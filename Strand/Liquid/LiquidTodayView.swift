@@ -659,11 +659,11 @@ struct LiquidTodayView: View {
                         Text(line).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                     }
                 }
-                vitalRow("Heart-rate variability", unitText(hrv, "ms"),
+                vitalRow(String(localized: "Heart-rate variability"), unitText(hrv, "ms"),
                          StrandPalette.metricCyan, fracOver(hrv, 120))
-                vitalRow("Resting heart rate", unitText(rhr, "bpm"),
+                vitalRow(String(localized: "Resting heart rate"), unitText(rhr, "bpm"),
                          StrandPalette.metricRose, fracOver(rhr, 100))
-                vitalRow("Breaths per minute", unitText(resp, "rpm", decimals: 1),
+                vitalRow(String(localized: "Breaths per minute"), unitText(resp, "rpm", decimals: 1),
                          StrandPalette.accent, fracOver(resp, 24))
             }
         }
@@ -1266,8 +1266,9 @@ private struct LiquidBatteryButton: View {
         .accessibilityLabel(batteryAccessibility)
     }
     private var batteryAccessibility: String {
-        let base = live.batteryPct.map { "Strap battery \(Int($0.rounded())) percent" } ?? "Strap battery"
-        return live.charging == true ? base + ", charging" : base
+        guard let pct = live.batteryPct else { return String(localized: "Strap battery") }
+        let estimateText: String? = nil
+        return String(localized: "Strap battery \(Int(pct.rounded())) percent\(live.charging == true ? ", charging" : "")\(estimateText.map { ", \($0)" } ?? "")")
     }
     private func ringColor(_ p: Double) -> Color {
         p < 15 ? StrandPalette.statusCritical : p < 35 ? StrandPalette.statusWarning : StrandPalette.chargeColor
