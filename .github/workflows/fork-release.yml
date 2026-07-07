@@ -187,19 +187,28 @@ jobs:
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate
-      - name: Build NOOP.app (macOS, unsigned)
+      - name: Build NOOP.app (macOS, unsigned, universal Release)
         run: >-
-          xcodebuild -scheme Strand -configuration Debug -destination 'platform=macOS'
-          -derivedDataPath build/dd
-          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
-          build
+          xcodebuild -scheme Strand -configuration Release -derivedDataPath build/dd
+          -destination 'generic/platform=macOS' ARCHS="x86_64 arm64" ONLY_ACTIVE_ARCH=NO
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Anonymize + verify universal binary
+        run: |
+          APP=$(find build/dd/Build/Products/Release -maxdepth 3 -name '*.app' -type d | head -1)
+          test -n "$APP" || { echo ".app not found"; exit 1; }
+          # Must be called NOOP.app for the release zip name and user expectations
+          if [ "$(basename "$APP")" != "NOOP.app" ]; then
+            mv "$APP" "$(dirname "$APP")/NOOP.app"
+            APP="$(dirname "$APP")/NOOP.app"
+          fi
+          Tools/anonymize-macos-app.sh "$APP"
       - name: Package + attach
         env:
           GH_TOKEN: ${{ github.token }}
           VER: ${{ needs.bump.outputs.ver }}
         run: |
-          APP=$(find build/dd/Build/Products -maxdepth 3 -name '*.app' -type d | head -1)
-          test -n "$APP" || { echo ".app not found"; exit 1; }
+          APP="build/dd/Build/Products/Release/NOOP.app"
+          test -d "$APP" || { echo ".app not found at $APP"; exit 1; }
           ditto -c -k --keepParent "$APP" "NOOP-macos-v${VER}.zip"
           gh release upload "${{ needs.bump.outputs.tag }}" "NOOP-macos-v${VER}.zip" --repo "$GITHUB_REPOSITORY" --clobber
 

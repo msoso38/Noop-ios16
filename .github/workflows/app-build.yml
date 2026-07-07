@@ -43,9 +43,11 @@ jobs:
       matrix:
         include:
           - scheme: Strand
-            destination: 'platform=macOS'
+            destination: 'generic/platform=macOS'
+            xcodebuild_args: 'ARCHS="x86_64 arm64" ONLY_ACTIVE_ARCH=NO'
           - scheme: NOOPiOS
             destination: 'generic/platform=iOS Simulator'
+            xcodebuild_args: ''
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,5 +62,6 @@ jobs:
         run: >-
           xcodebuild -scheme '${{ matrix.scheme }}' -configuration Debug
           -destination '${{ matrix.destination }}'
+          ${{ matrix.xcodebuild_args }}
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
           build
