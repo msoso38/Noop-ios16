@@ -19,6 +19,15 @@
       "versions": [
         {
           "version": "8.2.2",
+          "buildVersion": "173",
+          "date": "2026-07-07",
+          "localizedDescription": "NOOP 8.3.0. See the release notes for what changed.",
+          "downloadURL": "https://github.com/ryanbr/noop/releases/download/v8.3.0/NOOP-ios-unsigned-v8.3.0.ipa",
+          "size": 22431840,
+          "minOSVersion": "17.0"
+        },
+        {
+          "version": "8.2.2",
           "buildVersion": "172",
           "date": "2026-07-06",
           "localizedDescription": "NOOP 8.2.2. See the release notes for what changed.",
