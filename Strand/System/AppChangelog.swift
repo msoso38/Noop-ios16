@@ -398,12 +398,12 @@ enum AppChangelog {
                 "Plus the home-screen widgets and the iOS Live Activity say Charge instead of Recovery now, workout durations stop clipping on the Today tiles (Android, #332), and updating through AltStore no longer fails partway.",
             ]),
         Release(
-            version: "5.2.6",
-            title: "Updates check GitHub again",
-            date: "June 2026",
-            items: [
-                "**NOOP is back on GitHub** - and so is **Check for updates**. The in-app update check and the **Settings → About** \"project home\" link now point at github.com/NoopApp/noop again, where releases live (noop.fans stays as a mirror). It's still on-device and only runs when you tap - nothing about you is ever sent.",
-            ]),
+                    version: "5.2.6",
+                    title: "Updates check GitHub again",
+                    date: "June 2026",
+                    items: [
+                        "**NOOP is back on GitHub** - and so is **Check for updates**. The in-app update check and the **Settings → About** \\\"project home\\\" link now point at github.com/ryanbr/noop again, where releases live (noop.fans stays as a mirror). It's still on-device and only runs when you tap - nothing about you is ever sent."
+                    ]),
         Release(
             version: "5.2.5",
             title: "WHOOP 5/MG re-pairing fix",
@@ -1295,7 +1295,7 @@ enum AppChangelog {
             items: [
                 "Fixed (Mac): the download was accidentally an Apple-Silicon-only build, so it could not launch on Intel Macs at all. It now ships as a true universal binary that runs natively on both Intel and Apple Silicon. Thanks @stnnnts (#177, #165).",
                 "Fixed (iPhone): importing a WHOOP export or Apple Health .zip on a sideloaded build - the file picker was greying out the .zip so nothing could be selected. iOS now offers only the file types it can actually open, so the .zip is selectable again. Thanks @adrnxq (#179).",
-                "New (iPhone): an AltStore / SideStore source for one-tap updates on sideloaded installs - add https://raw.githubusercontent.com/NoopApp/noop/main/altstore-source.json as a source in AltStore or SideStore. Reimplemented from @RazvanRex (#178).",
+                "New (iPhone): an AltStore / SideStore source for one-tap updates on sideloaded installs - add https://raw.githubusercontent.com/ryanbr/noop/main/altstore-source.json as a source in AltStore or SideStore. Reimplemented from @RazvanRex (#178).",
             ]),
         Release(
             version: "2.6.2",

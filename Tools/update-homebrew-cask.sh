@@ -2,21 +2,21 @@
 #
 # update-homebrew-cask.sh <version> [zip] — refresh the Homebrew cask after a macOS release.
 # The cask download URL points at the GitHub release asset; the tap repo lives on GitHub
-# (github.com/NoopApp/homebrew-noop, Homebrew's default tap host) and is also mirrored to the
-# forge (noop.fans/NoopApp/homebrew-noop). This script pushes the updated cask to BOTH.
+# (github.com/ryanbr/homebrew-noop) and is also mirrored to the forge (noop.fans/ryanbr/homebrew-noop).
+# This script pushes the updated cask to BOTH.
 #
 # Users install/update with:
-#     brew tap noopapp/noop
+#     brew tap ryanbr/noop
 #     brew install --cask noop   /   brew upgrade --cask noop
 #
-# Anonymity-safe: commits as NoopApp; tokens read from ~/.config/noop/ and supplied
+# Anonymity-safe: commits as ryanbr; tokens read from ~/.config/noop/ and supplied
 # via a transient git credential helper — never on a command line, URL, or in output.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$HERE/../deploy.env" ] && source "$HERE/../deploy.env"
 DOMAIN="${FORGE_DOMAIN:-${NOOP_DOMAIN:-noop.fans}}"
-ORG="${FORGE_ORG:-NoopApp}"; REPO="${FORGE_REPO:-noop}"
+ORG="${FORGE_ORG:-ryanbr}"; REPO="${FORGE_REPO:-noop}"
 
 VER="${1:?usage: $0 <version e.g. 4.7.0> [zip path]}"
 ZIP="${2:-$HOME/Downloads/NOOP-v${VER}-macos.zip}"
@@ -56,14 +56,14 @@ end
 EOF
 
 cd "$TMP/tap"
-git -c user.name=NoopApp -c user.email=thenoopapp@gmail.com add Casks/noop.rb
+git -c user.name=ryanbr -c user.email=thenoopapp@gmail.com add Casks/noop.rb
 if git rev-parse HEAD >/dev/null 2>&1 && git diff --cached --quiet; then
   echo "Homebrew cask already current for ${VER} — nothing to push."; exit 0
 fi
-git -c user.name=NoopApp -c user.email=thenoopapp@gmail.com commit --quiet -m "noop ${VER}"
+git -c user.name=ryanbr -c user.email=thenoopapp@gmail.com commit --quiet -m "noop ${VER}"
 
 # Push to the canonical GitHub tap (required) and the forge mirror (best-effort).
-git -c credential.helper='!f() { echo username=NoopApp; echo "password=$GH_TOKEN"; }; f' \
+git -c credential.helper='!f() { echo username=ryanbr; echo "password=$GH_TOKEN"; }; f' \
     push --quiet "$GH_TAP_URL" HEAD:main
 echo "✓ Homebrew cask updated to ${VER} on GitHub (sha256 ${SHA:0:12}…)"
 

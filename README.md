@@ -19,13 +19,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ryanbr/noop/releases/latest"><img alt="Latest release" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Frelease.json&style=flat-square"></a>
-  <a href="https://github.com/ryanbr/noop/stargazers"><img alt="Stars" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fstars.json&style=flat-square"></a>
+  <a href="https://github.com/ryanbr/noop/releases/latest"><img alt="Latest release" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Frelease.json&style=flat-square"></a>
+  <a href="https://github.com/ryanbr/noop/stargazers"><img alt="Stars" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fstars.json&style=flat-square"></a>
 </p>
 
 <p align="center">
   <a href="#download">⬇&nbsp;Download</a> ·
-  <a href="https://github.com/ryanbr/noop/wiki/FAQ">❓&nbsp;FAQ</a> ·
+  <a href="https://github.com/ryanbr/noop/discussions">❓&nbsp;FAQ</a> ·
   <a href="https://discord.com/invite/nHK9FHczu">💬&nbsp;Discord</a> ·
   <a href="https://www.reddit.com/r/NOOPApp/">👽&nbsp;Reddit</a> ·
   <a href="#features">Features</a> ·
@@ -53,13 +53,13 @@
 Pre-built apps you can run right now:
 
 <p>
-  <a href="https://github.com/ryanbr/noop/releases/latest"><img alt="Version" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Frelease.json&style=flat-square"></a>
-  <img alt="Released" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Freleased.json&style=flat-square">
+  <a href="https://github.com/ryanbr/noop/releases/latest"><img alt="Version" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Frelease.json&style=flat-square"></a>
+  <img alt="Released" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Freleased.json&style=flat-square">
 </p>
 
 | Platform | Build | Notes |
 |---|---|---|
-| **macOS** | `NOOP.app` (see [Releases](https://github.com/ryanbr/noop/releases)) or Homebrew: `brew tap noopapp/noop && brew trust noopapp/noop && brew install --cask noop` | Apple Silicon + Intel. Drag to Applications. Not notarized — see **First launch on macOS** below. The one-time `brew trust noopapp/noop` is needed on Homebrew 6.0+ (harmless on older versions) — see [Homebrew docs](docs/HOMEBREW.md). |
+| **macOS** | `NOOP.app` (see [Releases](https://github.com/ryanbr/noop/releases)) or Homebrew: `brew tap ryanbr/noop && brew trust ryanbr/noop && brew install --cask noop` | Apple Silicon + Intel. Drag to Applications. Not notarized — see **First launch on macOS** below. The one-time `brew trust ryanbr/noop` is needed on Homebrew 6.0+ (harmless on older versions) — see [Homebrew docs](docs/HOMEBREW.md). |
 | **Android** | `NOOP-full.apk` (see [Releases](https://github.com/ryanbr/noop/releases)) | The full app. `minSdk 26` (Android 8+). Sideload — enable "install unknown apps". Blocked by Play Protect? See **Installing on Android** below. |
 | **iOS** | `NOOP-vX-ios.ipa` (see [Releases](https://github.com/ryanbr/noop/releases)) — sideload with AltStore/SideStore | Now a **direct download**. The `.ipa` is unsigned; **you** sign it on your iPhone with your own free Apple ID (no App Store, no developer account — NOOP stays anonymous). Re-signs every 7 days (AltStore automates it); Apple Health + Live Activity widgets may be limited under a free signing identity. See [docs/IOS.md](docs/IOS.md). Or build from source in Xcode. |
 
@@ -222,8 +222,8 @@ with the strap and **score recovery, strain and sleep on your own device** — n
 import required.
 
 <p>
-  <a href="https://github.com/ryanbr/noop/releases/latest"><img alt="Latest across all platforms" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Frelease.json&style=flat-square"></a>
-  <img alt="Commits per month" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Flastcommit.json&style=flat-square">
+  <a href="https://github.com/ryanbr/noop/releases/latest"><img alt="Latest across all platforms" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Frelease.json&style=flat-square"></a>
+  <img alt="Commits per month" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Flastcommit.json&style=flat-square">
   <img alt="Top language" src="https://img.shields.io/badge/languages-Swift%20%C2%B7%20Kotlin-E8B84B?style=flat-square">
   <img alt="Code size" src="https://img.shields.io/badge/build-from%20source-6B737B?style=flat-square">
 </p>
@@ -545,12 +545,12 @@ forward. Huge thanks to everyone filing reports, sharing strap logs, and reverse
 protocol alongside us — this project is built on it.
 
 <p>
-  <img alt="Open issues" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fopen.json&style=flat-square">
-  <img alt="Issues resolved" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fresolved.json&style=flat-square">
-  <a href="https://github.com/ryanbr/noop/stargazers"><img alt="Stars" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fstars.json&style=flat-square"></a>
-  <img alt="Forks" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fforks.json&style=flat-square">
-  <img alt="Commits per month" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Flastcommit.json&style=flat-square">
-  <img alt="Last commit" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNoopApp%2Fnoop%2Fmain%2Fdocs%2Fstats%2Flastcommit.json&style=flat-square">
+  <img alt="Open issues" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fopen.json&style=flat-square">
+  <img alt="Issues resolved" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fresolved.json&style=flat-square">
+  <a href="https://github.com/ryanbr/noop/stargazers"><img alt="Stars" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fstars.json&style=flat-square"></a>
+  <img alt="Forks" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Fforks.json&style=flat-square">
+  <img alt="Commits per month" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Flastcommit.json&style=flat-square">
+  <img alt="Last commit" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fryanbr%2Fnoop%2Fmain%2Fdocs%2Fstats%2Flastcommit.json&style=flat-square">
 </p>
 
 ![Repobeats analytics image](https://repobeats.axiom.co/api/embed/97acba228c083adca8453a1ebf15f18dad2894be.svg "Repobeats analytics image")

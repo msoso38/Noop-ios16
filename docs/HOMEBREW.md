@@ -3,21 +3,21 @@
 macOS users install + auto-update NOOP with:
 
 ```bash
-brew tap noopapp/noop
-brew trust noopapp/noop    # required since Homebrew 6.0.0 (see note below)
+brew tap ryanbr/noop
+brew trust ryanbr/noop    # required since Homebrew 6.0.0 (see note below)
 brew install --cask noop
 brew upgrade --cask noop   # later updates
 ```
 
-The cask lives in the **`NoopApp/homebrew-noop`** tap on GitHub and points at the macOS `.zip`
+The cask lives in the **`ryanbr/homebrew-noop`** tap on GitHub and points at the macOS `.zip`
 attached to each release.
 
 > **Why `brew trust`?** Since **Homebrew 6.0.0** (June 2026), non-official taps must be explicitly
 > trusted before Homebrew will load their code — otherwise you'll see
-> `Error: Refusing to load cask noopapp/noop/noop from untrusted tap`. Trust is a one-time,
+> `Error: Refusing to load cask ryanbr/noop/noop from untrusted tap`. Trust is a one-time,
 > per-machine decision (publishers can't pre-trust their own tap — only Homebrew's official taps are
-> trusted by default). Trust the whole tap with `brew trust noopapp/noop`, or just our cask with
-> `brew trust --cask noopapp/noop/noop`. It's the Homebrew equivalent of the Gatekeeper
+> trusted by default). Trust the whole tap with `brew trust ryanbr/noop`, or just our cask with
+> `brew trust --cask ryanbr/noop/noop`. It's the Homebrew equivalent of the Gatekeeper
 > right-click-Open below: you're vouching for code you can read — the cask is one short file in the
 > public tap, and the app's full source is in this repo.
 
@@ -43,16 +43,16 @@ rides along with them. Fewer secrets, nothing to fail, one less surface to keep 
 
 ## Requirements
 
-- The tap repo **`NoopApp/homebrew-noop`** exists (public). ✅ done.
-- The NoopApp PAT at `~/.config/noop/gh_token` (the same one used to push releases) has
+- The tap repo **`ryanbr/homebrew-noop`** exists (public). ✅ done.
+- The ryanbr PAT at `~/.config/noop/gh_token` (the same one used to push releases) has
   **Contents: Read and write** on `homebrew-noop`. The script reads the token from that file and
   supplies it through a transient git credential helper, so **the token never appears on a command
   line, in a remote URL, or in any output** (a clean remote URL is used for clone + push).
 
 ## Anonymity checklist
 
-- Tap repo + commits under the anonymous **NoopApp** identity (the script commits as
-  `NoopApp <thenoopapp@gmail.com>`).
+- Tap repo + commits under the anonymous **ryanbr** identity (the script commits as
+  `ryanbr <thenoopapp@gmail.com>`).
 - Token read from the local file only; never echoed. Scope it to the repos it needs and no more.
 - The cask installs the **already-anonymized** release zip (scrubbed by `Tools/anonymize-macos-app.sh`
   at build time) — no new surface.

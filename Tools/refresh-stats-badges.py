@@ -11,7 +11,7 @@ so the working tree stays the single source of truth and no API-side divergence 
 """
 import urllib.request, urllib.error, urllib.parse, json, os
 TOK=open(os.path.expanduser("~/.config/noop/gh_token")).read().strip()
-API="https://api.github.com/repos/NoopApp/noop"
+API="https://api.github.com/repos/ryanbr/noop"
 HERE=os.path.dirname(os.path.abspath(__file__))
 ROOT=os.path.dirname(HERE)
 def req(url):
@@ -32,8 +32,8 @@ _,b=req(API); repo=json.loads(b)
 _,b=req(API+"/releases/latest"); latest=json.loads(b)
 _,b=req(API+"/commits?per_page=1"); last=json.loads(b)[0]["commit"]["author"]["date"][:10]
 # open_issues_count on the repo includes PRs; use the search API to count issues only.
-open_issues=search_count("repo:NoopApp/noop is:issue is:open")
-resolved=search_count("repo:NoopApp/noop is:issue is:closed")
+open_issues=search_count("repo:ryanbr/noop is:issue is:open")
+resolved=search_count("repo:ryanbr/noop is:issue is:closed")
 write("docs/stats/release.json","latest",latest["tag_name"],"E8B84B")
 write("docs/stats/released.json","released",(latest.get("published_at") or "")[:10],"6B737B")
 write("docs/stats/stars.json","stars",repo.get("stargazers_count",0),"E8B84B")

@@ -12,7 +12,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$HERE/../deploy.env" ] && source "$HERE/../deploy.env"
 DOMAIN="${FORGE_DOMAIN:-${NOOP_DOMAIN:-noop.fans}}"
-ORG="${FORGE_ORG:-NoopApp}"; REPO="${FORGE_REPO:-noop}"
+ORG="${FORGE_ORG:-ryanbr}"; REPO="${FORGE_REPO:-noop}"
 
 VERSION="${1:?usage: $0 <version> <ipa> [desc]}"
 IPA="${2:?usage: $0 <version> <ipa> [desc]}"
