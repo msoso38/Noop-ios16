@@ -13,6 +13,9 @@
 - **[relue]** - relue/oura_ring_reverse `docs/.../heartbeat_replication_guide.md` and `heartbeat_complete_flow.md` (no-license; Ring 3 live-HR).
 - **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (no-license Rust clean-room decoder; facts cited only, no code copied). Its event tags marked `"_status": "unvalidated"` are treated the same as our Tier B - plausible, not ground-truth-confirmed.
 - **[sleepnet]** - Th0rgal/open_oura `docs/algorithms/sleepnet.md` (no-license; describes Oura's on-phone sleep-staging model + its encryption, NOT a BLE protocol layout). See §6.12.1.
+- **[oura-proto]** - Th0rgal/open_oura `crates/oura-protocol/src/{protocol,events,auth}.rs` (no-license clean-room Rust decoder). Opcodes, framing, event-body layouts. Treated as Tier-B leads (fixture-validate), same as [oura-rs]; see §9.
+- **[oura-link]** - Th0rgal/open_oura `crates/oura-link/src/client.rs` (no-license; the BLE connect→sync state machine). See §9.1.
+- **[oura-sync]** - Th0rgal/open_oura `docs/{sync-orchestration,data-recovery-map,native-decoder,ring-features}.md` + `crates/oura-analysis/src/ported/*.rs` (no-license). Sync recipe, recoverable-data map, native-lib decode provenance, reference scoring. See §9.
 
 > **CONFLICT NOTE (resolution rule):** The relue archive file `event_data_definition.md` describes events as **protobuf varint** records (e.g. `0x55` SLEEP_HR with field tags). This contradicts the **byte-for-byte verified TLV framing** in [open_ring] and [ringverse]. The TLV/bit-packed model from [open_ring]/[ringverse] is authoritative for our decoders; the protobuf description is treated as unverified/likely AI-fabricated and is NOT used. Where a layout is only attested by a single no-license, AI-generated doc, it is marked **(UNVERIFIED)** and our decoder must gate it behind a fixture test before trusting it.
 
@@ -457,3 +460,58 @@ NOOP-derived hypnogram as "Oura sleep stages": it is NOOP's own, from the ring's
 - Resolve the `0x0D` battery percent-vs-voltage offset per generation via captured fixtures (§6.10).
 - Validate all Tier-B sleep/activity/step layouts against real captures before enabling in scoring.
 - Confirm live-HR `0x02` path on actual Gen-4/Gen-5 hardware (only Gen-3 is verified in the corpus).
+- **⚠ SyncTime (`0x12`) send layout mismatch (§9.2).** [oura-proto] gives `12 09 <unix_secs:u64 LE> <tz:i8>`; NOOP's `OuraCommands.syncTime` emits a different 24-bit `unixSeconds/256` + `0xF6`-trailer body. Verify against a capture and align — a malformed SyncTime may be setting the ring clock wrongly or being ignored (the ring's own RTC currently still yields a ~correct `0x42` anchor, masking it, but this is fragile).
+- **Reconsider the `skinTempFunnel` sample floor for Oura nights (§9.10).** [oura-sync]'s temperature algorithm accepts a night at ≥ 4 valid 30-sample windows (~120 samples); NOOP requires 300 kept samples/night — likely too strict for a ring (fewer temp samples than a WHOOP strap).
+
+---
+
+## 9. open_oura clean-room digest (crates + tools, 2026-07-08)
+
+Digest of the `Th0rgal/open_oura` Rust workspace + Python tools ([oura-proto], [oura-link], [oura-sync], plus [oura-rs] `events.rs`). open_oura reverse-engineered the event bodies from Oura's own native library `libringeventparser.so` (ARM64) and the Android app. **Trust rule (unchanged, §1):** every layout below is a **lead to fixture-validate**, NOT ground truth, EXCEPT where it merely confirms an item NOOP has already verified. Nothing here changes a decoder without a real capture.
+
+### 9.1 Canonical connect → sync sequence [oura-link, oura-sync]
+The client state machine runs, in order: **1** connect+bond, subscribe notify · **2** authenticate (nonce → AES → `Authenticate`) · **3** **GetCapabilities** (`2f 02 01 <page 0-1>` → resp `ext 0x02`; decides **extended-vs-legacy** event path) · **4** app-level auth · **5** **SyncTime** (`0x12`, write phone UTC) · **6** SetNotification (`0x1c`) · **7** battery/product/firmware reads · **8** conditional feature `SetFeatureMode` enables · **9** **SYNC_EVENTS** (history drain) · **10** SYNC_R_DATA (only if `r_data_autosync`).
+- **Hard rule: do NOT issue any RData (`0x03`) for a normal pull** (§9.7).
+- **NOOP gap:** NOOP skips step 3 (**GetCapabilities**) entirely — it never negotiates extended-vs-legacy, so it always uses the legacy `0x10` drain. Sending SyncTime (step 5) is the fix already landed on `oura-*` branches; GetCapabilities remains an untried lead for the `0x43`-debug-heavy / thin-structured stream.
+
+### 9.2 SyncTime (`0x12`) exact layout — ⚠ NOOP DISCREPANCY [oura-proto, oura-link]
+Authoritative build: `12 09 <unix_secs: u64 LE (8 B)> <tz: i8 half-hours>`. Unit is **seconds** (`req_sync_time(now.as_secs(), 0)`), 8-byte little-endian, one signed tz byte. This is the SEND side; §6.11 covers decoding the ring's `0x42` reply.
+- **NOOP currently emits a DIFFERENT body**: `12 09 <token> <unixSeconds/256 : 3 B LE> 00 00 00 00 F6` — a 24-bit coarse time (÷256 ≈ 4.3-min resolution) with a trailing `0xF6` (resembling the `0x85` RTC-beacon trailer), NOT 8-byte LE seconds. **Almost certainly wrong.** It may set the ring clock incorrectly or be silently rejected; the anchor still lands today only because the ring's own RTC drives a ~correct `0x42` regardless. Fixture-verify and align (see §8). Cross-ref §5.5, §6.11.
+
+### 9.3 Command + `0x2F` sub-op set (authoritative) [oura-proto]
+Outer opcodes: `0x03` RData · `0x06` realtime measurement · `0x08` firmware info · `0x0C` battery request (→ `0x0D` reply) · `0x10` GetEvent · `0x12` SyncTime · `0x18` product info · `0x1C` notification flags · `0x24` set-auth-key · `0x28` sleep-analysis check · `0x2F` extended.
+`0x2F` sub-ops: `0x01` GetCapabilities · `0x20` FeatureStatus · `0x22` SetFeatureMode · **`0x24` GetFeatureLatestValues** (poll a capability's last value — e.g. last IBI/SpO2 — WITHOUT streaming) · `0x26` SetFeatureSubscription · `0x27` subscription-resp · `0x2B` AuthNonce (→ `0x2C`) · `0x2D` Authenticate (→ `0x2E`).
+Feature **modes**: `0x00` off · `0x01` automatic · `0x02` requested · `0x03` connected-live. (Matches §7.1; `0x24` GetFeatureLatestValues is the notable addition — a cheap poll path NOOP does not use.)
+
+### 9.4 History fetch — cursor unit + legacy/extended [oura-proto, oura-link, oura-sync]
+`GetEvent 0x10`: `10 09 <start: u32 LE DECISECONDS> <max_events: u8 (255)> <flags: u32 LE (0xFFFFFFFF = all)>`. **The cursor is in deciseconds = the ring's 100 ms tick** — this pins §5.5's tick and confirms NOOP's cursor is a ring-timestamp in 100 ms units. Response `0x11` → `EventBatchSummary { bytes_left }`; loop until `bytes_left == 0`, advancing cursor to `max_event_ts + 1`, persisting after each batch. **Extended path** (`ExtGetEvent`, via `0x2F`): `start_ms = cursor × 100`, `max = 65535`, NORMAL buffer — chosen only when GetCapabilities (§9.1 step 3) reports it. NOOP uses the legacy `0x10` path.
+
+### 9.5 Feature-gating mechanism [oura-sync ring-features]
+**All `FeatureDefinitions.*` server flags default FALSE client-side; the effective value arrives in the per-user `ClientConfiguration` Oura's cloud delivers.** So a NOOP-style cloudless client sees the OFF defaults: **SpO2** (`health/spo2`) and **REAL_STEPS** (`activity/real_steps`, feature `0x0B`) are OFF → this is the mechanism behind §7.1's "SpO2 confirmed OFF" and the empty Steps card, not a decode gap. `RESEARCH_DATA` (`0x01`) and `RAW_DATA_SAMPLER` (`0x12`) are **entitlement-locked firmware-side** (a `SetFeatureMode` is a no-op / `NOT_AVAILABLE`). `DAYTIME_HR` (`0x02`) is always-on Gen3+. Confirms + explains §7.1.
+
+### 9.6 Event tags not yet in §6 (leads — fixture-gate) [oura-rs, oura-sync]
+- **IBI family:** `0x44` ibi, `0x60` ibi_and_amplitude (14 B, 6 IBIs + PPG amps, bit-packed), `0x6E` spo2_ibi, **`0x71` green_ibi_and_amplitude**. HR = `60000 / ibi_ms`, plausible 300–2000 ms.
+- **`0x62` on_demand_meas** — a spot measurement bundling **breathing rate** + HR/HRV/temp. A NEW respiration source (NOOP has no respiration from Oura today).
+- **`0x5D` HRV** — [oura-rs] decodes as pairs `(u8 avg HR bpm, u8 RMSSD ms)` per 5 min. This is a **lead to promote** NOOP's `0x5D` (§6.9 keeps `b1`/`b2` raw, scale unpinned): `b2` may be RMSSD in **ms directly**. Validate before minting `rmssd_ms`.
+- **`0x8B` spo2_r_pi_event** — the REAL SpO2 source (Gen4/Cooper): header + 3-byte samples `(R-ratio: u16 BE / 16384, perfusion index: u8/255 × 0.05)`; feeds the quadratic in §9.10. A Gen-3 with SpO2 gated OFF never emits `0x8B` — consistent with NOOP's `[85,100]` persist gate dropping the misframed `0x6F/0x77` garbage.
+- **Sleep:** `0x4B`/`0x4E`/`0x5A` all carry the 2-bit hypnogram (`0 wake,1 light,2 deep,3 REM`); summaries `0x49/0x4C/0x4F/0x58` carry bedtime / stage durations / lowest-HR / contributors (all UNVERIFIED — need a capture *after* a processed sleep period). Each daily sleep doc carries a `sleep_algorithm_version`.
+- **Misc:** `0x59` eda (u16 LE @5 min), `0x56` alert (1 byte), `0x6C` feature_session (feature_id/status/±u16 value), `0x74` ehr_acm_intensity (u16 LE ×7), `0x61` debug_data (ASCII, or binary subtypes `0x11` charging_time u32 / `0x24` battery %+u16 mV), `0x84` ambient (i16 @5 min), `0x86` aohr (bpm/quality @1920 ms), `0x82`/`0x83` scan telemetry.
+- **`0x80` — generation conflict:** [oura-native] documents `0x80` as **green_ibi_quality (Ring 5)**: `ibi_ms = (b1 & 7) | (b0 << 3)`, `quality = (b1>>3)&3`. NOOP/[ringverse] treat `0x80` as an IBI amplitude tag. **Verify which layout applies per generation before trusting `0x80` on Ring 5.**
+- **`0x87`/`0x88` atlas metadata / raw_bioz — BACKEND-GATED** (need a cloud-delivered `FeatureDefinition`, like SleepNet §6.12.1); inaccessible to an independent client.
+
+### 9.7 RData raw sampler (`0x03`) — bulk flash sensor download [oura-proto, oura-sync]
+An opt-in research path (`r_data_autosync` pref, default off; feature `0x12` entitlement-locked). Sub-ops: `0x01` get-page, `0x02` configure (`03 <len> 02 <start_unix u32 LE> <cur_unix u32 LE> <type bytes…>`), `0x03` stop, `0x04` clear, `0x05` state. `DataType`: PPG 250/125/50 Hz · ACM 8g/2g/4g @50/10 Hz · Gyro 2000/500/125 dps @50/10 Hz · Temp 1 min/10 s/10 Hz.
+- **It does NOT self-stop** — the caller MUST issue `stop` + `clear` or the ring keeps sampling to flash. And **never issue RData on a normal pull** (§9.1).
+- **Sleep-relevant lead:** RData `ACM` is the ONLY way to pull **raw accelerometer** off the ring. NOOP's sleep pipeline is gravity-driven and Oura yields no gravity, which is exactly why NOOP builds sessions from the ring's own phase tags instead (the honest path, `OuraSleepSessionBuilder`). RData ACM could in principle feed the gravity stager, but it is heavy (flash, entitlement-locked, teardown-critical) — **not a v1 path.**
+
+### 9.8 Batched-sample timestamping + intervals [oura-native]
+Confirms NOOP's backward-walk: a batched event packs N samples under one event-time; per-sample time steps BACKWARD `t = utc_ms − (n−1)×interval`. Sampling intervals: **sleep-temp 30 s · HRV & ambient-temp 5 min · measurement-quality 3 min · SpO2 1 s · AOHR 1920 ms.**
+
+### 9.9 Cloud-only vs on-device (honest-data alignment) [oura-sync]
+- **On-wire / on-device** (NOOP may consume): raw HR/IBI/PPG, HRV (`0x5D`), SpO2 samples (when gated on), skin temp + its on-device baseline, MET bins + step counts, coarse sleep-phase tags, respiration spot (`0x62`).
+- **Cloud-ONLY, no local path:** Readiness / Sleep / Activity **scores** (0–100), workout auto-classification, SpO2 OVI/BDI indices, and the SleepNet hypnogram (§6.12.1).
+- Reinforces the invariant: NOOP computes its OWN scores from the raw + coarse signals and never needs Oura's cloud scores.
+
+### 9.10 Reference algorithms — compare to NOOP funnels [oura-sync ported]
+- **SpO2:** `SpO2% = a + b·r + c·r²` (quadratic on the `0x8B` R-ratio); coefficients are delivered **by the ring** (per-device), raw result clamped `[0,120]` (the `run_spo2.py` display tool further clamps `[85,100]`). Aligns NOOP's `[85,100]` SpO2 persist gate.
+- **Skin temp:** 7-sample sliding median → consecutive 30-sample windows → keep a window only if `(max − min) < 2.50 °C` and non-zero → **nightly value = min of the window maxima** → needs **≥ 4 valid windows** (~120 samples). Deviation = nightly − personal-baseline mean. **Lead:** NOOP's `skinTempFunnel` demands 300 kept samples/night — ~2.5× open_oura's floor; likely too strict for a ring (§8).
