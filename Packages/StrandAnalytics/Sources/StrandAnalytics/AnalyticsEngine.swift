@@ -316,6 +316,15 @@ public enum AnalyticsEngine {
                                   // measured night. Trace-only: never alters the DayResult. nil/default keeps
                                   // pure-function callers/tests byte-identical (still emits `measured`).
                                   sleepProvenance: SleepProvenance = .measured,
+                                  // Ring-supplied sleep sessions (Oura). `SleepStager.detectSleep` is
+                                  // gravity-driven and a ring streams no accelerometer, so it returns
+                                  // nothing for an Oura night; the caller instead builds sessions from the
+                                  // ring's OWN anchored phase timeline (OuraSleepSessionBuilder) and passes
+                                  // them here. When non-nil these REPLACE the gravity detector's output as
+                                  // the day's sessions, so the ring's night flows through the SAME funnels
+                                  // (sleep totals, the skin-temp window, rest) the WHOOP path uses. nil (the
+                                  // default) keeps every existing gravity-based caller/test byte-identical.
+                                  providedSleepSessions: [SleepSession]? = nil,
                                   // Sleep & Rest test-mode trace sink (zero-cost default nil = byte-identical).
                                   // When non-nil, the gate trace from detectSleep and the Rest sub-score line
                                   // are forwarded line-by-line. Side-effect-only; never alters the DayResult.
@@ -332,11 +341,19 @@ public enum AnalyticsEngine {
         func tsInDay(_ ts: Int) -> Bool { (ts + tzOffsetSeconds) >= dayStartUtc && (ts + tzOffsetSeconds) < dayEndUtc }
 
         // ── Sleep detection + staging ─────────────────────────────────────────
-        let allSessions = SleepStager.detectSleep(hr: hr, rr: rr, resp: resp, gravity: gravity,
+        // A ring supplies its own sessions (built from its phase timeline); everything else derives them
+        // from the gravity-driven stager. `providedSleepSessions` REPLACES detection wholesale — a device
+        // that hands us a hypnogram has no accelerometer for the stager to work from.
+        let allSessions: [SleepSession]
+        if let providedSleepSessions {
+            allSessions = providedSleepSessions
+        } else {
+            allSessions = SleepStager.detectSleep(hr: hr, rr: rr, resp: resp, gravity: gravity,
                                                   tzOffsetSeconds: tzOffsetSeconds, wristOff: wristOff,
                                                   bandSleepState: bandSleepState,
                                                   useSleepStagerV2: useSleepStagerV2,
                                                   traceSink: traceSink)
+        }
         // Sessions attributed to `day` = those whose end falls on `day` (LOCAL day, #277). `day` is
         // the caller's local-day key; attribute by the same offset so the bucket and the key agree.
         let matched = allSessions.filter { tsInDay($0.end) }

@@ -112,6 +112,34 @@ final class AnalyticsEngineTests: XCTestCase {
         XCTAssertEqual(result.cachedSleep[0].restingHr, 50)
     }
 
+    func testAnalyzeDayUsesProvidedSleepSessionsWithoutGravity() {
+        // The Oura path: a ring streams NO accelerometer, so the gravity-driven detector yields nothing.
+        // The caller instead builds sessions from the ring's own phase timeline and passes them via
+        // `providedSleepSessions`; dailyMetric's sleep fields must populate from them, gravity empty.
+        let day = "2021-06-15"
+        let dayStart = 1_623_715_200                 // 2021-06-15 00:00:00 UTC
+        let t = dayStart + 3_600                      // night starts 01:00 UTC, ends 08:00 (~7h, on `day`)
+        let phases: [(ts: Int, stage: Int)] = [
+            (t + 0,      1),   // light
+            (t + 3_600,  2),   // deep
+            (t + 7_200,  3),   // rem
+            (t + 10_800, 1),   // light
+            (t + 25_200, 0),   // wake (end marker)
+        ]
+        let sessions = OuraSleepSessionBuilder.sessions(fromPhases: phases)
+        XCTAssertEqual(sessions.count, 1)
+
+        let result = AnalyticsEngine.analyzeDay(
+            day: day, profile: UserProfile(age: 30), providedSleepSessions: sessions)
+
+        XCTAssertEqual(result.sleepSessions.count, 1, "the ring session flows through with no gravity")
+        XCTAssertNotNil(result.daily.totalSleepMin)
+        XCTAssertGreaterThan(result.daily.totalSleepMin!, 0)
+        XCTAssertNotNil(result.daily.deepMin)   // stage minutes come from the ring's hypnogram
+        XCTAssertNotNil(result.daily.remMin)
+        XCTAssertNotNil(result.cachedSleep[0].stagesJSON)
+    }
+
     func testAnalyzeDayColdStartRecoveryNil() {
         // No baselines supplied → recovery is nil (cold-start gate).
         let day = "2021-06-16"
