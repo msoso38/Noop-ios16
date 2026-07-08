@@ -480,6 +480,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 log("Oura: live-HR enabled - streaming HR / IBI")
                 startReengageTimer()
                 startHistoryFetchTimer()
+                // §5.3 step 1 / open_oura sync recipe step 4: hand the ring the current UTC BEFORE draining
+                // history so it can emit a usable 0x42 time-sync anchor (§5.5). Without this every fetched
+                // record stays "[no anchor yet]" and last-night sleep / skin-temp can't be placed on a
+                // calendar day (the Sleep screen reads matched=0). SyncTime WRITES the ring's clock - the
+                // phone owns ring time, exactly as the official Oura app does on every connect. Sent ONCE
+                // per session here, before the first fetch; the ack-fetch loop never re-sends it.
+                write([OuraCommands.syncTime(unixSeconds: Int(Date().timeIntervalSince1970))])
                 fetchHistoryIfIdle()   // pull last night's banked temp/SpO2/HRV/sleep-phase right away
                 write([OuraCommands.getBattery()])   // ask once HR streams; the 0x0D reply routes to onBattery
             }
