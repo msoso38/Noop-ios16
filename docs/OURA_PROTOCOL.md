@@ -12,6 +12,7 @@
 - **[open_oura-feat]** - Th0rgal/open_oura `docs/ring-features.md` (feature gating).
 - **[relue]** - relue/oura_ring_reverse `docs/.../heartbeat_replication_guide.md` and `heartbeat_complete_flow.md` (no-license; Ring 3 live-HR).
 - **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (no-license Rust clean-room decoder; facts cited only, no code copied). Its event tags marked `"_status": "unvalidated"` are treated the same as our Tier B - plausible, not ground-truth-confirmed.
+- **[sleepnet]** - Th0rgal/open_oura `docs/algorithms/sleepnet.md` (no-license; describes Oura's on-phone sleep-staging model + its encryption, NOT a BLE protocol layout). See §6.12.1.
 
 > **CONFLICT NOTE (resolution rule):** The relue archive file `event_data_definition.md` describes events as **protobuf varint** records (e.g. `0x55` SLEEP_HR with field tags). This contradicts the **byte-for-byte verified TLV framing** in [open_ring] and [ringverse]. The TLV/bit-packed model from [open_ring]/[ringverse] is authoritative for our decoders; the protobuf description is treated as unverified/likely AI-fabricated and is NOT used. Where a layout is only attested by a single no-license, AI-generated doc, it is marked **(UNVERIFIED)** and our decoder must gate it behind a fixture test before trusting it.
 
@@ -357,6 +358,28 @@ bits 14–15 : qual_b
 - **`0x49` `sleep_summary_1`**: start/end as uint16 LE minutes-before-event. [ringverse]
 - **`0x76` `bedtime_period`**: start/end as uint32 LE ringTimestamps → map to UTC (§5.5). [ringverse]
 - Tags `0x48,0x4A–0x4D,0x4F,0x57,0x58` are additional sleep summary/feature variants in the dictionary; layouts **(UNVERIFIED)** - decode only after fixtures. [ringverse] **Beware phantom sightings:** a `0x4C`/`0x49` "sleep_summary" whose payload is ASCII (e.g. contains `in_bed=…`, readable words) is almost certainly misframed `0x43` debug text, not a real summary — see §2.4 desync rule and §6.15. Confirm a candidate summary is binary and length-consistent before treating it as a fixture.
+
+#### 6.12.1 The polished hypnogram is cloud-locked (SleepNet) — NOOP does not chase it
+The 4-stage hypnogram the **Oura app** shows is **not** produced on the ring and is **not** on the BLE
+wire. It is the output of **SleepNet**, a PyTorch model that runs **on the phone** (in Oura's app, not
+in the ring's firmware/`ecore`) and classifies sleep in **per-30-second epochs**. The model ships as
+`oura_models.apk/assets/sleepstaging_2_6_0.pt.enc` (~114 KB) **encrypted AES-256-GCM**
+(`[12-byte IV][ciphertext + 16-byte tag]`, `AES/GCM/NoPadding`, `GCMParameterSpec(128, iv)`); the GCM key
+is **fetched from Oura's servers** (per-model, labelled, rotatable) and only cached on a logged-in device.
+So the finished hypnogram is **the one Oura metric that is not reproducible without Oura's cloud**. [sleepnet]
+
+**Consequence for NOOP (honest-data invariant, §1):** we neither can nor do reproduce SleepNet — the key
+is cloud-gated, and even with it, surfacing Oura's encrypted proprietary score is exactly what NOOP does
+not do. NOOP builds its **own** sleep session from signals that genuinely cross the BLE boundary:
+- the ring's own **2-bit `0x4E`/`0x5A` phase codes** (§6.12, **Tier A** — the ring's coarse on-device
+  awake/light/deep/REM classification, decoded and persisted as `OURA_SLEEP_PHASE` events);
+- the ring's own **sleep-window boundaries** — `0x49`/`0x76` summary/bedtime (Tier-B until fixtured) and
+  the **`0x43` debug narration** `check_sleep` / `in_bed` / `s: <start>` / `e: <end>` (§6.15), which on
+  live Gen 3 (2026-07-08) reported a ~552-min window corroborating the `0x49` summary;
+- plus NOOP's **own** staging over raw HR / HRV / skin-temp / motion.
+
+These are leads for a NOOP-side sleep-session builder, **not** a path to Oura's hypnogram. Do not label a
+NOOP-derived hypnogram as "Oura sleep stages": it is NOOP's own, from the ring's raw + coarse signals.
 
 ### 6.13 Motion / activity
 - **`0x47` `motion_events`** (variable): byte6 bits`[7:5]`=field_a, `[4:0]`=field_b; bytes7–9 = three **int8 × 8** axis magnitudes; optional bytes10–11. [ringverse]
