@@ -38,6 +38,18 @@ object OuraStreamMapping {
     const val EVENT_SLEEP_PHASE = "OURA_SLEEP_PHASE"
 
     /**
+     * Plausible SpO2 oxygen-saturation percentage band. Aligned with open_oura `tools/run_spo2.py`,
+     * which computes SpO2 from the r-ratio (tag 0x8b) and CLAMPS the result to [85, 100] - Oura's own
+     * reporting floor and the physiologically plausible band for a worn ring. Used as a REJECT gate at
+     * the persist boundary (drop outside), NEVER a clamp: an out-of-band value is either a raw
+     * sub-channel that is not a percentage (0x77 dc_raw PPG waveform, 0x7B unpinned uint16) or a
+     * reassembler-misaligned phantom (the -63..4.7M garbage seen on a SpO2-gated-off Gen 3 Horizon), so
+     * there is no genuine reading to clamp - forcing garbage to "100%" would fabricate an oxygen value,
+     * violating the honest-data invariant. Must match the Swift twin (OuraStreamMapping.plausibleSpO2Percent).
+     */
+    val PLAUSIBLE_SPO2_PERCENT = 85..100
+
+    /**
      * Fold a batch of decoded [events] into a protocol [Streams] for one flush. [anchor] maps a
      * ring-clock timestamp to wall-clock unix seconds (null => drop the sample). Pure: no BLE, no DB,
      * no clock, fully JVM-unit-testable. Tier-B events never reach scoring; if any leak in (they only
@@ -76,10 +88,18 @@ object OuraStreamMapping {
                 }
 
                 is OuraEvent.Spo2 -> {
-                    // The ring exposes ONE combined SpO2 reading (not separate red/ir channels): its
-                    // raw value goes in `red`; `ir` stays 0 (an unread channel, never a fabricated
-                    // second reading). `unit` carries the decoder's own scale tag so downstream never
-                    // assumes a percentage, mirroring the Swift twin's SpO2Sample(unit:).
+                    // Persist only PLAUSIBLE SpO2 percentages (PLAUSIBLE_SPO2_PERCENT, open_oura's
+                    // [85,100]). The ONLY decoder with established percentage semantics is 0x6F (direct
+                    // per-second %, ~95-96; OURA_PROTOCOL.md s6.5); the 0x7B uint16 (unpinned scale) and
+                    // 0x77 dc_raw PPG waveform are NOT oxygen-saturation percentages, so any value outside
+                    // the band is either one of those raw sub-channels or a reassembler-misaligned phantom
+                    // (the -63..4.7M garbage seen on a SpO2-gated-off Gen 3 Horizon). DROP it rather than
+                    // persist an impossible reading: nothing downstream reads spo2 red, so this loses no
+                    // real signal and yields ZERO rows on a ring with SpO2 feature 0x04 OFF. A genuine 0x6F
+                    // ~95-96 still passes. The ring exposes ONE combined channel: value in `red`, `ir` 0
+                    // (unread channel, never fabricated), `unit` carries the decoder's own scale tag.
+                    // PARITY: mirror the Swift twin's [85,100] gate exactly.
+                    if (ev.value.value !in PLAUSIBLE_SPO2_PERCENT) continue
                     val ts = anchor(ev.value.ringTimestamp) ?: continue
                     out.spo2.add(Spo2Sample(ts = ts, red = ev.value.value, ir = 0, unit = ev.value.unit))
                 }

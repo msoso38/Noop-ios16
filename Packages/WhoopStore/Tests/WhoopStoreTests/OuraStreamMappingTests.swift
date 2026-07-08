@@ -53,14 +53,42 @@ final class OuraStreamMappingTests: XCTestCase {
     // MARK: - SpO2 -> spo2:[SpO2Sample]
 
     func testSpO2MapsToSpO2StreamPreservingUnit() {
+        // A genuine 0x6F direct percentage (~95-96) passes the plausibility gate and keeps its unit tag.
         let s = OuraStreamMapping.streams(from: [
-            .spo2(OuraSpO2(ringTimestamp: 100, value: 970, unit: "raw")),
-            .spo2(OuraSpO2(ringTimestamp: 101, value: 12345, unit: "dc_raw")),
+            .spo2(OuraSpO2(ringTimestamp: 100, value: 96, unit: "raw")),
+            .spo2(OuraSpO2(ringTimestamp: 101, value: 88, unit: "raw")),
         ], at: ts)
-        XCTAssertEqual(s.spo2.map { $0.red }, [970, 12345])
+        XCTAssertEqual(s.spo2.map { $0.red }, [96, 88])
         XCTAssertEqual(s.spo2.map { $0.ir }, [0, 0])
-        XCTAssertEqual(s.spo2.map { $0.unit }, ["raw", "dc_raw"])
+        XCTAssertEqual(s.spo2.map { $0.unit }, ["raw", "raw"])
         XCTAssertEqual(s.spo2.map { $0.ts }, [ts, ts])
+    }
+
+    func testSpO2ImplausiblePercentagesAreDropped() {
+        // Everything outside open_oura's [85,100] band is a raw sub-channel (0x7B unpinned uint16 / 0x77
+        // dc_raw waveform) or a reassembler-misaligned phantom - never persisted, never clamped. Covers
+        // the real garbage range observed on a SpO2-gated-off Gen 3 Horizon: negatives, zero, >100 %, and
+        // the multi-million dc_raw accumulator. The lone in-band 96 survives so the batch is not rejected
+        // wholesale.
+        let s = OuraStreamMapping.streams(from: [
+            .spo2(OuraSpO2(ringTimestamp: 1, value: -320, unit: "dc_raw")),
+            .spo2(OuraSpO2(ringTimestamp: 2, value: 0, unit: "raw")),
+            .spo2(OuraSpO2(ringTimestamp: 3, value: 84, unit: "raw")),      // just below the floor
+            .spo2(OuraSpO2(ringTimestamp: 4, value: 96, unit: "raw")),      // genuine reading
+            .spo2(OuraSpO2(ringTimestamp: 5, value: 103, unit: "raw")),     // impossible %
+            .spo2(OuraSpO2(ringTimestamp: 6, value: 970, unit: "raw")),     // 0x7B raw, not a %
+            .spo2(OuraSpO2(ringTimestamp: 7, value: 12_856_474, unit: "dc_raw")),
+        ], at: ts)
+        XCTAssertEqual(s.spo2.map { $0.red }, [96], "only the in-band 96% survives")
+    }
+
+    func testSpO2BandEndpointsAreInclusive() {
+        // 85 and 100 are the accepted bounds (open_oura run_spo2.py clamp endpoints).
+        let s = OuraStreamMapping.streams(from: [
+            .spo2(OuraSpO2(ringTimestamp: 1, value: 85, unit: "raw")),
+            .spo2(OuraSpO2(ringTimestamp: 2, value: 100, unit: "raw")),
+        ], at: ts)
+        XCTAssertEqual(s.spo2.map { $0.red }, [85, 100])
     }
 
     // MARK: - Temp 0x46/0x75 -> skinTemp:[SkinTempSample] (centi-degree-C, parity with Kotlin)
@@ -142,7 +170,7 @@ final class OuraStreamMappingTests: XCTestCase {
             .hr(OuraHR(ringTimestamp: 1, bpm: 55, ibiMs: 1090)),
             .ibi(OuraIBI(ringTimestamp: 1, ibiMs: 1090)),
             .hrv(OuraHRV(ringTimestamp: 1, timeMs: 0, b1: 40, b2: 1)),
-            .spo2(OuraSpO2(ringTimestamp: 1, value: 965)),
+            .spo2(OuraSpO2(ringTimestamp: 1, value: 96)),
             .temp(OuraTemp(ringTimestamp: 1, celsius: 34.0)),
             .sleepPhase(OuraSleepPhase(ringTimestamp: 1, index: 0, stage: .light)),
             .battery(OuraBattery(percent: 88)),

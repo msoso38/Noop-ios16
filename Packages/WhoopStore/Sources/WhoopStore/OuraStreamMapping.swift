@@ -31,12 +31,22 @@ public enum OuraStreamMapping {
     /// WhoopEvent.kind for a decoded sleep-phase code (2-bit: awake/light/deep/rem).
     public static let sleepPhaseEventKind = "OURA_SLEEP_PHASE"
 
+    /// Plausible SpO2 oxygen-saturation percentage band. Aligned with open_oura `tools/run_spo2.py`,
+    /// which computes SpO2 from the r-ratio (tag 0x8b) and CLAMPS the result to `[85, 100]` — Oura's own
+    /// reporting floor and the physiologically plausible band for a worn ring. NOOP uses it as a REJECT
+    /// gate at the persist boundary (drop outside), NEVER a clamp: an out-of-band value is either a raw
+    /// sub-channel that is not a percentage (0x77 `dc_raw` PPG waveform, 0x7B unpinned uint16) or a
+    /// reassembler-misaligned phantom (the −63…4.7M garbage seen on a SpO2-gated-off Gen 3 Horizon), so
+    /// there is no genuine reading to clamp — forcing garbage to "100 %" would fabricate an oxygen value,
+    /// violating the honest-data invariant. Must match the Kotlin twin (OuraStreamMapping.kt).
+    public static let plausibleSpO2Percent = 85...100
+
     /// Build a `Streams` from a batch of decoded Oura events, all stamped at the arrival wall-clock `ts`
     /// (unix seconds). Pure → unit-testable. Section-4 table:
     ///   - `.hr`         (0x55 live-HR push)            → `hr:[HRSample]`
     ///   - `.ibi`        (0x44/0x60 IBI)                → `rr:[RRInterval]`
     ///   - `.hrv`        (0x5D HRV tag, raw int8 b1/b2)  → `events:[WhoopEvent(kind: OURA_HRV)]`
-    ///   - `.spo2`       (0x6F/0x70/0x77)              → `spo2:[SpO2Sample(raw_adc)]`
+    ///   - `.spo2`       (0x6F direct %)                → `spo2:[SpO2Sample]` (only plausible % [85,100])
     ///   - `.temp`       (0x46/0x75)                    → `skinTemp:[SkinTempSample(raw_adc)]`
     ///   - `.sleepPhase` (0x4E/0x5A 2-bit codes)        → `events:[WhoopEvent(kind: OURA_SLEEP_PHASE)]`
     ///   - `.battery`                                   → `battery:[BatterySample]`
@@ -74,9 +84,18 @@ public enum OuraStreamMapping {
                 ]))
 
             case .spo2(let v):
-                // Oura reports a single SpO2 channel; `SpO2Sample` is the WHOOP-shaped two-channel raw row,
-                // so we record the decoded value on `red` and leave `ir` at 0 (no second channel). `unit`
-                // carries the decoder's own scale tag ("raw"/"dc_raw") so downstream never assumes a %.
+                // Persist only PLAUSIBLE SpO2 percentages (`plausibleSpO2Percent`, open_oura's [85,100]).
+                // The ONLY decoder with established percentage semantics is 0x6F (direct per-second %,
+                // ~95-96; OURA_PROTOCOL.md s6.5); the 0x7B uint16 (unpinned scale) and 0x77 `dc_raw` PPG
+                // waveform are NOT oxygen-saturation percentages, so any value outside the band is either
+                // one of those raw sub-channels or a reassembler-misaligned phantom (the −63…4.7M garbage
+                // seen on a SpO2-gated-off Gen 3 Horizon). We DROP it rather than persist an impossible
+                // reading: nothing downstream reads spo2 `red` (AnalyticsEngine nulls spo2Pct), so this
+                // loses no real signal and yields ZERO rows on a ring with SpO2 feature 0x04 OFF. A genuine
+                // 0x6F ~95-96 still passes. `SpO2Sample` is the WHOOP-shaped two-channel raw row: decoded
+                // value on `red`, `ir` at 0 (no second channel), `unit` carries the decoder's own scale
+                // tag. PARITY: mirror this gate in the Kotlin twin (OuraStreamMapping.kt) exactly.
+                guard plausibleSpO2Percent.contains(v.value) else { continue }
                 out.spo2.append(SpO2Sample(ts: ts, red: v.value, ir: 0, unit: v.unit))
 
             case .temp(let v):

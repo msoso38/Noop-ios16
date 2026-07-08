@@ -96,6 +96,40 @@ class OuraStreamMappingTest {
     }
 
     @Test
+    fun spo2ImplausiblePercentagesAreDropped() {
+        // PARITY with Swift testSpO2ImplausiblePercentagesAreDropped: only values in open_oura's
+        // [85,100] band survive. Everything outside is a raw sub-channel (0x7B unpinned uint16 / 0x77
+        // dc_raw waveform) or a reassembler-misaligned phantom - never persisted, never clamped. Covers
+        // the garbage range seen on a SpO2-gated-off Gen 3 Horizon (negatives, zero, >100%, multi-million
+        // dc_raw accumulator); the lone in-band 96 survives so the batch is not rejected wholesale.
+        val s = OuraStreamMapping.streams(
+            listOf(
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 1, value = -320, unit = "dc_raw")),
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 2, value = 0)),
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 3, value = 84)),   // just below the floor
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 4, value = 96)),   // genuine reading
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 5, value = 103)),  // impossible %
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 6, value = 970)),  // 0x7B raw, not a %
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 7, value = 12_856_474, unit = "dc_raw")),
+            ),
+            anchor,
+        )
+        assertEquals(listOf(96), s.spo2.map { it.red }) // only the in-band 96% survives
+    }
+
+    @Test
+    fun spo2BandEndpointsAreInclusive() {
+        val s = OuraStreamMapping.streams(
+            listOf(
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 1, value = 85)),
+                OuraEvent.Spo2(OuraSpO2(ringTimestamp = 2, value = 100)),
+            ),
+            anchor,
+        )
+        assertEquals(listOf(85, 100), s.spo2.map { it.red })
+    }
+
+    @Test
     fun tempPersistsAsHundredthsOfDegree() {
         val s = OuraStreamMapping.streams(
             listOf(OuraEvent.Temp(OuraTemp(ringTimestamp = 4, celsius = 33.27))),
