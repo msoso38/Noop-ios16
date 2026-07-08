@@ -1088,6 +1088,16 @@ class OuraLiveSource(
                 // The 0x42 time-sync can arrive ANYWHERE in a history-fetch stream, not necessarily first.
                 // Anything parked while unanchored gets its real time retroactively the moment it lands.
                 drainPendingAnchorEvents()
+                // Check if anchor was actually set (might be rejected if epoch outside 2020-2035)
+                if (!d.hasAnchor) {
+                    log("Oura: 0x42 time-sync REJECTED - epoch ${e.value.epochMs / 1000} outside 2020-2035 plausibility window")
+                }
+            }
+            is OuraEvent.RtcBeaconEvent -> {
+                // RTC beacon (0x85) is a secondary anchor - check if it was accepted
+                if (!d.hasAnchor) {
+                    log("Oura: 0x85 RTC beacon REJECTED - epoch ${e.value.unixSeconds} outside 2020-2035 plausibility window OR primary anchor already set")
+                }
             }
             is OuraEvent.TierB -> {
                 // INVESTIGATION ONLY (real_steps / activity-summary / sleep-summary / smoothed-SpO2,

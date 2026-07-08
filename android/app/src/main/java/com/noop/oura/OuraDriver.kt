@@ -309,13 +309,16 @@ class OuraDriver(
      * `preferPrimary` is true for a 0x42 time-sync (always wins) and false for a 0x85 RTC beacon (fills a
      * gap only while no time-sync anchor exists yet). Kotlin twin of the anchor-set logic inlined in the
      * Swift driver's `.timeSync` / `.rtcBeacon` ingest cases.
+     *
+     * @return true if anchor was accepted, false if rejected (implausible epoch or secondary blocked by primary)
      */
-    private fun setAnchorIfPlausible(epochSeconds: Long, ringTimestamp: Long, preferPrimary: Boolean) {
+    fun setAnchorIfPlausible(epochSeconds: Long, ringTimestamp: Long, preferPrimary: Boolean): Boolean {
         // A secondary (beacon) anchor never displaces an already-set primary (time-sync) anchor.
-        if (!preferPrimary && anchorUtcMs != null) return
-        val ms = plausibleAnchorMs(epochSeconds) ?: return
+        if (!preferPrimary && anchorUtcMs != null) return false
+        val ms = plausibleAnchorMs(epochSeconds) ?: return false
         anchorUtcMs = ms
         anchorRingTime = ringTimestamp
+        return true
     }
 
     /**
@@ -401,14 +404,16 @@ class OuraDriver(
                 // CRASH-SAFETY (s6.11): a full cursor=0 history dump can hit a 0x42 record with an
                 // implausible raw value; plausibleAnchorMs bounds-checks BEFORE multiplying, so an
                 // implausible value is safely ignored (never anchors to garbage) instead of overflowing.
-                setAnchorIfPlausible(ts.epochMs, ts.ringTimestamp, preferPrimary = true)
+                val anchorAccepted = setAnchorIfPlausible(ts.epochMs, ts.ringTimestamp, preferPrimary = true)
+                // Note: anchorAccepted is true when anchor accepted, false when epoch outside 2020-2035 plausibility window
                 listOf(OuraEvent.TimeSyncEvent(ts))
             }
             OuraEventTag.RTC_BEACON -> {
                 // Secondary UTC anchor (s5.5, 1s granularity): only fills in while no 0x42 anchor exists yet
                 // this session, so a coarser beacon never overrides the primary time-sync anchor.
                 val r = OuraDecoders.decodeRtcBeacon(record) ?: return emptyList()
-                setAnchorIfPlausible(r.unixSeconds, r.ringTimestamp, preferPrimary = false)
+                val anchorAccepted = setAnchorIfPlausible(r.unixSeconds, r.ringTimestamp, preferPrimary = false)
+                // Note: anchorAccepted is false if epoch implausible OR primary anchor already set
                 listOf(OuraEvent.RtcBeaconEvent(r))
             }
             OuraEventTag.STATE_CHANGE, OuraEventTag.WEAR_EVENT ->
