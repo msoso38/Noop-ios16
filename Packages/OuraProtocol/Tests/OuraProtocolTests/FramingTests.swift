@@ -184,11 +184,46 @@ final class FramingTests: XCTestCase {
     }
 
     func testReassemblerLenBelowFourDoesNotEmitGarbageBeforeValidRecord() {
-        // A 2-byte garbage header whose len is < 4 is dropped one byte at a time; because TLV has no
-        // SOF this does not realign to the trailing valid record, but it must NOT emit a bogus record.
+        // A 2-byte garbage header whose len is < 4 is dropped one byte at a time. With the §2.4 type-
+        // resync it now REALIGNS to the trailing valid record (a byte whose type is a known tag) instead
+        // of stalling, and never emits a bogus record.
         let valid = bytes("4e0602000100006c")
         let r = OuraReassembler()
         let recs = r.feed([0x00, 0x01] + valid)   // 00 01 = len 1 (< 4)
         XCTAssertTrue(recs.allSatisfy { $0.type != 0x00 }, "must never emit a type-0 garbage record")
+        XCTAssertEqual(recs.map { $0.type }, [0x4E], "resync recovers the trailing valid record")
+    }
+
+    // MARK: - Reassembler: §2.4 type resync (phantom-summary prevention)
+
+    func testIsPlausibleRecordStart() {
+        XCTAssertTrue(OuraReassembler.isPlausibleRecordStart(0x4E))   // known sleep-phase tag
+        XCTAssertTrue(OuraReassembler.isPlausibleRecordStart(0x70))   // known spo2-smoothed tag
+        XCTAssertTrue(OuraReassembler.isPlausibleRecordStart(0x11))   // GetEvents summary outer op
+        XCTAssertTrue(OuraReassembler.isPlausibleRecordStart(0x0D))   // battery outer op
+        XCTAssertFalse(OuraReassembler.isPlausibleRecordStart(0x30))  // ASCII '0' - misalignment
+        XCTAssertFalse(OuraReassembler.isPlausibleRecordStart(0x3B))  // ASCII ';' - misalignment
+    }
+
+    func testReassemblerResyncsPastUnknownTypeToRecoverNextRecord() {
+        // Two junk bytes whose type is NOT a plausible record start (ASCII '0' then ';', each with a
+        // len >= 4 that would otherwise swallow the real record as a phantom body) precede a valid
+        // sleep-phase record. The parser must resync byte-by-byte and recover the real record.
+        let r = OuraReassembler()
+        let recs = r.feed(bytes("303b" + "4e0602000100006c"))
+        XCTAssertEqual(recs.map { $0.type }, [0x4E])
+        XCTAssertEqual(r.bufferedByteCount, 0)
+    }
+
+    func testReassemblerPreservesSummaryAndBatteryOuterResponses() {
+        // The GetEvents summary (0x11) and battery (0x0D) outer responses ride the same wire and must be
+        // consumed as sized no-op records (NOT resync'd away), so a real event packed behind them still
+        // emerges. Regression guard for the round-trip the notify-channel demux relies on.
+        let summary = bytes("1108ff00727202000300")   // 0x11 len=8, 10 bytes total
+        let event = bytes("4e0602000100006c")          // real sleep-phase record
+        let r = OuraReassembler()
+        let recs = r.feed(summary + event)
+        XCTAssertEqual(recs.map { $0.type }, [0x11, 0x4E])
+        XCTAssertEqual(r.bufferedByteCount, 0)
     }
 }

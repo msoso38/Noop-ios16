@@ -168,10 +168,23 @@ public final class OuraReassembler {
         buf.append(contentsOf: fragment)
         var out: [OuraRecord] = []
         while buf.count >= 2 {
+            let type = buf[0]
             let len = Int(buf[1])
             // A record must cover its 4 timestamp bytes. A len < 4 here is a misaligned byte: drop one
             // and resync rather than emit garbage (honest-data invariant).
             if len < OuraFraming.minRecordLen {
+                buf.removeFirst(1)
+                continue
+            }
+            // RESYNC on an implausible type (OURA_PROTOCOL.md §2.4). The type byte must be a real record
+            // start: a known inner event tag (>= 0x41), or the GetEvents-summary (0x11) / battery (0x0D)
+            // OUTER responses that legitimately ride the same wire and round-trip as sized no-op records.
+            // Any other byte means we are byte-misaligned - typically landed INSIDE a 0x43 debug-text
+            // payload, where ASCII bytes that alias real tags ('p'=0x70 / 'I'=0x49 / 'L'=0x4C / 'Q'=0x51)
+            // would otherwise mint a PHANTOM "summary" whose bogus len swallows the following real records
+            // (e.g. the sleep-phase timeline). Drop one byte and re-scan instead of consuming 2+len of
+            // garbage, so the parser realigns to the next genuine record boundary.
+            if !Self.isPlausibleRecordStart(type) {
                 buf.removeFirst(1)
                 continue
             }
@@ -185,6 +198,16 @@ public final class OuraReassembler {
             buf.removeFirst(total)
         }
         return out
+    }
+
+    /// A byte that can legitimately BEGIN a record on the notify channel: a known inner event tag, or
+    /// the two OUTER command responses that share the wire and are consumed as sized no-op records - the
+    /// GetEvents summary (`0x11`) and battery (`0x0D`), both below the `0x41` tag range. Everything else
+    /// is a byte-misalignment to resync past (§2.4). Kept private + pure so it is exercised via `feed`.
+    static func isPlausibleRecordStart(_ type: UInt8) -> Bool {
+        OuraEventTag(rawValue: type) != nil
+            || type == OuraFraming.getEventsResponseOp
+            || type == OuraFraming.batteryResponseOp
     }
 
     /// Discard any buffered partial bytes (call on disconnect so a half-record does not bleed into the
