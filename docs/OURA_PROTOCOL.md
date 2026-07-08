@@ -93,6 +93,8 @@ Returned during history fetch (`0x10`/`0x11`) and live streaming. Each record: [
 ### 2.4 Multi-packet payloads
 There is no application-level fragmentation header beyond the TLV `len`. A record never spans two notifications in the verified corpus; each notification contains whole frames/records. NOOP's parser must still be defensive: buffer partial trailing bytes across notifications and only emit complete `2+len` records.
 
+> **Byte-alignment desync → phantom tags (live Gen 3, 2026-07-08).** Observed: a run of `0x43` debug_event records (ASCII, §6.15) surfaced in the log as a single **`0x4C` "sleep_summary"** whose "payload" spilled across the following real `0x43` records (the later `43 0c ..`/`43 0b ..` headers were visible inline; the first record's `type` byte was missing). Root cause: the reassembler lost byte-alignment and read an ASCII byte inside a debug string as a `type` byte — `0x4C` is the letter **`L`**, `0x49`=`I`, `0x53`=`S`, all legal debug-text characters that alias real event tags. A desynced parser can therefore *fabricate* a `0x4C`/`0x49` "sleep summary" (or corrupt a genuine record). **Defensive rule:** validate each record before emitting it — reject `len < 4` (a record must cover its 4 timestamp bytes) and, on an implausible `type`/`len`, **resynchronise** (advance one byte and re-scan) rather than emitting the record; never let an unverified `type` byte from a mid-stream position mint a Tier-B summary event. `0x43` debug text should be decoded to ASCII and surfaced, not left to alias a sleep tag.
+
 ---
 
 ## 3. Authentication Handshake
@@ -354,7 +356,7 @@ bits 14–15 : qual_b
 - **`0x72` `sleep_acm_period`** (16 B): values0–2 = `whole(8)+frac(8)/255`; values3–5 = `whole(4)+frac(12)/4095`. [ringverse]
 - **`0x49` `sleep_summary_1`**: start/end as uint16 LE minutes-before-event. [ringverse]
 - **`0x76` `bedtime_period`**: start/end as uint32 LE ringTimestamps → map to UTC (§5.5). [ringverse]
-- Tags `0x48,0x4A–0x4D,0x4F,0x57,0x58` are additional sleep summary/feature variants in the dictionary; layouts **(UNVERIFIED)** - decode only after fixtures. [ringverse]
+- Tags `0x48,0x4A–0x4D,0x4F,0x57,0x58` are additional sleep summary/feature variants in the dictionary; layouts **(UNVERIFIED)** - decode only after fixtures. [ringverse] **Beware phantom sightings:** a `0x4C`/`0x49` "sleep_summary" whose payload is ASCII (e.g. contains `in_bed=…`, readable words) is almost certainly misframed `0x43` debug text, not a real summary — see §2.4 desync rule and §6.15. Confirm a candidate summary is binary and length-consistent before treating it as a fixture.
 
 ### 6.13 Motion / activity
 - **`0x47` `motion_events`** (variable): byte6 bits`[7:5]`=field_a, `[4:0]`=field_b; bytes7–9 = three **int8 × 8** axis magnitudes; optional bytes10–11. [ringverse]
@@ -371,7 +373,7 @@ bits 14–15 : qual_b
 
 ### 6.15 Lifecycle / state
 - **`0x41` ring_start_ind** (18 B): bytes6–10 = 40-bit device id; bytes15–19 config; triggers anchor invalidation on rt regress. [ringverse][open_ring]
-- **`0x43` debug_event**: ASCII text (state strings). [open_ring][open_oura-r3]
+- **`0x43` debug_event**: ASCII text (state strings), one string per TLV record (`43 <len> <rt:u32 LE> <ascii len-4>`). Live Gen 3 captures (2026-07-08) show short firmware diagnostics with sequential ring counters, e.g. `"Sw to App"`, `"in_bed=0"`, `"…in_info=6"`, `"bc 0x43"` — useful sleep/history signal (an explicit `in_bed` flag). NOOP decodes these to `OuraEvent.debugText`; surface them in the strap log. **Caution:** because the payload is arbitrary ASCII, a byte-misaligned parser can read a letter (`L`=0x4C, `I`=0x49, `S`=0x53) as a record `type` and mis-emit a phantom sleep-summary — see the desync rule in §2.4. [open_ring][open_oura-r3]
 - **`0x45` state_change_ind / `0x53` wear_event**: byte6 = STATE_* enum; optional trailing UTF-8 string if payload>5. STATE enum: `0 unspecified,1 not_in_finger,2 finger_detection,3 user_active,4 user_in_rest,5 hr_user_active,6 hr_user_in_rest,7 out_of_power,8 charging,9 hibernate_low_power,20–22 production,30 hw_test`. [open_ring]
 - **`0x85` rtc_beacon_ind** (10 B): `unix_s:u32 LE`, reserved 4 B, trailer u16 LE ∈ {`0x01F6`,`0x01F8`}. [open_ring]
 
