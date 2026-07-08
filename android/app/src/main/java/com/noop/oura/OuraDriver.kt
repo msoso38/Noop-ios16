@@ -301,6 +301,19 @@ class OuraDriver(
         // 1970 or far-future sample. Byte-identical to the Swift twin.
         val seconds = ms / 1000
         if (seconds < MIN_PLAUSIBLE_EPOCH_SECONDS || seconds > MAX_PLAUSIBLE_EPOCH_SECONDS) return null
+        // Phantom-record guard (anchor-relative). The absolute 2020-2035 gate above is far too loose to
+        // catch a MISFRAMED record: a framing desync on a 0x43 debug byte mints a record with a garbage
+        // ring timestamp that, at 100 ms/tick, lands days-to-years from the anchor yet still inside
+        // 2020-2035 (e.g. rt ~= 1.9e9 -> +6 years). A genuine history-fetched sample is always in the
+        // recent past relative to the session anchor (~now via 0x42): at most a clock-skew margin AFTER it
+        // (+1 day) and at most the ring's history depth BEFORE it (-90 days). Reject anything outside so the
+        // caller drops/parks it instead of banking a mis-dated row. Byte-identical to the Swift twin.
+        val anchorSeconds = anchorMs / 1000
+        if (seconds > anchorSeconds + MAX_FUTURE_ANCHOR_OFFSET_SECONDS ||
+            seconds < anchorSeconds - MAX_PAST_ANCHOR_OFFSET_SECONDS
+        ) {
+            return null
+        }
         return seconds
     }
 
@@ -554,5 +567,15 @@ class OuraDriver(
          */
         private const val MIN_PLAUSIBLE_EPOCH_SECONDS = 1_577_836_800L
         private const val MAX_PLAUSIBLE_EPOCH_SECONDS = 2_051_222_400L
+
+        /**
+         * Anchor-relative plausibility window for a history-fetched sample (phantom-record guard). History
+         * is always in the recent past relative to the session anchor (~now): a real sample can be at most a
+         * clock-skew/timezone margin AFTER the anchor (+1 day) and at most the ring's history depth BEFORE
+         * it (-90 days, generous). A misframed record's garbage ring timestamp lands far outside this and is
+         * dropped. Byte-identical to Swift's maxFuture/maxPastAnchorOffsetSeconds.
+         */
+        private const val MAX_FUTURE_ANCHOR_OFFSET_SECONDS = 86_400L      // +1 day
+        private const val MAX_PAST_ANCHOR_OFFSET_SECONDS = 7_776_000L     // -90 days
     }
 }

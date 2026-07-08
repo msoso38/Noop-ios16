@@ -262,7 +262,8 @@ Response: `13 05 <ack> <counter_echo:3 LE> 00`. [open_ring]
 ### 5.5 Ring-time → UTC anchoring
 - The ring clock is in **ticks**: default **100 ms/tick** (10 Hz); burst mode **1 ms/tick** (`factor_flag=1`). [open_ring]
 - Anchor from event `0x42` (time-sync ind, §6.11): set `anchor.utc_ms` from the event's epoch and `anchor.ring_time` from current `ringTimestamp`.
-- Conversion: `utc_ms = anchor.utc_ms + factor × (target_rt − anchor.ring_time)`, `factor ∈ {100,1}`. [open_ring]
+- Conversion: `utc_ms = anchor.utc_ms + factor × (target_rt − anchor.ring_time)`, `factor ∈ {100,1}`. NOOP v1 uses `factor = 100` only (burst mode not yet modeled; the low-rate temp/SpO2/sleep streams are 100 ms/tick, confirmed by a real night's `s:`/`e:` window converting to ~9 h). [open_ring]
+- **Phantom-record guard (anchor-relative plausibility).** A framing desync (§2.4) can mint a record with a garbage `ring_time` that, at 100 ms/tick, converts to a date **days-to-years from the anchor yet still inside the loose 2020–2035 epoch gate** — e.g. `rt ≈ 1.9e9 → +6 years (2033)`, `rt ≈ 16.7M → +19 days`. On live Gen 3 (2026-07-08) this scattered ~25% of a night's skin-temp rows across 2020–2034, so they never landed on the correct calendar day. Rule: a history-fetched sample is always in the **recent past** relative to the session anchor (≈ now via `0x42`); reject any conversion more than **+1 day** after or **−90 days** before the anchor (`OuraDriver.unixSeconds` returns nil → the caller drops/parks it, honest-data invariant). This is the single chokepoint every history sample passes; it complements the value-level gates (SpO2 §7.1, skin-temp funnel).
 - On `0x41` (ring start) with `rt` regression → invalidate anchor (zero it). [open_ring]
 - `0x85` RTC beacon gives 1-second-granularity `unix_s` as a secondary source. [open_ring]
 

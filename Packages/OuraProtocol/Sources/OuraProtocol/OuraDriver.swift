@@ -225,8 +225,30 @@ public final class OuraDriver {
         // 1970 or far-future sample.
         let seconds = ms / 1000
         guard seconds >= Self.minPlausibleEpochSeconds, seconds <= Self.maxPlausibleEpochSeconds else { return nil }
+        // Phantom-record guard (anchor-relative). The absolute 2020-2035 gate above is far too loose to
+        // catch a MISFRAMED record: a framing desync on a 0x43 debug byte mints a record with a GARBAGE
+        // ring timestamp that, at 100 ms/tick, lands days-to-years from the anchor yet still INSIDE
+        // 2020-2035 - e.g. rt ~= 1.9e9 converts to +6 years (2033), rt ~= 16.7M to +19 days. Every such
+        // sample was persisted with a bogus date, scattering real streams across the calendar (observed:
+        // ~25% of a night's skin-temp rows landed in 2020-2034). A genuine history-fetched sample is
+        // ALWAYS in the recent past relative to the session anchor (which reflects ~now via the 0x42
+        // time-sync): at most a small clock-skew margin AFTER it, and at most the ring's history depth
+        // BEFORE it. Reject anything outside that window so the caller drops/parks it instead of banking a
+        // mis-dated row (honest-data invariant). This is the single chokepoint every history sample passes.
+        let anchorSeconds = anchorUtcMs / 1000
+        guard seconds <= anchorSeconds + Self.maxFutureAnchorOffsetSeconds,
+              seconds >= anchorSeconds - Self.maxPastAnchorOffsetSeconds else { return nil }
         return Int(seconds)
     }
+
+    /// Anchor-relative plausibility window for a history-fetched sample (phantom-record guard, above).
+    /// History is always in the recent past relative to the session anchor (≈ now): a real sample can be
+    /// at most a clock-skew/timezone margin AFTER the anchor (+1 day) and at most the ring's history depth
+    /// BEFORE it (−90 days, generous - the ring's flash cannot bank months of multi-stream 30 s data). A
+    /// misframed record's garbage ring timestamp lands far outside this and is dropped. Tunable if a real
+    /// deep-backlog capture ever proves the past bound too tight.
+    private static let maxFutureAnchorOffsetSeconds: Int64 = 86_400        // +1 day
+    private static let maxPastAnchorOffsetSeconds: Int64 = 7_776_000       // −90 days
 
     /// Bounds for a plausible anchor epoch (unix seconds): 2020-01-01 to 2035-01-01. A decoded 0x42/0x85
     /// value outside this range is a corrupt/misaligned record (seen on real hardware: a full cursor=0

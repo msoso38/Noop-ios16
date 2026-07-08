@@ -235,6 +235,48 @@ class OuraDriverTest {
     }
 
     @Test
+    fun testPhantomRingTimestampFarFromAnchorIsRejected() {
+        // Parity with Swift testPhantomRingTimestampFarFromAnchorIsRejected. A misframed record's garbage
+        // ring timestamp converts to a date days-to-years from the anchor but still INSIDE 2020-2035; the
+        // anchor-relative guard must reject it so it is never banked with a bogus date.
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
+        val anchorEpochSeconds = 1_700_000_000L
+        val anchorRt = 100_000_000L   // large so we can also probe a far-PAST rt (rt=0)
+        d.ingest(
+            OuraRecord(
+                type = OuraEventTag.TIME_SYNC.raw, ringTimestamp = anchorRt,
+                payload = le8(anchorEpochSeconds) + intArrayOf(0x00),
+            ),
+        )
+
+        // Recent-past sample (-2.78 h) is kept - a normal history-fetched record.
+        assertEquals(anchorEpochSeconds - 10_000, d.unixSeconds(forRingTimestamp = anchorRt - 100_000))
+        // Phantom FUTURE (~+3.17 years): inside 2020-2035 absolutely, but far beyond +1 day from anchor.
+        assertNull(d.unixSeconds(forRingTimestamp = anchorRt + 1_000_000_000))
+        // Phantom PAST (~-115 days via rt=0): beyond the -90 day history window.
+        assertNull(d.unixSeconds(forRingTimestamp = 0L))
+    }
+
+    @Test
+    fun testAnchorRelativeWindowEndpointsAreInclusive() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
+        val anchorEpochSeconds = 1_700_000_000L
+        val anchorRt = 100_000_000L
+        d.ingest(
+            OuraRecord(
+                type = OuraEventTag.TIME_SYNC.raw, ringTimestamp = anchorRt,
+                payload = le8(anchorEpochSeconds) + intArrayOf(0x00),
+            ),
+        )
+        // Exactly +1 day (864_000 ticks) is kept; a tick further into the future is rejected.
+        assertEquals(anchorEpochSeconds + 86_400, d.unixSeconds(forRingTimestamp = anchorRt + 864_000))
+        assertNull(d.unixSeconds(forRingTimestamp = anchorRt + 864_010))
+        // Exactly -90 days (77_760_000 ticks) is kept; a tick further into the past is rejected.
+        assertEquals(anchorEpochSeconds - 7_776_000, d.unixSeconds(forRingTimestamp = anchorRt - 77_760_000))
+        assertNull(d.unixSeconds(forRingTimestamp = anchorRt - 77_760_100))
+    }
+
+    @Test
     fun testRtcBeaconOnlyAnchorsWhenNoTimeSyncSeenYet() {
         val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
         val beaconRt = 5_000L

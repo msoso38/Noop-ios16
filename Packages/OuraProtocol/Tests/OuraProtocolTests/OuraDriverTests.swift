@@ -197,6 +197,38 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(d.unixSeconds(forRingTimestamp: anchorRt + 100), Int(anchorEpochSeconds) + 10)
     }
 
+    func testPhantomRingTimestampFarFromAnchorIsRejected() {
+        // A misframed record's garbage ring timestamp converts to a date days-to-years from the anchor but
+        // still INSIDE the loose 2020-2035 absolute window. The anchor-relative guard must reject it so it
+        // is never banked with a bogus date (the ~25% of a night's rows that scattered across 2020-2034).
+        let d = OuraDriver(ringGen: .gen3, authKey: key)
+        let anchorEpochSeconds: Int64 = 1_700_000_000
+        let anchorRt: UInt32 = 100_000_000   // large so we can also probe a far-PAST rt (rt=0)
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue, ringTimestamp: anchorRt,
+                                        payload: le8(anchorEpochSeconds) + [0x00]))
+
+        // Recent-past sample (-2.78 h) is kept - a normal history-fetched record.
+        XCTAssertEqual(d.unixSeconds(forRingTimestamp: anchorRt - 100_000), Int(anchorEpochSeconds) - 10_000)
+        // Phantom FUTURE (~+3.17 years): inside 2020-2035 absolutely, but far beyond +1 day from anchor.
+        XCTAssertNil(d.unixSeconds(forRingTimestamp: anchorRt + 1_000_000_000))
+        // Phantom PAST (~-115 days via rt=0): beyond the -90 day history window.
+        XCTAssertNil(d.unixSeconds(forRingTimestamp: 0))
+    }
+
+    func testAnchorRelativeWindowEndpointsAreInclusive() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key)
+        let anchorEpochSeconds: Int64 = 1_700_000_000
+        let anchorRt: UInt32 = 100_000_000
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue, ringTimestamp: anchorRt,
+                                        payload: le8(anchorEpochSeconds) + [0x00]))
+        // Exactly +1 day (864_000 ticks) is kept; a tick further into the future is rejected.
+        XCTAssertEqual(d.unixSeconds(forRingTimestamp: anchorRt + 864_000), Int(anchorEpochSeconds) + 86_400)
+        XCTAssertNil(d.unixSeconds(forRingTimestamp: anchorRt + 864_010))
+        // Exactly -90 days (77_760_000 ticks) is kept; a tick further into the past is rejected.
+        XCTAssertEqual(d.unixSeconds(forRingTimestamp: anchorRt - 77_760_000), Int(anchorEpochSeconds) - 7_776_000)
+        XCTAssertNil(d.unixSeconds(forRingTimestamp: anchorRt - 77_760_100))
+    }
+
     func testRtcBeaconOnlyAnchorsWhenNoTimeSyncSeenYet() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         let beaconRt: UInt32 = 5_000
