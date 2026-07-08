@@ -372,7 +372,7 @@ object AppleHealthImporter {
             // skinTempDevC) are not derivable from an Apple Health export and stay null.
             val hasDailyMetric = d.restingHr != null || d.hrvSDNN != null || d.spo2Pct != null ||
                 d.respRate != null || d.asleepMin != null || d.deepMin != null || d.remMin != null ||
-                d.coreMin != null
+                d.coreMin != null || d.steps != null
             if (hasDailyMetric) {
                 dailyMetricRows += DailyMetric(
                     deviceId = deviceId,
