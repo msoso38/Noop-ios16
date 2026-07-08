@@ -61,18 +61,18 @@ object OuraCommands {
     // MARK: - Time sync
 
     /**
-     * SyncTime: `12 09 <token:1> <counter:3 LE> 00 00 00 00 f6` where counter = floor(unix_s / 256)
-     * and the trailer 0xf6 is fixed. Per OURA_PROTOCOL.md s5.4. `token` defaults to 0.
+     * SyncTime (0x12): hand the ring the current wall-clock so it can emit a usable 0x42 UTC anchor
+     * (s5.5). Layout `12 09 <unix_secs: u64 LE (8 B)> <tz: i8 half-hours>` - unix SECONDS, 8-byte little-
+     * endian, one signed timezone byte in 30-minute units. Matches the authoritative open_oura
+     * req_sync_time(secs, 0) (OURA_PROTOCOL.md s5.4/s9.2). Supersedes an earlier reverse-engineered guess
+     * (token + unix_s/256 in 3 bytes + 0xF6 trailer) that did NOT match the native client. `tzHalfHours`
+     * defaults to 0 (UTC). Byte-identical to the Swift twin (OuraCommands.syncTime).
      */
-    fun syncTime(unixSeconds: Long, token: Int = 0x00): OuraCommand {
-        val counter = unixSeconds / 256
-        val c0 = (counter and 0xFFL).toInt()
-        val c1 = ((counter shr 8) and 0xFFL).toInt()
-        val c2 = ((counter shr 16) and 0xFFL).toInt()
-        return OuraCommand(
-            "sync_time",
-            intArrayOf(0x12, 0x09, token and 0xFF, c0, c1, c2, 0x00, 0x00, 0x00, 0x00, 0xF6),
-        )
+    fun syncTime(unixSeconds: Long, tzHalfHours: Int = 0): OuraCommand {
+        val body = IntArray(9)
+        for (i in 0 until 8) body[i] = ((unixSeconds shr (i * 8)) and 0xFFL).toInt()   // u64 seconds, LE
+        body[8] = tzHalfHours and 0xFF                                                 // i8 tz (30-min units)
+        return OuraCommand("sync_time", intArrayOf(0x12, body.size) + body)
     }
 
     // MARK: - Event fetch (cursor)

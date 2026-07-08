@@ -495,10 +495,18 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertTrue(OuraRingGen.gen3.capabilities.contains(.hrv))
     }
 
-    func testSyncTimeCommandCounter() {
-        // counter = floor(unix / 256). For unix = 256 -> counter 1 -> bytes 01 00 00, trailer 0xF6.
-        let cmd = OuraCommands.syncTime(unixSeconds: 256)
-        XCTAssertEqual(cmd.bytes, [0x12, 0x09, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF6])
+    func testSyncTimeCommandIsU64SecondsLEPlusTz() {
+        // Authoritative layout: 12 09 <unix_secs u64 LE> <tz i8>. 1_700_000_000 = 0x6553F100
+        // -> LE 00 F1 53 65 00 00 00 00, tz 0. (Supersedes the old unix/256 + 0xF6-trailer guess.)
+        let cmd = OuraCommands.syncTime(unixSeconds: 1_700_000_000)
+        XCTAssertEqual(cmd.bytes,
+                       [0x12, 0x09, 0x00, 0xF1, 0x53, 0x65, 0x00, 0x00, 0x00, 0x00, 0x00])
+    }
+
+    func testSyncTimeCommandTimezoneByte() {
+        // tz is a signed half-hour offset in the trailing byte: +4 (=UTC+2) -> 0x04; -4 -> 0xFC.
+        XCTAssertEqual(OuraCommands.syncTime(unixSeconds: 0, tzHalfHours: 4).bytes.last, 0x04)
+        XCTAssertEqual(OuraCommands.syncTime(unixSeconds: 0, tzHalfHours: -4).bytes.last, 0xFC)
     }
 
     // MARK: - Dangerous commands are isolated and labelled

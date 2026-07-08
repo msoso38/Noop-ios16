@@ -257,10 +257,18 @@ Gen 5 example `0912 020100 020103 010001 090329 665544332211`. [open_oura-r5]
 
 ### 5.4 SyncTime (`0x12`)
 ```
-12 09 <token:1> <counter:3 LE> 00 00 00 00 f6
+12 09 <unix_secs: u64 LE (8 B)> <tz: i8 half-hours>
 ```
-where `counter = floor(unix_seconds / 256)`, trailer `0xf6` fixed. [open_ring]
-Response: `13 05 <ack> <counter_echo:3 LE> 00`. [open_ring]
+Unit is **unix seconds** (NOT ms/deciseconds), 8-byte little-endian, then one signed timezone byte in
+30-minute units. Authoritative from open_oura `req_sync_time(now.as_secs(), 0)` ([oura-proto]/[oura-link]);
+NOOP sends `tz = 0` (UTC) as the reference client does and buckets local days downstream itself.
+> **Superseded RE guess (do not use):** an earlier layout `12 09 <token> <floor(unix/256):3 LE> 00 00 00 00 f6`
+> was attributed to [ringverse]/[open_ring] but does NOT match the native client — it encodes a ~4.3-min-
+> resolution 24-bit time with a bogus `0xf6` trailer (which looks copied from the `0x85` RTC-beacon trailer).
+> `OuraCommands.syncTime` now emits the 8-byte-LE-seconds layout above (§9.2). Fixed 2026-07-08.
+
+Response: `13 xx …` ack (echo/format unverified; NOOP does not require it — the usable anchor is the ring's
+subsequent `0x42` event, §5.5). [open_ring]
 
 ### 5.5 Ring-time → UTC anchoring
 - The ring clock is in **ticks**: default **100 ms/tick** (10 Hz); burst mode **1 ms/tick** (`factor_flag=1`). [open_ring]
@@ -460,7 +468,7 @@ NOOP-derived hypnogram as "Oura sleep stages": it is NOOP's own, from the ring's
 - Resolve the `0x0D` battery percent-vs-voltage offset per generation via captured fixtures (§6.10).
 - Validate all Tier-B sleep/activity/step layouts against real captures before enabling in scoring.
 - Confirm live-HR `0x02` path on actual Gen-4/Gen-5 hardware (only Gen-3 is verified in the corpus).
-- **⚠ SyncTime (`0x12`) send layout mismatch (§9.2).** [oura-proto] gives `12 09 <unix_secs:u64 LE> <tz:i8>`; NOOP's `OuraCommands.syncTime` emits a different 24-bit `unixSeconds/256` + `0xF6`-trailer body. Verify against a capture and align — a malformed SyncTime may be setting the ring clock wrongly or being ignored (the ring's own RTC currently still yields a ~correct `0x42` anchor, masking it, but this is fragile).
+- **✓ SyncTime (`0x12`) send layout — FIXED 2026-07-08 (§9.2).** [oura-proto] gives `12 09 <unix_secs:u64 LE> <tz:i8>`; NOOP previously emitted a 24-bit `unixSeconds/256` + `0xF6`-trailer body. `OuraCommands.syncTime` (Swift + Kotlin twin) now emits the authoritative 8-byte-LE-seconds layout with a signed tz byte (`tz=0`/UTC), pinned by tests.
 - **Reconsider the `skinTempFunnel` sample floor for Oura nights (§9.10).** [oura-sync]'s temperature algorithm accepts a night at ≥ 4 valid 30-sample windows (~120 samples); NOOP requires 300 kept samples/night — likely too strict for a ring (fewer temp samples than a WHOOP strap).
 
 ---
@@ -474,9 +482,9 @@ The client state machine runs, in order: **1** connect+bond, subscribe notify ·
 - **Hard rule: do NOT issue any RData (`0x03`) for a normal pull** (§9.7).
 - **NOOP gap:** NOOP skips step 3 (**GetCapabilities**) entirely — it never negotiates extended-vs-legacy, so it always uses the legacy `0x10` drain. Sending SyncTime (step 5) is the fix already landed on `oura-*` branches; GetCapabilities remains an untried lead for the `0x43`-debug-heavy / thin-structured stream.
 
-### 9.2 SyncTime (`0x12`) exact layout — ⚠ NOOP DISCREPANCY [oura-proto, oura-link]
-Authoritative build: `12 09 <unix_secs: u64 LE (8 B)> <tz: i8 half-hours>`. Unit is **seconds** (`req_sync_time(now.as_secs(), 0)`), 8-byte little-endian, one signed tz byte. This is the SEND side; §6.11 covers decoding the ring's `0x42` reply.
-- **NOOP currently emits a DIFFERENT body**: `12 09 <token> <unixSeconds/256 : 3 B LE> 00 00 00 00 F6` — a 24-bit coarse time (÷256 ≈ 4.3-min resolution) with a trailing `0xF6` (resembling the `0x85` RTC-beacon trailer), NOT 8-byte LE seconds. **Almost certainly wrong.** It may set the ring clock incorrectly or be silently rejected; the anchor still lands today only because the ring's own RTC drives a ~correct `0x42` regardless. Fixture-verify and align (see §8). Cross-ref §5.5, §6.11.
+### 9.2 SyncTime (`0x12`) exact layout — ✓ FIXED [oura-proto, oura-link]
+Authoritative build: `12 09 <unix_secs: u64 LE (8 B)> <tz: i8 half-hours>`. Unit is **seconds** (`req_sync_time(now.as_secs(), 0)`), 8-byte little-endian, one signed tz byte. This is the SEND side; §6.11 covers decoding the ring's `0x42` reply. Canonical layout now in §5.4.
+- **Was wrong, now aligned (2026-07-08).** NOOP previously emitted `12 09 <token> <unixSeconds/256 : 3 B LE> 00 00 00 00 F6` — a 24-bit coarse time (÷256 ≈ 4.3-min resolution) with a bogus `0xF6` trailer (copied from the `0x85` RTC-beacon), NOT 8-byte LE seconds. `OuraCommands.syncTime` (Swift + Kotlin twin) now emits the authoritative layout above; `tz = 0` (UTC) like the reference, since NOOP buckets local days downstream. Tests pin the byte layout + the signed tz byte. Cross-ref §5.4, §5.5, §6.11.
 
 ### 9.3 Command + `0x2F` sub-op set (authoritative) [oura-proto]
 Outer opcodes: `0x03` RData · `0x06` realtime measurement · `0x08` firmware info · `0x0C` battery request (→ `0x0D` reply) · `0x10` GetEvent · `0x12` SyncTime · `0x18` product info · `0x1C` notification flags · `0x24` set-auth-key · `0x28` sleep-analysis check · `0x2F` extended.
