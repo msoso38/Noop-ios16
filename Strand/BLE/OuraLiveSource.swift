@@ -687,8 +687,21 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // steps (MET is not a step count; OuraStreamMapping drops .activityInfo unconditionally).
                 log("Oura: activity (Tier-B) state=\(info.state) met=\(info.met)")
 
+            case .debugText(let ringTimestamp, let text):
+                // 0x43 debug_event: the ring's OWN ASCII firmware diagnostics (state strings), one per TLV
+                // record (OURA_PROTOCOL.md §6.15). Surfaced live for investigation - these carry useful
+                // sleep/history signal (captures show an explicit `in_bed=…` flag, `…in_info=…`, etc). Decoding
+                // them here also stops a debug string from *aliasing* a real event tag: a byte-misaligned
+                // parser reads a letter inside the text ('L'=0x4C / 'I'=0x49) as a `type` byte and mints a
+                // phantom sleep-summary (§2.4 desync rule). Diagnostics only - never persisted or scored. The
+                // trim+non-empty gate keeps a truncated tail byte from logging a blank line.
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    log("Oura: debug (0x43) rt=\(ringTimestamp) \"\(trimmed)\"")
+                }
+
             default:
-                break   // motion / state / rtcBeacon / debugText: not a durable Streams row (see OuraStreamMapping)
+                break   // motion / state / rtcBeacon: not a durable Streams row (see OuraStreamMapping)
             }
         }
     }
