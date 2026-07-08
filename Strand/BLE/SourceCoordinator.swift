@@ -56,6 +56,10 @@ final class SourceCoordinator: ObservableObject {
     /// previously invisible). Passed straight into `StandardHRSource`. Defaults to a no-op so existing
     /// call sites (and tests) compile unchanged.
     private let straplog: (String) -> Void
+    /// User body weight (kg) provider, wired to `Profile.weightKg` at the composition root — the SAME
+    /// source the production calorie path uses. Read live so a profile edit takes effect on the next
+    /// flush. Used only by the Oura source's Phase-1 activity-estimate kcal figure.
+    private let bodyweightKg: () -> Double
 
     // MARK: - State
 
@@ -119,7 +123,8 @@ final class SourceCoordinator: ObservableObject {
          setWhoopPreferredPeripheral: @escaping (String?) -> Void,
          setWhoopActiveDeviceId: @escaping (String) -> Void,
          connectedPeripheralUUID: AnyPublisher<String?, Never>,
-         straplog: @escaping (String) -> Void = { _ in }) {
+         straplog: @escaping (String) -> Void = { _ in },
+         bodyweightKg: @escaping () -> Double = { 70.0 }) {
         self.registry = registry
         self.live = live
         self.storeHandle = storeHandle
@@ -129,6 +134,7 @@ final class SourceCoordinator: ObservableObject {
         self.setWhoopActiveDeviceId = setWhoopActiveDeviceId
         self.connectedPeripheralUUID = connectedPeripheralUUID
         self.straplog = straplog
+        self.bodyweightKg = bodyweightKg
     }
 
     // MARK: - Wiring
@@ -363,7 +369,8 @@ final class SourceCoordinator: ObservableObject {
             },
             log: straplog,
             onBattery: { [live] pct in live.setBattery(Double(pct)) },
-            adoptIntent: adoptIntent)
+            adoptIntent: adoptIntent,
+            bodyweightKg: bodyweightKg)
         if adoptIntent { straplog("Oura: adopt consent granted - this session may install NOOP's key") }
         if let pid = peripheralId(for: id), let uuid = UUID(uuidString: pid) {
             source.connect(uuid)

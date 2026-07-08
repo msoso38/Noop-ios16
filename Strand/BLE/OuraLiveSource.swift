@@ -115,6 +115,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     // MARK: - Dependencies (injected - no BLEManager / WhoopBleClient reference)
 
     private let live: LiveState
+    /// Provider for the user's body weight (kg), read live so a profile edit takes effect next flush.
+    /// Wired to `Profile.weightKg` at the composition root (the same source the production calorie path
+    /// uses); Phase-1 Oura activity-estimate kcal only.
+    private let bodyweightKg: () -> Double
     private let deviceId: String
     private let persist: (Streams) -> Void
     private let log: (String) -> Void
@@ -158,6 +162,27 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// ONLY (see the `allowTierB: true` comment at driver construction) - the log is how we collect raw
     /// captures to validate these layouts; nothing here ever persists or scores. Reset on stop/disconnect.
     private var loggedTierBKinds: Set<String> = []
+
+    // MARK: Phase-1 Oura activity estimate (Tier-B INVESTIGATION — logged, NEVER persisted/scored)
+    // Accumulates decoded 0x50 MET samples for the CURRENT local day and logs a per-day estimate
+    // (OuraActivityEstimator) so the numbers can be manually cross-checked against the WHOOP band's
+    // steps / active-kcal the following day. This buffer intentionally SURVIVES reconnects within the
+    // same local day (so a day accumulates across BLE sessions); it is flushed+cleared on day rollover
+    // and logged as a running "so far" snapshot on disconnect and on a throttle while streaming. See
+    // docs/OURA_PROTOCOL.md §6.13 and CLAUDE.md ("promoting steps out of Tier-B").
+    private var activityDayKey: String?
+    private var activitySamples: [OuraActivitySample] = []
+    private var lastActivityLogAt: Date = .distantPast
+    /// Phase-1 constants. The body weight for the (secondary) kcal figure comes from the live user
+    /// profile via the injected `bodyweightKg` provider — the SAME `Profile.weightKg` the production
+    /// calorie path uses (Calories.estimateDayCalories), never a hardcoded value. `assumedIntervalSec`
+    /// is the UNVERIFIED MET spacing every time-based figure scales with (the WHOOP compare calibrates
+    /// it); `stepsPerActiveMin` is a labelled PROXY cadence, never an honest step count.
+    private static let activityAssumedIntervalSec = 30.0
+    private static let activityStepsPerActiveMin = 100.0
+    /// Throttle for the running "so far" activity log while streaming (seconds).
+    private static let activityLogThrottleSec: TimeInterval = 300
+
     /// History-fetched events decoded BEFORE a ring-time -> UTC anchor exists this session, held here
     /// (with their own ring timestamp) until the anchor lands (`drainPendingAnchorEvents`), so they get
     /// their real historical time instead of a premature wall-clock guess. The ring's 0x42 time-sync can
@@ -334,7 +359,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 log: @escaping (String) -> Void = { _ in },
                 onBattery: @escaping (Int) -> Void = { _ in },
                 feedsLive: Bool = true,
-                adoptIntent: Bool = false) {
+                adoptIntent: Bool = false,
+                bodyweightKg: @escaping () -> Double = { 70.0 }) {
         self.live = live
         self.deviceId = deviceId
         self.ringGen = ringGen
@@ -344,6 +370,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         self.onBattery = onBattery
         self.feedsLive = feedsLive
         self.adoptIntent = adoptIntent
+        self.bodyweightKg = bodyweightKg
         super.init()
         // Dedicated queue-less central -> callbacks arrive on the main queue, matching @MainActor.
         self.central = CBCentralManager(delegate: self, queue: nil)
@@ -603,6 +630,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private func ingest(_ events: [OuraEvent]) {
         guard !events.isEmpty, let driver else { return }
         let now = Int(Date().timeIntervalSince1970)
+        rolloverActivityDayIfNeeded(now: now)
         for e in events {
             switch e {
             case .hr(let hr):
@@ -687,12 +715,19 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 }
 
             case .activityInfo(let info):
-                // INVESTIGATION ONLY (0x50 activity/MET, Tier B - a plausible third-party formula, NOT
-                // ground-truth-validated; see OuraActivityInfo). Logged with the DECODED state/MET values
-                // every time (not once-per-kind): this is the tag under active plausibility evaluation, so
-                // every real capture is evidence. Never persisted, never scored, and NEVER converted into
-                // steps (MET is not a step count; OuraStreamMapping drops .activityInfo unconditionally).
-                log("Oura: activity (Tier-B) state=\(info.state) met=\(info.met)")
+                // PHASE 1 (Tier-B INVESTIGATION): 0x50 activity/MET is a plausible third-party formula,
+                // NOT ground-truth-validated (see OuraActivityInfo). Instead of spamming one line per
+                // record, accumulate the decoded MET samples into a per-local-day estimate and log a
+                // rolled-up "so far" snapshot on a throttle (final on day rollover / disconnect). Still
+                // never persisted, never scored, and NEVER converted into an honest step count — the
+                // estimate's stepProxy is explicitly labelled, and OuraStreamMapping still drops
+                // .activityInfo unconditionally. This is how we decide whether 0x50 earns Tier A.
+                if activityDayKey == nil { activityDayKey = dayKeyLocal(now) }
+                for m in info.met { activitySamples.append(OuraActivitySample(ts: now, met: m)) }
+                if Date().timeIntervalSince(lastActivityLogAt) >= Self.activityLogThrottleSec {
+                    logActivityEstimate(final: false)
+                    lastActivityLogAt = Date()
+                }
 
             case .debugText(let ringTimestamp, let text):
                 // 0x43 debug_event: the ring's OWN ASCII firmware diagnostics (state strings), one per TLV
@@ -716,6 +751,41 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 break   // motion / state / rtcBeacon: not a durable Streams row (see OuraStreamMapping)
             }
         }
+    }
+
+    // MARK: - Phase-1 activity estimate (Tier-B INVESTIGATION — logged, never persisted)
+
+    /// Local-day key ("YYYY-MM-DD", device time zone) for a unix-seconds timestamp. Matches the
+    /// `dailyMetric.day` convention so a logged Oura estimate lines up with the WHOOP day it's compared to.
+    private func dayKeyLocal(_ ts: Int) -> String {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(ts)))
+    }
+
+    /// If the local day changed since the accumulator started, log the completed day as FINAL and reset
+    /// the buffer for the new day. Called at the top of every ingest batch (all events share `now`).
+    private func rolloverActivityDayIfNeeded(now: Int) {
+        let today = dayKeyLocal(now)
+        guard let prior = activityDayKey, prior != today else { return }
+        logActivityEstimate(final: true)
+        activitySamples.removeAll(keepingCapacity: true)
+        activityDayKey = today
+        lastActivityLogAt = .distantPast
+    }
+
+    /// Summarise the accumulated MET samples for the current day and log the one-line estimate. `final`
+    /// marks a day-rollover (complete for whatever coverage we got) vs a running "so far" snapshot.
+    private func logActivityEstimate(final: Bool) {
+        guard let day = activityDayKey, !activitySamples.isEmpty else { return }
+        let est = OuraActivityEstimator.summarize(
+            activitySamples, day: day,
+            bodyweightKg: bodyweightKg(),
+            assumedIntervalSec: Self.activityAssumedIntervalSec,
+            stepsPerActiveMin: Self.activityStepsPerActiveMin)
+        log("Oura: " + est.logLine(final: final))
     }
 
     // MARK: - Debug-text (0x43) filter — Phase-1 investigation logging
@@ -919,6 +989,9 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         } else {
             log("Oura: disconnected (clean)")
         }
+        // Phase-1: log the day's running activity estimate on drop (buffer is NOT cleared here — it keeps
+        // accumulating across reconnects and is finalised on day rollover).
+        logActivityEstimate(final: false)
         stopReengageTimer()
         stopHistoryFetchTimer()
         // Drain BEFORE driver.stop() clears its anchor (same reasoning as stop()).

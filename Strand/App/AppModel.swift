@@ -425,7 +425,10 @@ final class AppModel: ObservableObject {
             // path. Timestamp matches BLEManager.log()'s "HH:mm:ss" so the lines read consistently.
             straplog: { [weak self] line in
                 self?.live.append(log: "[\(AppModel.logTimeFormatter.string(from: Date()))] \(line)")
-            })
+            },
+            // Live user body weight for the Oura source's Phase-1 activity-estimate kcal — the SAME
+            // `Profile.weightKg` the production calorie path uses, never a hardcoded value.
+            bodyweightKg: { [weak self] in self?.profile.weightKg ?? 70.0 })
         coordinator.start()
         self.deviceRegistry = registry
         self.sourceCoordinator = coordinator
