@@ -8,6 +8,7 @@ import com.noop.data.SkinTempSample
 import com.noop.data.RespSample
 import com.noop.data.RrInterval
 import com.noop.data.StepSample
+import com.noop.data.Spo2Sample
 import com.noop.protocol.DeviceFamily
 import com.noop.protocol.skinTempCelsius
 import org.json.JSONObject
@@ -168,6 +169,9 @@ object AnalyticsEngine {
         // Default WHOOP5 keeps every 5/MG + pure-function caller byte-identical; IntelligenceEngine passes
         // the day owner's real family.
         skinTempFamily: DeviceFamily = DeviceFamily.WHOOP5,
+        // WHOOP 4.0 raw SpO2 ADC channels (spo2_red@68 / spo2_ir@70 on v24 layout).
+        // Mean of per-second raw ADC values during detected sleep. NOT a blood-oxygen %.
+        spo2: List<Spo2Sample> = emptyList(),
         profile: UserProfile,
         baselines: ProfileBaselines = ProfileBaselines(),
         maxHROverride: Double? = null,
@@ -333,6 +337,11 @@ object AnalyticsEngine {
             baselines.skinTemp?.takeIf { it.usable }?.let { round2(Baselines.deviation(v, it).delta) }
         }
 
+        // ── Nightly RAW SpO2 ADC means (WHOOP 4.0, Issue #93) ─────────────────
+        // Surface the raw red/IR PPG ADC means over detected sleep. NOT a calibrated SpO2 % (that
+        // needs WHOOP's proprietary curve). Null when no SpO2 samples fall inside a sleep window.
+        val nightlySpo2Raw = wornNightlySpo2Raw(matched, spo2)
+
         // ── Rest (sleep_performance composite, 0–100) ─────────────────────────
         // Replaces the bare efficiency proxy: duration-vs-personal-need 0.50 + efficiency 0.20 +
         // restorative (deep+REM)/asleep 0.20 + consistency 0.10. Stored under the sleep_performance
@@ -484,6 +493,8 @@ object AnalyticsEngine {
             strain = strain,
             exerciseCount = workouts.size,
             spo2Pct = null,
+            spo2Red = nightlySpo2Raw?.first,
+            spo2Ir = nightlySpo2Raw?.second,
             skinTempDevC = skinTempDevC,
             respRateBpm = respRateDaily,
             steps = stepsTotal,
@@ -573,6 +584,32 @@ object AnalyticsEngine {
         family: DeviceFamily = DeviceFamily.WHOOP5,
         minSamples: Int = MIN_SKIN_TEMP_SAMPLES_INLINE,
     ): Double? = skinTempFunnel(sessions, hr, skinTemp, family, minSamples).mean
+
+    /**
+     * Wear-gated nightly mean raw SpO2 ADC channels (red + IR), averaged over the detected in-bed
+     * [sessions]. WHOOP 4.0 banks these as raw PPG ADC values (spo2_red@68 / spo2_ir@70 on the v24
+     * historical layout) but NOT a calibrated blood-oxygen % — computing one needs WHOOP's proprietary
+     * calibration curve, so we surface the RAW means only. The strap streams SpO2 solely on-wrist, so
+     * there is no off-wrist wear gate to apply (unlike skin temp). A night with no SpO2 samples inside
+     * any session window yields null. Pure + deterministic. Mirrors the Swift `nightlySpo2Raw`. (Issue #93)
+     */
+    internal fun wornNightlySpo2Raw(
+        sessions: List<DetectedSleep>,
+        spo2: List<Spo2Sample>,
+    ): Pair<Int, Int>? {
+        if (sessions.isEmpty() || spo2.isEmpty()) return null
+        var redSum = 0L
+        var irSum = 0L
+        var kept = 0
+        for (s in spo2) {
+            if (sessions.none { s.ts in it.start..it.end }) continue
+            redSum += s.red
+            irSum += s.ir
+            kept++
+        }
+        if (kept == 0) return null
+        return ((redSum / kept).toInt() to (irSum / kept).toInt())
+    }
 
     /** Plausible worn skin-temperature range (°C). Off-wrist/charging samples drift to ambient and are
      *  excluded; the strap's own decode gate is the looser 20–45. (PR #85) */

@@ -438,6 +438,10 @@ object IntelligenceEngine {
             val grav = repo.gravitySamples(owner, from, to, STREAM_LIMIT)
             val steps = repo.stepSamples(owner, from, to, STREAM_LIMIT)
             val skin = repo.skinTempSamples(owner, from, to, STREAM_LIMIT)
+            // Issue #93: raw SpO2 ADC rows (WHOOP 4.0 v24 spo2_red@68 / spo2_ir@70). Surfaced as raw
+            // means only — no calibrated % (needs WHOOP's proprietary curve). analyzeDay averages them
+            // over the detected sleep windows.
+            val spo2 = repo.spo2Samples(owner, from, to, STREAM_LIMIT)
             // #938: the strap family that WROTE this owner's skin-temp rows, so analyzeDay converts the raw
             // register on the right scale (5/MG banks centidegrees, a WHOOP 4.0 v24 banks a raw ADC). The
             // owner source resolves it from the registry; unknown/non-WHOOP owners fall back to WHOOP5 (the
@@ -501,6 +505,7 @@ object IntelligenceEngine {
                 dayGravity = dayGrav,
                 skinTemp = skin,
                 skinTempFamily = skinFamily,   // #938
+                spo2 = spo2,
                 profile = profile,
                 baselines = baselines1,
                 maxHROverride = maxHROverride,

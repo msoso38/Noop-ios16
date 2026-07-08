@@ -48,7 +48,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LabMarkerRow::class,
         LiveSessionRow::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = false,
 )
 abstract class WhoopDatabase : RoomDatabase() {
@@ -426,6 +426,33 @@ abstract class WhoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v16 -> v17: ADDITIVE, adds `dailyMetric.spo2Red` + `dailyMetric.spo2Ir` (both nullable INTEGER),
+         * the Issue #93 "surface WHOOP 4.0 raw SpO2 ADC means" change. The nightly raw red/IR PPG ADC
+         * means (spo2_red@68 / spo2_ir@70 on the v24 historical layout) are now persisted per day so the
+         * Health screen can SHOW the decoded sensor data WITHOUT us fabricating a calibrated blood-oxygen %.
+         *
+         * ALTER ... ADD COLUMN only (no data touched), so existing dailyMetric rows read back with both
+         * columns = NULL (a pre-migration night simply has no raw SpO2 captured yet), an absent value stays
+         * absent, never a fabricated 0. The SQL MUST match Room's generated columns for two `Int?` fields
+         * exactly: INTEGER, no NOT NULL, no SQL DEFAULT (a Kotlin construction default never reaches the
+         * schema), the additive, nullable-safe form of MIGRATION_2_3 (already-offloaded raw streams survive;
+         * the strap trims acked history and won't re-send it). Like the others this is the
+         * no-destructive-fallback path: a mismatch throws loudly rather than silently wiping non-resendable
+         * strap history. Exposed as [DAILY_SPO2_RAW_MIGRATION_SQL] so a plain-JVM unit test can pin the
+         * shape without Robolectric.
+         */
+        internal val DAILY_SPO2_RAW_MIGRATION_SQL: List<String> = listOf(
+            "ALTER TABLE `dailyMetric` ADD COLUMN `spo2Red` INTEGER",
+            "ALTER TABLE `dailyMetric` ADD COLUMN `spo2Ir` INTEGER",
+        )
+
+        internal val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in DAILY_SPO2_RAW_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
         private fun build(appContext: Context): WhoopDatabase =
             Room.databaseBuilder(appContext, WhoopDatabase::class.java, DB_NAME)
                 // #1014: replace ONLY the corruption handling of the default open-helper. The
@@ -440,7 +467,7 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                     MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
-                    MIGRATION_14_15, MIGRATION_15_16,
+                    MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17,
                 )
                 // #1037: a FRESH install builds the schema straight at the current version and runs NO
                 // migrations, so the MIGRATION_7_8 "my-whoop" registry seed never fires and the WHOOP,

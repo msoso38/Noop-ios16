@@ -1645,6 +1645,32 @@ private fun vitalsFor(
             metricColor = Palette.metricCyan,
             sparkline = trail(d?.spo2Pct) { it.spo2Pct },
         ),
+        // Issue #93: WHOOP 4.0 raw SpO2 PPG ADC means (red/IR) per night. NOT a calibrated blood-oxygen
+        // % — that needs WHOOP's proprietary curve. Shown as RAW ADC so users can SEE the sensor data is
+        // decoded, without us fabricating a clinical-looking number. Only present when raw means exist.
+        run {
+            val rawMean = if (d?.spo2Red != null && d?.spo2Ir != null) (d.spo2Red + d.spo2Ir) / 2.0 else null
+            Vital(
+                key = "spo2raw", label = "Raw SpO₂", unit = "ADC",
+                value = rawMean,
+                format = { String.format("%.0f", it) },
+                deltaText = deltaText(
+                    rawMean,
+                    previous { if (it.spo2Red != null && it.spo2Ir != null) (it.spo2Red + it.spo2Ir) / 2.0 else null },
+                    decimals = 0,
+                ),
+                readingDay = todayKey,
+                asOfLabel = asOfLabel(todayKey),
+                rangeCaption = rangeCaption(
+                    days.mapNotNull { if (it.spo2Red != null && it.spo2Ir != null) (it.spo2Red + it.spo2Ir) / 2.0 else null },
+                    "ADC",
+                ) { String.format(Locale.US, "%.0f", it) },
+                // No banding: raw ADC is device/placement-dependent and not a clinical value.
+                banding = VitalBands.band(null, emptyList(), 0.0..1.0, null),
+                metricColor = Palette.metricCyan,
+                sparkline = trail(rawMean) { if (it.spo2Red != null && it.spo2Ir != null) (it.spo2Red + it.spo2Ir) / 2.0 else null },
+            )
+        },
         Vital(
             key = "rhr", label = "Resting HR", unit = "bpm",
             value = d?.restingHr?.toDouble(), format = { it.roundToInt().toString() },
@@ -1950,6 +1976,7 @@ private fun latestVitals(days: List<DailyMetric>, tempUnit: TemperatureUnit): Li
     return listOf(
         latestVital("resp", days, tempUnit, emptyByKey) { it.respRateBpm != null },
         latestVital("spo2", days, tempUnit, emptyByKey) { it.spo2Pct != null },
+        latestVital("spo2raw", days, tempUnit, emptyByKey) { it.spo2Red != null && it.spo2Ir != null },
         latestVital("rhr", days, tempUnit, emptyByKey) { it.restingHr != null },
         latestVital("hrv", days, tempUnit, emptyByKey) { it.avgHrv != null },
         latestVital("skin", days, tempUnit, emptyByKey) { it.skinTempDevC != null },

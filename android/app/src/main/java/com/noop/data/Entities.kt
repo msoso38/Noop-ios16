@@ -221,6 +221,10 @@ data class DailyMetric(
     val exerciseCount: Int? = null,
     // v7 in-sleep signal aggregates (nullable; computed server-side).
     val spo2Pct: Double? = null,        // mean SpO2 (%) during sleep
+    // WHOOP 4.0 raw SpO2 ADC values (spo2_red@68 / spo2_ir@70 on v24 layout).
+    // Mean of per-second raw ADC values during detected sleep. NOT a blood-oxygen %.
+    val spo2Red: Int? = null,
+    val spo2Ir: Int? = null,
     val skinTempDevC: Double? = null,   // skin-temperature deviation (°C) from baseline
     val respRateBpm: Double? = null,    // mean respiration rate (breaths/min) during sleep
     // On-device derived daily step total from the WHOOP5 step_motion_counter@57 (sum of positive
