@@ -695,15 +695,42 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // parser reads a letter inside the text ('L'=0x4C / 'I'=0x49) as a `type` byte and mints a
                 // phantom sleep-summary (§2.4 desync rule). Diagnostics only - never persisted or scored. The
                 // trim+non-empty gate keeps a truncated tail byte from logging a blank line.
+                // The channel FLOODS during streaming (hundreds/connect) with repetitive firmware
+                // state-machine chatter - `DHR_mode:3` / `DHR data sub` every ~150 ms, per-beat PPG
+                // windows (`S:…`/`E:…`, uppercase), `DHR_state`/`PPG_cont`/`AFs`/`blestda`, and identical
+                // lines repeated dozens of times (`DHR_info:neg t`). `logDebug` drops those known
+                // high-rate internals and collapses consecutive duplicates, so the useful LOW-rate lines
+                // survive: sleep/lifecycle (`check_sleep`, `no_bedtime`, `wakeup`, `in_bed=…`, the
+                // lowercase `s:`/`e:`/`nb:` sleep boundaries), `auth_key_set`, `batt:…`, `orientation`.
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    log("Oura: debug (0x43) rt=\(ringTimestamp) \"\(trimmed)\"")
-                }
+                logDebug(trimmed, rt: ringTimestamp)
 
             default:
                 break   // motion / state / rtcBeacon: not a durable Streams row (see OuraStreamMapping)
             }
         }
+    }
+
+    // MARK: - Debug-text (0x43) filter — Phase-1 investigation logging
+
+    /// Prefixes of the ring's high-rate firmware chatter to DROP from the strap log (case-sensitive, so
+    /// the UPPERCASE PPG markers `S:`/`E:` are dropped while the lowercase sleep boundaries `s:`/`e:`
+    /// survive). Widen this list to quieten the log further, or trim it to see more while investigating.
+    private static let debugDropPrefixes = [
+        "DHR_mode", "DHR data sub", "DHR_state", "DHR_info",   // ~150 ms HR state-machine chatter
+        "PPG_cont", "S:", "E:", "AFs", "blestda", "nr", "BQ",  // per-beat PPG windows / AGC / BLE state
+    ]
+    /// Last debug string we logged, to collapse consecutive identical lines (e.g. `DHR_info:neg t` ×20).
+    private var lastDebugText: String?
+
+    /// Log a decoded 0x43 debug string unless it is empty, a known high-rate flood (drop-prefix), or an
+    /// immediate duplicate of the previous logged line. Investigation only — never persisted or scored.
+    private func logDebug(_ text: String, rt: UInt32) {
+        guard !text.isEmpty,
+              !Self.debugDropPrefixes.contains(where: { text.hasPrefix($0) }),
+              text != lastDebugText else { return }
+        lastDebugText = text
+        log("Oura: debug (0x43) rt=\(rt) \"\(text)\"")
     }
 
     // MARK: - Re-engagement timer (daytime-HR auto-reverts ~20s)
