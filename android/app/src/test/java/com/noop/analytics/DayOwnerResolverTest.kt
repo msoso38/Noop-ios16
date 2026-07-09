@@ -58,4 +58,45 @@ class DayOwnerResolverTest {
         )
         assertNull(DayOwnerResolver.resolve("2026-06-15", lockedOwner = null, candidates = candidates))
     }
+
+    // §6.15: an active Oura ring with only a bare check_sleep window (richData=false) must NOT displace an
+    // imported WHOOP night with a full HR-backed record (richData=true) — the richer record wins despite
+    // the worse priority. Mirrors Swift testRichImportBeatsActiveWindowOnlyRing.
+    @Test
+    fun richImportBeatsActiveWindowOnlyRing() {
+        val candidates = listOf(
+            DayOwnerResolver.Candidate("oura", priority = 0, hasData = true, richData = false),
+            DayOwnerResolver.Candidate("whoop-import", priority = 2, hasData = true, richData = true),
+        )
+        assertEquals(
+            "whoop-import",
+            DayOwnerResolver.resolve("2026-07-08", lockedOwner = null, candidates = candidates),
+        )
+    }
+
+    // …but on a day nothing richer recorded, the window-only ring is the sole source and owns it.
+    @Test
+    fun windowOnlyRingOwnsDayWithNoRicherRecord() {
+        val candidates = listOf(
+            DayOwnerResolver.Candidate("oura", priority = 0, hasData = true, richData = false),
+            DayOwnerResolver.Candidate("whoop-import", priority = 2, hasData = false, richData = true),
+        )
+        assertEquals(
+            "oura",
+            DayOwnerResolver.resolve("2026-07-09", lockedOwner = null, candidates = candidates),
+        )
+    }
+
+    // Two window-only rings (both richData=false) still fall back to device priority (active wins).
+    @Test
+    fun windowOnlyTieBreaksOnPriority() {
+        val candidates = listOf(
+            DayOwnerResolver.Candidate("oura-active", priority = 0, hasData = true, richData = false),
+            DayOwnerResolver.Candidate("oura-other", priority = 1, hasData = true, richData = false),
+        )
+        assertEquals(
+            "oura-active",
+            DayOwnerResolver.resolve("2026-07-09", lockedOwner = null, candidates = candidates),
+        )
+    }
 }

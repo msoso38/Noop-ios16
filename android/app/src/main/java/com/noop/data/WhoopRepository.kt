@@ -603,6 +603,10 @@ class WhoopRepository(private val dao: WhoopDao) {
     suspend fun events(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT) =
         dao.events(deviceId, from, to, limit)
 
+    /** Cheap presence probe for one event kind in a window (§6.15 day-owner). Twin of Swift `hasEvent`. */
+    suspend fun hasEvent(deviceId: String, kind: String, from: Long, to: Long): Boolean =
+        dao.hasEvent(deviceId, kind, from, to)
+
     suspend fun batterySamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT) =
         dao.batterySamples(deviceId, from, to, limit)
 

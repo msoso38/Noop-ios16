@@ -78,6 +78,19 @@ final class ReadTests: XCTestCase {
                                         payload: ["k": .int(9)])])
     }
 
+    func testHasEventProbesKindAndRange() async throws {
+        let store = try await seeded()   // dev1 has one "BLE_CONNECTION_DOWN(12)" event at ts=150
+        // Present kind, in range → true; wrong kind, wrong range, and wrong device → false.
+        let present = try await store.hasEvent(deviceId: "dev1", kind: "BLE_CONNECTION_DOWN(12)", from: 0, to: 1000)
+        XCTAssertTrue(present)
+        let wrongKind = try await store.hasEvent(deviceId: "dev1", kind: "OURA_SLEEP_WINDOW", from: 0, to: 1000)
+        XCTAssertFalse(wrongKind)
+        let outOfRange = try await store.hasEvent(deviceId: "dev1", kind: "BLE_CONNECTION_DOWN(12)", from: 200, to: 1000)
+        XCTAssertFalse(outOfRange)
+        let wrongDevice = try await store.hasEvent(deviceId: "other", kind: "BLE_CONNECTION_DOWN(12)", from: 0, to: 1000)
+        XCTAssertFalse(wrongDevice)
+    }
+
     func testBatterySamples() async throws {
         let store = try await seeded()
         let bat = try await store.batterySamples(deviceId: "dev1", from: 0, to: 1000, limit: 100)

@@ -244,6 +244,15 @@ interface WhoopDao : DeviceRegistryDao {
     )
     suspend fun events(deviceId: String, from: Long, to: Long, limit: Int): List<EventRow>
 
+    /** Cheap presence probe: is there an event of [kind] for [deviceId] in `[from, to]`? Used by the
+     *  day-owner resolver so an active ring with no overnight HR but a persisted check_sleep window
+     *  (OURA_SLEEP_WINDOW, §6.15) still counts as having data. Twin of Swift `hasEvent`. */
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM event WHERE deviceId = :deviceId AND kind = :kind " +
+            "AND ts >= :from AND ts <= :to LIMIT 1)"
+    )
+    suspend fun hasEvent(deviceId: String, kind: String, from: Long, to: Long): Boolean
+
     @Query(
         "SELECT * FROM battery WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
             "ORDER BY ts ASC LIMIT :limit"

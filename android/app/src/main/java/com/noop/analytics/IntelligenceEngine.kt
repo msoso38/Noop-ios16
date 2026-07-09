@@ -434,7 +434,12 @@ object IntelligenceEngine {
             // scored-days loop, NOT here). Only when the universal sink is on. A day skipped below for too
             // few rows is never scored, so it emits no line, byte-identical to the iOS behaviour.
             if (universalSink != null) readOwnerByDay[day] = OwnerRead(owner, hr.size)
-            if (hr.size < MIN_HR_SAMPLES) continue // need real raw data, not a stray sample
+            // Normally a night needs real raw HR to score. EXCEPTION (§6.15): an Oura ring banks no overnight
+            // HR but persists its own check_sleep sleep window — score that night from the window
+            // (totalSleepMin honest; HR-derived fields stay null) instead of skipping it. Only a persisted
+            // OURA_SLEEP_WINDOW opens this path, so every non-Oura night keeps the byte-identical gate. Swift twin.
+            val hasSleepWindow = repo.hasEvent(owner, OuraStreamMapping.EVENT_SLEEP_WINDOW, from, to)
+            if (hr.size < MIN_HR_SAMPLES && !hasSleepWindow) continue // need real raw data, not a stray sample
             val rr = repo.rrIntervals(owner, from, to, STREAM_LIMIT)
             val resp = repo.respSamples(owner, from, to, STREAM_LIMIT)
             val grav = repo.gravitySamples(owner, from, to, STREAM_LIMIT)
@@ -1482,8 +1487,16 @@ object IntelligenceEngine {
         val candidates = candidatePriorities.map { (id, priority) ->
             // Cheap presence check: a single HR row for this device in the night window marks it a
             // candidate. (LIMIT 1 , not the full pull the caller does once an owner is chosen.)
-            val hasData = repo.hrSamples(id, from, to, 1).isNotEmpty()
-            DayOwnerResolver.Candidate(deviceId = id, priority = priority, hasData = hasData)
+            // §6.15: an Oura ring banks NO overnight HR but persists its own check_sleep sleep window, so an
+            // HR-only probe made the active ring lose its night to an imported strap. Count a persisted
+            // OURA_SLEEP_WINDOW as data too, so the ring can own a night NOTHING RICHER recorded — but a bare
+            // window is not a full record: richData = hasHr keeps it below any HR-backed candidate (e.g. an
+            // imported WHOOP night with stages/recovery/HRV). Non-Oura devices never have this event -> no
+            // change. Mirrors Swift.
+            val hasHr = repo.hrSamples(id, from, to, 1).isNotEmpty()
+            val hasWindow = repo.hasEvent(id, OuraStreamMapping.EVENT_SLEEP_WINDOW, from, to)
+            DayOwnerResolver.Candidate(
+                deviceId = id, priority = priority, hasData = hasHr || hasWindow, richData = hasHr)
         }
         return DayOwnerResolver.resolve(day, lockedOwner = null, candidates = candidates) ?: importedDeviceId
     }

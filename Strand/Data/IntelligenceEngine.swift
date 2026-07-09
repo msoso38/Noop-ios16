@@ -455,7 +455,15 @@ final class IntelligenceEngine: ObservableObject {
                                                        registry: registry, fallbackDeviceId: ownerFallbackId)
 
                 let hr = (try? await store.hrSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
-                guard hr.count >= 200 else { continue }   // need real raw data, not a stray sample
+                // Normally a night needs real raw HR (not a stray sample) to score. EXCEPTION (§6.15): an
+                // Oura ring banks no overnight HR but persists its own `check_sleep` sleep window — score
+                // that night from the window (totalSleepMin honest; HR-derived fields stay nil) instead of
+                // skipping it. Only a persisted OURA_SLEEP_WINDOW opens this path, so every non-Oura night
+                // keeps the byte-identical HR gate.
+                let hasSleepWindow = (try? await store.hasEvent(deviceId: owner,
+                                                                kind: OuraStreamMapping.sleepWindowEventKind,
+                                                                from: from, to: to)) ?? false
+                guard hr.count >= 200 || hasSleepWindow else { continue }
                 let rr = (try? await store.rrIntervals(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
                 let resp = (try? await store.respSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
                 let grav = (try? await store.gravitySamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
@@ -1329,8 +1337,17 @@ final class IntelligenceEngine: ObservableObject {
             let priority = d.id == activeId ? 0 : (isImport ? 2 : 1)
             // Cheap presence check: a single HR row for this device in the night window is enough to
             // mark it a candidate. (LIMIT 1 , not the full pull the caller does once an owner is chosen.)
-            let hasData = !((try? await store.hrSamples(deviceId: d.id, from: from, to: to, limit: 1)) ?? []).isEmpty
-            candidates.append(DayOwnerResolver.Candidate(deviceId: d.id, priority: priority, hasData: hasData))
+            // #oura(§6.15): an Oura ring banks NO overnight HR (it's disconnected while you sleep) but DOES
+            // persist its own `check_sleep` sleep window — so an HR-only probe made the active ring lose its
+            // night to an imported strap. Count a persisted OURA_SLEEP_WINDOW as data too, so the ring can own
+            // a night NOTHING RICHER recorded. But a bare window is NOT a full record: `richData: hasHr` keeps
+            // it below any HR-backed candidate (e.g. an imported WHOOP night with stages/recovery/HRV) — so the
+            // ring wins only days no full record exists. Non-Oura devices never have this event → no change.
+            let hasHr = !((try? await store.hrSamples(deviceId: d.id, from: from, to: to, limit: 1)) ?? []).isEmpty
+            let hasWindow = (try? await store.hasEvent(deviceId: d.id, kind: OuraStreamMapping.sleepWindowEventKind,
+                                                       from: from, to: to)) ?? false
+            candidates.append(DayOwnerResolver.Candidate(deviceId: d.id, priority: priority,
+                                                         hasData: hasHr || hasWindow, richData: hasHr))
         }
         return DayOwnerResolver.resolve(day: day, lockedOwner: nil, candidates: candidates) ?? fallbackDeviceId
     }

@@ -118,6 +118,19 @@ extension WhoopStore {
         }
     }
 
+    /// Cheap presence probe: is there at least one event of `kind` for `deviceId` in `[from, to]`? Used by
+    /// the day-owner resolver so an active ring that banks no overnight HR but DID persist a `check_sleep`
+    /// sleep window (OURA_SLEEP_WINDOW, §6.15) still counts as having data for that night. `LIMIT 1`, no
+    /// payload decode — the resolver runs this once per candidate per scanned day.
+    public func hasEvent(deviceId: String, kind: String, from: Int, to: Int) async throws -> Bool {
+        try syncRead { db in
+            try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(SELECT 1 FROM event
+                    WHERE deviceId = ? AND kind = ? AND ts >= ? AND ts <= ? LIMIT 1)
+                """, arguments: [deviceId, kind, from, to]) ?? false
+        }
+    }
+
     public func events(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [WhoopEvent] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
