@@ -242,6 +242,7 @@ NOOP is an independent, **experimental** project — capable, but a work in prog
 |---|---|
 | **WHOOP 4.0** | ✅ The tested, supported path. Live HR, recovery, strain, sleep, history offload — the full experience. (v1.95 also unlocked sleep + recovery on the newer "v25" 4.0 firmware layout that earlier versions could only read live HR from.) |
 | **WHOOP 5.0 / MG** | 🧪 **Live heart rate works** (confirmed on real hardware). Pick "WHOOP 5.0 / MG" before connecting — and see the pairing note below, because you can't just scan for it. Deeper 5/MG metrics (recovery, strain, sleep) are still being mapped; there's an opt-in **Settings → Experimental** toggle for 5/MG owners who want to help document the protocol. |
+| **Oura Ring** | 🧪 **Live heart rate works** (confirmed on real hardware Gen3). Pick "Oura" before connecting — You must have been done a Factory Reset from the Oura App, make sure that the Oura App is stopped, make sure that there is no remaining Oura entries in the bluetooth |
 
 > ### WHOOP 5.0 / MG analysis limits
 >
