@@ -688,6 +688,23 @@ private struct FitnessAgeSection: View {
             hasWaist: profile.waistCm > 0)
     }
 
+    /// The not-ready card's lead: a concrete countdown of nights-of-wear still needed (from the shared
+    /// `nightsUntilReady`), noting the profile basics only when they're actually missing. Copy is kept
+    /// WORD-FOR-WORD identical to the Android `fitnessReadyLead` so the two platforms match.
+    private func fitnessReadyLead() -> String {
+        let rhrDays = repo.days.suffix(7).compactMap { $0.restingHr }.count
+        let remaining = FitnessAgeEngine.nightsUntilReady(rhrDays: rhrDays)
+        let needsBasics = profile.age <= 0 || profile.sex.isEmpty
+        switch (remaining, needsBasics) {
+        case (0, false): return String(localized: "A few more days and we can show your Fitness Age.")
+        case (0, true):  return String(localized: "Add your age and sex below and we can show your Fitness Age.")
+        case (1, false): return String(localized: "1 more night of wear and we can show your Fitness Age.")
+        case (1, true):  return String(localized: "1 more night of wear, plus your age and sex below, and we can show your Fitness Age.")
+        case (let n, false): return String(localized: "\(n) more nights of wear and we can show your Fitness Age.")
+        case (let n, true):  return String(localized: "\(n) more nights of wear, plus your age and sex below, and we can show your Fitness Age.")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("Fitness Age", overline: "Weekly",
@@ -720,12 +737,11 @@ private struct FitnessAgeSection: View {
                     .transition(.opacity)
             }
         } else if loaded {
-            // No value yet: lead with the checklist so the user sees exactly what's still needed.
+            // No value yet: lead with a concrete countdown ("N more nights of wear…") so the user knows
+            // how far off it is, then the checklist shows exactly what's still needed.
             ReadinessChecklistCard(
                 readiness: readiness,
-                lead: readiness.canCompute
-                    ? "A few more days and we can show your Fitness Age."
-                    : "A few more days of wear, plus the basics below, and we can show your Fitness Age.",
+                lead: fitnessReadyLead(),
                 onFix: { fitnessSheet = .settings })
         } else {
             // Brief read of the weekly value; honest placeholder rather than an empty gap.
@@ -866,7 +882,9 @@ private struct FitnessAgeSection: View {
 private struct ReadinessChecklistCard: View {
     let readiness: FitnessAgeReadiness
     /// Optional intro line shown above the groups (e.g. the "a few more days" no-value message).
-    let lead: LocalizedStringKey?
+    /// Already-localized text (from `fitnessReadyLead()`, which returns `String(localized:)`), so it's a
+    /// plain `String` rendered verbatim — not a `LocalizedStringKey` (which would re-key a resolved string).
+    let lead: String?
     /// Invoked when the user taps a required-missing row's "Fix in Settings".
     let onFix: () -> Void
 
@@ -1225,6 +1243,7 @@ private struct LiquidVitalTile: View {
         case "rhr":        return over(100)
         case "resp_rate":  return over(24)
         case "spo2":       return across(90, 100)
+        case "spo2raw":    return across(0, 65535)   // raw PPG ADC mean over the u16 sensor span (#93)
         case "skin_temp":
             // Absolute skin temp (>= 20 °C) maps across a plausible wrist band; a small ±deviation
             // maps around a half-full centre so a normal night reads mid-gauge, not empty.

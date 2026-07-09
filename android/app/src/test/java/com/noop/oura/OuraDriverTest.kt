@@ -23,6 +23,20 @@ class OuraDriverTest {
 
     private fun bytes(s: String) = OuraTestHex.bytes(s)
 
+    @Test
+    fun testIsPlausibleAnchorEpochBounds() {
+        // The anchor plausibility window is [2020-01-01, 2035-01-01] UTC. OuraLiveSource reads this same
+        // predicate to log WHY an anchor was rejected (#91), so the boundaries are pinned here. Twin of the
+        // Swift OuraDriverTests.testIsPlausibleAnchorEpochBounds.
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
+        assertTrue(d.isPlausibleAnchorEpoch(1_577_836_800L))    // 2020-01-01, inclusive min
+        assertTrue(d.isPlausibleAnchorEpoch(2_051_222_400L))    // 2035-01-01, inclusive max
+        assertTrue(d.isPlausibleAnchorEpoch(1_700_000_000L))    // ~2023, mid-window
+        assertFalse(d.isPlausibleAnchorEpoch(1_577_836_799L))   // one second before min
+        assertFalse(d.isPlausibleAnchorEpoch(2_051_222_401L))   // one second past max
+        assertFalse(d.isPlausibleAnchorEpoch(0L))               // epoch 0 — the ~1970 anchor #91 must avoid
+    }
+
     // MARK: - Full happy-path step sequence (auth -> enable triplet -> streaming)
 
     @Test

@@ -598,10 +598,10 @@ private fun FitnessAgeSection(vm: AppViewModel, days: List<DailyMetric>, profile
     // age; activity (a scored strain day) is an enrichment signal; height/weight/waist sit under the
     // VO₂max role. Age/sex come from the profile. Approximate by design — the weekly value is the
     // authority; this just explains the gaps.
+    // rhrDays drives BOTH the readiness verdict AND the not-ready countdown lead, so hoist it out.
+    val rhrDays = remember(days) { days.takeLast(7).count { it.restingHr != null } }
     val readiness = remember(days, profile.age, profile.sex, profile.waistCm) {
-        val last7 = days.takeLast(7)
-        val rhrDays = last7.count { it.restingHr != null }
-        val activityDays = last7.count { it.strain != null }
+        val activityDays = days.takeLast(7).count { it.strain != null }
         FitnessAgeEngine.assessReadiness(
             hasAge = profile.age > 0,
             hasSex = profile.sex.isNotBlank(),
@@ -629,8 +629,9 @@ private fun FitnessAgeSection(vm: AppViewModel, days: List<DailyMetric>, profile
                 FitnessReadinessCard(readiness = readiness, headed = false)
             }
         } else {
-            // No weekly value yet — surface the checklist directly so the user knows what's pending.
-            FitnessReadinessCard(readiness = readiness, headed = true)
+            // No weekly value yet — lead with a concrete countdown, then the checklist.
+            FitnessReadinessCard(readiness = readiness, headed = true,
+                lead = fitnessReadyLead(rhrDays, profile.age > 0, profile.sex.isNotBlank()))
         }
     }
 }
@@ -897,11 +898,27 @@ private fun FitnessAgeHero(
     }
 }
 
+/** The not-ready card's lead: a concrete countdown of nights-of-wear still needed (from the shared
+ *  [FitnessAgeEngine.nightsUntilReady]), noting the profile basics only when actually missing. Copy is kept
+ *  WORD-FOR-WORD identical to the iOS `fitnessReadyLead` (HealthView) so the two platforms match. */
+private fun fitnessReadyLead(rhrDays: Int, hasAge: Boolean, hasSex: Boolean): String {
+    val remaining = FitnessAgeEngine.nightsUntilReady(rhrDays)
+    val needsBasics = !hasAge || !hasSex
+    return when {
+        remaining == 0 && !needsBasics -> "A few more days and we can show your Fitness Age."
+        remaining == 0 && needsBasics  -> "Add your age and sex below and we can show your Fitness Age."
+        remaining == 1 && !needsBasics -> "1 more night of wear and we can show your Fitness Age."
+        remaining == 1 && needsBasics  -> "1 more night of wear, plus your age and sex below, and we can show your Fitness Age."
+        !needsBasics -> "$remaining more nights of wear and we can show your Fitness Age."
+        else         -> "$remaining more nights of wear, plus your age and sex below, and we can show your Fitness Age."
+    }
+}
+
 /** The readiness checklist card: each input as a ✓ / ⚠ / ○ glyph + its detail, grouped by role into
- *  "Drives your Fitness Age" and "Unlocks your VO₂max". When [headed] (no value yet) it leads with a
- *  "a few more days" heading and floats the required-missing items to the top of their group. */
+ *  "Drives your Fitness Age" and "Unlocks your VO₂max". When [headed] (no value yet) it leads with the
+ *  [lead] countdown and floats the required-missing items to the top of their group. */
 @Composable
-private fun FitnessReadinessCard(readiness: FitnessAgeReadiness, headed: Boolean) {
+private fun FitnessReadinessCard(readiness: FitnessAgeReadiness, headed: Boolean, lead: String = "") {
     val drivesAge = readiness.items
         .filter { it.role == FitnessReadinessRole.DRIVES_AGE }
         .sortedBy { if (headed) readinessSortKey(it) else 0 }
@@ -914,7 +931,7 @@ private fun FitnessReadinessCard(readiness: FitnessAgeReadiness, headed: Boolean
             if (headed) {
                 Column(verticalArrangement = Arrangement.spacedBy(Metrics.space4)) {
                     Text(
-                        "A few more days and we can show your Fitness Age",
+                        lead.ifBlank { "A few more days and we can show your Fitness Age." },
                         style = NoopType.headline,
                         color = Palette.textPrimary,
                     )
@@ -1523,6 +1540,9 @@ private data class Vital(
     /** The in-range caption that stands in for a StatePill inside the fixed-height tile.
      *  The wording says which yardstick judged it: your baseline vs typical ranges. */
     val stateCaption: String = when {
+        // Raw SpO₂ is a device-dependent ADC, not a clinical value — never claim an in/out-of-range
+        // judgment. Show a plain "uncalibrated" note when a value decoded, "No data" otherwise. (#93)
+        key == "spo2raw" -> if (banding.band == VitalBands.Band.NO_DATA) "No data" else "Uncalibrated"
         banding.band == VitalBands.Band.NO_DATA -> "No data"
         banding.basis == VitalBands.Basis.PERSONAL ->
             if (banding.band == VitalBands.Band.IN_RANGE) "In your range" else "Off your baseline"
@@ -1620,6 +1640,13 @@ private fun vitalsFor(
         skinUnitLabel,
         skinFormat,
     )
+    // WHOOP 4.0 raw SpO₂: the (red + IR) / 2 ADC mean per night, present only when both channels
+    // decoded for the day. Averaged for a single "signal decoded" tile; both channels stay in the DB. (#93)
+    val spo2RawMean: (DailyMetric) -> Double? = { row ->
+        if (row.spo2Red != null && row.spo2Ir != null) (row.spo2Red + row.spo2Ir) / 2.0 else null
+    }
+    val spo2rawRangeCaption =
+        rangeCaption(days.mapNotNull(spo2RawMean), "ADC") { String.format(Locale.US, "%.0f", it) }
     return listOf(
         Vital(
             key = "resp", label = "Resp Rate", unit = "rpm",
@@ -1644,6 +1671,22 @@ private fun vitalsFor(
             banding = VitalBands.band(d?.spo2Pct, emptyList(), 95.0..100.0, null),
             metricColor = Palette.metricCyan,
             sparkline = trail(d?.spo2Pct) { it.spo2Pct },
+        ),
+        Vital(
+            // Issue #93: WHOOP 4.0 raw SpO₂ PPG ADC mean (red+IR)/2 per night. NOT a calibrated
+            // blood-oxygen % — that needs WHOOP's proprietary curve. Shown as RAW ADC so users can SEE
+            // the sensor data decoded, without fabricating a clinical-looking number. Banding over the
+            // full u16 span just keeps the tile cyan (never "off range"); `stateCaption` labels it
+            // uncalibrated, so we never assert an in/out-of-range clinical judgment on raw sensor data.
+            key = "spo2raw", label = "Raw SpO₂", unit = "ADC",
+            value = d?.let(spo2RawMean), format = { String.format("%.0f", it) },
+            deltaText = deltaText(d?.let(spo2RawMean), previous(spo2RawMean), decimals = 0),
+            readingDay = todayKey,
+            asOfLabel = asOfLabel(todayKey),
+            rangeCaption = spo2rawRangeCaption,
+            banding = VitalBands.band(d?.let(spo2RawMean), emptyList(), 0.0..65535.0, null),
+            metricColor = Palette.metricCyan,
+            sparkline = trail(d?.let(spo2RawMean)) { spo2RawMean(it) },
         ),
         Vital(
             key = "rhr", label = "Resting HR", unit = "bpm",
@@ -1950,6 +1993,7 @@ private fun latestVitals(days: List<DailyMetric>, tempUnit: TemperatureUnit): Li
     return listOf(
         latestVital("resp", days, tempUnit, emptyByKey) { it.respRateBpm != null },
         latestVital("spo2", days, tempUnit, emptyByKey) { it.spo2Pct != null },
+        latestVital("spo2raw", days, tempUnit, emptyByKey) { it.spo2Red != null && it.spo2Ir != null },
         latestVital("rhr", days, tempUnit, emptyByKey) { it.restingHr != null },
         latestVital("hrv", days, tempUnit, emptyByKey) { it.avgHrv != null },
         latestVital("skin", days, tempUnit, emptyByKey) { it.skinTempDevC != null },

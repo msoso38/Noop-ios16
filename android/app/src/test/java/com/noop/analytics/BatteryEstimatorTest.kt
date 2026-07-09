@@ -65,6 +65,33 @@ class BatteryEstimatorTest {
         assertEquals(44.0, e.remainingHours, 1e-6)   // 52->44 = 8pp over 8h = 1 %/h; 44 / 1
     }
 
+    @Test fun oldPeakDoesNotFlattenARecentFastDrain() {
+        // #99: a WHOOP MG that tops up short of full every day (never trips the near-full rule), reported
+        // "9% = ~3 days" when the real drain that day was ~1.5 %/h. Ten daily cycles of 30pp/20h (1.5 %/h),
+        // each day's peak a little lower than the last (so the GLOBAL max sits all the way back on day
+        // one), then today: a quick top-up to 25% and a 4h tail down to 9%. The old whole-buffer max scan
+        // anchored on day one's peak and netted the fit across nine unseen intermediate top-ups, diluting
+        // 1.5 %/h into ~0.3 %/h and reporting ~29h. Bounding the search to the last two cycles instead
+        // anchors on YESTERDAY's peak (34%), fitting today's actual 1.5 %/h and landing on the honest 6h.
+        val r = mutableListOf<Pair<Long, Double>>()
+        var t = 0L
+        var peak = 70.0
+        while (peak >= 34.0) {
+            r.add(t to peak)
+            t += 20 * h
+            r.add(t to peak - 30.0)
+            t += 1 * h
+            peak -= 4.0
+        }
+        r.add(t to 25.0)
+        t += 4 * h
+        r.add(t to 9.0)
+        val e = BatteryEstimator.estimate(r, BatteryEstimator.ratedLifeHoursWhoop5)!!
+        assertEquals(BatteryEstimator.Source.MEASURED, e.source)
+        assertEquals(9.0, e.currentSoc, 1e-6)
+        assertEquals(6.0, e.remainingHours, 1e-6)   // 9 / 1.5 %/h, yesterday's real slope
+    }
+
     @Test fun nearFullChargeStillResetsTheRun() {
         // The guard must NOT change a genuine near-full charge: discharge 100->20, charge back to 95 (>=90,
         // near-full), then 95->85 over 5h is 2 %/h. The run still resets on the near-full charge, source
@@ -84,13 +111,25 @@ class BatteryEstimatorTest {
         assertEquals(285.12, e.remainingHours, 1e-6)   // 99 / (100/288)
     }
 
-    @Test fun clampsToOneAndAHalfTimesRated() {
-        // A slow drain near full charge must not report more than 1.5x the rated life. 100% to 90% over
-        // 20h is 0.5 %/h, current 90% -> 180h raw, clamped to 108*1.5 = 162h.
+    @Test fun clampsToOneAndAHalfTimesRatedScaledToSoc() {
+        // #99: the cap scales with CURRENT SoC (was a flat 1.5x of the FULL rated life). 100% to 90% over
+        // 20h is 0.5 %/h, current 90% -> 180h raw, clamped to 108 * 1.5 * 0.90 = 145.8h (was 162h).
         val e = BatteryEstimator.estimate(listOf(0L to 100.0, 20 * h to 90.0),
             BatteryEstimator.ratedLifeHoursWhoop4)!!
         assertEquals(BatteryEstimator.Source.MEASURED, e.source)
-        assertEquals(162.0, e.remainingHours, 1e-6)   // clamped, not 200
+        assertEquals(145.8, e.remainingHours, 1e-6)   // 108 * 1.5 * 0.90
+    }
+
+    @Test fun lowSocClampScalesWithCurrentCharge() {
+        // #99 (the report): a too-slow discharge (25% -> 9% over 100h ~= 0.16 %/h, e.g. idle / off-wrist
+        // spans or sparse 5/MG SoC readings) extrapolates 9% to ~56h raw — but 9% of a 12-day MG can't be
+        // ~2.3 days. The SoC-scaled cap bounds it to 288 * 1.5 * 0.09 = 38.88h (~1.6 days), where the OLD
+        // flat 1.5x-rated cap (432h) let the "9% = 3 days" nonsense through.
+        val e = BatteryEstimator.estimate(listOf(0L to 25.0, 100 * h to 9.0),
+            BatteryEstimator.ratedLifeHoursWhoop5)!!
+        assertEquals(BatteryEstimator.Source.MEASURED, e.source)
+        assertEquals(9.0, e.currentSoc, 1e-6)
+        assertEquals(38.88, e.remainingHours, 1e-6)   // 288 * 1.5 * 0.09, not ~56h
     }
 
     @Test fun unsortedSamplesAreHandled() {

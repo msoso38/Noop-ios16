@@ -909,6 +909,8 @@ fun SettingsScreen(
                     },
                 )
             }
+            RowDivider()   // #79 parity: the hairline every other section has between FormRows (Android rows
+                           // were already 16dp-spaced, unlike iOS where they touched — this matches both)
             FormRow(label = "Chart colours") {
                 // Titanium = brand gold/amber/blue ramps; Classic = throwback red→green readiness scale
                 // (cool→hot zones, green→red stress). Re-colours every gauge/chart, in both schemes.
@@ -1243,7 +1245,9 @@ fun SettingsScreen(
                                 color = Palette.textPrimary,
                             )
                             Text(
-                                "Runs the stream only during your quiet hours window (22:00 to 07:00 by default), roughly halving the battery cost. Daytime Stress readings will be sparser, since Stress reads this live stream.",
+                                "Runs the continuous HRV stream only during your quiet hours window (22:00–07:00 by default), roughly halving the battery cost. Daytime Stress readings will be sparser. " +
+                                "Note: continuous background HRV capture (including daytime naps) is paused outside this window. " +
+                                "For on-demand daytime HRV readings (including naps), use the \"Take an HRV reading\" button on the Live screen.",
                                 style = NoopType.footnote,
                                 color = Palette.textTertiary,
                             )
