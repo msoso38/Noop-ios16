@@ -215,6 +215,12 @@ public final class OuraDriver {
     /// Convert a record's ring-clock timestamp to unix seconds using the current session's anchor
     /// (OURA_PROTOCOL.md s5.5). Returns nil when no anchor has arrived yet this session, so the caller
     /// can honestly fall back (e.g. to wall-clock arrival time) instead of guessing.
+    /// Whether a ring-time→UTC anchor has arrived this session. Lets a caller tell the TWO reasons
+    /// `unixSeconds(forRingTimestamp:)` returns nil apart: `false` ⇒ no anchor yet (park / honest
+    /// wall-clock fallback is OK); `true` ⇒ an anchor EXISTS but the ring timestamp was rejected as
+    /// phantom/out-of-window, so the record must be DROPPED, never stamped at wall-clock (honest-data).
+    public var hasAnchor: Bool { anchorUtcMs != nil && anchorRingTime != nil }
+
     public func unixSeconds(forRingTimestamp rt: UInt32) -> Int? {
         guard let anchorUtcMs, let anchorRingTime else { return nil }
         let deltaTicks = Int64(rt) - Int64(anchorRingTime)

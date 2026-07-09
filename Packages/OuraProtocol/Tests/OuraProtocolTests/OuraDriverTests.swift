@@ -215,6 +215,24 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertNil(d.unixSeconds(forRingTimestamp: 0))
     }
 
+    func testHasAnchorDistinguishesNoAnchorFromPhantomRejection() {
+        // hasAnchor lets the live-source drain tell the two `unixSeconds == nil` cases apart: park/fallback
+        // when no anchor yet, vs DROP a phantom once an anchor exists.
+        let d = OuraDriver(ringGen: .gen3, authKey: key)
+        XCTAssertFalse(d.hasAnchor)                                   // nothing anchored yet
+        XCTAssertNil(d.unixSeconds(forRingTimestamp: 12_345))         // → caller should PARK
+
+        let anchorEpochSeconds: Int64 = 1_700_000_000
+        let anchorRt: UInt32 = 100_000_000
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue, ringTimestamp: anchorRt,
+                                        payload: le8(anchorEpochSeconds) + [0x00]))
+        XCTAssertTrue(d.hasAnchor)                                    // anchor present now
+        XCTAssertNil(d.unixSeconds(forRingTimestamp: 0))             // phantom rt rejected → caller should DROP
+
+        d.stop()
+        XCTAssertFalse(d.hasAnchor)                                   // stop clears the anchor
+    }
+
     func testAnchorRelativeWindowEndpointsAreInclusive() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         let anchorEpochSeconds: Int64 = 1_700_000_000

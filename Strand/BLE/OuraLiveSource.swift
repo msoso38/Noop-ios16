@@ -611,9 +611,25 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private func drainPendingAnchorEvents() {
         guard !pendingAnchorEvents.isEmpty, let driver else { return }
         let now = Int(Date().timeIntervalSince1970)
+        // `unixSeconds` returns nil for TWO reasons; the phantom guard is only honest if we tell them apart:
+        //   • an anchor EXISTS but the ring timestamp was rejected as phantom/out-of-window → DROP the
+        //     record. The old `?? now` fallback stamped it at wall-clock and BANKED it, so a misframed
+        //     skin-temp/SpO2/phase parked before the anchor landed slipped past the guard and polluted
+        //     "today" with a bogus sample (honest-data violation). Dropping is the whole point of the guard.
+        //   • NO anchor ever arrived this session (teardown drain) → keep the honest wall-clock fallback so
+        //     a real last-night record is placed at ~arrival rather than silently lost.
+        var droppedPhantoms = 0
         for pending in pendingAnchorEvents {
-            let ts = driver.unixSeconds(forRingTimestamp: pending.ringTimestamp) ?? now
-            enqueue([pending.event], ts: ts)
+            if let ts = driver.unixSeconds(forRingTimestamp: pending.ringTimestamp) {
+                enqueue([pending.event], ts: ts)
+            } else if driver.hasAnchor {
+                droppedPhantoms += 1               // anchor present but rt is phantom → drop, never bank
+            } else {
+                enqueue([pending.event], ts: now)  // no anchor this session → honest wall-clock fallback
+            }
+        }
+        if droppedPhantoms > 0 {
+            log("Oura: dropped \(droppedPhantoms) phantom record(s) - ring timestamp outside the anchor window")
         }
         pendingAnchorEvents.removeAll()
     }

@@ -638,9 +638,24 @@ class OuraLiveSource(
         if (pendingAnchorEvents.isEmpty()) return@guardedCallback
         val d = driver ?: return@guardedCallback
         val now = (System.currentTimeMillis() / 1000L).toInt()
+        // `unixSeconds` returns null for TWO reasons; the phantom guard is only honest if we tell them apart:
+        //   - an anchor EXISTS but the ring timestamp was rejected as phantom/out-of-window -> DROP the
+        //     record. The old `?: now` fallback stamped it at wall-clock and BANKED it, so a misframed
+        //     skin-temp/SpO2/phase parked before the anchor landed slipped past the guard and polluted
+        //     "today" with a bogus sample (honest-data violation). Dropping is the whole point of the guard.
+        //   - NO anchor ever arrived this session (teardown drain) -> keep the honest wall-clock fallback so
+        //     a real last-night record is placed at ~arrival rather than silently lost. Mirrors Swift.
+        var droppedPhantoms = 0
         for ((event, ringTimestamp) in pendingAnchorEvents) {
-            val ts = d.unixSeconds(forRingTimestamp = ringTimestamp)?.toInt() ?: now
-            enqueue(listOf(event), ts)
+            val ts = d.unixSeconds(forRingTimestamp = ringTimestamp)?.toInt()
+            when {
+                ts != null -> enqueue(listOf(event), ts)
+                d.hasAnchor -> droppedPhantoms++          // anchor present but rt is phantom -> drop, never bank
+                else -> enqueue(listOf(event), now)       // no anchor this session -> honest wall-clock fallback
+            }
+        }
+        if (droppedPhantoms > 0) {
+            log("Oura: dropped $droppedPhantoms phantom record(s) - ring timestamp outside the anchor window")
         }
         pendingAnchorEvents.clear()
     }

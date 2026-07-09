@@ -2,6 +2,7 @@ package com.noop.oura
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -255,6 +256,30 @@ class OuraDriverTest {
         assertNull(d.unixSeconds(forRingTimestamp = anchorRt + 1_000_000_000))
         // Phantom PAST (~-115 days via rt=0): beyond the -90 day history window.
         assertNull(d.unixSeconds(forRingTimestamp = 0L))
+    }
+
+    @Test
+    fun testHasAnchorDistinguishesNoAnchorFromPhantomRejection() {
+        // Parity with Swift testHasAnchorDistinguishesNoAnchorFromPhantomRejection. hasAnchor lets the
+        // live-source drain tell the two `unixSeconds == null` cases apart: park/fallback when no anchor
+        // yet, vs DROP a phantom once an anchor exists.
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
+        assertFalse(d.hasAnchor)                                   // nothing anchored yet
+        assertNull(d.unixSeconds(forRingTimestamp = 12_345L))      // -> caller should PARK
+
+        val anchorEpochSeconds = 1_700_000_000L
+        val anchorRt = 100_000_000L
+        d.ingest(
+            OuraRecord(
+                type = OuraEventTag.TIME_SYNC.raw, ringTimestamp = anchorRt,
+                payload = le8(anchorEpochSeconds) + intArrayOf(0x00),
+            ),
+        )
+        assertTrue(d.hasAnchor)                                    // anchor present now
+        assertNull(d.unixSeconds(forRingTimestamp = 0L))          // phantom rt rejected -> caller should DROP
+
+        d.stop()
+        assertFalse(d.hasAnchor)                                   // stop clears the anchor
     }
 
     @Test
