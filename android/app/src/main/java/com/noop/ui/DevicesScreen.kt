@@ -1,5 +1,6 @@
 package com.noop.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -165,13 +166,13 @@ fun DevicesScreen(
                 onMakeActive = { switchTarget = device },
                 onRename = { renameTarget = device },
                 onRemove = { removeTarget = device },
-                // Manual connect/disconnect for the WHOOP — the reliable escape hatch when the automatic
-                // reconnect is stuck. connect() runs the same active direct path as onboarding.
+                // Manual connect and disconnect for the WHOOP. A short toast confirms the tap, since the link
+                // state only changes a few seconds later.
                 onConnect = if (device.brand.equals("WHOOP", ignoreCase = true)) {
-                    { viewModel.connect() }
+                    { Toast.makeText(context, "Reconnecting…", Toast.LENGTH_SHORT).show(); viewModel.connect() }
                 } else null,
                 onDisconnect = if (device.brand.equals("WHOOP", ignoreCase = true)) {
-                    { viewModel.disconnect() }
+                    { Toast.makeText(context, "Disconnecting", Toast.LENGTH_SHORT).show(); viewModel.disconnect() }
                 } else null,
             )
         }
@@ -516,10 +517,9 @@ private fun DeviceActionsMenu(
                     }
                 }
             } else {
-                // Manual connect/disconnect (WHOOP only — onConnect is null for other sources). connect()
-                // runs the same active, direct (autoConnect=false) path as onboarding, so it re-establishes a
-                // link the automatic reconnect left stuck, the way re-running setup does. Shown first so it's
-                // the obvious escape hatch.
+                // Manual connect and disconnect (WHOOP only; onConnect is null for other sources). Connect
+                // runs the same direct path as the initial connect, so it recovers a link the automatic
+                // reconnect left stuck. Shown first as the obvious recovery action.
                 if (onConnect != null) {
                     if (isLiveConnected) {
                         MenuItem("Disconnect", Icons.Filled.Close) { onOpenChange(false); onDisconnect?.invoke() }
