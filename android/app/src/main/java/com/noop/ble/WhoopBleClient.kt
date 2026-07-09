@@ -604,6 +604,9 @@ class WhoopBleClient(
         // disconnect/reconnect fixes is really a missing keep-alive. We re-arm + poll battery every
         // 30s, and bounce a truly silent link after 120s (the auto version of disconnect+reconnect).
         private const val KEEPALIVE_INTERVAL_MS = 30_000L
+        /** Delay after the 5/MG connect handshake before reading battery (0x2A19), so it doesn't race the
+         *  clock writes on a slow stack while still populating the ring within ~2s of connect. */
+        private const val BATTERY_ON_CONNECT_DELAY_MS = 1_500L
         /** No inbound data for this long ⇒ the link/stream stalled; bounce it to resume streaming. */
         private const val KEEPALIVE_STALL_MS = 120_000L
         /** #580: longer stall fuse for a known history-empty 5/MG. Live HR over 0x2A37 keeps the link alive
@@ -3828,10 +3831,18 @@ class WhoopBleClient(
                 // WHOOP 4.0 only: re-arm realtime HR so the firmware can't let it lapse (while the Live
                 // screen wants it), and poll battery (~60s) — which also keeps the link warm. A 5/MG
                 // strap rejects WHOOP4-framed commands, so we skip them and rely on re-subscribe + bounce.
+                // Advance the tick for BOTH families so the ~60s battery cadence fires on 5/MG too (it used
+                // to increment only inside the WHOOP4 branch, so a 5/MG tick never advanced).
+                keepAliveTick += 1
                 if (connectedFamily == DeviceFamily.WHOOP4) {
                     if (wantsRealtime) { realtimeArmed = true; send(CommandNumber.TOGGLE_REALTIME_HR, byteArrayOf(1)) }
-                    keepAliveTick += 1
                     if (keepAliveTick % 2 == 0) send(CommandNumber.GET_BATTERY_LEVEL)
+                } else if (connectedFamily == DeviceFamily.WHOOP5 && keepAliveTick % 2 == 0) {
+                    // 5/MG battery comes ONLY from a 0x2A19 read (refreshBattery), and the strap sends no
+                    // unsolicited battery notification — so poll it here (~60s) instead of only while the Live
+                    // screen is open. This keeps the battery ring fresh on any screen without a manual
+                    // Body > Health > Sync, and the read doubles as a link keep-warm.
+                    refreshBattery()
                 }
             }
         }
@@ -4230,6 +4241,9 @@ class WhoopBleClient(
                 connectHandshakeDone = true
                 send(CommandNumber.SET_CLOCK, setClockPayload(), withResponse = true)
                 send(CommandNumber.GET_CLOCK, byteArrayOf(), withResponse = true)
+                // Populate the battery ring right after connect (not only once the Live screen opens).
+                // Posted after the clock writes settle so the 0x2A19 read doesn't race them on a slow stack.
+                handler.postDelayed({ refreshBattery() }, BATTERY_ON_CONNECT_DELAY_MS)
                 log("WHOOP 5/MG: clock synced (set/get) — strap can persist history now")
                 if (!backfillStarted) {
                     backfillStarted = true
@@ -5073,9 +5087,16 @@ class WhoopBleClient(
                 // range stops hammering BLE — replaces the old fixed RECONNECT_DELAY_MS. The counter
                 // resets on the next STATE_CONNECTED and on an explicit user Connect. (#48)
                 val directDelay = nextReconnectDelayMs()
-                log("Disconnected (status=$status); reconnecting directly in ${directDelay / 1000}s (attempt $failedReconnectAttempts)")
+                // The FIRST couple of reconnect attempts use the FAST direct connect (autoConnect=false) —
+                // the same path as first-connect. A 5/MG the OS still holds bonded/ACL-connected never
+                // re-emits the advertisement/connection-complete event that autoConnect=true waits for, so
+                // passive mode just hangs — the "very hard to reconnect after a drop, though app-start
+                // connects instantly" report. Fall back to autoConnect=true from the 3rd attempt for a strap
+                // that is genuinely out of range (#61: reconnect when it returns to range, no scan/advert).
+                val passiveReconnect = failedReconnectAttempts >= 3
+                log("Disconnected (status=$status); reconnecting ${if (passiveReconnect) "passively" else "directly"} in ${directDelay / 1000}s (attempt $failedReconnectAttempts)")
                 // #1030 (ryanbr): cancellable backoff timer (see scheduleReconnect).
-                scheduleReconnect(directDelay) { connectToDevice(dev, autoConnect = true) }
+                scheduleReconnect(directDelay) { connectToDevice(dev, autoConnect = passiveReconnect) }
             } else {
                 val rescanDelay = nextReconnectDelayMs()
                 log("Disconnected (status=$status); rescanning in ${rescanDelay / 1000}s (attempt $failedReconnectAttempts)")
