@@ -20,6 +20,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import com.noop.data.EventEntry
 import com.noop.data.OuraStreamMapping
 import com.noop.data.StreamBatch
 import com.noop.data.StreamPersistence
@@ -1164,9 +1165,12 @@ class OuraLiveSource(
         }
     }
 
-    /** PROTOTYPE (§6.15): feed a debug line to [checkSleepParser] and, on a NEW window, anchor both
-     *  boundaries to UTC (§5.5) and log the ring's own bedtime->wake span. Unresolved (no anchor / phantom)
-     *  simply skips - never a guessed time. Twin of the Swift `logCheckSleepWindowIfAny`. */
+    /** Feed a debug line to [checkSleepParser] and, on a NEW window, anchor both boundaries to UTC (§5.5),
+     *  log the ring's own bedtime->wake span, and PERSIST it as an OURA_SLEEP_WINDOW event so
+     *  IntelligenceEngine can build an honest sleep session from it (§6.15). Unresolved (no anchor / phantom)
+     *  simply skips - never a guessed time. Stored at `ts = bedtime` (stable per night; the DO NOTHING
+     *  upsert keeps the first write). A discovery-only instance has a no-op [persist], so nothing is stored.
+     *  Twin of the Swift `logCheckSleepWindowIfAny`. */
     private fun logCheckSleepWindowIfAny(line: String, d: OuraDriver) {
         val w = checkSleepParser.ingest(line) ?: return
         val bedtime = d.unixSeconds(forRingTimestamp = w.startRt) ?: return
@@ -1176,8 +1180,10 @@ class OuraLiveSource(
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
         log(
             "Oura: ring sleep window (check_sleep) ${fmt.format(Date(bedtime * 1000L))} -> " +
-                "${fmt.format(Date(wake * 1000L))} (${mins / 60}h ${mins % 60}m) [PROTOTYPE - not persisted]",
+                "${fmt.format(Date(wake * 1000L))} (${mins / 60}h ${mins % 60}m)",
         )
+        val payloadJson = """{"start":$bedtime,"end":$wake}"""
+        persist(StreamBatch(events = listOf(EventEntry(bedtime, OuraStreamMapping.EVENT_SLEEP_WINDOW, payloadJson))), deviceId)
     }
 
     /**

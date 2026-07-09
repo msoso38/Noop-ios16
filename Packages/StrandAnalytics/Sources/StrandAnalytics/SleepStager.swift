@@ -1947,7 +1947,12 @@ public enum SleepStager {
         let tib = max(0.0, Double(session.end - session.start))
 
         func dur(_ s: StageSegment) -> Double { Double(s.end - s.start) }
-        let sleepSegs = segs.filter { $0.stage == "light" || $0.stage == "deep" || $0.stage == "rem" }
+        // TST = any non-wake time. For every gravity/phase-staged session this is byte-identical to
+        // `light|deep|rem` (those are the only non-wake labels the stagers emit). It ALSO admits the
+        // stage-UNKNOWN label "asleep" (from the Oura `check_sleep` window, §6.15): the ring gives a real
+        // bedtime→wake span but no stage split, so we count it as sleep TIME without inventing deep/REM/
+        // light (those filters below stay specific → they read 0 for an "asleep"-only session). Honest-data.
+        let sleepSegs = segs.filter { $0.stage != "wake" }
         let tst = sleepSegs.reduce(0.0) { $0 + dur($1) }
         let deepS = segs.filter { $0.stage == "deep" }.reduce(0.0) { $0 + dur($1) }
         let remS = segs.filter { $0.stage == "rem" }.reduce(0.0) { $0 + dur($1) }

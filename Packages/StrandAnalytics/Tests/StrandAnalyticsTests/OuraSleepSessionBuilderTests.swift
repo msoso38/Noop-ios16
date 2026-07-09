@@ -126,4 +126,36 @@ final class OuraSleepSessionBuilderTests: XCTestCase {
         XCTAssertEqual(s[0].end, base + 9000)
         XCTAssertEqual(s[0].efficiency, 0.8, accuracy: 0.0001)
     }
+
+    // MARK: - check_sleep window session (§6.15)
+
+    func testSessionFromWindowIsOneAsleepSegment() {
+        let end = base + 7 * 3600 + 56 * 60          // 7 h 56 m, like the real check_sleep capture
+        let s = OuraSleepSessionBuilder.session(fromWindowStart: base, end: end)
+        XCTAssertNotNil(s)
+        XCTAssertEqual(s?.start, base)
+        XCTAssertEqual(s?.end, end)
+        XCTAssertEqual(s?.efficiency, 1.0)
+        XCTAssertEqual(s?.stages.count, 1)
+        XCTAssertEqual(s?.stages.first?.stage, "asleep")
+        XCTAssertNil(s?.restingHR)
+    }
+
+    func testSessionFromWindowRejectsNonPositiveSpan() {
+        XCTAssertNil(OuraSleepSessionBuilder.session(fromWindowStart: base, end: base))
+        XCTAssertNil(OuraSleepSessionBuilder.session(fromWindowStart: base, end: base - 1))
+    }
+
+    func testWindowSessionCountsAsSleepTimeButNotStages() {
+        // The honest contract: a stage-unknown window contributes its full duration to TST and efficiency,
+        // but ZERO to deep/REM/light — so the card shows total sleep, stages blank, nothing fabricated.
+        let end = base + 8 * 3600
+        let s = OuraSleepSessionBuilder.session(fromWindowStart: base, end: end)!
+        let m = SleepStager.hypnogramMetrics(s)
+        XCTAssertEqual(m.tstS, Double(8 * 3600), accuracy: 0.5)   // full window is sleep time
+        XCTAssertEqual(m.efficiency, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(m.deepMin, 0.0, accuracy: 0.0001)
+        XCTAssertEqual(m.remMin, 0.0, accuracy: 0.0001)
+        XCTAssertEqual(m.lightMin, 0.0, accuracy: 0.0001)
+    }
 }

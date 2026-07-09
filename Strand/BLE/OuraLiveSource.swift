@@ -850,11 +850,14 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         log("Oura: debug (0x43) rt=\(rt) \"\(text)\"")
     }
 
-    /// PROTOTYPE (§6.15, INVESTIGATION): feed a debug line to the `check_sleep` parser and, when it yields
-    /// a NEW sleep window, anchor both boundaries to UTC (§5.5) and log the ring's own bedtime→wake span.
-    /// This is the honest sleep-duration signal (the ring's own decision); it is NOT yet turned into a
-    /// persisted `sleepSession`. `s:`/`e:` are ring timestamps in the anchor domain, so unresolved (no
-    /// anchor yet, or a phantom value) simply skips — never a guessed time.
+    /// Feed a debug line to the `check_sleep` parser and, when it yields a NEW sleep window, anchor both
+    /// boundaries to UTC (§5.5), log the ring's own bedtime→wake span, and PERSIST it as an
+    /// `OURA_SLEEP_WINDOW` event so IntelligenceEngine can build an honest sleep session from it (§6.15) —
+    /// the reliable duration source where the sparse phase events under-count. `s:`/`e:` are ring
+    /// timestamps in the anchor domain, so unresolved (no anchor yet, or a phantom value) simply skips —
+    /// never a guessed time. Stored at `ts = bedtime` (stable per night; the `DO NOTHING` upsert keeps the
+    /// first write, and repeated/refined windows are near-identical). No-op for the discovery scanner
+    /// (`feedsLive == false` → the default persist closure drops it).
     private func logCheckSleepWindowIfAny(from line: String) {
         guard let w = checkSleepParser.ingest(line: line),
               let driver,
@@ -864,7 +867,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         let mins = (wake - bedtime) / 60
         let bedStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(bedtime)))
         let wakeStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(wake)))
-        log("Oura: ring sleep window (check_sleep) \(bedStr) → \(wakeStr) (\(mins / 60)h \(mins % 60)m) [PROTOTYPE — not persisted]")
+        log("Oura: ring sleep window (check_sleep) \(bedStr) → \(wakeStr) (\(mins / 60)h \(mins % 60)m)")
+        guard feedsLive else { return }
+        let event = WhoopEvent(ts: bedtime, kind: OuraStreamMapping.sleepWindowEventKind,
+                               payload: ["start": .int(bedtime), "end": .int(wake)])
+        persist(Streams(events: [event]))
     }
 
     // MARK: - Re-engagement timer (daytime-HR auto-reverts ~20s)

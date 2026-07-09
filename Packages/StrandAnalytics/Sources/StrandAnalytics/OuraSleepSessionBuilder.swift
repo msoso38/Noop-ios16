@@ -32,6 +32,27 @@ public enum OuraSleepSessionBuilder {
         }
     }
 
+    /// The stage-UNKNOWN label for a `check_sleep` window: the ring gives a real bedtime→wake span but no
+    /// stage breakdown. `hypnogramMetrics` counts it as sleep TIME (TST) but NOT toward deep/REM/light, so
+    /// the day's total-sleep is honest while the stage split stays blank (never fabricated).
+    static let unknownStage = "asleep"
+
+    /// Build ONE session from the ring's OWN `check_sleep` window (OURA_PROTOCOL.md §6.15) — bedtime→wake
+    /// unix seconds. This is the honest sleep-DURATION source: the ring's coarse phase events (§6.12) are
+    /// sparse connection-time bursts that under-count, whereas `check_sleep s:/e:` is the firmware's own
+    /// sleep-period decision (validated on device: 7 h 56 m vs a wearer's real 7 h 52 m).
+    ///
+    /// The whole window is one stage-unknown `asleep` segment: no HR streams overnight (the ring isn't
+    /// connected), so efficiency is not measurable and we do not invent one — the window IS the sleep
+    /// period, so efficiency is 1.0 and stages are left unknown. `restingHR`/`avgHRV` are nil (enriched by
+    /// the engine from any night HR/RR it does have). Returns nil for a non-positive span.
+    public static func session(fromWindowStart start: Int, end: Int) -> SleepSession? {
+        guard end > start else { return nil }
+        let seg = StageSegment(start: start, end: end, stage: unknownStage)
+        return SleepSession(start: start, end: end, efficiency: 1.0, stages: [seg],
+                            restingHR: nil, avgHRV: nil)
+    }
+
     /// Build sleep session(s) from the ring's anchored phase timeline.
     ///
     /// Each phase event marks a stage that HOLDS until the next event, so consecutive events

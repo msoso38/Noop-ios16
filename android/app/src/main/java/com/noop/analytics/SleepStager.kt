@@ -2174,7 +2174,11 @@ object SleepStager {
         val tib = maxOf(0.0, (session.end - session.start).toDouble())
 
         fun dur(s: StageSegment): Double = (s.end - s.start).toDouble()
-        val sleepSegs = segs.filter { it.stage == "light" || it.stage == "deep" || it.stage == "rem" }
+        // TST = any non-wake time. Byte-identical to `light|deep|rem` for every gravity/phase-staged session
+        // (those are the only non-wake labels the stagers emit); it ALSO admits the stage-UNKNOWN label
+        // "asleep" (the Oura check_sleep window, §6.15) — counted as sleep TIME without inventing deep/REM/
+        // light (those filters below stay specific). Honest-data. Mirrors Swift.
+        val sleepSegs = segs.filter { it.stage != "wake" }
         val tst = sleepSegs.sumOf { dur(it) }
         val deepS = segs.filter { it.stage == "deep" }.sumOf { dur(it) }
         val remS = segs.filter { it.stage == "rem" }.sumOf { dur(it) }

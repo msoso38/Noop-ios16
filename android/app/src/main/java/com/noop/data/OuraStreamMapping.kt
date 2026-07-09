@@ -37,6 +37,12 @@ object OuraStreamMapping {
     /** The event `kind` recorded for the ring's own open sleep-phase (0x49.../0x58) tags. */
     const val EVENT_SLEEP_PHASE = "OURA_SLEEP_PHASE"
 
+    /** The event `kind` for the ring's OWN `check_sleep` sleep window (§6.15): the firmware's bedtime->wake
+     *  decision, anchored to unix seconds, payload `{start, end}`. The honest sleep-DURATION source —
+     *  IntelligenceEngine prefers it over the sparse [EVENT_SLEEP_PHASE] bursts. Stored at `ts = start`
+     *  (stable per night). Must match Swift exactly. */
+    const val EVENT_SLEEP_WINDOW = "OURA_SLEEP_WINDOW"
+
     /**
      * Plausible SpO2 oxygen-saturation percentage band. Aligned with open_oura `tools/run_spo2.py`,
      * which computes SpO2 from the r-ratio (tag 0x8b) and CLAMPS the result to [85, 100] - Oura's own

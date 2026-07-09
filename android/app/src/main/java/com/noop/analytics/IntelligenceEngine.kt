@@ -473,8 +473,23 @@ object IntelligenceEngine {
                 val phase = try { JSONObject(ev.payloadJSON).optInt("phase", -1) } catch (_: Throwable) { -1 }
                 if (phase < 0) null else OuraSleepSessionBuilder.Phase(ts = ev.ts, stage = phase)
             }
-            val ouraSessions = if (sleepPhases.isEmpty()) null
-                else OuraSleepSessionBuilder.sessions(sleepPhases)
+            // PREFER the ring's OWN `check_sleep` window (OURA_SLEEP_WINDOW, §6.15) when present: the
+            // firmware's real bedtime->wake decision (validated 7h56m vs a wearer's 7h52m), where the phase
+            // events above are sparse connection-time bursts that under-count. The window session is
+            // stage-UNKNOWN ("asleep") — honest total sleep, blank stages, nothing faked. Fall back to the
+            // phase-event builder, then to the gravity stager (null) for non-Oura owners. Mirrors Swift.
+            val windowSession = nightEvents.mapNotNull { ev ->
+                if (ev.kind != OuraStreamMapping.EVENT_SLEEP_WINDOW) return@mapNotNull null
+                val o = try { JSONObject(ev.payloadJSON) } catch (_: Throwable) { return@mapNotNull null }
+                val s = o.optLong("start", -1L)
+                val e = o.optLong("end", -1L)
+                if (s < 0L || e < 0L) null else OuraSleepSessionBuilder.sessionFromWindow(s, e)
+            }.maxByOrNull { it.end - it.start }   // the fullest window in the read span
+            val ouraSessions = when {
+                windowSession != null -> listOf(windowSession)
+                sleepPhases.isNotEmpty() -> OuraSleepSessionBuilder.sessions(sleepPhases)
+                else -> null
+            }
 
             // Calendar-day window for the ADDITIVE daily totals (steps + calories). The night window
             // above is anchored to the current time-of-day and ends at dayStart+12h, so for a PAST

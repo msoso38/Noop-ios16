@@ -570,8 +570,28 @@ final class IntelligenceEngine: ObservableObject {
                           let phase = ev.payload["phase"]?.intValue else { return nil }
                     return (ts: ev.ts, stage: phase)
                 }
-                let ouraSessions = sleepPhases.isEmpty
-                    ? nil : OuraSleepSessionBuilder.sessions(fromPhases: sleepPhases)
+                // PREFER the ring's OWN `check_sleep` window (OURA_SLEEP_WINDOW, §6.15) when present: it is
+                // the firmware's real bedtime→wake decision (validated 7h56m vs a wearer's 7h52m), whereas
+                // the phase events above are sparse connection-time bursts that under-count. The window
+                // session is stage-UNKNOWN ("asleep") — honest total sleep, blank stages, nothing faked.
+                // Pick the window whose span best covers the night (latest bedtime ≤ the read window), then
+                // fall back to the phase-event builder, then to the gravity stager (nil) for non-Oura owners.
+                let windowSession: SleepSession? = wristEvents
+                    .filter { $0.kind == OuraStreamMapping.sleepWindowEventKind }
+                    .compactMap { ev -> SleepSession? in
+                        guard let s = ev.payload["start"]?.intValue,
+                              let e = ev.payload["end"]?.intValue else { return nil }
+                        return OuraSleepSessionBuilder.session(fromWindowStart: s, end: e)
+                    }
+                    .max { ($0.end - $0.start) < ($1.end - $1.start) }   // the fullest window in the read span
+                let ouraSessions: [SleepSession]?
+                if let windowSession {
+                    ouraSessions = [windowSession]
+                } else if !sleepPhases.isEmpty {
+                    ouraSessions = OuraSleepSessionBuilder.sessions(fromPhases: sleepPhases)
+                } else {
+                    ouraSessions = nil
+                }
                 let res = AnalyticsEngine.analyzeDay(day: day, hr: hr, rr: rr, resp: resp, gravity: grav,
                                                      steps: steps, dayHr: dayHr, daySteps: daySteps,
                                                      dayGravity: dayGrav,

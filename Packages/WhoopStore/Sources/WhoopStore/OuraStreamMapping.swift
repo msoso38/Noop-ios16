@@ -30,6 +30,11 @@ public enum OuraStreamMapping {
     public static let hrvEventKind = "OURA_HRV"
     /// WhoopEvent.kind for a decoded sleep-phase code (2-bit: awake/light/deep/rem).
     public static let sleepPhaseEventKind = "OURA_SLEEP_PHASE"
+    /// WhoopEvent.kind for the ring's OWN `check_sleep` sleep window (§6.15): the firmware's bedtime→wake
+    /// decision, anchored to unix seconds. Payload `{start, end}`. The honest sleep-DURATION source —
+    /// IntelligenceEngine prefers it over the sparse `sleepPhaseEventKind` bursts when present. `ts` = the
+    /// window end (wake), so it is attributed to the day the sleep ENDS (the analyzeDay convention).
+    public static let sleepWindowEventKind = "OURA_SLEEP_WINDOW"
 
     /// Plausible SpO2 oxygen-saturation percentage band. Aligned with open_oura `tools/run_spo2.py`,
     /// which computes SpO2 from the r-ratio (tag 0x8b) and CLAMPS the result to `[85, 100]` — Oura's own
