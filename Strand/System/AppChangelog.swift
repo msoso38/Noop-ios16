@@ -7,7 +7,7 @@ enum AppChangelog {
 
     /// Bump this when you add a release below. The "What's New" sheet shows automatically when the
     /// stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
-    static let currentVersion = "8.5.0"
+    static let currentVersion = "8.5.2"
 
     struct Release: Identifiable {
         let version: String
@@ -19,6 +19,29 @@ enum AppChangelog {
 
     /// Newest first.
     static let releases: [Release] = [
+        Release(
+            version: "8.5.2",
+            title: "Your WHOOP journal in Insights, clearer metric taps",
+            date: "July 2026",
+            items: [
+                "**Imported WHOOP journal now shows up in Insights (#136).** Journal entries from a WHOOP export were landing one day early, so Insights read every historic day as \"without\" the behaviour. They now line up with the night they belong to. Already-imported history: remove and re-add your WHOOP import to correct it.",
+                "**Tapping Fitness Age or Vitality shows the value, not \"Not enough history yet\" (#139/#146).** When a card shows a score from a single reading, tapping it now shows that value with a \"trend to follow\" note, instead of a dead-end that contradicted the card.",
+                "**HRV settings are together now (#155).** The HRV window (whole-night vs deep-sleep) moved from Units into the Strap section, next to the Continuous / Overnight HRV toggles.",
+                "**More of the app is translated.** Appearance settings (Sky behind cards, Card transparency) now show in your language.",
+            ]
+        ),
+        Release(
+            version: "8.5.1",
+            title: "WHOOP-style HRV, warm-ups counted, and clearer cards",
+            date: "July 2026",
+            items: [
+                "**HRV, the WHOOP way (#141).** A new Settings option computes your nightly HRV over the deep-sleep window — the same slow-wave window WHOOP uses — so the number lines up with what your WHOOP app shows. Whole-night stays the default; switching re-learns your Charge baseline over a few nights.",
+                "**Workouts catch the warm-up (#148).** Auto-detected walks and rides no longer lose their first 10–15 minutes while your heart rate is still climbing — the start now reaches back over the warm-up to when you actually got moving.",
+                "**Fitness Age stops getting stuck on \"No Data\" (#139/#140).** When all your readiness inputs are in, Fitness Age now scores instead of showing an empty gauge, there's a refresh button to recompute on demand, and the card shows how many more nights it needs rather than a dead end.",
+                "**Trends can draw bars (#134).** A new Settings toggle renders the Trends graphs as bar charts, zero-anchored, instead of lines.",
+                "**Clearer Home cards (#150).** Hydration no longer shares an identical icon with Blood Oxygen.",
+            ]
+        ),
         Release(
             version: "8.5.0",
             title: "Raw SpO₂, honest units, and a lighter app",
