@@ -245,15 +245,24 @@ Gen 5 example `0912 020100 020103 010001 090329 665544332211`. [open_oura-r5]
 
 ### 5.2 GetEvents response / summary (`0x11`)
 ```
-11 08 <status:1> <sub_status:1> <last_ring_timestamp:4 LE> <pad:2>
+11 08 <events_received:1> <sleep_analysis_progress:1> <bytes_left:4 LE> <pad:2>
 ```
-[open_ring]
-- `status` - `0x00` = empty/no more; `0xFF` = data follows (event records arrive as inner TLV stream, §2.3). [open_ring]
-- `last_ring_timestamp` - new cursor value to use next fetch.
+This is open_oura's `EventBatchSummary` (`crates/oura-protocol/src/events.rs`). [open_ring]
+- `events_received` - count of decoded events in this batch (0 on the terminal packet).
+- `sleep_analysis_progress` - progress only, not a gate.
+- `bytes_left` - remaining bytes of the drain. **Loop while `bytes_left > 0`; done at `0`.**
+- **There is NO resume cursor in this packet.** The resume position is CLIENT-managed — the newest
+  event-envelope ring-time you've stored (open_oura's `nextEventToSync`), persisted per §5.3, never read
+  back from the summary.
+
+> **#91 (fixed):** NOOP originally decoded bytes 2-5 as a `last_ring_timestamp` cursor and persisted it.
+> Those bytes are `bytes_left` — a remaining-**byte** count (~800 KB full → 0), not a clock. Persisting it
+> and comparing next session's smaller `bytes_left` against last session's minted a phantom "ring-time
+> regression", which reset the cursor to 0 and re-dumped the ring's entire banked history on every connect.
 
 ### 5.3 Canonical fetch loop (NOOP)
-1. SyncTime (§5.4). 2. Send `0x10` with stored cursor, `max=255`. 3. Receive inner TLV records (§6). 4. ~100 ms later send ack-fetch (`max=0`, cursor = `last_ring_timestamp`) to advance. 5. Repeat until `status=0x00`. [open_ring]
-6. Optionally `28 01 00` to flush flash-buffered events first. [open_ring]
+1. SyncTime (§5.4). 2. Send `0x10` with the persisted resume ring-time (`nextEventToSync`), `max=255`. 3. Receive inner TLV records (§6). 4. ~100 ms later send ack-fetch (`max=0`) to advance the drain. 5. Repeat until `bytes_left = 0`. 6. On completion, persist the resume cursor = the newest **stored** event ring-time; a stored sample older than where you sought means the ring rebooted (or ignored the seek) → next connect does a full pull from 0. [open_ring]
+7. Optionally `28 01 00` to flush flash-buffered events first. [open_ring]
 
 ### 5.4 SyncTime (`0x12`)
 ```

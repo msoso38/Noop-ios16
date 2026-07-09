@@ -353,11 +353,27 @@ class OuraLiveSource(
     // retrievable only by asking the ring for its history. Kotlin twin of the Swift lane9 history wiring.
 
     /**
-     * The GetEvents cursor to resume from, loaded from [OuraHistoryCursorStore] on connect and advanced as
-     * `0x11` summaries arrive. 0 = fetch everything the ring has banked (first-ever connect for this ring;
-     * OURA_PROTOCOL.md s5.1). Held as a Long (the unsigned 32-bit ring timestamp).
+     * The GetEvents resume cursor — a CLIENT-managed event-envelope ring-time (open_oura `nextEventToSync`,
+     * sync-orchestration.md), loaded from [OuraHistoryCursorStore] on connect and advanced to the newest
+     * STORED history sample's ring-time when a drain completes. 0 = fetch everything the ring has banked
+     * (first-ever connect; OURA_PROTOCOL.md s5.1). Held as a Long (unsigned 32-bit ring timestamp).
+     *
+     * #91: the GetEvents response carries NO cursor — only `bytes_left`. NOOP used to persist that byte-count
+     * and, seeing next session's smaller, declared a phantom "regression" and re-dumped everything. Kotlin
+     * twin of Swift's `historyCursor`.
      */
     private var historyCursor: Long = 0
+    /** Newest STORED (real, anchored) history-sample ring-time this session — becomes the next persisted
+     *  [historyCursor] when the drain completes. Never advanced from the no-anchor wall-clock fallback. */
+    private var maxStoredRingTime: Long = 0
+    /** Absolute ceiling for a plausible ring-time (deciseconds since boot): ~1.6 years of uptime. A wearable
+     *  never runs this long between reboots (observed uptime is days), so any cursor above it is misframe
+     *  garbage that must never be seeked to. Kotlin twin of Swift's `maxPlausibleResumeTicks`. */
+    private val maxPlausibleResumeTicks = 500_000_000L
+    /** The cursor we resumed FROM this fetch, to detect a genuine ring reboot: a stored sample older than
+     *  where we sought means the clock reset (or the seek was ignored) -> fall back to a full pull. */
+    private var resumeCursorAtFetchStart: Long = 0
+    private var sawPreResumeData = false
 
     /**
      * Periodic re-fetch while connected, so an overnight-connected session (or one left open after a nap)
@@ -395,8 +411,27 @@ class OuraLiveSource(
     private fun fetchHistoryIfIdle(): Unit = guardedCallback("history-fetch") {
         val d = driver ?: return@guardedCallback
         if (d.phase != OuraDriverPhase.Streaming) return@guardedCallback
-        log("Oura: fetching history from cursor $historyCursor")
+        resumeCursorAtFetchStart = historyCursor
+        sawPreResumeData = false
+        log("Oura: fetching history from cursor $historyCursor (${describeCursor(historyCursor)})")
         advance(OuraTransition.StartHistoryFetch(cursor = historyCursor))
+    }
+
+    /**
+     * Decode a ring-tick cursor to a human-readable local date/time via the current session anchor (s5.5).
+     * Distinguishes the honest states so a log line never misreports: `all history` (the 0 sentinel = full
+     * pull), a real date, `out of anchor window` (an anchor EXISTS but this ring-time is a phantom — e.g. a
+     * garbage resume cursor), or `no anchor yet` (none this session). Kotlin twin of Swift's `describeCursor`.
+     */
+    private fun describeCursor(cursor: Long): String {
+        if (cursor == 0L) return "all history"
+        val d = driver ?: return "no driver"
+        val seconds = d.unixSeconds(forRingTimestamp = cursor)
+        return when {
+            seconds != null -> SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(seconds * 1000L))
+            d.hasAnchor -> "out of anchor window"
+            else -> "no anchor yet"
+        }
     }
 
     private fun scheduleHistoryFetch() {
@@ -411,37 +446,57 @@ class OuraLiveSource(
     }
 
     /**
-     * Handle a `0x11` GetEvents response (OURA_PROTOCOL.md s5.2): persist the advanced cursor (so a LATER
-     * connection resumes rather than re-fetching everything) and drive the driver's cursor-loop state
-     * machine, which asks for another ack-fetch while `moreData` or returns to Streaming once caught up.
-     *
-     * The ring's terminal "no more data" response (moreData=false, status 0x00) zero-fills the cursor
-     * field, whereas a mid-fetch response (moreData=true) carries a real advancing nonzero cursor. So the
-     * cursor is only trusted/persisted while the response is actually carrying new data - persisting the
-     * terminal zero would reset the cursor to 0 on every fetch and force a full backlog re-fetch forever.
-     *
-     * A cursor persisted from one BLE connection can come back SMALLER on the next connection's first real
-     * cursor: `ringTimestamp = (session << 16) | counter` (s2.3), and the ring's internal `session`
-     * component can shift across reconnects/restarts. Resuming from a cursor whose session no longer matches
-     * the ring's current one is not a real resume - the ring just re-dumps its whole backlog anyway - so we
-     * detect the regression and reset to an honest, explicit 0 rather than feed the ring a now-meaningless
-     * reference. Kotlin twin of Swift's `handleHistorySummary`.
+     * Handle a `0x11` GetEvents response (OURA_PROTOCOL.md s5.2 / open_oura `EventBatchSummary`). The summary
+     * carries `bytes_left`, NOT a resume cursor: while `bytes_left > 0` (`moreData`) the drain continues; at 0
+     * it is complete. The byte-count is NEVER persisted — that (compared across sessions as a clock) was the
+     * #91 re-dump. The durable resume point (`nextEventToSync`) is the newest STORED sample's ring-time
+     * ([maxStoredRingTime]), committed here on completion; a genuine reboot ([sawPreResumeData]) falls back
+     * to a full pull. Kotlin twin of Swift's `handleHistorySummary`.
      */
     private fun handleHistorySummary(summary: com.noop.oura.GetEventsSummary): Unit = guardedCallback("history-summary") {
-        if (summary.moreData) {
-            if (summary.cursor < historyCursor) {
-                log("Oura: ring-time regression detected (fetch cursor ${summary.cursor} < persisted " +
-                    "$historyCursor) - the ring's session likely reset; resetting our cursor to 0")
-                historyCursor = 0
-                OuraHistoryCursorStore.save(appContext, deviceId, 0)
-            } else {
-                historyCursor = summary.cursor
-                OuraHistoryCursorStore.save(appContext, deviceId, summary.cursor)
+        if (!summary.moreData) {
+            // A resume cursor is only trustworthy if it resolves to a real time under the CURRENT anchor. A
+            // value that doesn't was stored against a TRANSIENT bad anchor (a misframed 0x85/0x42 whose epoch
+            // passed but whose ring-time was garbage); persisting it would seek to nonsense next connect.
+            // Treat it, and a genuine reboot (sawPreResumeData), the same: full pull next time. Mirrors Swift.
+            val resumeResolves = maxStoredRingTime > 0 && driver?.unixSeconds(forRingTimestamp = maxStoredRingTime) != null
+            when {
+                sawPreResumeData -> {
+                    log("Oura: history fetch caught up but the ring served data older than cursor " +
+                        "$resumeCursorAtFetchStart - clock reset/seek ignored; next connect does a full pull")
+                    historyCursor = 0
+                    OuraHistoryCursorStore.save(appContext, deviceId, 0)
+                }
+                maxStoredRingTime > historyCursor && resumeResolves -> {
+                    historyCursor = maxStoredRingTime
+                    OuraHistoryCursorStore.save(appContext, deviceId, maxStoredRingTime)
+                    log("Oura: history fetch caught up (resume cursor $historyCursor (${describeCursor(historyCursor)}))")
+                }
+                maxStoredRingTime > historyCursor -> {
+                    log("Oura: history fetch caught up but resume cursor $maxStoredRingTime " +
+                        "(${describeCursor(maxStoredRingTime)}) is a phantom (transient bad anchor?) - full pull next connect")
+                    historyCursor = 0
+                    OuraHistoryCursorStore.save(appContext, deviceId, 0)
+                }
+                else -> log("Oura: history fetch caught up (resume cursor unchanged $historyCursor (${describeCursor(historyCursor)}))")
             }
-        } else {
-            log("Oura: history fetch caught up (cursor $historyCursor)")
         }
-        advance(OuraTransition.HistoryCursorAdvanced(cursor = summary.cursor, moreData = summary.moreData))
+        // The ack-fetch cursor is ignored by the ring (maxEvents=0 continuation); pass the resume point.
+        advance(OuraTransition.HistoryCursorAdvanced(cursor = historyCursor, moreData = summary.moreData))
+    }
+
+    /**
+     * Record a STORED history sample's ring-time toward the resume cursor (open_oura `nextEventToSync`).
+     * Called only where a sample resolved a REAL anchored time and was enqueued — never for the no-anchor
+     * wall-clock fallback. Also flags a reboot: a real sample older than where we sought this fetch.
+     */
+    private fun noteStoredHistoryRingTime(rt: Long) {
+        // Ignore a ring-time above the plausibility ceiling: it resolved to a real time only because a
+        // TRANSIENT bad anchor (misframed 0x85/0x42) made it look valid; letting it set the resume cursor is
+        // exactly what banked the 2e9 garbage. Bounds the cursor at the source. Mirrors Swift.
+        if (rt > maxPlausibleResumeTicks) return
+        if (rt > maxStoredRingTime) maxStoredRingTime = rt
+        if (resumeCursorAtFetchStart > 0 && rt < resumeCursorAtFetchStart) sawPreResumeData = true
     }
 
     // MARK: - Sample buffer (flushed in batches off the per-notification hot loop)
@@ -540,9 +595,21 @@ class OuraLiveSource(
         checkSleepParser.reset()
         loggedTierBKinds.clear()
         pendingAnchorEvents.clear()
-        // Resume the GetEvents cursor from where the LAST connection to this ring left off (s5.1/5.3), so a
-        // routine reconnect doesn't re-fetch the ring's entire banked history every time.
+        // Resume the GetEvents drain from where the LAST connection left off (s5.1/5.3) - a client-managed
+        // event-envelope ring-time (open_oura `nextEventToSync`) - so a routine reconnect doesn't re-fetch
+        // the ring's entire banked history. The per-session resume trackers start fresh.
         historyCursor = OuraHistoryCursorStore.read(appContext, deviceId)
+        // Ceiling guard: a persisted cursor above ~1.6 years of ticks is misframe garbage (e.g. 2_055_602_179
+        // = ~6.5 y, banked by a pre-guard build against a transient bad anchor). The ring honors the seek, so
+        // seeking to it returns nothing forever -> a stuck ring never syncs. Clamp back to a full pull.
+        if (historyCursor > maxPlausibleResumeTicks) {
+            log("Oura: persisted resume cursor $historyCursor is implausibly large - resetting to a full pull")
+            historyCursor = 0
+            OuraHistoryCursorStore.save(appContext, deviceId, 0)
+        }
+        maxStoredRingTime = 0
+        resumeCursorAtFetchStart = 0
+        sawPreResumeData = false
         // connectGatt can throw (SecurityException if BLUETOOTH_CONNECT was revoked mid-session,
         // IllegalArgumentException on a stale device) - never let that crash the app; a failed start
         // simply leaves the previous source in place (mirrors [StandardHrSource]).
@@ -660,7 +727,10 @@ class OuraLiveSource(
         for ((event, ringTimestamp) in pendingAnchorEvents) {
             val ts = d.unixSeconds(forRingTimestamp = ringTimestamp)?.toInt()
             when {
-                ts != null -> enqueue(listOf(event), ts)
+                ts != null -> {
+                    enqueue(listOf(event), ts)
+                    noteStoredHistoryRingTime(ringTimestamp)   // parked sample placed -> advance resume cursor
+                }
                 d.hasAnchor -> droppedPhantoms++          // anchor present but rt is phantom -> drop, never bank
                 else -> enqueue(listOf(event), now)       // no anchor this session -> honest wall-clock fallback
             }
@@ -1195,7 +1265,12 @@ class OuraLiveSource(
      */
     private fun enqueueAnchoredOrPark(event: OuraEvent, ringTimestamp: Long, d: OuraDriver) {
         val ts = d.unixSeconds(forRingTimestamp = ringTimestamp)
-        if (ts != null) enqueue(listOf(event), ts.toInt()) else pendingAnchorEvents.add(event to ringTimestamp)
+        if (ts != null) {
+            enqueue(listOf(event), ts.toInt())
+            noteStoredHistoryRingTime(ringTimestamp)   // history sample placed -> advance the resume cursor
+        } else {
+            pendingAnchorEvents.add(event to ringTimestamp)
+        }
     }
 
     private fun handleBattery(pct: Int) = guardedCallback("battery") {
@@ -1319,7 +1394,11 @@ class OuraLiveSource(
  */
 object OuraHistoryCursorStore {
     private const val FILE_NAME = "noop_oura_history_cursor"
-    private const val KEY_PREFIX = "history_cursor_"
+
+    // #91: bumped from "history_cursor_" because the old key stored the misdecoded `bytes_left` byte-count;
+    // ignoring that stale value means the first post-upgrade connect does one clean full pull rather than
+    // seeking to a garbage ring-time. Kotlin twin of the Swift key bump (`.historyResumeRt.`).
+    private const val KEY_PREFIX = "history_resume_rt_"
 
     private fun prefs(ctx: Context): SharedPreferences =
         ctx.applicationContext.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)

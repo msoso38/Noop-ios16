@@ -62,21 +62,34 @@ class FramingTest {
 
     @Test
     fun testParseGetEventsResponseMoreDataFollows() {
-        // 11 08 <status=ff> <sub_status=00> <last_rt:4LE=78563412> <pad:2>
+        // 11 08 <events_received=ff> <sleep_progress=00> <bytes_left:4LE=78563412 -> 0x12345678> <pad:2>
         val outer = OuraFraming.parseOuterFrame(bytes("1108ff00785634120000"))
         assertEquals(OuraFraming.getEventsResponseOp, outer?.op)
         val summary = OuraFraming.parseGetEventsResponse(outer!!.body)
-        assertEquals(0x1234_5678L, summary?.cursor)
-        assertEquals(true, summary?.moreData)
+        assertEquals(0xff, summary?.eventsReceived)
+        assertEquals(0x1234_5678L, summary?.bytesLeft)
+        assertEquals(true, summary?.moreData)              // bytes_left > 0 -> ring has more
     }
 
     @Test
-    fun testParseGetEventsResponseNoMoreData() {
-        // status 0x00 -> caught up, no more data.
-        val outer = OuraFraming.parseOuterFrame(bytes("11080000785634120000"))
+    fun testParseGetEventsResponseTerminalIsBytesLeftZero() {
+        // The terminal packet zero-fills bytes_left (00 00 00 00).
+        val outer = OuraFraming.parseOuterFrame(bytes("11080000000000000000"))
         val summary = OuraFraming.parseGetEventsResponse(outer!!.body)
-        assertEquals(0x1234_5678L, summary?.cursor)
-        assertEquals(false, summary?.moreData)
+        assertEquals(0L, summary?.bytesLeft)
+        assertEquals(false, summary?.moreData)             // bytes_left == 0 -> drain complete
+    }
+
+    // #91: bytes_left is a remaining-BYTE count, not a cursor. A later summary with a SMALLER bytes_left is
+    // normal draining (not a "regression"), and while > 0 the loop must keep going. Mirrors Swift.
+    @Test
+    fun testParseGetEventsResponseSmallerBytesLeftStillMeansMoreData() {
+        val first = OuraFraming.parseGetEventsResponse(bytes("ff00746e05000000"))   // bytes_left 355956
+        val later = OuraFraming.parseGetEventsResponse(bytes("ff000d0d00000000"))   // bytes_left 3341 (< first)
+        assertEquals(355_956L, first?.bytesLeft)
+        assertEquals(3_341L, later?.bytesLeft)
+        assertEquals(true, first?.moreData)
+        assertEquals(true, later?.moreData)                // still draining -- NOT a regression/terminal
     }
 
     @Test

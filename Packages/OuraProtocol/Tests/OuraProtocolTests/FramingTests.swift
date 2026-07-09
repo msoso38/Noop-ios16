@@ -55,20 +55,34 @@ final class FramingTests: XCTestCase {
     // MARK: - GetEvents response (0x11, s5.2)
 
     func testParseGetEventsResponseMoreDataFollows() {
-        // 11 08 <status=ff> <sub_status=00> <last_rt:4LE=78563412> <pad:2>
+        // 11 08 <events_received=ff> <sleep_progress=00> <bytes_left:4LE=78563412 → 0x12345678> <pad:2>
         let outer = OuraFraming.parseOuterFrame(bytes("1108ff00785634120000"))
         XCTAssertEqual(outer?.op, OuraFraming.getEventsResponseOp)
         let summary = OuraFraming.parseGetEventsResponse(outer!.body)
-        XCTAssertEqual(summary?.cursor, 0x1234_5678)
-        XCTAssertEqual(summary?.moreData, true)
+        XCTAssertEqual(summary?.eventsReceived, 0xff)
+        XCTAssertEqual(summary?.bytesLeft, 0x1234_5678)
+        XCTAssertEqual(summary?.moreData, true)             // bytes_left > 0 ⇒ ring has more
     }
 
-    func testParseGetEventsResponseNoMoreData() {
-        // status 0x00 -> caught up, no more data.
-        let outer = OuraFraming.parseOuterFrame(bytes("11080000785634120000"))
+    func testParseGetEventsResponseTerminalIsBytesLeftZero() {
+        // The terminal packet zero-fills bytes_left (00 00 00 00). events_received may be 0 too.
+        let outer = OuraFraming.parseOuterFrame(bytes("11080000000000000000"))
         let summary = OuraFraming.parseGetEventsResponse(outer!.body)
-        XCTAssertEqual(summary?.cursor, 0x1234_5678)
-        XCTAssertEqual(summary?.moreData, false)
+        XCTAssertEqual(summary?.bytesLeft, 0)
+        XCTAssertEqual(summary?.moreData, false)            // bytes_left == 0 ⇒ drain complete
+    }
+
+    // #91: bytes_left is a remaining-BYTE count, not a cursor. A later summary reporting a SMALLER
+    // bytes_left than an earlier one is normal draining (not a "regression"), and while it stays > 0 the
+    // loop must keep going — the exact case NOOP used to misread as a session reset → full re-dump.
+    func testParseGetEventsResponseSmallerBytesLeftStillMeansMoreData() {
+        let first = OuraFraming.parseGetEventsResponse(bytes("ff00746e05000000"))   // bytes_left 355956
+        let later = OuraFraming.parseGetEventsResponse(bytes("ff000d0d00000000"))   // bytes_left 3341 (< first)
+        XCTAssertEqual(first?.bytesLeft, 355_956)
+        XCTAssertEqual(later?.bytesLeft, 3_341)
+        XCTAssertLessThan(later!.bytesLeft, first!.bytesLeft)
+        XCTAssertTrue(first!.moreData)
+        XCTAssertTrue(later!.moreData)                      // still draining — NOT a regression/terminal
     }
 
     func testParseGetEventsResponseShortBodyReturnsNil() {

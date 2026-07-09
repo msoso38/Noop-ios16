@@ -85,12 +85,13 @@ data class OuraRecord(val type: Int, val ringTimestamp: Long, val payload: IntAr
 }
 
 /**
- * The parsed result of a 0x11 GetEvents response (OURA_PROTOCOL.md s5.2). Kotlin twin of the Swift
- * `(cursor: UInt32, moreData: Bool)` tuple. `cursor` is the new resume cursor (an unsigned 32-bit ring
- * timestamp carried as a Long, 0..0xFFFFFFFF); `moreData` is true while the ring still has banked events
- * to hand over.
+ * The parsed result of a 0x11 GetEvents response, per open_oura's `EventBatchSummary` (events.rs):
+ * `events_received:1  sleep_analysis_progress:1  bytes_left:4LE`. Kotlin twin of the Swift
+ * `(eventsReceived, bytesLeft, moreData)` tuple. `bytesLeft` is the remaining-byte count of the drain
+ * (carried as a Long, 0..0xFFFFFFFF); `moreData` is true while `bytesLeft > 0`. There is NO resume cursor
+ * in this packet (#91 — see parseGetEventsResponse).
  */
-data class GetEventsSummary(val cursor: Long, val moreData: Boolean)
+data class GetEventsSummary(val eventsReceived: Int, val bytesLeft: Long, val moreData: Boolean)
 
 object OuraFraming {
     /** The secure-session / extended opcode. Per OURA_PROTOCOL.md s2.2 / s4.1. */
@@ -115,20 +116,24 @@ object OuraFraming {
     const val minRecordLen = 4
 
     /**
-     * Parse a 0x11 GetEvents response body: `status:1 sub_status:1 last_ring_timestamp:4LE pad:2`
-     * (OURA_PROTOCOL.md s5.2). `status` 0x00 = empty/no more; any other value = data follows. The
-     * `last_ring_timestamp` is the new cursor to resume the fetch from. Returns null on a short body
-     * (never guesses a cursor). Kotlin twin of Swift's parseGetEventsResponse; `cursor` is the unsigned
-     * 32-bit ring timestamp carried as a Long (0..0xFFFFFFFF).
+     * Parse a 0x11 GetEvents response body per open_oura's `EventBatchSummary` (events.rs):
+     * `events_received:1  sleep_analysis_progress:1  bytes_left:4LE`. The drain loop runs until
+     * `bytes_left == 0` (sync-orchestration.md). There is NO resume cursor in this packet — the resume
+     * position is a CLIENT-managed event-envelope ring-time (`nextEventToSync`), never read back here.
+     * Returns null on a short body. Kotlin twin of Swift's parseGetEventsResponse.
+     *
+     * #91: NOOP previously decoded bytes[2..5] as a `last_ring_timestamp` cursor and persisted it. Those
+     * bytes are `bytes_left` (a remaining-byte count, ~800 KB full → 0); comparing two byte-counts across
+     * sessions as clocks minted a phantom "regression" → reset to 0 → full re-dump every connect.
      */
     fun parseGetEventsResponse(body: IntArray): GetEventsSummary? {
         if (body.size < 6) return null
-        val status = body[0]
-        val cursor = (body[2].toLong() and 0xFFL) or
+        val eventsReceived = body[0] and 0xFF
+        val bytesLeft = (body[2].toLong() and 0xFFL) or
             ((body[3].toLong() and 0xFFL) shl 8) or
             ((body[4].toLong() and 0xFFL) shl 16) or
             ((body[5].toLong() and 0xFFL) shl 24)
-        return GetEventsSummary(cursor = cursor, moreData = status != 0x00)
+        return GetEventsSummary(eventsReceived = eventsReceived, bytesLeft = bytesLeft, moreData = bytesLeft > 0L)
     }
 
     /**
