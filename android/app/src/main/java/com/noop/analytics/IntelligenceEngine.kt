@@ -2,11 +2,13 @@ package com.noop.analytics
 
 import com.noop.data.DailyMetric
 import com.noop.data.MetricSeriesRow
+import com.noop.data.OuraStreamMapping
 import com.noop.data.SleepSession
 import com.noop.data.WhoopRepository
 import com.noop.data.WorkoutRow
 import com.noop.protocol.DeviceFamily
 import kotlinx.coroutines.Dispatchers
+import org.json.JSONObject
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -452,7 +454,24 @@ object IntelligenceEngine {
             // only when its off-wrist coverage reaches maxOffWristSleepFraction, so a real night with a
             // short off-wrist tail survives. Pairing needs WRIST_ON too (to bound each interval); a span
             // still open at the window end closes at `to`. Empty when the strap emitted no wrist events.
-            val wristOff = AnalyticsEngine.offWristIntervals(repo.events(owner, from, to, STREAM_LIMIT), to)
+            val nightEvents = repo.events(owner, from, to, STREAM_LIMIT)
+            val wristOff = AnalyticsEngine.offWristIntervals(nightEvents, to)
+            // Oura sleep bridge: an Oura ring streams no accelerometer, so the gravity-driven SleepStager
+            // returns nothing for its nights — the Sleep card reads blank AND the skin-temp funnel window
+            // (gated to a session) never opens. What the ring DOES emit is its own coarse per-epoch phase
+            // classification (OURA_SLEEP_PHASE, Tier-A 2-bit codes, §6.12), already persisted to the event
+            // table and read above as `nightEvents`. Build NOOP sessions from that anchored phase timeline
+            // (OuraSleepSessionBuilder) and hand them to analyzeDay as `providedSleepSessions`, so the
+            // ring's night flows through the SAME funnels the WHOOP path uses (sleep totals, skin-temp
+            // window, rest). Any non-Oura owner emits no such events → `sleepPhases` empty → pass null,
+            // keeping the gravity stager byte-identical for every existing device. Mirrors Swift.
+            val sleepPhases = nightEvents.mapNotNull { ev ->
+                if (ev.kind != OuraStreamMapping.EVENT_SLEEP_PHASE) return@mapNotNull null
+                val phase = try { JSONObject(ev.payloadJSON).optInt("phase", -1) } catch (_: Throwable) { -1 }
+                if (phase < 0) null else OuraSleepSessionBuilder.Phase(ts = ev.ts, stage = phase)
+            }
+            val ouraSessions = if (sleepPhases.isEmpty()) null
+                else OuraSleepSessionBuilder.sessions(sleepPhases)
 
             // Calendar-day window for the ADDITIVE daily totals (steps + calories). The night window
             // above is anchored to the current time-of-day and ends at dayStart+12h, so for a PAST
@@ -513,6 +532,7 @@ object IntelligenceEngine {
                 // The Context-aware caller (AppViewModel/WhoopBleClient) supplied it from
                 // PuffinExperiment.from(context).experimentalSleepV2.
                 useSleepStagerV2 = useExperimentalSleepV2,
+                providedSleepSessions = ouraSessions,
                 // Sleep & Rest test mode (Test Centre E5): thread the trace sink straight through. null (the
                 // default) keeps analyzeDay's byte-identical untraced path; when the caller passed a non-null
                 // sink (mode on), detectSleep's gate trace + the Rest sub-score line route to the .sleep-tagged

@@ -551,6 +551,24 @@ final class IntelligenceEngine: ObservableObject {
                 // built ONLY when the mode is active. nil otherwise = analyzeDay's byte-identical default path.
                 var sleepTrace: [String] = []
                 let traceSink: ((String) -> Void)? = sleepTraceActive ? { sleepTrace.append($0) } : nil
+                // Oura sleep bridge: an Oura ring streams no accelerometer, so the gravity-driven
+                // SleepStager returns nothing for its nights — the Sleep card reads blank AND the skin-temp
+                // funnel window (gated to a sleepSession) never opens. What the ring DOES emit is its own
+                // coarse per-epoch phase classification (OURA_SLEEP_PHASE, Tier-A 2-bit codes, §6.12),
+                // already persisted to the `event` table and read above as `wristEvents`. Build NOOP
+                // sessions from that anchored phase timeline (OuraSleepSessionBuilder) and hand them to
+                // analyzeDay as `providedSleepSessions`, so the ring's night flows through the SAME funnels
+                // the WHOOP path uses (sleep totals, skin-temp window, rest). Any non-Oura owner emits no
+                // such events → `sleepPhases` empty → pass nil, keeping the gravity stager byte-identical
+                // for every existing device. (SleepNet's polished hypnogram is cloud-locked and off-wire;
+                // this is the honest ring-native session — see OuraSleepSessionBuilder / OURA_PROTOCOL §6.12.1.)
+                let sleepPhases: [(ts: Int, stage: Int)] = wristEvents.compactMap { ev in
+                    guard ev.kind == OuraStreamMapping.sleepPhaseEventKind,
+                          let phase = ev.payload["phase"]?.intValue else { return nil }
+                    return (ts: ev.ts, stage: phase)
+                }
+                let ouraSessions = sleepPhases.isEmpty
+                    ? nil : OuraSleepSessionBuilder.sessions(fromPhases: sleepPhases)
                 let res = AnalyticsEngine.analyzeDay(day: day, hr: hr, rr: rr, resp: resp, gravity: grav,
                                                      steps: steps, dayHr: dayHr, daySteps: daySteps,
                                                      dayGravity: dayGrav,
@@ -563,6 +581,7 @@ final class IntelligenceEngine: ObservableObject {
                                                      // #690: thread the V2 toggle into the NORMAL staging path so
                                                      // it affects detected nights, not just the self-heal restage.
                                                      useSleepStagerV2: useSleepStagerV2,
+                                                     providedSleepSessions: ouraSessions,
                                                      traceSink: traceSink)
                 // ── Steps test mode: 5/MG raw-counter trace ──────────────────────────────────────────────
                 // Only built when the Steps mode is on (the gate was read once before the loop). Recomputes

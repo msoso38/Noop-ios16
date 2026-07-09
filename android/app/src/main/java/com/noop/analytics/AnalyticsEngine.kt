@@ -207,13 +207,25 @@ object AnalyticsEngine {
         // instead of V1. Default false keeps V1 the byte-identical default for pure-function callers/tests;
         // IntelligenceEngine threads PuffinExperiment.from(context).experimentalSleepV2. Mirrors Swift. (V7 / #690)
         useSleepStagerV2: Boolean = false,
+        // Sessions supplied by the caller INSTEAD of running the gravity-driven detector. detectSleep is
+        // gravity-driven and a ring streams no accelerometer, so it returns nothing for an Oura night; the
+        // caller instead builds sessions from the ring's OWN anchored phase timeline
+        // (OuraSleepSessionBuilder) and passes them here. When non-null these REPLACE the gravity
+        // detector's output as the day's sessions, so the ring's night flows through the SAME funnels
+        // (sleep totals, the skin-temp window, rest) the WHOOP path uses. null (the default) keeps every
+        // existing gravity-based caller/test byte-identical. Mirrors Swift (`[SleepSession]?`; the Kotlin
+        // analytics session shape is [DetectedSleep], which is Swift's analytics `SleepSession` one-to-one).
+        providedSleepSessions: List<DetectedSleep>? = null,
         // Sleep & Rest test-mode trace sink (E11). null = byte-identical default. When non-null the gate
         // trace from detectSleep and the Rest sub-score line are forwarded line-by-line. Mirrors Swift.
         traceSink: ((String) -> Unit)? = null,
     ): DayResult {
 
         // ── Sleep detection + staging ─────────────────────────────────────────
-        val allSessions = SleepStager.detectSleep(
+        // A ring supplies its own sessions (built from its phase timeline); everything else derives them
+        // from the gravity-driven stager. `providedSleepSessions` REPLACES detection wholesale — a device
+        // that hands us a hypnogram has no accelerometer for the stager to work from. Mirrors Swift.
+        val allSessions = providedSleepSessions ?: SleepStager.detectSleep(
             hr = hr, rr = rr, resp = resp, gravity = gravity, tzOffsetSeconds = tzOffsetSeconds,
             wristOff = wristOff, bandSleepState = bandSleepState,
             useSleepStagerV2 = useSleepStagerV2,
