@@ -21,12 +21,14 @@ import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Circle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.AlertDialog
@@ -163,6 +165,14 @@ fun DevicesScreen(
                 onMakeActive = { switchTarget = device },
                 onRename = { renameTarget = device },
                 onRemove = { removeTarget = device },
+                // Manual connect/disconnect for the WHOOP — the reliable escape hatch when the automatic
+                // reconnect is stuck. connect() runs the same active direct path as onboarding.
+                onConnect = if (device.brand.equals("WHOOP", ignoreCase = true)) {
+                    { viewModel.connect() }
+                } else null,
+                onDisconnect = if (device.brand.equals("WHOOP", ignoreCase = true)) {
+                    { viewModel.disconnect() }
+                } else null,
             )
         }
 
@@ -302,6 +312,8 @@ private fun DeviceCard(
     onRemove: (() -> Unit)?,
     onReAdd: (() -> Unit)? = null,
     onDeleteData: (() -> Unit)? = null,
+    onConnect: (() -> Unit)? = null,
+    onDisconnect: (() -> Unit)? = null,
 ) {
     val profile = deviceProfile(device)
     // The per-device actions menu's open state is hoisted here so the WHOLE card is a tap target that opens
@@ -391,6 +403,7 @@ private fun DeviceCard(
                 DeviceActionsMenu(
                     device = device,
                     isActive = isActive,
+                    isLiveConnected = isLiveConnected,
                     open = menuOpen,
                     onOpenChange = { menuOpen = it },
                     onMakeActive = onMakeActive,
@@ -398,6 +411,8 @@ private fun DeviceCard(
                     onRemove = onRemove,
                     onReAdd = onReAdd,
                     onDeleteData = onDeleteData,
+                    onConnect = onConnect,
+                    onDisconnect = onDisconnect,
                 )
             }
         }
@@ -467,6 +482,7 @@ private fun StatePill(device: PairedDeviceRow, isActive: Boolean, isLiveConnecte
 private fun DeviceActionsMenu(
     device: PairedDeviceRow,
     isActive: Boolean,
+    isLiveConnected: Boolean,
     // Open state is hoisted to the DeviceCard so the whole card (not just this ⋮ button) can open the menu.
     open: Boolean,
     onOpenChange: (Boolean) -> Unit,
@@ -475,6 +491,8 @@ private fun DeviceActionsMenu(
     onRemove: (() -> Unit)?,
     onReAdd: (() -> Unit)?,
     onDeleteData: (() -> Unit)?,
+    onConnect: (() -> Unit)? = null,
+    onDisconnect: (() -> Unit)? = null,
 ) {
     Box {
         IconButton(
@@ -498,6 +516,18 @@ private fun DeviceActionsMenu(
                     }
                 }
             } else {
+                // Manual connect/disconnect (WHOOP only — onConnect is null for other sources). connect()
+                // runs the same active, direct (autoConnect=false) path as onboarding, so it re-establishes a
+                // link the automatic reconnect left stuck, the way re-running setup does. Shown first so it's
+                // the obvious escape hatch.
+                if (onConnect != null) {
+                    if (isLiveConnected) {
+                        MenuItem("Disconnect", Icons.Filled.Close) { onOpenChange(false); onDisconnect?.invoke() }
+                    } else {
+                        MenuItem("Reconnect", Icons.Filled.Refresh) { onOpenChange(false); onConnect() }
+                    }
+                    HorizontalDivider(color = Palette.hairline)
+                }
                 if (!isActive) {
                     MenuItem("Make active", Icons.Filled.Bolt) { onOpenChange(false); onMakeActive() }
                 }
