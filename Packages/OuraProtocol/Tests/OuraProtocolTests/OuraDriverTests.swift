@@ -78,6 +78,17 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertFalse(OuraDriver.isPlausibleAnchorEpoch(0))              // epoch 0 — the ~1970 anchor #91 must avoid
     }
 
+    func testIsPlausibleAnchorRingTimeBounds() {
+        // The anchor ring-time ceiling is 500M ticks (≈579 days uptime). Second half of the anchor gate:
+        // a plausible epoch is not enough if the record's ring-time is garbage. OuraLiveSource reads this
+        // same predicate to log WHY an anchor was rejected (#91), so the boundary is pinned here.
+        XCTAssertTrue(OuraDriver.isPlausibleAnchorRingTime(0))            // boot (rt=0), inclusive min
+        XCTAssertTrue(OuraDriver.isPlausibleAnchorRingTime(1_624_998))    // a real on-device resume cursor
+        XCTAssertTrue(OuraDriver.isPlausibleAnchorRingTime(500_000_000))  // ceiling, inclusive max
+        XCTAssertFalse(OuraDriver.isPlausibleAnchorRingTime(500_000_001)) // one tick past the ceiling
+        XCTAssertFalse(OuraDriver.isPlausibleAnchorRingTime(2_055_602_179)) // the on-device garbage cursor (#91)
+    }
+
     func testFactoryResetStatusDrivesNeedsKeyInstall() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         _ = d.nextStep(after: .ready)
@@ -286,6 +297,41 @@ final class OuraDriverTests: XCTestCase {
         _ = d.ingest(record: laterBeaconRec)
         XCTAssertEqual(d.unixSeconds(forRingTimestamp: syncRt), Int(syncEpochSeconds),
                        "a later RTC beacon must not displace an already-set time-sync anchor")
+    }
+
+    func testTimeSyncWithPlausibleEpochButGarbageRingTimeDoesNotAnchor() {
+        // A misframed 0x42 can carry a plausible epoch (2020-2035) yet a garbage ring-time (rt bytes read
+        // off a wrong offset -> billions). Anchoring on it would pin anchorRingTime ~2e9 ticks from every
+        // real sample and starve all history. Both halves of the gate must pass: garbage rt -> no anchor.
+        let d = OuraDriver(ringGen: .gen3, authKey: key)
+        let epochSeconds: Int64 = 1_700_000_000              // perfectly plausible
+        let garbageRt: UInt32 = 2_055_602_179                // the real on-device garbage value (#91)
+        let events = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue,
+                                                 ringTimestamp: garbageRt, payload: le8(epochSeconds) + [0x00]))
+        // The event is still surfaced (honest decode) — it just must not become the anchor.
+        XCTAssertEqual(events, [.timeSync(OuraTimeSync(ringTimestamp: garbageRt, epochMs: epochSeconds, tzOffsetSeconds: 0))])
+        XCTAssertFalse(d.hasAnchor, "a garbage ring-time must not set an anchor even with a plausible epoch")
+        XCTAssertNil(d.unixSeconds(forRingTimestamp: 1_624_998), "no anchor -> a real ring-time still can't resolve")
+
+        // A subsequent WELL-FORMED time-sync (plausible epoch AND plausible rt) then anchors cleanly.
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue, ringTimestamp: 1_624_998,
+                                        payload: le8(epochSeconds) + [0x00]))
+        XCTAssertTrue(d.hasAnchor)
+        XCTAssertEqual(d.unixSeconds(forRingTimestamp: 1_624_998), Int(epochSeconds))
+    }
+
+    func testRtcBeaconWithPlausibleEpochButGarbageRingTimeDoesNotAnchor() {
+        // Same guard on the secondary 0x85 path: a plausible unix_s paired with a garbage ring-time is a
+        // misframed beacon and must not anchor.
+        let d = OuraDriver(ringGen: .gen3, authKey: key)
+        let unixSeconds = 1_700_000_500
+        let garbageRt: UInt32 = 3_000_000_000
+        let payload: [UInt8] = [
+            UInt8(unixSeconds & 0xFF), UInt8((unixSeconds >> 8) & 0xFF),
+            UInt8((unixSeconds >> 16) & 0xFF), UInt8((unixSeconds >> 24) & 0xFF),
+        ]
+        _ = d.ingest(record: OuraRecord(type: OuraEventTag.rtcBeacon.rawValue, ringTimestamp: garbageRt, payload: payload))
+        XCTAssertFalse(d.hasAnchor, "a garbage beacon ring-time must not set an anchor")
     }
 
     func testStopClearsTheAnchor() {

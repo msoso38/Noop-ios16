@@ -1183,14 +1183,21 @@ class OuraLiveSource(
                 // epoch; only announce "acquired" when the sync ACTUALLY anchored (the old unconditional
                 // "acquired" line fired even on a rejected sync). `epochMs` holds the raw wire value, which
                 // is unix SECONDS despite the name (s6.11).
-                if (d.isPlausibleAnchorEpoch(e.value.epochMs)) {
+                // The driver anchors only when BOTH the epoch AND the ring-time are plausible (a misframed
+                // 0x42 can carry a good epoch but a garbage ring-time that would pin the anchor ~2e9 ticks
+                // off and starve all history). Mirror that full gate here so "acquired" never fires on a
+                // sync the driver actually rejected, and name WHICH half failed.
+                if (d.isPlausibleAnchorEpoch(e.value.epochMs) && d.isPlausibleAnchorRingTime(e.value.ringTimestamp)) {
                     if (!loggedAnchor) {
                         loggedAnchor = true
                         log("Oura: UTC time anchor acquired - history-fetched samples now get their real time")
                     }
-                } else {
+                } else if (!d.isPlausibleAnchorEpoch(e.value.epochMs)) {
                     log("Oura: 0x42 time-sync REJECTED - implausible epoch ${e.value.epochMs}s (outside the " +
                         "2020–2035 anchor window); history samples stay unanchored (#91)")
+                } else {
+                    log("Oura: 0x42 time-sync REJECTED - implausible ring-time ${e.value.ringTimestamp} ticks " +
+                        "(misframed record; history samples stay unanchored) (#91)")
                 }
                 // The 0x42 time-sync can arrive ANYWHERE in a history-fetch stream, not necessarily first.
                 // Anything parked while unanchored gets its real time retroactively the moment it lands.
@@ -1203,6 +1210,9 @@ class OuraLiveSource(
                 if (!d.isPlausibleAnchorEpoch(e.value.unixSeconds)) {
                     log("Oura: 0x85 RTC beacon REJECTED - implausible epoch ${e.value.unixSeconds}s (outside " +
                         "the 2020–2035 anchor window) (#91)")
+                } else if (!d.isPlausibleAnchorRingTime(e.value.ringTimestamp)) {
+                    log("Oura: 0x85 RTC beacon REJECTED - implausible ring-time ${e.value.ringTimestamp} ticks " +
+                        "(misframed record) (#91)")
                 }
             }
             is OuraEvent.TierB -> {

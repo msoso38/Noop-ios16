@@ -269,12 +269,30 @@ public final class OuraDriver {
         return seconds * 1000   // safe: bounded input, cannot overflow
     }
 
+    /// Ceiling for a plausible anchor RING-TIME (100 ms ticks, boot-relative): 500M ticks ≈ 579 days of
+    /// uptime. The epoch gate alone is not enough — a misframed 0x42/0x85 can carry a plausible epoch
+    /// (2020-2035) yet a GARBAGE ring-time (the 4 rt bytes read off a wrong offset land in the billions).
+    /// Anchoring on that pins `anchorRingTime` to a value ~2e9 ticks away from every real sample, so the
+    /// anchor-relative phantom guard then drops ALL genuine history — the ring's data starves even though
+    /// the epoch looked fine. A consumer ring reboots/charges (resetting its clock) long before 579 days,
+    /// so a ring-time above this in an anchor record is corrupt and never trusted. Mirrors the
+    /// `maxPlausibleResumeTicks` ceiling OuraLiveSource applies to the persisted resume cursor.
+    private static let maxPlausibleAnchorRingTime: UInt32 = 500_000_000
+
     /// True when `seconds` falls inside the anchor plausibility window (2020-01-01 .. 2035-01-01), i.e. the
     /// `.timeSync` / `.rtcBeacon` ingest would accept it. A record whose epoch is outside this is silently
     /// ignored so a garbage value can't anchor history to ~1970. Exposed READ-ONLY so OuraLiveSource can log
     /// WHY an anchor was rejected (#91) without duplicating the bounds or reaching into anchor state. Pure.
     public static func isPlausibleAnchorEpoch(_ seconds: Int64) -> Bool {
         plausibleAnchorMs(fromEpochSeconds: seconds) != nil
+    }
+
+    /// True when `ringTime` is a plausible boot-relative ring-time for an anchor record (≤ the 579-day
+    /// ceiling). A misframed anchor record can pass `isPlausibleAnchorEpoch` yet carry a garbage ring-time;
+    /// this is the second half of the gate. Exposed READ-ONLY so OuraLiveSource can log WHY an anchor was
+    /// rejected (#91) without duplicating the bound. Pure.
+    public static func isPlausibleAnchorRingTime(_ ringTime: UInt32) -> Bool {
+        ringTime <= maxPlausibleAnchorRingTime
     }
 
     // MARK: - Record ingest (decode)
@@ -351,7 +369,11 @@ public final class OuraDriver {
             // raw value (a misaligned/corrupt record deep in the backlog); a naive `* 1000` overflows Int64
             // and traps. plausibleAnchorMs bounds-checks BEFORE multiplying, so an implausible value is
             // safely ignored (honest: never anchors to a garbage time) instead of crashing.
-            if let ms = Self.plausibleAnchorMs(fromEpochSeconds: ts.epochMs) {
+            // Both halves must be plausible: a plausible epoch paired with a garbage ring-time (misframed
+            // record) would pin the anchor ~2e9 ticks off and starve all real history (see
+            // maxPlausibleAnchorRingTime). Reject unless BOTH the epoch and the ring-time check out.
+            if let ms = Self.plausibleAnchorMs(fromEpochSeconds: ts.epochMs),
+               Self.isPlausibleAnchorRingTime(ts.ringTimestamp) {
                 anchorUtcMs = ms
                 anchorRingTime = ts.ringTimestamp
             }
@@ -360,7 +382,8 @@ public final class OuraDriver {
             // Secondary UTC anchor (s5.5, 1s granularity): only fills in while no 0x42 anchor exists yet
             // this session, so a coarser beacon never overrides the primary time-sync anchor.
             guard let r = OuraDecoders.decodeRtcBeacon(record) else { return [] }
-            if anchorUtcMs == nil, let ms = Self.plausibleAnchorMs(fromEpochSeconds: Int64(r.unixSeconds)) {
+            if anchorUtcMs == nil, let ms = Self.plausibleAnchorMs(fromEpochSeconds: Int64(r.unixSeconds)),
+               Self.isPlausibleAnchorRingTime(r.ringTimestamp) {
                 anchorUtcMs = ms
                 anchorRingTime = r.ringTimestamp
             }

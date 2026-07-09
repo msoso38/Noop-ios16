@@ -37,6 +37,19 @@ class OuraDriverTest {
         assertFalse(d.isPlausibleAnchorEpoch(0L))               // epoch 0 — the ~1970 anchor #91 must avoid
     }
 
+    @Test
+    fun testIsPlausibleAnchorRingTimeBounds() {
+        // The anchor ring-time ceiling is 500M ticks (≈579 days uptime). Second half of the anchor gate: a
+        // plausible epoch is not enough if the record's ring-time is garbage. Twin of the Swift
+        // OuraDriverTests.testIsPlausibleAnchorRingTimeBounds.
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
+        assertTrue(d.isPlausibleAnchorRingTime(0L))              // boot (rt=0), inclusive min
+        assertTrue(d.isPlausibleAnchorRingTime(1_624_998L))     // a real on-device resume cursor
+        assertTrue(d.isPlausibleAnchorRingTime(500_000_000L))   // ceiling, inclusive max
+        assertFalse(d.isPlausibleAnchorRingTime(500_000_001L))  // one tick past the ceiling
+        assertFalse(d.isPlausibleAnchorRingTime(2_055_602_179L)) // the on-device garbage cursor (#91)
+    }
+
     // MARK: - Full happy-path step sequence (auth -> enable triplet -> streaming)
 
     @Test
@@ -347,6 +360,49 @@ class OuraDriverTest {
             "a later RTC beacon must not displace an already-set time-sync anchor",
             syncEpochSeconds, d.unixSeconds(forRingTimestamp = syncRt),
         )
+    }
+
+    /**
+     * A misframed 0x42 can carry a plausible epoch (2020-2035) yet a garbage ring-time (rt bytes read off a
+     * wrong offset -> billions). Anchoring on it would pin anchorRingTime ~2e9 ticks from every real sample
+     * and starve all history. Both halves of the gate must pass. Kotlin twin of Swift's
+     * testTimeSyncWithPlausibleEpochButGarbageRingTimeDoesNotAnchor.
+     */
+    @Test
+    fun testTimeSyncWithPlausibleEpochButGarbageRingTimeDoesNotAnchor() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
+        val epochSeconds = 1_700_000_000L                        // perfectly plausible
+        val garbageRt = 2_055_602_179L                           // the real on-device garbage value (#91)
+        d.ingest(
+            OuraRecord(type = OuraEventTag.TIME_SYNC.raw, ringTimestamp = garbageRt, payload = le8(epochSeconds) + intArrayOf(0x00)),
+        )
+        assertFalse(d.hasAnchor)                                  // garbage ring-time must not set an anchor
+        assertNull(d.unixSeconds(forRingTimestamp = 1_624_998L)) // no anchor -> a real ring-time still can't resolve
+
+        // A subsequent WELL-FORMED time-sync (plausible epoch AND plausible rt) then anchors cleanly.
+        d.ingest(
+            OuraRecord(type = OuraEventTag.TIME_SYNC.raw, ringTimestamp = 1_624_998L, payload = le8(epochSeconds) + intArrayOf(0x00)),
+        )
+        assertTrue(d.hasAnchor)
+        assertEquals(epochSeconds, d.unixSeconds(forRingTimestamp = 1_624_998L))
+    }
+
+    /**
+     * Same guard on the secondary 0x85 path: a plausible unix_s paired with a garbage ring-time is a
+     * misframed beacon and must not anchor. Kotlin twin of Swift's
+     * testRtcBeaconWithPlausibleEpochButGarbageRingTimeDoesNotAnchor.
+     */
+    @Test
+    fun testRtcBeaconWithPlausibleEpochButGarbageRingTimeDoesNotAnchor() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)
+        val unixSeconds = 1_700_000_500L
+        val garbageRt = 3_000_000_000L
+        val payload = intArrayOf(
+            (unixSeconds and 0xFF).toInt(), ((unixSeconds shr 8) and 0xFF).toInt(),
+            ((unixSeconds shr 16) and 0xFF).toInt(), ((unixSeconds shr 24) and 0xFF).toInt(),
+        )
+        d.ingest(OuraRecord(type = OuraEventTag.RTC_BEACON.raw, ringTimestamp = garbageRt, payload = payload))
+        assertFalse(d.hasAnchor)                                 // garbage beacon ring-time must not set an anchor
     }
 
     @Test

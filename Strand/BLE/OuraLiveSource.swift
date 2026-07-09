@@ -761,13 +761,19 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // epoch; only announce "acquired" when the sync ACTUALLY anchored (the old unconditional
                 // "acquired" line fired even on a rejected sync). `epochMs` holds the raw wire value, which
                 // is unix SECONDS despite the name (s6.11).
-                if OuraDriver.isPlausibleAnchorEpoch(ts.epochMs) {
+                // The driver anchors only when BOTH the epoch AND the ring-time are plausible (a misframed
+                // 0x42 can carry a good epoch but a garbage ring-time that would pin the anchor ~2e9 ticks
+                // off and starve all history). Mirror that full gate here so "acquired" never fires on a
+                // sync the driver actually rejected, and name WHICH half failed.
+                if OuraDriver.isPlausibleAnchorEpoch(ts.epochMs), OuraDriver.isPlausibleAnchorRingTime(ts.ringTimestamp) {
                     if !loggedAnchor {
                         loggedAnchor = true
                         log("Oura: UTC time anchor acquired - history-fetched samples now get their real time")
                     }
-                } else {
+                } else if !OuraDriver.isPlausibleAnchorEpoch(ts.epochMs) {
                     log("Oura: 0x42 time-sync REJECTED - implausible epoch \(ts.epochMs)s (outside the 2020–2035 anchor window); history samples stay unanchored (#91)")
+                } else {
+                    log("Oura: 0x42 time-sync REJECTED - implausible ring-time \(ts.ringTimestamp) ticks (misframed record; history samples stay unanchored) (#91)")
                 }
                 // The 0x42 time-sync can arrive ANYWHERE in a history-fetch stream, not necessarily first.
                 // Anything parked while unanchored gets its real time retroactively the moment an anchor lands.
@@ -779,6 +785,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // IMPLAUSIBLE-epoch beacon is a real failure (it can never anchor), so log just that.
                 if !OuraDriver.isPlausibleAnchorEpoch(Int64(r.unixSeconds)) {
                     log("Oura: 0x85 RTC beacon REJECTED - implausible epoch \(r.unixSeconds)s (outside the 2020–2035 anchor window) (#91)")
+                } else if !OuraDriver.isPlausibleAnchorRingTime(r.ringTimestamp) {
+                    log("Oura: 0x85 RTC beacon REJECTED - implausible ring-time \(r.ringTimestamp) ticks (misframed record) (#91)")
                 }
 
             case .tierB(let summary):

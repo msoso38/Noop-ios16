@@ -335,6 +335,10 @@ class OuraDriver(
         // A secondary (beacon) anchor never displaces an already-set primary (time-sync) anchor.
         if (!preferPrimary && anchorUtcMs != null) return
         val ms = plausibleAnchorMs(epochSeconds) ?: return
+        // Both halves must be plausible: a plausible epoch paired with a garbage ring-time (misframed
+        // record) would pin the anchor ~2e9 ticks off and starve all real history (#91). Reject unless the
+        // ring-time also checks out.
+        if (!isPlausibleAnchorRingTime(ringTimestamp)) return
         anchorUtcMs = ms
         anchorRingTime = ringTimestamp
     }
@@ -358,6 +362,15 @@ class OuraDriver(
      * anchor was rejected (#91) without duplicating the bounds or reaching into anchor state. Pure.
      */
     fun isPlausibleAnchorEpoch(epochSeconds: Long): Boolean = plausibleAnchorMs(epochSeconds) != null
+
+    /**
+     * True when [ringTime] is a plausible boot-relative ring-time for an anchor record (<= the 579-day
+     * ceiling, 500M ticks at 100 ms/tick). A misframed anchor record can pass [isPlausibleAnchorEpoch] yet
+     * carry a garbage ring-time (billions); this is the second half of the gate. Exposed READ-ONLY so
+     * OuraLiveSource can log WHY an anchor was rejected (#91) without duplicating the bound. Pure. Mirrors
+     * the maxPlausibleResumeTicks ceiling OuraLiveSource applies to the persisted resume cursor.
+     */
+    fun isPlausibleAnchorRingTime(ringTime: Long): Boolean = ringTime <= MAX_PLAUSIBLE_ANCHOR_RING_TIME
 
     // MARK: - Record ingest (decode)
 
@@ -583,6 +596,17 @@ class OuraDriver(
          */
         private const val MIN_PLAUSIBLE_EPOCH_SECONDS = 1_577_836_800L
         private const val MAX_PLAUSIBLE_EPOCH_SECONDS = 2_051_222_400L
+
+        /**
+         * Ceiling for a plausible anchor RING-TIME (100 ms ticks, boot-relative): 500M ticks ≈ 579 days of
+         * uptime. The epoch gate alone is not enough — a misframed 0x42/0x85 can carry a plausible epoch yet
+         * a GARBAGE ring-time (rt bytes off a wrong offset -> billions). Anchoring on that pins the anchor
+         * ~2e9 ticks from every real sample, so the phantom guard then drops ALL genuine history and the
+         * ring's data starves even though the epoch looked fine (#91). A consumer ring reboots/charges long
+         * before 579 days. Byte-identical to Swift's maxPlausibleAnchorRingTime and OuraLiveSource's
+         * maxPlausibleResumeTicks.
+         */
+        private const val MAX_PLAUSIBLE_ANCHOR_RING_TIME = 500_000_000L
 
         /**
          * Anchor-relative plausibility window for a history-fetched sample (phantom-record guard). History
