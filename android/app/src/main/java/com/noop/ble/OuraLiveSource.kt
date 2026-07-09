@@ -40,6 +40,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.security.SecureRandom
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -225,6 +228,11 @@ class OuraLiveSource(
     private var loggedFirstSpo2 = false
     /** Logs the FIRST ring-time -> UTC anchor of this session only (s5.5); reset on stop/disconnect. */
     private var loggedAnchor = false
+    /** PROTOTYPE (§6.15 / §6.12.1, INVESTIGATION): accumulates the ring's `check_sleep` `s:`/`e:` debug
+     *  boundaries into its OWN computed sleep window - a far more reliable duration signal than the sparse
+     *  OURA_SLEEP_PHASE bursts. Reset per session. The window is LOGGED (anchored to UTC), not yet persisted.
+     *  Twin of the Swift [checkSleepParser]. */
+    private val checkSleepParser = OuraCheckSleepParser()
     /** Tier-B (UNVERIFIED) kinds ("activity" / "real_steps" / "sleep_summary" / "spo2_smoothed") already
      *  logged this session, so a repeated tag logs once per KIND, not once per record. INVESTIGATION
      *  ONLY (see the `allowTierB = true` comment at driver construction) - the log is how we collect raw
@@ -528,6 +536,7 @@ class OuraLiveSource(
         loggedFirstTemp = false
         loggedFirstSpo2 = false
         loggedAnchor = false
+        checkSleepParser.reset()
         loggedTierBKinds.clear()
         pendingAnchorEvents.clear()
         // Resume the GetEvents cursor from where the LAST connection to this ring left off (s5.1/5.3), so a
@@ -577,6 +586,7 @@ class OuraLiveSource(
         loggedFirstTemp = false
         loggedFirstSpo2 = false
         loggedAnchor = false
+        checkSleepParser.reset()
         loggedTierBKinds.clear()
         reachedStreaming = false
         // A stop MID-install is an honest failure (no ack will come); a stop after streaming leaves the
@@ -720,6 +730,7 @@ class OuraLiveSource(
                     loggedFirstTemp = false
                     loggedFirstSpo2 = false
                     loggedAnchor = false
+                    checkSleepParser.reset()
                     loggedTierBKinds.clear()
                     reachedStreaming = false
                     // A disconnect MID-install is an honest failure (no 0x25 ack will arrive); a disconnect
@@ -1142,9 +1153,31 @@ class OuraLiveSource(
                 // every real capture is evidence. Never persisted, never scored, and NEVER converted into
                 // steps (MET is not a step count; OuraStreamMapping drops ActivityInfo unconditionally).
                 log("Oura: activity (Tier-B) state=${e.value.state} met=${e.value.met}")
-            // Motion / state / rtcBeacon / debugText: not a durable Streams row (see OuraStreamMapping).
+            is OuraEvent.DebugTextEvent ->
+                // PROTOTYPE (§6.15, INVESTIGATION): the ring logs its OWN computed sleep window as
+                // `check_sleep` s:/e: debug lines. Feed them to the parser and, on a new window, log the
+                // anchored bedtime->wake span (the honest sleep-duration signal). Not persisted. Twin of the
+                // Swift logCheckSleepWindowIfAny. (Android does not otherwise surface 0x43 debug text.)
+                logCheckSleepWindowIfAny(e.text.trim(), d)
+            // Motion / state / rtcBeacon: not a durable Streams row (see OuraStreamMapping).
             else -> Unit
         }
+    }
+
+    /** PROTOTYPE (§6.15): feed a debug line to [checkSleepParser] and, on a NEW window, anchor both
+     *  boundaries to UTC (§5.5) and log the ring's own bedtime->wake span. Unresolved (no anchor / phantom)
+     *  simply skips - never a guessed time. Twin of the Swift `logCheckSleepWindowIfAny`. */
+    private fun logCheckSleepWindowIfAny(line: String, d: OuraDriver) {
+        val w = checkSleepParser.ingest(line) ?: return
+        val bedtime = d.unixSeconds(forRingTimestamp = w.startRt) ?: return
+        val wake = d.unixSeconds(forRingTimestamp = w.endRt) ?: return
+        if (wake <= bedtime) return
+        val mins = (wake - bedtime) / 60
+        val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+        log(
+            "Oura: ring sleep window (check_sleep) ${fmt.format(Date(bedtime * 1000L))} -> " +
+                "${fmt.format(Date(wake * 1000L))} (${mins / 60}h ${mins % 60}m) [PROTOTYPE - not persisted]",
+        )
     }
 
     /**

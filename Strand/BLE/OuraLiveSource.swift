@@ -454,6 +454,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         loggedFirstTemp = false
         loggedFirstSpo2 = false
         loggedAnchor = false
+        checkSleepParser.reset()
         loggedTierBKinds.removeAll()
         reachedStreaming = false
         pendingInstallKey = nil
@@ -779,6 +780,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // lowercase `s:`/`e:`/`nb:` sleep boundaries), `auth_key_set`, `batt:…`, `orientation`.
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 logDebug(trimmed, rt: ringTimestamp)
+                logCheckSleepWindowIfAny(from: trimmed)   // PROTOTYPE: ring's own sleep window (§6.15)
 
             default:
                 break   // motion / state / rtcBeacon: not a durable Streams row (see OuraStreamMapping)
@@ -833,6 +835,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// Last debug string we logged, to collapse consecutive identical lines (e.g. `DHR_info:neg t` ×20).
     private var lastDebugText: String?
 
+    /// PROTOTYPE (§6.15 / §6.12.1, INVESTIGATION): accumulates the ring's `check_sleep` `s:`/`e:` debug
+    /// boundaries into its OWN computed sleep window — a far more reliable duration signal than the sparse
+    /// `OURA_SLEEP_PHASE` bursts. Reset per session. The window is LOGGED (anchored to UTC), not yet persisted.
+    private var checkSleepParser = OuraCheckSleepParser()
+
     /// Log a decoded 0x43 debug string unless it is empty, a known high-rate flood (drop-prefix), or an
     /// immediate duplicate of the previous logged line. Investigation only — never persisted or scored.
     private func logDebug(_ text: String, rt: UInt32) {
@@ -841,6 +848,23 @@ public final class OuraLiveSource: NSObject, ObservableObject {
               text != lastDebugText else { return }
         lastDebugText = text
         log("Oura: debug (0x43) rt=\(rt) \"\(text)\"")
+    }
+
+    /// PROTOTYPE (§6.15, INVESTIGATION): feed a debug line to the `check_sleep` parser and, when it yields
+    /// a NEW sleep window, anchor both boundaries to UTC (§5.5) and log the ring's own bedtime→wake span.
+    /// This is the honest sleep-duration signal (the ring's own decision); it is NOT yet turned into a
+    /// persisted `sleepSession`. `s:`/`e:` are ring timestamps in the anchor domain, so unresolved (no
+    /// anchor yet, or a phantom value) simply skips — never a guessed time.
+    private func logCheckSleepWindowIfAny(from line: String) {
+        guard let w = checkSleepParser.ingest(line: line),
+              let driver,
+              let bedtime = driver.unixSeconds(forRingTimestamp: w.startRt),
+              let wake = driver.unixSeconds(forRingTimestamp: w.endRt),
+              wake > bedtime else { return }
+        let mins = (wake - bedtime) / 60
+        let bedStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(bedtime)))
+        let wakeStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(wake)))
+        log("Oura: ring sleep window (check_sleep) \(bedStr) → \(wakeStr) (\(mins / 60)h \(mins % 60)m) [PROTOTYPE — not persisted]")
     }
 
     // MARK: - Re-engagement timer (daytime-HR auto-reverts ~20s)
@@ -987,6 +1011,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedFirstTemp = false
         loggedFirstSpo2 = false
         loggedAnchor = false
+        checkSleepParser.reset()
         loggedTierBKinds.removeAll()
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
         pendingInstallKey = nil
@@ -1037,6 +1062,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedFirstTemp = false
         loggedFirstSpo2 = false
         loggedAnchor = false
+        checkSleepParser.reset()
         loggedTierBKinds.removeAll()
         reachedStreaming = false
         pendingInstallKey = nil
