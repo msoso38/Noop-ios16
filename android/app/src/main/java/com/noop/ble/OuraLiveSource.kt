@@ -584,6 +584,11 @@ class OuraLiveSource(
         // TierB/ActivityInfo unconditionally - the Tier-discipline gate that matters lives there, not here.
         driver = OuraDriver(ringGen = ringGen, authKey = authKey(), allowTierB = true,
                             allowKeyInstall = adoptIntent)
+        // Near-now anchor gate: the ring is sync_time-synced to this host on connect, so a genuine 0x42/0x85
+        // beacon reads ≈ now. Injecting the host clock lets the driver reject a misframed beacon whose bytes
+        // decode to a wrong YEAR (e.g. 2021) before it can anchor and mis-stamp a batch of samples. Refreshed
+        // every connect. Twin of the Swift OuraLiveSource wiring.
+        driver?.anchorReferenceEpochSeconds = System.currentTimeMillis() / 1000L
         reassembler.reset()
         pendingInstallKey = null       // a new connection starts with no install in flight
         _adoptPhase.value = AdoptPhase.Idle   // a stale outcome must never drive the wizard's transition
@@ -1187,14 +1192,14 @@ class OuraLiveSource(
                 // 0x42 can carry a good epoch but a garbage ring-time that would pin the anchor ~2e9 ticks
                 // off and starve all history). Mirror that full gate here so "acquired" never fires on a
                 // sync the driver actually rejected, and name WHICH half failed.
-                if (d.isPlausibleAnchorEpoch(e.value.epochMs) && d.isPlausibleAnchorRingTime(e.value.ringTimestamp)) {
+                if (d.acceptsAnchorEpoch(e.value.epochMs) && d.isPlausibleAnchorRingTime(e.value.ringTimestamp)) {
                     if (!loggedAnchor) {
                         loggedAnchor = true
                         log("Oura: UTC time anchor acquired - history-fetched samples now get their real time")
                     }
-                } else if (!d.isPlausibleAnchorEpoch(e.value.epochMs)) {
-                    log("Oura: 0x42 time-sync REJECTED - implausible epoch ${e.value.epochMs}s (outside the " +
-                        "2020–2035 anchor window); history samples stay unanchored (#91)")
+                } else if (!d.acceptsAnchorEpoch(e.value.epochMs)) {
+                    log("Oura: 0x42 time-sync REJECTED - implausible epoch ${e.value.epochMs}s (not within " +
+                        "±7d of now / outside 2020–2035); history samples stay unanchored (#91)")
                 } else {
                     log("Oura: 0x42 time-sync REJECTED - implausible ring-time ${e.value.ringTimestamp} ticks " +
                         "(misframed record; history samples stay unanchored) (#91)")
@@ -1207,9 +1212,9 @@ class OuraLiveSource(
                 // #91: the 0x85 beacon is the SECONDARY anchor (fills the gap only until a 0x42 arrives). A
                 // beacon ignored because a primary anchor already exists is NORMAL and not logged; only an
                 // IMPLAUSIBLE-epoch beacon is a real failure (it can never anchor), so log just that.
-                if (!d.isPlausibleAnchorEpoch(e.value.unixSeconds)) {
-                    log("Oura: 0x85 RTC beacon REJECTED - implausible epoch ${e.value.unixSeconds}s (outside " +
-                        "the 2020–2035 anchor window) (#91)")
+                if (!d.acceptsAnchorEpoch(e.value.unixSeconds)) {
+                    log("Oura: 0x85 RTC beacon REJECTED - implausible epoch ${e.value.unixSeconds}s (not " +
+                        "within ±7d of now / outside 2020–2035) (#91)")
                 } else if (!d.isPlausibleAnchorRingTime(e.value.ringTimestamp)) {
                     log("Oura: 0x85 RTC beacon REJECTED - implausible ring-time ${e.value.ringTimestamp} ticks " +
                         "(misframed record) (#91)")

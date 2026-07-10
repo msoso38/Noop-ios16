@@ -277,6 +277,28 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// it ignored the seek), so the persisted cursor is stale and must fall back to a full pull.
     private var resumeCursorAtFetchStart: UInt32 = 0
     private var sawPreResumeData = false
+    /// #91-followup: convergence guard for the GetEvents drain. A healthy drain shrinks `bytesLeft` on
+    /// every continuation until it reaches 0. A ring doing a FULL PULL (cursor 0) while it is still
+    /// generating live events re-dumps from its log start each continuation, so `bytesLeft` floors and
+    /// oscillates instead of reaching 0 — an endless `get_events` loop (observed on-device 2026-07-10:
+    /// `bytesLeft` 1.29M → 338k → 338k…, re-dumping the ring's `rt=60466` boot text every cycle). We stop
+    /// the drain when `bytesLeft` stops strictly shrinking for `maxHistoryDrainStalls` consecutive reads,
+    /// or at a hard cycle cap, and on that forced stop we NEVER reset the cursor to 0 (that re-arms the
+    /// very full pull that loops). Reset per fetch pass in `fetchHistoryIfIdle`.
+    private var historyDrainCycles = 0
+    private var historyDrainStalls = 0
+    /// The SMALLEST `bytesLeft` seen this fetch. A continuation counts as progress only if it beats this by
+    /// at least `drainProgressEpsilon` — so the ~1 KB oscillation at the plateau (337k↔338k) reads as a
+    /// stall, not progress, and the guard converges instead of resetting on every tiny wobble.
+    private var minDrainBytesLeft: UInt32 = .max
+    /// Wall-clock start of the current fetch pass. A healthy full drain of this ring completes in ~30 s
+    /// (observed); the pathological re-dump takes ~72 s PER cycle and never ends, so a per-fetch deadline
+    /// bounds the worst case regardless of the summary cadence. Checked at each summary boundary.
+    private var historyFetchStartedAt: Date?
+    private static let maxHistoryDrainStalls = 2
+    private static let maxHistoryDrainCycles = 500
+    private static let maxHistoryFetchSeconds: TimeInterval = 120
+    private static let drainProgressEpsilon: UInt32 = 8_192
     /// Periodic re-fetch while connected, so an overnight-connected session (or one left open after a nap)
     /// picks up freshly-banked sleep data without needing a reconnect. Mirrors BLEManager's ~15 min
     /// periodic WHOOP history-offload floor.
@@ -290,7 +312,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         guard let driver, driver.phase == .streaming else { return }
         resumeCursorAtFetchStart = historyCursor
         sawPreResumeData = false
-        log("Oura: fetching history from cursor \(historyCursor) (\(describeCursor(historyCursor)))")
+        historyDrainCycles = 0
+        historyDrainStalls = 0
+        minDrainBytesLeft = .max
+        historyFetchStartedAt = Date()
+        log("Oura: fetching history from cursor \(historyCursor) (\(describeCursor(historyCursor))) [drain-guard v2]")
         advance(.startHistoryFetch(cursor: historyCursor))
     }
 
@@ -318,30 +344,93 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// reset (or it ignored the seek), so we fall back to a full pull (0) next time rather than resume from
     /// a now-stale ring-time.
     private func handleHistorySummary(_ summary: (eventsReceived: UInt8, bytesLeft: UInt32, moreData: Bool)) {
-        if !summary.moreData {
-            // A resume cursor is only trustworthy if it resolves to a real time under the CURRENT anchor.
-            // A value that doesn't was stored against a TRANSIENT bad anchor (a misframed 0x85/0x42 whose
-            // epoch passed but whose ring-time was garbage) — persisting it would seek to nonsense next
-            // connect. Treat it, and a genuine reboot (sawPreResumeData), the same: full pull next time.
-            let resumeResolves = maxStoredRingTime > 0 && (driver?.unixSeconds(forRingTimestamp: maxStoredRingTime) != nil)
-            if sawPreResumeData {
-                log("Oura: history fetch caught up but the ring served data older than cursor \(resumeCursorAtFetchStart) - clock reset/seek ignored; next connect does a full pull")
-                historyCursor = 0
-                OuraHistoryCursorStore.save(0, deviceId: deviceId)
-            } else if maxStoredRingTime > historyCursor, resumeResolves {
-                historyCursor = maxStoredRingTime
-                OuraHistoryCursorStore.save(maxStoredRingTime, deviceId: deviceId)
-                log("Oura: history fetch caught up (resume cursor \(historyCursor) [\(describeCursor(historyCursor))])")
-            } else if maxStoredRingTime > historyCursor {
-                log("Oura: history fetch caught up but resume cursor \(maxStoredRingTime) [\(describeCursor(maxStoredRingTime))] is a phantom (transient bad anchor?) - full pull next connect")
-                historyCursor = 0
-                OuraHistoryCursorStore.save(0, deviceId: deviceId)
+        if summary.moreData {
+            // Convergence guard (#91-followup): a healthy drain shrinks `bytesLeft` on every continuation
+            // until 0. A full pull of a live-generating ring re-dumps from its log start each cycle, so
+            // `bytesLeft` floors/oscillates (observed ~340k) and never reaches 0 → an endless `get_events`
+            // loop. STOP (forcing `moreData=false`, so the driver issues no further continuation) when ANY
+            // of three bounds trips:
+            //   • `bytesLeft` makes no real progress against its running minimum for `maxHistoryDrainStalls`
+            //     consecutive reads (the plateau — the definitive stuck signal),
+            //   • the fetch has run past `maxHistoryFetchSeconds` of wall clock (a healthy full drain of this
+            //     ring finishes in ~30 s; the pathological one is ~72 s/cycle, so this caps the worst case
+            //     regardless of the slow summary cadence),
+            //   • a hard cycle cap (last-ditch backstop).
+            historyDrainCycles += 1
+            if summary.bytesLeft + Self.drainProgressEpsilon <= minDrainBytesLeft {
+                minDrainBytesLeft = summary.bytesLeft
+                historyDrainStalls = 0
             } else {
-                log("Oura: history fetch caught up (resume cursor unchanged \(historyCursor) [\(describeCursor(historyCursor))])")
+                historyDrainStalls += 1
             }
+            let elapsed = historyFetchStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+            // FULL-PULL fast-exit (the common, decisive case): this ring re-dumps its ENTIRE banked log on
+            // every `get_events` continuation of a cursor-0 pull, so ONE completed pass already delivered
+            // everything storable (all `check_sleep` windows + banked samples). Once the anchor has seated
+            // and we have banked real forward progress (a stored ring-time that resolves under the anchor),
+            // every further pass is pure re-dump — stop NOW rather than wait for a `bytesLeft==0` that never
+            // comes. Scoped to `resumeCursorAtFetchStart == 0` so a normal resumed pull still drains to zero.
+            let fullPullPassComplete = resumeCursorAtFetchStart == 0
+                && historyDrainCycles >= 2
+                && maxStoredRingTime > 0
+                && (driver?.unixSeconds(forRingTimestamp: maxStoredRingTime) != nil)
+            let stalled = historyDrainStalls >= Self.maxHistoryDrainStalls
+            let timedOut = elapsed >= Self.maxHistoryFetchSeconds
+            let tooMany = historyDrainCycles >= Self.maxHistoryDrainCycles
+            if fullPullPassComplete || stalled || timedOut || tooMany {
+                let why = fullPullPassComplete ? "full-pull pass complete (banked through ring-time \(maxStoredRingTime))"
+                        : stalled ? "bytesLeft \(summary.bytesLeft) not shrinking (\(historyDrainStalls) stalls)"
+                        : timedOut ? "fetch ran \(Int(elapsed))s without completing"
+                                   : "hit cycle cap \(historyDrainCycles)"
+                log("Oura: history drain stopping (\(why)) after \(historyDrainCycles) reads - avoids a #91-style re-dump loop")
+                finalizeHistoryDrain(forced: true)
+                advance(.historyCursorAdvanced(cursor: historyCursor, moreData: false))
+                return
+            }
+        } else {
+            finalizeHistoryDrain(forced: false)
         }
         // The ack-fetch cursor is ignored by the ring (maxEvents=0 continuation); pass the resume point.
         advance(.historyCursorAdvanced(cursor: historyCursor, moreData: summary.moreData))
+    }
+
+    /// Commit the GetEvents resume cursor when a drain ends. `forced == true` means the convergence guard
+    /// stopped a non-converging drain (a re-dumping full pull): we must NOT reset to 0 there — that re-arms
+    /// the looping full pull — so we commit forward progress if a stored sample resolves, else HOLD the
+    /// current cursor. `forced == false` is the natural `bytesLeft == 0` completion and keeps the #91 logic
+    /// verbatim (a reboot or a phantom resume falls back to a full pull next connect).
+    private func finalizeHistoryDrain(forced: Bool) {
+        // A resume cursor is only trustworthy if it resolves to a real time under the CURRENT anchor. A value
+        // that doesn't was stored against a TRANSIENT bad anchor (a misframed 0x85/0x42 whose epoch passed
+        // but whose ring-time was garbage) — persisting it would seek to nonsense next connect.
+        let resumeResolves = maxStoredRingTime > 0 && (driver?.unixSeconds(forRingTimestamp: maxStoredRingTime) != nil)
+        if forced {
+            if maxStoredRingTime > historyCursor, resumeResolves {
+                historyCursor = maxStoredRingTime
+                OuraHistoryCursorStore.save(maxStoredRingTime, deviceId: deviceId)
+                log("Oura: history drain stopped early - resume advanced to \(historyCursor) [\(describeCursor(historyCursor))]")
+            } else {
+                log("Oura: history drain stopped early - resume cursor holds at \(historyCursor) [\(describeCursor(historyCursor))] (no forward-resolving sample yet)")
+            }
+            return
+        }
+        // Natural completion: a genuine reboot (sawPreResumeData) and a phantom resume both fall back to a
+        // full pull next time (0).
+        if sawPreResumeData {
+            log("Oura: history fetch caught up but the ring served data older than cursor \(resumeCursorAtFetchStart) - clock reset/seek ignored; next connect does a full pull")
+            historyCursor = 0
+            OuraHistoryCursorStore.save(0, deviceId: deviceId)
+        } else if maxStoredRingTime > historyCursor, resumeResolves {
+            historyCursor = maxStoredRingTime
+            OuraHistoryCursorStore.save(maxStoredRingTime, deviceId: deviceId)
+            log("Oura: history fetch caught up (resume cursor \(historyCursor) [\(describeCursor(historyCursor))])")
+        } else if maxStoredRingTime > historyCursor {
+            log("Oura: history fetch caught up but resume cursor \(maxStoredRingTime) [\(describeCursor(maxStoredRingTime))] is a phantom (transient bad anchor?) - full pull next connect")
+            historyCursor = 0
+            OuraHistoryCursorStore.save(0, deviceId: deviceId)
+        } else {
+            log("Oura: history fetch caught up (resume cursor unchanged \(historyCursor) [\(describeCursor(historyCursor))])")
+        }
     }
 
     /// Record a STORED history sample's ring-time toward the resume cursor (open_oura `nextEventToSync`).
@@ -765,13 +854,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // 0x42 can carry a good epoch but a garbage ring-time that would pin the anchor ~2e9 ticks
                 // off and starve all history). Mirror that full gate here so "acquired" never fires on a
                 // sync the driver actually rejected, and name WHICH half failed.
-                if OuraDriver.isPlausibleAnchorEpoch(ts.epochMs), OuraDriver.isPlausibleAnchorRingTime(ts.ringTimestamp) {
+                if driver.acceptsAnchorEpoch(ts.epochMs), OuraDriver.isPlausibleAnchorRingTime(ts.ringTimestamp) {
                     if !loggedAnchor {
                         loggedAnchor = true
                         log("Oura: UTC time anchor acquired - history-fetched samples now get their real time")
                     }
-                } else if !OuraDriver.isPlausibleAnchorEpoch(ts.epochMs) {
-                    log("Oura: 0x42 time-sync REJECTED - implausible epoch \(ts.epochMs)s (outside the 2020–2035 anchor window); history samples stay unanchored (#91)")
+                } else if !driver.acceptsAnchorEpoch(ts.epochMs) {
+                    log("Oura: 0x42 time-sync REJECTED - implausible epoch \(ts.epochMs)s (not within ±7d of now / outside 2020–2035); history samples stay unanchored (#91)")
                 } else {
                     log("Oura: 0x42 time-sync REJECTED - implausible ring-time \(ts.ringTimestamp) ticks (misframed record; history samples stay unanchored) (#91)")
                 }
@@ -783,8 +872,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // #91: the 0x85 beacon is the SECONDARY anchor (fills the gap only until a 0x42 arrives). A
                 // beacon ignored because a primary anchor already exists is NORMAL and not logged; only an
                 // IMPLAUSIBLE-epoch beacon is a real failure (it can never anchor), so log just that.
-                if !OuraDriver.isPlausibleAnchorEpoch(Int64(r.unixSeconds)) {
-                    log("Oura: 0x85 RTC beacon REJECTED - implausible epoch \(r.unixSeconds)s (outside the 2020–2035 anchor window) (#91)")
+                if !driver.acceptsAnchorEpoch(Int64(r.unixSeconds)) {
+                    log("Oura: 0x85 RTC beacon REJECTED - implausible epoch \(r.unixSeconds)s (not within ±7d of now / outside 2020–2035) (#91)")
                 } else if !OuraDriver.isPlausibleAnchorRingTime(r.ringTimestamp) {
                     log("Oura: 0x85 RTC beacon REJECTED - implausible ring-time \(r.ringTimestamp) ticks (misframed record) (#91)")
                 }
@@ -1067,6 +1156,11 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
                             authKey: authKey().map { [UInt8]($0) },
                             allowTierB: true,
                             allowKeyInstall: adoptIntent)
+        // Near-now anchor gate: the ring is `sync_time`-synced to this host on connect, so a genuine
+        // 0x42/0x85 beacon reads ≈ now. Injecting the host clock lets the driver reject a misframed beacon
+        // whose bytes decode to a wrong YEAR (e.g. 2021) before it can anchor and mis-stamp a batch of
+        // samples (the 2021-dated skin-temp rows). Refreshed every connect.
+        driver?.anchorReferenceEpochSeconds = Int64(Date().timeIntervalSince1970)
         reachedStreaming = false
         loggedFirstHR = false
         loggedFirstTemp = false
