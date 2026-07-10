@@ -447,19 +447,31 @@ final class OuraDriverTests: XCTestCase {
         ])
     }
 
-    // MARK: - Notification-level ingest via reassembler
+    // MARK: - Notification-level ingest (open_oura: one record per notification)
 
-    func testIngestNotificationReassemblesAndDecodes() {
+    func testIngestDecodesOneRecordPerNotification() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         let reassembler = OuraReassembler()
-        // Two records packed together: 0x7B SpO2 then 0x46 temp.
-        let value = bytes("7b060200010003ca" + "460802000100420e470e")
-        let events = d.ingest(notification: value, reassembler: reassembler)
-        XCTAssertEqual(events, [
-            .spo2(OuraSpO2(ringTimestamp: rt, value: 970)),
+        // The ring streams one event per notification; feed them separately, not packed. A 0x7B SpO2
+        // notification, then a 0x46 temp notification (whose payload holds two int16 samples).
+        let spo2 = d.ingest(notification: bytes("7b060200010003ca"), reassembler: reassembler)
+        XCTAssertEqual(spo2, [.spo2(OuraSpO2(ringTimestamp: rt, value: 970))])
+        let temp = d.ingest(notification: bytes("460802000100420e470e"), reassembler: reassembler)
+        XCTAssertEqual(temp, [
             .temp(OuraTemp(ringTimestamp: rt, celsius: 36.50)),
             .temp(OuraTemp(ringTimestamp: rt, celsius: 36.55)),
         ])
+    }
+
+    func testIngestNotificationDecodesOnlyFirstPacketWhenBytesLookPacked() {
+        // Defensive: if a notification ever carries bytes that LOOK like two packed records, only the
+        // first is decoded (one lenient packet per notification) — the trailing bytes are ignored, never
+        // walked into phantom records. Documents the open_oura contract.
+        let d = OuraDriver(ringGen: .gen3, authKey: key)
+        let reassembler = OuraReassembler()
+        let value = bytes("7b060200010003ca" + "460802000100420e470e")
+        let events = d.ingest(notification: value, reassembler: reassembler)
+        XCTAssertEqual(events, [.spo2(OuraSpO2(ringTimestamp: rt, value: 970))])
     }
 
     // MARK: - Generation-driven command set / MTU
