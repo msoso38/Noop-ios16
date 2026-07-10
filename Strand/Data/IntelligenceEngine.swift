@@ -653,6 +653,21 @@ final class IntelligenceEngine: ObservableObject {
                                                      // ring buffer isn't flooded; every night keeps the summary.
                                                      hrvWindowDetail: dayStart == nowLocalMidnight,
                                                      deepHrvWindow: deepHrvWindow)
+                // #195: whole-night HRV cleaning-pipeline summary to the always-on strap log, so a "reads ~2x
+                // too high" report is triageable without the HRV test mode: RMSSD vs SDNN (rmssd >> sdnn =
+                // beat-to-beat jitter surviving the ectopic filter, not real HRV), meanNN as an HR sanity-check,
+                // and how many R-R intervals survived cleaning (a low count also flags the sparse-capture /
+                // calibration side). A SEPARATE analyzer pass over the in-sleep R-R — does NOT touch the shipped
+                // windowed avgHrv. Emitted here (loop 1) where `rr` is in scope; byte-identical to the Kotlin line.
+                let sleepRr = rr.filter { r in res.cachedSleep.contains { r.ts >= $0.startTs && r.ts < $0.endTs } }
+                    .map { Double($0.rrMs) }
+                if sleepRr.count >= HRVAnalyzer.minBeats {
+                    let h = HRVAnalyzer.analyze(rawRR: sleepRr)
+                    func ms(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "nil" }
+                    let rej = h.nInput > 0 ? String(format: "%.0f", 100 * (1 - Double(h.nClean) / Double(h.nInput))) : "0"
+                    diagnosticSink?("hrv diag day=\(res.daily.day) rmssd=\(ms(h.rmssd))ms sdnn=\(ms(h.sdnn))ms "
+                                    + "meanNN=\(ms(h.meanNN))ms rr=\(h.nInput)/\(h.nClean) rejected=\(rej)%", nil)
+                }
                 // ── Steps test mode: 5/MG raw-counter trace ──────────────────────────────────────────────
                 // Only built when the Steps mode is on (the gate was read once before the loop). Recomputes
                 // the SAME wrap-aware @57 sum analyzeDay just ran, over the SAME `daySteps` calendar-day
