@@ -145,6 +145,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
 
     /// Logs the FIRST live HR sample of a connection only (never every push); reset on stop/disconnect.
     private var loggedFirstHR = false
+    /// The ring's optical HR needs a beat or two to settle after (re)subscribe, so the very first live-HR
+    /// sample of a session is often an artifact (observed on-device). Drop exactly one, then stream
+    /// normally. Reset on stop/disconnect alongside `loggedFirstHR`.
+    private var droppedFirstLiveHR = false
     /// Logs the FIRST skin-temp sample DECODED THIS SESSION only (never every record); reset on
     /// stop/disconnect. These are last-night values from the history fetch, not live pushes, but we still
     /// only want one log line, not one per sample. Twin of `loggedFirstHR`.
@@ -424,6 +428,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         driver = nil
         reassembler.reset()
         loggedFirstHR = false
+        droppedFirstLiveHR = false
         loggedFirstTemp = false
         loggedFirstSpo2 = false
         loggedAnchor = false
@@ -600,6 +605,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             switch e {
             case .hr(let hr):
                 guard hr.bpm >= 30, hr.bpm <= 220 else { continue }   // physiological gate
+                // Drop the first (settling) live-HR sample of the session — it is frequently an artifact.
+                // The value is never shown or persisted; the NEXT sample becomes the first real reading.
+                if !droppedFirstLiveHR {
+                    droppedFirstLiveHR = true
+                    log("Oura: dropping first live HR \(hr.bpm) bpm (settling sample)")
+                    continue
+                }
                 if !loggedFirstHR {
                     loggedFirstHR = true
                     log("Oura: receiving live data - first HR \(hr.bpm) bpm")
@@ -851,6 +863,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
                             allowKeyInstall: adoptIntent)
         reachedStreaming = false
         loggedFirstHR = false
+        droppedFirstLiveHR = false
         loggedFirstTemp = false
         loggedFirstSpo2 = false
         loggedAnchor = false
@@ -898,6 +911,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         reassembler.reset()
         writeCharacteristic = nil
         loggedFirstHR = false
+        droppedFirstLiveHR = false
         loggedFirstTemp = false
         loggedFirstSpo2 = false
         loggedAnchor = false
