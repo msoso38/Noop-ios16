@@ -162,6 +162,28 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// ONLY (see the `allowTierB: true` comment at driver construction) - the log is how we collect raw
     /// captures to validate these layouts; nothing here ever persists or scores. Reset on stop/disconnect.
     private var loggedTierBKinds: Set<String> = []
+
+    // MARK: - Activity (0x50 MET) estimate accumulation — INVESTIGATION ONLY
+    // Aggregate the decoded 0x50 MET stream into an honest, clearly-labeled per-day estimate
+    // (OuraActivityEstimator) logged at drain-end, for eyeballing against WHOOP active minutes / Apple
+    // exercise minutes. Tier-B: never persisted, never scored, never a step count. Reset per connection.
+    /// MET samples bucketed by LOCAL calendar day (key `yyyy-MM-dd`, so a bucket matches the WHOOP / Apple
+    /// daily figure being compared), accumulated across the history drain.
+    private var activityMETByDay: [String: [Double]] = [:]
+    /// Cadence self-check state: the previous 0x50 record's UTC and sample count, plus the per-sample
+    /// seconds observed between consecutive records — `(curr.utc - prev.utc) / prev.sampleCount`. The
+    /// median pins the ring's MET epoch directly from the stream, validating `activityEpochSeconds`.
+    private var lastActivityUtc: Int?
+    private var lastActivitySampleCount = 0
+    private var activityCadenceObs: [Double] = []
+    /// Assumed per-sample epoch for the estimate log (the ONE calibration knob; the cadence self-check
+    /// above measures the real value). 60 s = Oura's common 1-minute MET resolution.
+    private let activityEpochSeconds: Double = 60
+    /// Cached local-day formatter (the 0x50 stream is high-volume; avoid building one per record).
+    private static let activityDayFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f   // local time zone by default
+    }()
+
     /// History-fetched events decoded BEFORE a ring-time -> UTC anchor exists this session, held here
     /// (with their own ring timestamp) until the anchor lands (`drainPendingAnchorEvents`), so they get
     /// their real historical time instead of a premature wall-clock guess. The ring's 0x42 time-sync can
@@ -290,8 +312,30 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             }
         } else {
             log("Oura: history fetch caught up (cursor \(historyCursor) [\(describeCursor(historyCursor))])")
+            logActivityEstimateSummary()
         }
         advance(.historyCursorAdvanced(cursor: summary.cursor, moreData: summary.moreData))
+    }
+
+    /// Log the per-day MET-derived activity estimate + the empirical cadence cross-check at drain-end.
+    /// INVESTIGATION ONLY (OuraActivityEstimator; weight-free, so no kcal): a clearly-labeled Tier-B
+    /// estimate for eyeballing against WHOOP active minutes / Apple exercise minutes. The cadence line
+    /// reports the ring's real per-sample spacing so `activityEpochSeconds` can be pinned. Never
+    /// persisted, never scored, never a step count.
+    private func logActivityEstimateSummary() {
+        guard !activityMETByDay.isEmpty else { return }
+        if !activityCadenceObs.isEmpty {
+            let sorted = activityCadenceObs.sorted()
+            let median = sorted[sorted.count / 2]
+            log(String(format: "Oura: activity cadence self-check - median %.1fs/sample over %d gaps (assumed %.0fs)",
+                       median, activityCadenceObs.count, activityEpochSeconds))
+        }
+        for day in activityMETByDay.keys.sorted() {
+            let est = OuraActivityEstimator.estimate(metSamples: activityMETByDay[day] ?? [],
+                                                     epochSeconds: activityEpochSeconds)
+            log(String(format: "Oura: activity estimate day=%@ samples=%d meanMET=%.2f maxMET=%.1f metMin=%.1f activeMin=%.1f [assumed %.0fs/sample, Tier-B est]",
+                       day, est.sampleCount, est.meanMET, est.maxMET, est.metMinutes, est.activeMinutes, activityEpochSeconds))
+        }
     }
 
     // MARK: - Sample buffer
@@ -433,6 +477,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         loggedFirstSpo2 = false
         loggedAnchor = false
         loggedTierBKinds.removeAll()
+        activityMETByDay.removeAll()
+        activityCadenceObs.removeAll()
+        lastActivityUtc = nil
+        lastActivitySampleCount = 0
         reachedStreaming = false
         pendingInstallKey = nil
         adoptPhase = .idle
@@ -714,7 +762,25 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // every time (not once-per-kind): this is the tag under active plausibility evaluation, so
                 // every real capture is evidence. Never persisted, never scored, and NEVER converted into
                 // steps (MET is not a step count; OuraStreamMapping drops .activityInfo unconditionally).
-                log("Oura: activity (Tier-B) state=\(info.state) met=\(info.met)")
+                // Include the record's anchored timestamp so an individual MET burst can be correlated
+                // with what the wearer was doing (walk / swim / …); before the UTC anchor lands it reads
+                // "no anchor yet".
+                let utc = driver.unixSeconds(forRingTimestamp: info.ringTimestamp)
+                let when = utc.map { Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval($0))) } ?? "no anchor yet"
+                log("Oura: activity (Tier-B) [\(when)] state=\(info.state) met=\(info.met)")
+                // Accumulate the MET series by local day for the drain-end estimate, and observe the
+                // per-sample cadence from consecutive record times (both investigation-only, never scored).
+                if let utc = utc {
+                    let dayKey = Self.activityDayFormatter.string(from: Date(timeIntervalSince1970: Double(utc)))
+                    activityMETByDay[dayKey, default: []].append(contentsOf: info.met)
+                    if let prev = lastActivityUtc, lastActivitySampleCount > 0 {
+                        let perSample = Double(utc - prev) / Double(lastActivitySampleCount)
+                        // Reject off-wrist gaps / out-of-order re-dumps; keep only plausible epoch spacings.
+                        if perSample >= 5, perSample <= 600 { activityCadenceObs.append(perSample) }
+                    }
+                    lastActivityUtc = utc
+                    lastActivitySampleCount = info.met.count
+                }
 
             default:
                 break   // motion / state / debugText: not a durable Streams row (see OuraStreamMapping)
@@ -916,6 +982,10 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedFirstSpo2 = false
         loggedAnchor = false
         loggedTierBKinds.removeAll()
+        activityMETByDay.removeAll()
+        activityCadenceObs.removeAll()
+        lastActivityUtc = nil
+        lastActivitySampleCount = 0
         reachedStreaming = false
         pendingInstallKey = nil
         // A disconnect MID-install is an honest failure (no ack came); a disconnect after streaming leaves
