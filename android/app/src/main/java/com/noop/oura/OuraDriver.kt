@@ -112,6 +112,17 @@ class OuraDriver(
     private var anchorRingTime: Long? = null
 
     /**
+     * Host wall-clock reference (unix SECONDS) for the near-now anchor gate. The ring is sync_time-synced to
+     * the host on connect, so a REAL 0x42/0x85 beacon reads ≈ now; a MISFRAMED one whose bytes decode to a
+     * plausible-but-WRONG YEAR (e.g. 2021) must NOT anchor — it silently mis-stamps a whole batch of samples
+     * to that year. When set, an anchor epoch must fall within ±[MAX_ANCHOR_DRIFT_SECONDS] of this. null
+     * (unit tests / no reference injected) ⇒ fall back to the static 2020-2035 window so pure tests keep
+     * clock-independent bounds. Set by the transport (OuraLiveSource) on each connect. Twin of Swift's
+     * anchorReferenceEpochSeconds.
+     */
+    var anchorReferenceEpochSeconds: Long? = null
+
+    /**
      * The freshly-provisioned key the transport generated during an adopt flow (s3.2). Once set by
      * beginKeyInstall it becomes the effective key for the post-install re-auth. null otherwise.
      */
@@ -334,6 +345,7 @@ class OuraDriver(
     private fun setAnchorIfPlausible(epochSeconds: Long, ringTimestamp: Long, preferPrimary: Boolean) {
         // A secondary (beacon) anchor never displaces an already-set primary (time-sync) anchor.
         if (!preferPrimary && anchorUtcMs != null) return
+        if (!acceptsAnchorEpoch(epochSeconds)) return
         val ms = plausibleAnchorMs(epochSeconds) ?: return
         // Both halves must be plausible: a plausible epoch paired with a garbage ring-time (misframed
         // record) would pin the anchor ~2e9 ticks off and starve all real history (#91). Reject unless the
@@ -341,6 +353,18 @@ class OuraDriver(
         if (!isPlausibleAnchorRingTime(ringTimestamp)) return
         anchorUtcMs = ms
         anchorRingTime = ringTimestamp
+    }
+
+    /**
+     * Combined anchor-epoch gate. Requires BOTH the static 2020-2035 sanity window (also the overflow guard)
+     * AND — when a host reference is injected — a ±[MAX_ANCHOR_DRIFT_SECONDS] near-now window, so a misframed
+     * beacon whose bytes land in a wrong year can never anchor and mis-stamp a batch. With no reference (unit
+     * tests) it degrades to the static window. Twin of Swift's acceptsAnchorEpoch.
+     */
+    fun acceptsAnchorEpoch(epochSeconds: Long): Boolean {
+        if (!isPlausibleAnchorEpoch(epochSeconds)) return false
+        val reference = anchorReferenceEpochSeconds ?: return true
+        return kotlin.math.abs(epochSeconds - reference) <= MAX_ANCHOR_DRIFT_SECONDS
     }
 
     /**
@@ -596,6 +620,14 @@ class OuraDriver(
          */
         private const val MIN_PLAUSIBLE_EPOCH_SECONDS = 1_577_836_800L
         private const val MAX_PLAUSIBLE_EPOCH_SECONDS = 2_051_222_400L
+
+        /**
+         * Max drift between an anchor epoch and the host wall-clock reference for the epoch to be trusted.
+         * The ring is sync_time-synced to the host on connect, so a genuine beacon reads within seconds of
+         * now; ±7 days covers a beacon banked earlier in the ring's recent history while rejecting any
+         * wrong-YEAR misframe. Byte-identical to Swift's maxAnchorDriftSeconds.
+         */
+        private const val MAX_ANCHOR_DRIFT_SECONDS = 7L * 86_400L   // ±7 days
 
         /**
          * Ceiling for a plausible anchor RING-TIME (100 ms ticks, boot-relative): 500M ticks ≈ 579 days of

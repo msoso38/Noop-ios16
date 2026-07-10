@@ -75,6 +75,14 @@ public final class OuraDriver {
     /// guessing. A stale anchor from a PREVIOUS session is never reused - the ring may have rebooted.
     private var anchorUtcMs: Int64?
     private var anchorRingTime: UInt32?
+    /// Host wall-clock reference (unix SECONDS) for the near-now anchor gate. The ring is `sync_time`-synced
+    /// to the host on connect, so a REAL 0x42/0x85 beacon reads ≈ now; a MISFRAMED one whose 4/8 payload
+    /// bytes happen to decode to a plausible-but-WRONG YEAR (e.g. 2021) must NOT be allowed to anchor — it
+    /// silently mis-stamps a whole batch of samples to that year (observed: 81 skin-temp rows dated 2021).
+    /// When set, an anchor epoch must fall within ±`maxAnchorDriftSeconds` of this. nil (unit tests / no
+    /// reference injected) ⇒ fall back to the static 2020–2035 window so pure tests keep clock-independent
+    /// bounds. Set by the transport (OuraLiveSource) on each connect. Must match the Kotlin twin.
+    public var anchorReferenceEpochSeconds: Int64?
     /// The freshly-provisioned key the transport generated during an adopt flow (s3.2). Once set by
     /// beginKeyInstall it becomes the effective key for the post-install re-auth. nil otherwise.
     private var installedKey: [UInt8]?
@@ -269,6 +277,24 @@ public final class OuraDriver {
         return seconds * 1000   // safe: bounded input, cannot overflow
     }
 
+    /// Maximum drift between an anchor epoch and the host wall-clock reference (`anchorReferenceEpochSeconds`)
+    /// for the epoch to be trusted. The ring is `sync_time`-synced to the host on connect, so a genuine
+    /// beacon reads within a few seconds of now; ±7 days generously covers a beacon banked earlier in the
+    /// ring's recent history while still rejecting any wrong-YEAR misframe (a 2021 value is >4 y off). Must
+    /// match the Kotlin twin.
+    private static let maxAnchorDriftSeconds: Int64 = 7 * 86_400   // ±7 days
+
+    /// Combined anchor-epoch gate. Requires BOTH the static 2020–2035 sanity window (also the overflow guard
+    /// for the seconds→ms `* 1000`) AND — when a host reference is injected — a ±`maxAnchorDriftSeconds`
+    /// near-now window, so a misframed beacon whose bytes land in a wrong year can never anchor and mis-stamp
+    /// a batch. With no reference (unit tests) it degrades to the static window, so existing pure tests keep
+    /// their fixed, clock-independent behaviour. Must match the Kotlin twin.
+    public func acceptsAnchorEpoch(_ seconds: Int64) -> Bool {
+        guard Self.isPlausibleAnchorEpoch(seconds) else { return false }
+        guard let reference = anchorReferenceEpochSeconds else { return true }
+        return abs(seconds - reference) <= Self.maxAnchorDriftSeconds
+    }
+
     /// Ceiling for a plausible anchor RING-TIME (100 ms ticks, boot-relative): 500M ticks ≈ 579 days of
     /// uptime. The epoch gate alone is not enough — a misframed 0x42/0x85 can carry a plausible epoch
     /// (2020-2035) yet a GARBAGE ring-time (the 4 rt bytes read off a wrong offset land in the billions).
@@ -372,8 +398,8 @@ public final class OuraDriver {
             // Both halves must be plausible: a plausible epoch paired with a garbage ring-time (misframed
             // record) would pin the anchor ~2e9 ticks off and starve all real history (see
             // maxPlausibleAnchorRingTime). Reject unless BOTH the epoch and the ring-time check out.
-            if let ms = Self.plausibleAnchorMs(fromEpochSeconds: ts.epochMs),
-               Self.isPlausibleAnchorRingTime(ts.ringTimestamp) {
+            if acceptsAnchorEpoch(ts.epochMs), Self.isPlausibleAnchorRingTime(ts.ringTimestamp),
+               let ms = Self.plausibleAnchorMs(fromEpochSeconds: ts.epochMs) {
                 anchorUtcMs = ms
                 anchorRingTime = ts.ringTimestamp
             }
@@ -382,8 +408,9 @@ public final class OuraDriver {
             // Secondary UTC anchor (s5.5, 1s granularity): only fills in while no 0x42 anchor exists yet
             // this session, so a coarser beacon never overrides the primary time-sync anchor.
             guard let r = OuraDecoders.decodeRtcBeacon(record) else { return [] }
-            if anchorUtcMs == nil, let ms = Self.plausibleAnchorMs(fromEpochSeconds: Int64(r.unixSeconds)),
-               Self.isPlausibleAnchorRingTime(r.ringTimestamp) {
+            if anchorUtcMs == nil, acceptsAnchorEpoch(Int64(r.unixSeconds)),
+               Self.isPlausibleAnchorRingTime(r.ringTimestamp),
+               let ms = Self.plausibleAnchorMs(fromEpochSeconds: Int64(r.unixSeconds)) {
                 anchorUtcMs = ms
                 anchorRingTime = r.ringTimestamp
             }

@@ -219,6 +219,32 @@ final class OuraDriverTests: XCTestCase {
         XCTAssertEqual(d.unixSeconds(forRingTimestamp: anchorRt + 100), Int(anchorEpochSeconds) + 10)
     }
 
+    func testNearNowAnchorGateRejectsWrongYearButKeepsStaticWindowWhenNoReference() {
+        let now: Int64 = 1_752_000_000            // ~2025-07, the injected host clock
+        let anchorRt: UInt32 = 10_000
+        func seat(_ epoch: Int64, reference: Int64?) -> Bool {
+            let d = OuraDriver(ringGen: .gen3, authKey: key)
+            d.anchorReferenceEpochSeconds = reference
+            _ = d.ingest(record: OuraRecord(type: OuraEventTag.timeSync.rawValue,
+                                            ringTimestamp: anchorRt, payload: le8(epoch) + [0x00]))
+            return d.hasAnchor
+        }
+        // With the host reference set: a near-now beacon anchors; a wrong-YEAR (2021) beacon that still sits
+        // inside the loose 2020-2035 window is REJECTED (it would mis-stamp a whole batch to 2021).
+        XCTAssertTrue(seat(now, reference: now))
+        XCTAssertTrue(seat(now - 6 * 86_400, reference: now))   // 6 days stale (banked beacon) still OK
+        XCTAssertFalse(seat(now - 8 * 86_400, reference: now))  // 8 days off → outside ±7d
+        XCTAssertFalse(seat(1_610_000_000, reference: now))     // ~2021, >4y off → rejected
+        // With NO reference (unit-test default): degrade to the static 2020-2035 window, so the 2021 value
+        // anchors again — proves existing clock-independent tests are unaffected.
+        XCTAssertTrue(seat(1_610_000_000, reference: nil))
+        // The pure predicate mirrors the seat behaviour.
+        let d = OuraDriver(ringGen: .gen3, authKey: key)
+        d.anchorReferenceEpochSeconds = now
+        XCTAssertTrue(d.acceptsAnchorEpoch(now))
+        XCTAssertFalse(d.acceptsAnchorEpoch(1_610_000_000))
+    }
+
     func testPhantomRingTimestampFarFromAnchorIsRejected() {
         // A misframed record's garbage ring timestamp converts to a date days-to-years from the anchor but
         // still INSIDE the loose 2020-2035 absolute window. The anchor-relative guard must reject it so it
