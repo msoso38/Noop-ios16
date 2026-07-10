@@ -83,6 +83,37 @@ final class DayOwnerReadIntegrationTests: XCTestCase {
         XCTAssertTrue(read.allSatisfy { $0.bpm == 99 }, "read must follow the locked owner")
     }
 
+    /// #137 (B1): on a STRAP-LESS day — the active WHOOP collected NO HR — an imported activity file's
+    /// HR (source "activity-file", a `.fileImport` device) makes it the day owner, so `dayHr` reads the
+    /// ride's HR and the day Effort ring can light. This is the whole point of registering `activity-file`
+    /// as a `.fileImport` candidate: with the strap absent it's the only source with data, so priority-2
+    /// still wins (an owner is the lowest-priority candidate that HAS data, not merely the lowest priority).
+    /// On a day the strap DID collect HR, the strap (priority 0) would win instead — proven by the first
+    /// test above — so imported HR only ever surfaces where there's no strap data to override it.
+    func testActivityFileOwnsStrapLessDayAndReadReturnsItsHR() async throws {
+        let store = try await WhoopStore.inMemory()    // migration v15 seeds active 'my-whoop' (no data yet)
+        let registry = DeviceRegistryStore(dbQueue: store.registryWriter)
+
+        // The activity-file import device, exactly as DataSourcesView registers it (#137 B1).
+        try registry.add(PairedDevice(id: "activity-file", brand: "Workout files", model: "",
+                                      sourceKind: .fileImport, capabilities: [.hr],
+                                      status: .paired, addedAt: 1, lastSeenAt: 1))
+
+        // ONLY the imported ride has HR this day; the active strap has none (strap-less day).
+        let base = dayStart + 3 * 3_600
+        let rideHR = (0..<300).map { HRSample(ts: base + $0, bpm: 132) }
+        _ = try await store.insert(Streams(hr: rideHR), deviceId: "activity-file")
+
+        let from = dayStart - 30 * 3_600, to = dayStart + 12 * 3_600
+        let owner = try await resolveOwner(store: store, registry: registry, from: from, to: to)
+        XCTAssertEqual(owner, "activity-file",
+                       "with no strap HR, the imported file (priority 2, has data) must own the day")
+
+        let read = try await store.hrSamples(deviceId: owner!, from: from, to: to, limit: 200_000)
+        XCTAssertEqual(read.count, rideHR.count)
+        XCTAssertTrue(read.allSatisfy { $0.bpm == 132 }, "the day read must return the imported ride's HR")
+    }
+
     /// Single-device install (the default): only the seeded active 'my-whoop' is paired. The owner
     /// MUST resolve to 'my-whoop' so behaviour is byte-identical to the pre-I2 code.
     func testSingleDeviceResolvesToWhoopUnchanged() async throws {

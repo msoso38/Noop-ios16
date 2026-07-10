@@ -4,6 +4,7 @@ import StrandDesign
 import StrandImport
 import StrandAnalytics
 import WhoopStore
+import WhoopProtocol   // #137: Streams / HRSample, to persist an imported activity's per-sample HR
 
 struct DataSourcesView: View {
     @EnvironmentObject var model: AppModel
@@ -458,7 +459,16 @@ struct DataSourcesView: View {
     /// Parse a single GPX / TCX / FIT activity file and upsert it as one workout (source
     /// "activity-file"). The route polyline isn't persisted on macOS (the shared WorkoutRow has no route
     /// column), but distance / HR / energy / ascent and an honest "N GPS points · M HR samples" note are.
-    /// No `strain` is stored unless the file carried one — imported files never feed the HR-based Effort.
+    ///
+    /// #137: the imported ride's REAL per-sample HR is now ALSO persisted as an HR stream under the
+    /// `activity-file` deviceId, and `activity-file` is registered as a `.fileImport` device. Together
+    /// (A + B1) that lets a strap-less day's ride light the day Effort ring: the per-day owner resolver
+    /// (`IntelligenceEngine.resolveDayOwner`) treats `activity-file` as an import candidate (priority 2)
+    /// and — being the only source with HR that day — picks it as the day owner, so `dayHr` reads the
+    /// ride's HR and Effort scores from it. On a day the user ALSO wore the strap, the strap (priority
+    /// 0/1) wins ownership and the imported HR is ignored for Effort — the desired behaviour. The
+    /// workout row itself still stores `strain = nil` (we never fabricate a per-workout strain); the day
+    /// Effort is computed from the measured HR stream, exactly as it is for a worn strap.
     private func importActivityFile(url: URL) {
         activityFileImporting = true
         activityFileSummary = nil
@@ -506,6 +516,36 @@ struct DataSourcesView: View {
                     notes: activity.importNote()
                 )
                 try await store.upsertWorkouts([row], deviceId: ActivityFileImporter.sourceId)
+
+                // #137 (A): persist the ride's real per-sample HR under the activity-file source. The
+                // insert is keyed on (deviceId, ts), so re-importing the same file is idempotent (an
+                // identical ts overwrites, never duplicates). Skipped when the file carried no
+                // timestamped HR (a pure GPS track) — nothing to store, so day Effort stays honestly dark.
+                if !activity.hrSamples.isEmpty {
+                    let hr = activity.hrSamples.map { HRSample(ts: $0.ts, bpm: $0.bpm) }
+                    _ = try? await store.insert(Streams(hr: hr), deviceId: ActivityFileImporter.sourceId)
+                }
+
+                // #137 (B1): register `activity-file` as a `.fileImport` device so the per-day owner
+                // resolver can pick it as the day owner on a strap-less day (it iterates the registry's
+                // paired devices; an unregistered source is invisible to it). status `.paired`, NEVER
+                // `.active`, so it can never displace the live strap as the active device; capability
+                // `.hr` marks what the source CAN provide (presence per-day is still gated by an actual
+                // HR read in the resolver). Idempotent (ON CONFLICT(id) DO UPDATE), makeActive: false.
+                model.registerDevice(
+                    PairedDevice(
+                        id: ActivityFileImporter.sourceId,
+                        brand: "Workout files",
+                        model: "",
+                        sourceKind: .fileImport,
+                        capabilities: [.hr],
+                        status: .paired,
+                        addedAt: Int(Date().timeIntervalSince1970),
+                        lastSeenAt: Int(Date().timeIntervalSince1970)
+                    ),
+                    makeActive: false
+                )
+
                 await repo.refresh()
                 activityFileSummary = ActivityFileImporter.summaryText(activity)
                 activityFileFailed = false
