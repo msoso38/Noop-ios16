@@ -422,7 +422,8 @@ final class IntelligenceEngine: ObservableObject {
         var scoredNights: [(daily: DailyMetric, strain: Double?, cachedSleep: [CachedSleepSession],
                             workouts: [ExerciseSession], nightlySkin: Double?,
                             sessionMotion: [Int: [Double]],
-                            sessionSleepState: [Int: [Int]])] = []
+                            sessionSleepState: [Int: [Int]],
+                            hrvDiag: String?)] = []   // #195: carried from loop 1, emitted in the main-actor loop
         // Nightly values harvested in pass 1, keyed by day, to seed the pass-2 baseline.
         var nightlyHrvByDay: [String: Double?] = [:]
         var nightlyRhrByDay: [String: Double?] = [:]
@@ -653,20 +654,26 @@ final class IntelligenceEngine: ObservableObject {
                                                      // ring buffer isn't flooded; every night keeps the summary.
                                                      hrvWindowDetail: dayStart == nowLocalMidnight,
                                                      deepHrvWindow: deepHrvWindow)
-                // #195: whole-night HRV cleaning-pipeline summary to the always-on strap log, so a "reads ~2x
+                // #195: whole-night HRV cleaning-pipeline summary for the always-on strap log, so a "reads ~2x
                 // too high" report is triageable without the HRV test mode: RMSSD vs SDNN (rmssd >> sdnn =
                 // beat-to-beat jitter surviving the ectopic filter, not real HRV), meanNN as an HR sanity-check,
                 // and how many R-R intervals survived cleaning (a low count also flags the sparse-capture /
-                // calibration side). A SEPARATE analyzer pass over the in-sleep R-R — does NOT touch the shipped
-                // windowed avgHrv. Emitted here (loop 1) where `rr` is in scope; byte-identical to the Kotlin line.
+                // calibration side — `nInput` is set before the min-beats gate, so a sparse night still shows
+                // its count with rmssd=nil). A SEPARATE analyzer pass over the in-sleep R-R — does NOT touch the
+                // shipped windowed avgHrv. Built here (loop 1) where `rr` is in scope, but EMITTED in the
+                // main-actor replay loop below (diagnosticSink is main-actor isolated), carried on `hrvDiag`.
+                // Byte-identical to the Kotlin line.
                 let sleepRr = rr.filter { r in res.cachedSleep.contains { r.ts >= $0.startTs && r.ts < $0.endTs } }
                     .map { Double($0.rrMs) }
-                if sleepRr.count >= HRVAnalyzer.minBeats {
+                let hrvDiag: String?
+                if sleepRr.isEmpty {
+                    hrvDiag = nil
+                } else {
                     let h = HRVAnalyzer.analyze(rawRR: sleepRr)
                     func ms(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "nil" }
                     let rej = h.nInput > 0 ? String(format: "%.0f", 100 * (1 - Double(h.nClean) / Double(h.nInput))) : "0"
-                    diagnosticSink?("hrv diag day=\(res.daily.day) rmssd=\(ms(h.rmssd))ms sdnn=\(ms(h.sdnn))ms "
-                                    + "meanNN=\(ms(h.meanNN))ms rr=\(h.nInput)/\(h.nClean) rejected=\(rej)%", nil)
+                    hrvDiag = "hrv diag day=\(res.daily.day) rmssd=\(ms(h.rmssd))ms sdnn=\(ms(h.sdnn))ms "
+                        + "meanNN=\(ms(h.meanNN))ms rr=\(h.nInput)/\(h.nClean) rejected=\(rej)%"
                 }
                 // ── Steps test mode: 5/MG raw-counter trace ──────────────────────────────────────────────
                 // Only built when the Steps mode is on (the gate was read once before the loop). Recomputes
@@ -740,7 +747,8 @@ final class IntelligenceEngine: ObservableObject {
             scoredNights.append((daily: res.daily, strain: res.strain, cachedSleep: res.cachedSleep,
                                  workouts: res.workouts, nightlySkin: res.nightlySkinTempC,
                                  sessionMotion: res.sessionMotionByStart,
-                                 sessionSleepState: res.sessionSleepStateByStart))
+                                 sessionSleepState: res.sessionSleepStateByStart,
+                                 hrvDiag: hrvDiag))
         }
 
         // ── Seed the baseline from the UNION of imported nightly history + the values just computed.
@@ -901,6 +909,8 @@ final class IntelligenceEngine: ObservableObject {
             // Counts-only (a rounded ms + the window), PII-free; byte-identical to the Kotlin line.
             let hrvLog = daily.avgHrv.map { String(format: "%.1f", $0) } ?? "nil"
             diagnosticSink?("hrv day=\(daily.day) window=\(deepHrvWindow ? "deep" : "whole") avgHrv=\(hrvLog)", nil)
+            // #195: the whole-night HRV cleaning summary built in loop 1 (rmssd vs sdnn / cleaning counts).
+            if let hrvDiagLine = night.hrvDiag { diagnosticSink?(hrvDiagLine, nil) }
             // ── CAPTURE-B: universal dayOwner self-diagnostic (#814/#799) ────────────────────────────────
             // ONE line per scored day, tagged `.universal` so it rides EVERY Test Centre export regardless
             // of which mode is on. It pins down the read/write split #814 is about: `readId` is the owner
