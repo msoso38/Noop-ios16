@@ -115,6 +115,10 @@ final class IntelligenceEngine: ObservableObject {
         /// deep-only vs last-SWS summary) for this day, collected off the main actor and replayed tagged
         /// `.hrv` in per-day order. Empty unless the HRV mode is active. (#141)
         let hrvTrace: [String]
+        /// #195: the ALWAYS-ON whole-night HRV cleaning summary (`hrv diag …`), built off the main actor
+        /// where `rr` is in scope and replayed through `diagnosticSink` in pass 2 (which is main-actor
+        /// isolated). nil when the night has no in-sleep R-R.
+        let hrvDiag: String?
     }
 
     struct Computed: Identifiable {
@@ -712,7 +716,8 @@ final class IntelligenceEngine: ObservableObject {
                 }
                 out.append(DayScan(result: res, rhrLine: rhrLine,
                                    readOwner: owner, hrRows: hr.count,
-                                   sleepTrace: sleepTrace, stepsTrace: stepsTrace, hrvTrace: hrvTrace))
+                                   sleepTrace: sleepTrace, stepsTrace: stepsTrace, hrvTrace: hrvTrace,
+                                   hrvDiag: hrvDiag))
             }
             return out
         }.value
@@ -748,7 +753,7 @@ final class IntelligenceEngine: ObservableObject {
                                  workouts: res.workouts, nightlySkin: res.nightlySkinTempC,
                                  sessionMotion: res.sessionMotionByStart,
                                  sessionSleepState: res.sessionSleepStateByStart,
-                                 hrvDiag: hrvDiag))
+                                 hrvDiag: scan.hrvDiag))
         }
 
         // ── Seed the baseline from the UNION of imported nightly history + the values just computed.
