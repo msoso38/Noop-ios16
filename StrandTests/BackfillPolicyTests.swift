@@ -52,4 +52,43 @@ final class BackfillPolicyTests: XCTestCase {
         XCTAssertTrue(BackfillPolicy.shouldRun(trigger: .connect, now: 1000, lastBackfillAt: last, emptyStreak: 99))
         XCTAssertTrue(BackfillPolicy.shouldRun(trigger: .foreground, now: 1000, lastBackfillAt: last, emptyStreak: 99))
     }
+
+    // MARK: - #160: future-dated clock backoff
+
+    /// #160: a future-dated-clock strap's recurring automatic offloads are SKIPPED ENTIRELY (not just
+    /// throttled) — each ~60s offload starves the WHOOP4 realtime-HR re-arm, and #1012 won't trust the
+    /// range anyway. `.strap` never runs while `clockUntrusted`, no matter how long since the last pass.
+    func testClockUntrustedSkipsStrapEntirely() {
+        // A huge elapsed that would trivially pass every floor: still skipped when the clock is untrusted.
+        XCTAssertTrue (BackfillPolicy.shouldRun(trigger: .strap, now: 1_000_000, lastBackfillAt: 0,
+                                                emptyStreak: 0, clockUntrusted: false))
+        XCTAssertFalse(BackfillPolicy.shouldRun(trigger: .strap, now: 1_000_000, lastBackfillAt: 0,
+                                                emptyStreak: 0, clockUntrusted: true))
+    }
+
+    func testClockUntrustedSkipsPeriodicEntirely() {
+        XCTAssertTrue (BackfillPolicy.shouldRun(trigger: .periodic, now: 1_000_000, lastBackfillAt: 0,
+                                                clockUntrusted: false))
+        XCTAssertFalse(BackfillPolicy.shouldRun(trigger: .periodic, now: 1_000_000, lastBackfillAt: 0,
+                                                clockUntrusted: true))
+    }
+
+    /// The skip is independent of `emptyStreak`: a clock-untrusted strap that is ALSO banking real rows
+    /// (emptyStreak 0) is skipped just the same as one with a long empty streak.
+    func testClockUntrustedSkipRegardlessOfEmptyStreak() {
+        XCTAssertFalse(BackfillPolicy.shouldRun(trigger: .strap, now: 1_000_000, lastBackfillAt: 0,
+                                                emptyStreak: 0, clockUntrusted: true))
+        XCTAssertFalse(BackfillPolicy.shouldRun(trigger: .periodic, now: 1_000_000, lastBackfillAt: 0,
+                                                emptyStreak: 99, clockUntrusted: true))
+    }
+
+    /// clockUntrusted must never delay a user- or connection-driven sync — the .connect pass is exactly
+    /// how a self-corrected clock gets picked up again after the automatic triggers were skipped.
+    func testClockUntrustedNeverDelaysConnectForegroundManualOrAutoContinue() {
+        let last = 1000 - fe
+        XCTAssertTrue(BackfillPolicy.shouldRun(trigger: .connect, now: 1000, lastBackfillAt: last, clockUntrusted: true))
+        XCTAssertTrue(BackfillPolicy.shouldRun(trigger: .foreground, now: 1000, lastBackfillAt: last, clockUntrusted: true))
+        XCTAssertTrue(BackfillPolicy.shouldRun(trigger: .manual, now: 1000, lastBackfillAt: 999, clockUntrusted: true))
+        XCTAssertTrue(BackfillPolicy.shouldRun(trigger: .autoContinue, now: 1000, lastBackfillAt: 999, clockUntrusted: true))
+    }
 }

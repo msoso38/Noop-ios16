@@ -2247,8 +2247,14 @@ public final class BLEManager: NSObject, ObservableObject {
             connected: state.connected, bonded: state.bonded, backfilling: backfilling) else { return }
         let now = Date().timeIntervalSince1970
         let last = UserDefaults.standard.object(forKey: BLEManager.backfillLastAtKey) as? Double
+        // #160: a future-dated-clock strap's recurring automatic offloads (#928/#1012) are near-useless
+        // AND each ~60s session blocks the WHOOP4 realtime-HR keep-alive re-arm (guard !backfilling), so
+        // live HR lapses. Feed the already-tracked future-dated signal into BackfillPolicy, which SKIPS
+        // the .strap/.periodic triggers entirely for such a strap (the .connect pass still re-checks it).
+        let clockUntrusted = BackfillContinuation.isFutureDatedNewest(strapNewestTs, wallNowUnix: Int(now))
         guard BackfillPolicy.shouldRun(trigger: trigger, now: now, lastBackfillAt: last,
-                                       emptyStreak: emptySyncTracker.consecutiveEmptySyncs) else {
+                                       emptyStreak: emptySyncTracker.consecutiveEmptySyncs,
+                                       clockUntrusted: clockUntrusted) else {
             log("Backfill: \(trigger) skipped (rate-limited; last \(last.map { Int(now - $0) } ?? -1)s ago)")
             return
         }
