@@ -299,8 +299,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The active strap source id (raw streams + imported history live under this). Resolved once at
      *  startup from the device registry (see [NoopApplication.activeDeviceId]); falls back to the
-     *  legacy "my-whoop", so behaviour is unchanged today. */
-    private val deviceId = noopApp.activeDeviceId
+     *  legacy "my-whoop", so behaviour is unchanged today. Public (not private) so the Today screen's
+     *  workout union can follow a re-paired strap's fresh "whoop-<id>" instead of stranding its
+     *  recordings under a read pinned to the literal "my-whoop" (#814 twin of the Workouts screen). */
+    val deviceId = noopApp.activeDeviceId
 
     /** Live connection + biometric snapshot, surfaced straight from the BLE client. */
     val live: StateFlow<LiveState> = ble.state
@@ -1273,6 +1275,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     .getLong(Baselines.hrvBaselineEpochKey, 0L).toDouble(),
                 recoveryEpoch = NoopPrefs.of(appContext)
                     .getLong(Baselines.recoveryBaselineEpochKey, 0L).toDouble(),
+                // #195/#141: keep the HRV window consistent with the 15-min loop — without this a sleep edit
+                // would re-score + persist every night's HRV over the WHOLE night, silently overwriting the
+                // deep-window value (the "deep sleep window changes nothing" bug).
+                deepHrvWindow = UnitPrefs.hrvWindow(appContext) == HrvWindow.DEEP_SLEEP,
                 // Opt-in experimental sleep staging (V2) — same flag the 15-min loop reads, so a manual
                 // re-score after an edit stages with the same engine the user chose. (V7 Pillar 3b)
                 useExperimentalSleepV2 = PuffinExperiment.from(appContext).experimentalSleepV2,

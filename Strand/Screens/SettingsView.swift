@@ -249,10 +249,17 @@ struct SettingsView: View {
     /// iOS 16+ and macOS 13+ (NOOP's floor), so the same control serves both platforms — no
     /// availability gating needed. The photo is stored only on this device (NOOP is fully offline).
     private var profilePhotoCard: some View {
-        SettingsSection(
+        // #153: resolve the whole blurb through `String(localized:)` first, then hand SwiftUI the plain
+        // String via `LocalizedStringKey(_:)`. Interpolating `Platform.deviceNounPhrase` (itself an
+        // already-resolved localized String) straight into the `blurb:` `LocalizedStringKey` literal
+        // confused SwiftUI's text-measurement pass — the blurb rendered with zero trailing margin and
+        // clipped to the card edge instead of wrapping inside the card padding. The localization key is
+        // unchanged (`…Stored only on %@…`), so the existing translations still apply.
+        let blurbText = String(localized: "Optional. Add a photo for the avatar in the top-left. Stored only on \(Platform.deviceNounPhrase). NOOP is offline, so it's never uploaded.")
+        return SettingsSection(
             icon: "person.crop.circle",
             title: "Profile photo",
-            blurb: "Optional. Add a photo for the avatar in the top-left. Stored only on \(Platform.deviceNounPhrase). NOOP is offline, so it's never uploaded."
+            blurb: LocalizedStringKey(blurbText)
         ) {
             HStack(spacing: 16) {
                 ProfileAvatarView(imageData: profile.avatarImageData, size: 64)
@@ -270,7 +277,6 @@ struct SettingsView: View {
                             .accessibilityHint("Reverts to the default profile icon")
                     }
                 }
-                .frame(maxWidth: .infinity)
             }
         }
         // Load the picked photo's bytes, then hand them to the store (which downscales + persists).
@@ -889,7 +895,10 @@ struct SettingsView: View {
                 // re-baselines (like a sleep edit).
                 FormRow(label: "HRV window") {
                     Picker("HRV window", selection: $hrvWindowRaw) {
-                        Text("Whole night").tag(HrvWindow.whole.rawValue)
+                        // #153: "Night" (not "Whole night") — a single short word so the two-segment
+                        // control doesn't truncate once it sizes to the row (some locales' longer
+                        // translations overflowed), matching the Temperature/Theme pickers above.
+                        Text("Night").tag(HrvWindow.whole.rawValue)
                         Text("Deep sleep").tag(HrvWindow.deep.rawValue)
                     }
                     .labelsHidden()
@@ -897,16 +906,18 @@ struct SettingsView: View {
                     .tint(StrandPalette.accent)
                     .accessibilityLabel("HRV window")
                     .onChangeCompat(of: hrvWindowRaw) { _ in
-                        // The new window shifts every night's avgHrv, so the HRV BASELINE must re-learn or
-                        // recovery would compare the new value against a baseline still folded from the old
-                        // window (the EWMA spans further than the ~21 nights that re-score → skewed for weeks).
-                        // Re-anchor the HRV baseline to now (HRV-only sibling of "Recalibrate Charge baseline"),
-                        // then re-score + refresh so the recent trend + fresh baseline both reflect the window.
-                        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Baselines.hrvBaselineEpochKey)
+                        // #201: the new window shifts every night's avgHrv, so the HRV baseline must reflect it
+                        // too — but a plain re-score already achieves that. analyzeRecent re-scores the recent
+                        // ~21 nights' avgHrv under the new window AND re-folds the HRV baseline from them in the
+                        // same pass, and the baseline's 14-night-half-life EWMA is dominated by that fresh
+                        // re-scored tail. So DON'T re-anchor the baseline epoch: doing so would drop all history
+                        // and force a multi-night "calibrating" reset for someone who already has plenty of nights
+                        // (that reset reading as "the setting is broken" was #195). A genuine cold-start user
+                        // (<4 valid nights) still calibrates honestly; established users see the switch immediately.
                         Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
                     }
                 }
-                Text("Whole night is NOOP's default measure; Deep sleep pools HRV over slow-wave sleep only, reading lower and matching WHOOP. Switching re-scores recent nights and recalibrates Charge over a few nights.")
+                Text("Whole night is NOOP's default measure; Deep sleep pools HRV over slow-wave sleep only, reading lower and matching WHOOP. Switching re-scores your recent nights over the new window and takes effect right away once you have a few nights of data.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
