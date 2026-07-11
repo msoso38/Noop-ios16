@@ -1019,6 +1019,8 @@ fun TodayScreen(
                 humanDate = humanDate,
                 selectedDay = selectedDay,
                 batteryPct = if (liveSnap.connected) liveSnap.batteryPct else null,
+                backfilling = liveSnap.backfilling,
+                syncChunksThisSession = liveSnap.syncChunksThisSession,
                 onPickDay = { offset -> selectedDayOffset = offset },
                 onQuickActions = onQuickActions,
                 onOpenSettings = onOpenSettings,
@@ -1883,6 +1885,9 @@ private fun LiquidTodayHeader(
     humanDate: String,
     selectedDay: LocalDate,
     batteryPct: Double?,
+    // #245: sync-progress for the compact header chip (twin of iOS SyncStatusChip).
+    backfilling: Boolean = false,
+    syncChunksThisSession: Int = 0,
     onPickDay: (Int) -> Unit,
     onQuickActions: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -1959,11 +1964,14 @@ private fun LiquidTodayHeader(
             )
         }
 
-        // RIGHT: the controls, in order — avatar · + · battery ring. Each ~34dp, 8dp apart.
+        // RIGHT: the controls, in order — [sync chip] · avatar · + · battery ring. Each ~34dp, 8dp apart.
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            // #245: compact "syncing history" chip, shown for EVERY user while the strap offloads (the
+            // full SyncingHistoryNote is gated on recovery == null). Twin of iOS SyncStatusChip.
+            SyncStatusChip(backfilling = backfilling, chunks = syncChunksThisSession)
             // (a) Profile avatar (the photo set in Settings, or the NOOP loop mark) → Settings. Mirrors iOS.
             Box(
                 modifier = Modifier
@@ -1988,8 +1996,33 @@ private fun LiquidTodayHeader(
     }
 }
 
-/** The strap battery ring (iOS LiquidBatteryButton): a 34dp translucent disc with a hairline rim; when a
- *  reading exists it draws a trimmed ring in the charge/warning/critical hue plus the % inside, else a
+/** #245: compact "syncing history" chip for the Today top bar, shown for EVERY user while the strap
+ *  offloads history — the full-width SyncingHistoryNote is gated on `recovery == null`, so an established
+ *  user (and especially a WHOOP 5/MG owner, whose offloads are already rare) saw no sync feedback on
+ *  Today. Renders nothing when idle. Twin of iOS SyncStatusChip. DRAFT (#245): placement/style TBD. */
+@Composable
+private fun SyncStatusChip(backfilling: Boolean, chunks: Int) {
+    if (!backfilling) return
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(Palette.surfaceInset)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+    ) {
+        Icon(
+            Icons.Filled.History,
+            contentDescription = "Syncing strap history",
+            tint = Palette.accent,
+            modifier = Modifier.size(14.dp),
+        )
+        Text("$chunks", style = NoopType.caption, color = Palette.accent)
+    }
+}
+
+/** The liquid header strap-battery ring: when connected + a reading exists it draws a trimmed ring in
+ *  the charge/warning/critical hue plus the % inside, else a
  *  bolt-slash glyph. Tap → Devices. Mirrors the iOS liquid header battery ring. */
 @Composable
 private fun LiquidBatteryRing(batteryPct: Double?, onClick: () -> Unit) {

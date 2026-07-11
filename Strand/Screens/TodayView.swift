@@ -1082,6 +1082,11 @@ struct TodayView: View {
 
             Spacer(minLength: 8)
 
+            // #245: a compact "syncing history" chip, visible to EVERY user (not only those still
+            // building scores — the big SyncingHistoryNote below is gated on `recovery == nil`). Renders
+            // nothing when idle; its own LiveState observation ticks the count without re-rendering Today.
+            SyncStatusChip()
+
             // Uniform 36pt circular icon set: recording-status light, updates bell, quick-add (+), menu.
             HStack(spacing: 8) {
                 // Recording status, a colour-coded light (green recording / amber synced / red not
@@ -4394,6 +4399,30 @@ struct TodayDayScopedCache {
 /// The compact 36pt recording-status light in the iOS top bar, a colour-coded dot (green recording,
 /// amber last-synced, red not recording, accent for experimental 5.0 history). Taps to Devices. Owns
 /// the `LiveState` observation so a live-HR tick refreshes only this dot.
+/// #245: a compact sync-progress chip for the Today top bar. The full-width `SyncingHistoryNote` only
+/// renders for users whose scores are still building (`recovery == nil`), so an established user — and
+/// especially a WHOOP 5/MG owner, whose history offloads are already rare — saw no sync feedback on
+/// Today at all, only on the Live screen. This mirrors the Live "SYNCING N" badge into the header for
+/// everyone. Renders nothing when idle. DRAFT (#245): placement/style still to be finalised.
+private struct SyncStatusChip: View {
+    @EnvironmentObject private var live: LiveState
+    var body: some View {
+        if live.backfilling {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("\(live.syncChunksThisSession)")
+                    .font(StrandFont.captionNumber)
+            }
+            .foregroundStyle(StrandPalette.accent)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(StrandPalette.surfaceInset))
+            .accessibilityLabel(Text("Syncing strap history, \(live.syncChunksThisSession) chunks"))
+        }
+    }
+}
+
 private struct RecordingStatusLight: View {
     @EnvironmentObject private var live: LiveState
     let selectedDayOffset: Int
