@@ -162,9 +162,6 @@ fun TestCentreScreen(vm: AppViewModel) {
                 scope.launch { pendingReport = buildPending(context, MASTER_REPORT_MODE, vm.ble.exportLogText(), vm) }
             },
         )
-
-        // --- Section 4: Advanced / experimental ---
-        AdvancedCard(vm, is5MG)
     }
 
     pendingReport?.let { p ->
@@ -437,50 +434,6 @@ private fun ExportCard(vm: AppViewModel, onReport: () -> Unit) {
 }
 
 @Composable
-private fun AdvancedCard(vm: AppViewModel, is5MG: Boolean) {
-    val context = LocalContext.current
-    val puffin = remember { PuffinExperiment.from(context) }
-    var v2 by remember { mutableStateOf(puffin.experimentalSleepV2) }
-    // Re-hosted Continuous-HRV toggle, bound to the SAME NoopPrefs key (noop.continuousHrv) the Settings
-    // card uses, so flipping it here or there is one and the same setting (mirrors the iOS Test Centre).
-    var continuousHrv by remember { mutableStateOf(NoopPrefs.continuousHrv(context)) }
-    var probes by remember { mutableStateOf(puffin.isEnabled) }
-    var deepData by remember { mutableStateOf(puffin.isDeepDataEnabled) }
-    var broadcast by remember { mutableStateOf(puffin.broadcastHr) }
-    var capture by remember { mutableStateOf(puffin.isCaptureEnabled) }
-    SettingsSectionTC(
-        icon = Icons.Filled.Info,
-        title = "Advanced",
-        blurb = "Experimental probes, off by default. The fuller WHOOP 5/MG controls and the raw-sensor CSV export still live in Settings under Diagnostics.",
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            ToggleRowTC("Experimental sleep staging (V2)", v2) {
-                v2 = it; puffin.experimentalSleepV2 = it
-            }
-            // Same write path as Settings: vm.setContinuousHrv persists noop.continuousHrv and re-applies
-            // keep-stream-for-data, so the live capture follows the toggle from either screen.
-            ToggleRowTC("Continuous HRV capture", continuousHrv) {
-                continuousHrv = it; vm.setContinuousHrv(it)
-            }
-            if (is5MG) {
-                ToggleRowTC("Try WHOOP 5/MG protocol probes", probes) {
-                    probes = it; puffin.isEnabled = it
-                }
-                ToggleRowTC("Unlock WHOOP 5/MG deep data (R22)", deepData) {
-                    deepData = it; puffin.isDeepDataEnabled = it
-                }
-                ToggleRowTC("Broadcast heart rate (Garmin/ANT)", broadcast) {
-                    broadcast = it; puffin.broadcastHr = it; vm.ble.setBroadcastHr(it)
-                }
-                ToggleRowTC("Record puffin frames to a file", capture) {
-                    capture = it; puffin.isCaptureEnabled = it
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun ReportReviewDialog(
     previewText: String,
     modeInactive: Boolean,
@@ -557,18 +510,6 @@ private fun SettingsSectionTC(
             Text(blurb, style = NoopType.subhead, color = Palette.textSecondary)
             content()
         }
-    }
-}
-
-@Composable
-private fun ToggleRowTC(title: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(title, style = NoopType.subhead, color = Palette.textPrimary, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onCheckedChange, colors = settingsSwitchColors())
     }
 }
 
