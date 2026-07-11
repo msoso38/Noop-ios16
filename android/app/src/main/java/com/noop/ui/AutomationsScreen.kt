@@ -57,8 +57,7 @@ import kotlin.math.roundToInt
 /**
  * Automations — turn the strap's physical inputs (double-tap, wrist on/off) and live
  * biometrics into on-device actions and haptic coaching. HR-zone coaching, the smart alarm
- * and the illness watch are real + persisted (ViewModel-backed); the remaining toggles
- * (stress nudge, auto-lock) are still local UI placeholders mirroring AutomationsView.swift.
+ * and the illness watch are real + persisted (ViewModel-backed).
  */
 @Composable
 fun AutomationsScreen(viewModel: AppViewModel) {
@@ -68,8 +67,6 @@ fun AutomationsScreen(viewModel: AppViewModel) {
     // dispatch runs in the ViewModel on a fresh strap DOUBLE_TAP event; this card just edits the choice.
     val doubleTapAction by viewModel.doubleTapAction.collectAsStateWithLifecycle()
 
-    var stressNudge by remember { mutableStateOf(false) }
-    var autoLockOnWristOff by remember { mutableStateOf(false) }
     // (#766) The strap firmware wake-alarm state used to be read here; it moved to SmartAlarmScreen with
     // the rest of the alarm UI.
     // Illness watch is real + persisted (opt-OUT — the watch has always run on Android).
@@ -157,7 +154,7 @@ fun AutomationsScreen(viewModel: AppViewModel) {
             icon = Icons.Filled.Bolt,
             title = "Haptic coaching",
             blurb = "Train by feel. The strap buzzes so you don't have to watch a screen.",
-            active = zoneCoaching || stressNudge,
+            active = zoneCoaching,
         ) {
             ToggleRow(
                 label = "HR-zone coaching",
@@ -174,30 +171,6 @@ fun AutomationsScreen(viewModel: AppViewModel) {
                     onChange = { viewModel.setZoneCoachRecovery(it) },
                 )
             }
-            RowDivider()
-            ToggleRow(
-                label = "Resting stress nudge (experimental)",
-                help = "A gentle buzz when your HRV drops while your heart rate is calm, a cue to take a paced breath. Rate-limited to once every 15 minutes; off by default.",
-                checked = stressNudge,
-                onChange = { stressNudge = it },
-            )
-        }
-        }
-
-        // Wear & presence.
-        item {
-        SettingsSection(
-            icon = Icons.Filled.TouchApp,
-            title = "Wear & presence",
-            blurb = "React when the strap comes off or goes on.",
-            active = autoLockOnWristOff,
-        ) {
-            ToggleRow(
-                label = "Lock the device when I take the strap off",
-                help = "Fires the moment the strap leaves your wrist.",
-                checked = autoLockOnWristOff,
-                onChange = { autoLockOnWristOff = it },
-            )
         }
         }
 

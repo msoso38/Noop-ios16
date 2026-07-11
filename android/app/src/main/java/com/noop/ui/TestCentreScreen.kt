@@ -335,14 +335,6 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
                 fullWidth = true,
                 onClick = { showRecalibrate = true },
             )
-            // Environment dump: the strap log already carries the AndroidDiagnostics header (spec 3.4).
-            NoopButton(
-                text = "Copy environment dump",
-                leadingIcon = Icons.Filled.Info,
-                kind = NoopButtonKind.Secondary,
-                fullWidth = true,
-                onClick = { scope.launch { LogExport.shareStrapLog(context, vm.ble.exportLogText()) } },
-            )
         }
     }
     if (showRecalibrate) {
