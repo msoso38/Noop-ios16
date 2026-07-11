@@ -184,6 +184,15 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f   // local time zone by default
     }()
 
+    // MARK: - Sleep-phase arrival visibility — INVESTIGATION ONLY
+    // Log every 0x4B/0x4E/0x5A hypnogram record (anchored time + code count + stage histogram) so a
+    // capture shows inline when/whether the ring transmits the night's phase timeline, and observe the
+    // per-CODE cadence (record gap ÷ previous record's code count) to pin the ring's phase epoch — the
+    // same technique that pinned the 60 s activity MET epoch. Reset per connection.
+    private var lastPhaseUtc: Int?
+    private var lastPhaseCodeCount = 0
+    private var phaseCadenceObs: [Double] = []
+
     /// History-fetched events decoded BEFORE a ring-time -> UTC anchor exists this session, held here
     /// (with their own ring timestamp) until the anchor lands (`drainPendingAnchorEvents`), so they get
     /// their real historical time instead of a premature wall-clock guess. The ring's 0x42 time-sync can
@@ -397,6 +406,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// reports the ring's real per-sample spacing so `activityEpochSeconds` can be pinned. Never
     /// persisted, never scored, never a step count.
     private func logActivityEstimateSummary() {
+        // Sleep-phase cadence (investigation): pins the ring's per-code phase epoch from the stream,
+        // exactly like the activity 60 s pin. Logged whenever any hypnogram records arrived this drain.
+        if !phaseCadenceObs.isEmpty {
+            let sorted = phaseCadenceObs.sorted()
+            log(String(format: "Oura: sleep-phase cadence self-check - median %.1fs/code over %d gaps",
+                       sorted[sorted.count / 2], phaseCadenceObs.count))
+        }
         guard !activityMETByDay.isEmpty else { return }
         if !activityCadenceObs.isEmpty {
             let sorted = activityCadenceObs.sorted()
@@ -555,6 +571,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
         lastActivitySampleCount = 0
+        phaseCadenceObs.removeAll()
+        lastPhaseUtc = nil
+        lastPhaseCodeCount = 0
         maxStoredRingTime = 0
         resumeCursorAtFetchStart = 0
         sawPreResumeData = false
@@ -733,6 +752,27 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private func ingest(_ events: [OuraEvent]) {
         guard !events.isEmpty, let driver else { return }
         let now = Int(Date().timeIntervalSince1970)
+        // Sleep-phase record visibility (investigation): one 0x4B/0x4E/0x5A record's codes arrive as one
+        // events array; log it whole (time + count + histogram) and feed the per-code cadence observer.
+        let phases = events.compactMap { e -> OuraSleepPhase? in
+            if case .sleepPhase(let v) = e { return v } else { return nil }
+        }
+        if let firstPhase = phases.first {
+            let utc = driver.unixSeconds(forRingTimestamp: firstPhase.ringTimestamp)
+            let when = utc.map { Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval($0))) } ?? "no anchor yet"
+            var counts = [0, 0, 0, 0]
+            for p in phases { counts[p.stage.rawValue] += 1 }
+            log("Oura: sleep-phase record [\(when)] codes=\(phases.count) deep/light/rem/awake=\(counts[0])/\(counts[1])/\(counts[2])/\(counts[3])")
+            if let utc {
+                if let prev = lastPhaseUtc, lastPhaseCodeCount > 0, utc > prev {
+                    let perCode = Double(utc - prev) / Double(lastPhaseCodeCount)
+                    // Keep only plausible epoch spacings; a gap across sessions/naps is not a cadence.
+                    if perCode >= 5, perCode <= 3600 { phaseCadenceObs.append(perCode) }
+                }
+                lastPhaseUtc = utc
+                lastPhaseCodeCount = phases.count
+            }
+        }
         for e in events {
             switch e {
             case .hr(let hr):
@@ -1088,6 +1128,9 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
         lastActivitySampleCount = 0
+        phaseCadenceObs.removeAll()
+        lastPhaseUtc = nil
+        lastPhaseCodeCount = 0
         reachedStreaming = false
         pendingInstallKey = nil
         // A disconnect MID-install is an honest failure (no ack came); a disconnect after streaming leaves

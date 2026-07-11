@@ -117,14 +117,15 @@ final class DecoderGoldenTests: XCTestCase {
     // MARK: - 0x4E sleep phase (2-bit codes MSB-first; header byte skipped)
 
     func testSleepPhase0x4E() {
-        // header 0x00, phase byte 0x6C = bits 01 10 11 00 -> light, deep, rem, awake.
+        // header 0x00, phase byte 0x6C = bits 01 10 11 00 = codes 1,2,3,0. Per open_oura's VALIDATED
+        // mapping (0=deep, 1=light, 2=rem, 3=awake) -> light, rem, awake, deep.
         let rec = record("4e0602000100006c")
         let phases = OuraDecoders.decodeSleepPhase(rec)
         XCTAssertEqual(phases, [
             OuraSleepPhase(ringTimestamp: rt, index: 0, stage: .light),
-            OuraSleepPhase(ringTimestamp: rt, index: 1, stage: .deep),
-            OuraSleepPhase(ringTimestamp: rt, index: 2, stage: .rem),
-            OuraSleepPhase(ringTimestamp: rt, index: 3, stage: .awake),
+            OuraSleepPhase(ringTimestamp: rt, index: 1, stage: .rem),
+            OuraSleepPhase(ringTimestamp: rt, index: 2, stage: .awake),
+            OuraSleepPhase(ringTimestamp: rt, index: 3, stage: .deep),
         ])
     }
 

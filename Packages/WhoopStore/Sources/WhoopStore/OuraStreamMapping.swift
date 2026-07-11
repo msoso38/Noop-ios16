@@ -90,7 +90,15 @@ public enum OuraStreamMapping {
                 out.skinTemp.append(SkinTempSample(ts: ts, raw: Int((v.celsius * 100).rounded()), unit: "centi_c"))
 
             case .sleepPhase(let v):
-                out.events.append(WhoopEvent(ts: ts, kind: sleepPhaseEventKind, payload: [
+                // PK-COLLAPSE FIX: the event store's PK is (deviceId, ts, kind), and a phase RECORD
+                // carries several codes that all share the record's anchored `ts` — persisting them at
+                // the same second collapsed a whole hypnogram record to ONE surviving row. Offset each
+                // code by its index in SECONDS: an ORDER-preserving synthetic spacing that keeps every
+                // code a distinct row and stays inside the record's real span. The ring's true per-code
+                // epoch is NOT yet pinned (the app's phase cadence self-check measures it); consumers
+                // must treat the SEQUENCE (index) as truth and this spacing as provisional, not a
+                // measured per-code duration. The raw 2-bit code persists unchanged.
+                out.events.append(WhoopEvent(ts: ts + v.index, kind: sleepPhaseEventKind, payload: [
                     "phase": .int(v.stage.rawValue),
                     "index": .int(v.index),
                 ]))

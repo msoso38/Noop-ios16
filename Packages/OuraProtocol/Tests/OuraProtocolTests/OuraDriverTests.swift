@@ -317,16 +317,17 @@ final class OuraDriverTests: XCTestCase {
         // 0x4B was previously a Tier-B "sleep summary" (dropped by default). It is actually a hypnogram
         // alias (open_oura `0x4b | 0x4e | 0x5a => decode_sleep_phases`), so it now decodes with the SAME
         // validated 2-bit phase decoder as 0x4E/0x5A and emits Tier-A sleep-phase events even when
-        // allowTierB == false. Same payload as the 0x4E golden -> light, deep, rem, awake.
+        // allowTierB == false. Same payload as the 0x4E golden; open_oura's validated stage mapping
+        // (0=deep, 1=light, 2=rem, 3=awake) -> codes 1,2,3,0 = light, rem, awake, deep.
         XCTAssertEqual(OuraEventTag(rawValue: 0x4B), .sleepPhaseB)
         XCTAssertEqual(OuraEventTag.sleepPhaseB.tier, .tierA)
         let d = OuraDriver(ringGen: .gen3, authKey: key)   // allowTierB defaults to false
         let rec = OuraFraming.parseRecord(bytes("4b0602000100006c"))!
         XCTAssertEqual(d.ingest(record: rec), [
             .sleepPhase(OuraSleepPhase(ringTimestamp: rt, index: 0, stage: .light)),
-            .sleepPhase(OuraSleepPhase(ringTimestamp: rt, index: 1, stage: .deep)),
-            .sleepPhase(OuraSleepPhase(ringTimestamp: rt, index: 2, stage: .rem)),
-            .sleepPhase(OuraSleepPhase(ringTimestamp: rt, index: 3, stage: .awake)),
+            .sleepPhase(OuraSleepPhase(ringTimestamp: rt, index: 1, stage: .rem)),
+            .sleepPhase(OuraSleepPhase(ringTimestamp: rt, index: 2, stage: .awake)),
+            .sleepPhase(OuraSleepPhase(ringTimestamp: rt, index: 3, stage: .deep)),
         ])
     }
 
