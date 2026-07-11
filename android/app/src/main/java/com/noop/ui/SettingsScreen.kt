@@ -1539,7 +1539,7 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     Text(
-                        "Broadcast heart rate (Garmin/ANT)",
+                        "Broadcast strap HR (Garmin/ANT)",
                         style = NoopType.subhead,
                         color = Palette.textPrimary,
                         modifier = Modifier.weight(1f),

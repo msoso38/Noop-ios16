@@ -745,7 +745,7 @@ fun DataSourcesScreen(vm: AppViewModel) {
         // --- Broadcast heart rate (NOOP as a standard BLE HR peripheral) ---
         item {
         SourceCard(
-            title = "Broadcast heart rate",
+            title = "Broadcast HR from this phone",
             icon = Icons.Filled.MonitorHeart,
             tint = DomainTheme.Effort.color,
             subtitle = "Re-share your live strap heart rate over Bluetooth as a standard heart-rate " +
@@ -781,7 +781,7 @@ fun DataSourcesScreen(vm: AppViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Broadcast heart rate", style = NoopType.subhead, color = Palette.textPrimary)
+                    Text("Broadcast HR from this phone", style = NoopType.subhead, color = Palette.textPrimary)
                     Text(
                         "Acts as a standard Bluetooth heart-rate strap. Pair NOOP from your treadmill, " +
                             "bike or app to see your strap's heart rate there.",
