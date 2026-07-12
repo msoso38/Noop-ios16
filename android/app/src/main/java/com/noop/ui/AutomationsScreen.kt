@@ -97,7 +97,6 @@ fun AutomationsScreen(viewModel: AppViewModel) {
     var inactivityActiveHours by remember { mutableStateOf(InactivityPrefs.activeHoursEnabled(ctx)) }
     var inactivityActiveStart by remember { mutableStateOf(InactivityPrefs.activeStartMinutes(ctx)) }
     var inactivityActiveEnd by remember { mutableStateOf(InactivityPrefs.activeEndMinutes(ctx)) }
-    var inactivityOnlyWorn by remember { mutableStateOf(NotifPrefs.getBool(ctx, NotifPrefs.WORN, true)) }
     // The engine also requires the global notification master (default OFF); surface that dependency so
     // enabling the reminder while master is off isn't silently inert.
     val notifMasterOn = NotifPrefs.getBool(ctx, NotifPrefs.MASTER, false)
@@ -232,17 +231,6 @@ fun AutomationsScreen(viewModel: AppViewModel) {
                     onChange = {
                         inactivityBuzzLoops = it
                         InactivityPrefs.setInt(ctx, InactivityPrefs.BUZZ_LOOPS, it)
-                    },
-                )
-                RowDivider()
-                ToggleRow(
-                    label = "Only when worn",
-                    help = "Don't buzz when the strap is off your wrist.",
-                    checked = inactivityOnlyWorn,
-                    onChange = {
-                        inactivityOnlyWorn = it
-                        // Reuses the shared notification only-when-worn gate (NotifPrefs.WORN).
-                        NotifPrefs.setBool(ctx, NotifPrefs.WORN, it)
                     },
                 )
                 RowDivider()
