@@ -4915,12 +4915,18 @@ class WhoopBleClient(
                 backfilling = false,
                 syncChunksThisSession = ackedChunksThisSession,
                 lastSyncAt = nowSec,
-                lastSyncError = if (bankedNothing && sustainedEmpty)
-                    "Synced, but your strap had no stored history to hand over - only its diagnostic output. This usually means its clock has lost sync, so it isn't saving data to flash. Fully charge it to 100%, then reconnect, and it should start banking again."
-                // #324/#928: the strap banked records but its newest is dated implausibly in the future
-                // (RTC relatched ahead). #773 drops the samples so nothing is misfiled, but this path would
-                // otherwise report a clean sync and leave the user with no data and no reason. Name it.
-                else futureClockBanner,
+                // bankedNothing keeps its own sustained-empty precedence (#126/#214) — future-dated is
+                // checked ONLY on the banked-something path, matching the Swift else-if order exactly so
+                // the two platforms never disagree on which banner a given sync shows.
+                lastSyncError = when {
+                    bankedNothing && sustainedEmpty ->
+                        "Synced, but your strap had no stored history to hand over - only its diagnostic output. This usually means its clock has lost sync, so it isn't saving data to flash. Fully charge it to 100%, then reconnect, and it should start banking again."
+                    bankedNothing -> null   // banked nothing but not yet sustained — stay silent (matches Swift)
+                    // #324/#928: the strap banked records but its newest is dated implausibly in the future
+                    // (RTC relatched ahead). #773 drops the samples so nothing is misfiled, but this path
+                    // would otherwise report a clean sync and leave the user with no data + no reason.
+                    else -> futureClockBanner
+                },
                 historySyncExperimental = whoop5HistoryExperimental,
             )
             "timeout" -> it.copy(

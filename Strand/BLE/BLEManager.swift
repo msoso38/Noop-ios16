@@ -1683,10 +1683,11 @@ public final class BLEManager: NSObject, ObservableObject {
         // future-dated regardless of HOW this offload ended — a deep future-dated backlog TIMES OUT as
         // readily as it completes (the reporter's #324 session ended on timeout, not HISTORY_COMPLETE).
         // Compute the banner once so BOTH outcomes name the real cause instead of "strap went quiet".
+        let wallNowForBanner = Int(Date().timeIntervalSince1970)
         let futureClockBanner = BLEManager.futureDatedStrapBanner(
-            strapNewestTs: strapNewestTs, wallNowUnix: Int(Date().timeIntervalSince1970))
+            strapNewestTs: strapNewestTs, wallNowUnix: wallNowForBanner)
         if futureClockBanner != nil {
-            let aheadH = ((strapNewestTs ?? 0) - Int(Date().timeIntervalSince1970)) / 3600
+            let aheadH = ((strapNewestTs ?? 0) - wallNowForBanner) / 3600
             log("Backfill: the strap's newest banked record is \(aheadH)h AHEAD of the wall clock (#324/#928) - clock set in the future; showing the future-clock banner and importing nothing from this range.")
         }
         // Honest sync outcome for a cloud-free user (mirrors Android exitBackfilling, ed6a31d):
