@@ -1,4 +1,5 @@
 import Foundation
+import WhoopProtocol   // DeviceFamily (sleepMotionLine)
 
 // RestSubScoreTrace.swift - the Sleep & Rest test-mode diagnostic for the Rest composite.
 //
