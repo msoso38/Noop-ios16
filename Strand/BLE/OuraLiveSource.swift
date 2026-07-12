@@ -632,6 +632,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 log("Oura: live-HR enabled - streaming HR / IBI")
                 startReengageTimer()
                 startHistoryFetchTimer()
+                // §5.3 step 1 / open_oura sync recipe: hand the ring the current UTC BEFORE draining
+                // history so it can emit a usable 0x42 time-sync anchor (§5.5). Without this a short
+                // resume drain carries NO 0x42 at all — every fetched record stays "[no anchor yet]",
+                // the night's hypnogram gets wall-clock-stamped at connect time, and the resume cursor
+                // can never commit (observed 2026-07-12: 4 connects re-dumped the same window). Sent
+                // ONCE per session, before the first fetch; the ack-fetch loop never re-sends it.
+                write([OuraCommands.syncTime(unixSeconds: Int(Date().timeIntervalSince1970))])
                 fetchHistoryIfIdle()   // pull last night's banked temp/SpO2/HRV/sleep-phase right away
                 write([OuraCommands.getBattery()])   // ask once HR streams; the 0x0D reply routes to onBattery
             }
