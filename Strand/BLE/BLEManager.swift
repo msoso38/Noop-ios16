@@ -1729,6 +1729,15 @@ public final class BLEManager: NSObject, ObservableObject {
                 state.lastSyncError = sustainedEmpty
                     ? "Synced, but your strap had no stored history to hand over - only its diagnostic output. This usually means its clock has lost sync, so it isn't saving data to flash. Fully charge it to 100%, then reconnect, and it should start banking again."
                     : nil
+            } else if let futureBanner = BLEManager.futureDatedStrapBanner(
+                          strapNewestTs: strapNewestTs, wallNowUnix: Int(Date().timeIntervalSince1970)) {
+                // #324/#928: the strap banked records but its newest is dated implausibly in the FUTURE
+                // (RTC relatched ahead). #773 drops the future-dated samples so nothing is misfiled, but
+                // the "banked something" path above would otherwise report a clean sync and leave the
+                // user with no data and no reason. Name the real cause + the strap-side remedy.
+                let aheadH = ((strapNewestTs ?? 0) - Int(Date().timeIntervalSince1970)) / 3600
+                log("Backfill: completed but the strap's newest banked record is \(aheadH)h AHEAD of the wall clock (#324/#928) - clock set in the future; showing the future-clock banner and importing nothing from this range.")
+                state.lastSyncError = futureBanner
             } else {
                 state.lastSyncError = nil
             }
@@ -1928,6 +1937,23 @@ public final class BLEManager: NSObject, ObservableObject {
         let bankedSensorRecords = decodedChunks > 0 || archivedFrames > 0 || unarchivedFrames > 0
         let bankedNothing = !bankedSensorRecords && (consoleChunks >= 3 || rowsPersisted == 0)
         return (bankedSensorRecords, bankedNothing)
+    }
+
+    /// #324/#928: the post-sync banner for a strap whose clock is set in the FUTURE. Unlike the
+    /// "clock lost / not banking" case (`bankedNothing`), this strap DOES bank records every pass — but
+    /// its RTC relatched to a future base, so every banked timestamp reads ahead of the wall clock and
+    /// NOOP won't import them (importing would misfile the night days or years ahead). The existing
+    /// clock-lost banner is gated on empty syncs and never fires here, so this failure mode was silent
+    /// (#324). Returns the user-facing string when the strap-reported newest record is future-dated
+    /// beyond the 48 h skew allowance (`BackfillContinuation.isFutureDatedNewest`), else nil. Pure and
+    /// deterministic — one detection is decisive (nothing legitimate banks 48 h ahead), so no streak
+    /// gate is needed. Mirrors Android `futureDatedStrapBanner`.
+    nonisolated static func futureDatedStrapBanner(strapNewestTs: Int?, wallNowUnix: Int) -> String? {
+        guard BackfillContinuation.isFutureDatedNewest(strapNewestTs, wallNowUnix: wallNowUnix) else { return nil }
+        return "Synced, but your strap's clock is set in the future - its banked history is dated ahead of "
+            + "today, so NOOP can't trust those timestamps and didn't import them (importing them would "
+            + "misfile your data days or years ahead). Fully charge the strap to 100% and power-cycle it so "
+            + "its clock re-syncs, then reconnect."
     }
 
     /// Start (or restart) the periodic backfill timer. Each tick re-runs the type-47 historical
