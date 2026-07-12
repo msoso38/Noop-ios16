@@ -446,15 +446,16 @@ object AnalyticsEngine {
             traceSink(RestScorer.sleepMotionLine(day, gravity.size, hr.size,
                 SleepStager.isGravitySparse(gravity, hr), useSleepStagerV2, skinTempFamily))
             // #271: the ONSET decision — did HR dip when the window opened, or did it open on a still-but-
-            // awake stretch (HR still ~baseline)? Baseline is the DAY median (dayHr when the caller supplies
-            // the full calendar day, else the night window) so a real onset reads BELOW it, matching the
-            // day-median the daytime/re-onset guards use; at-onset HR comes from the night-window `hr`, which
-            // reliably covers the onset instant. Emitted only when both have HR, so a motion-only night stays
-            // silent rather than logging a 0-ratio.
+            // awake stretch (HR still ~baseline)? Both the day-median baseline AND the at-onset window read
+            // from the SAME HR that DETECTION ran over (`dayHr ?: hr` — the full calendar day when the caller
+            // supplies it, else the night window), so the onset instant is guaranteed inside it and the
+            // baseline reads as a real DAY median (a real onset sits BELOW it, matching the daytime/re-onset
+            // guards). Emitted only when both have HR, so a motion-only night stays silent.
+            val onsetHr = dayHr ?: hr
             val onsetTs = (mainGroup.minOfOrNull { it.start } ?: matched.minOfOrNull { it.start }) ?: 0L
-            val baselineHr = RestScorer.medianBpm((dayHr ?: hr).map { it.bpm })
+            val baselineHr = RestScorer.medianBpm(onsetHr.map { it.bpm })
             val hrAtOnset = RestScorer.medianBpm(
-                hr.filter { it.ts >= onsetTs && it.ts < onsetTs + RestScorer.onsetTraceWindowSec }.map { it.bpm })
+                onsetHr.filter { it.ts >= onsetTs && it.ts < onsetTs + RestScorer.onsetTraceWindowSec }.map { it.bpm })
             if (onsetTs > 0 && baselineHr != null && hrAtOnset != null) {
                 traceSink(RestScorer.sleepOnsetLine(onsetTs, hrAtOnset, baselineHr))
             }
