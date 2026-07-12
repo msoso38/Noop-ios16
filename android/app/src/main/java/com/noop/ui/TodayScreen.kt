@@ -1975,8 +1975,9 @@ private fun LiquidTodayHeader(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // #245: compact "syncing history" chip, shown for EVERY user while the strap offloads (the
-            // full SyncingHistoryNote is gated on recovery == null). Twin of iOS SyncStatusChip.
+            // #245: compact sync-status chip, shown for EVERY user — syncing / last-synced / experimental,
+            // so the absence of active syncing reads as caught-up (the full SyncingHistoryNote is gated on
+            // recovery == null). Twin of iOS SyncStatusChip.
             SyncStatusChip(
                 backfilling = backfilling, chunks = syncChunksThisSession,
                 lastSyncAt = lastSyncAt, historySyncExperimental = historySyncExperimental,

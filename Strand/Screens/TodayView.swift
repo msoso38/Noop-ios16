@@ -1082,9 +1082,10 @@ struct TodayView: View {
 
             Spacer(minLength: 8)
 
-            // #245: a compact "syncing history" chip, visible to EVERY user (not only those still
-            // building scores — the big SyncingHistoryNote below is gated on `recovery == nil`). Renders
-            // nothing when idle; its own LiveState observation ticks the count without re-rendering Today.
+            // #245: a compact sync-status chip, visible to EVERY user (not only those still building
+            // scores — the big SyncingHistoryNote below is gated on `recovery == nil`). Three states
+            // (syncing / last-synced / experimental), so the absence of active syncing reads as caught-up;
+            // nothing only on a cold start. Owns its LiveState observation so a tick refreshes only it.
             SyncStatusChip()
 
             // Uniform 36pt circular icon set: recording-status light, updates bell, quick-add (+), menu.
