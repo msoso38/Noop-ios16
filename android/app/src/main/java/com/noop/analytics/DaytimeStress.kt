@@ -41,6 +41,10 @@ object DaytimeStress {
 
     /** Minimum HR samples in an hour before its mean HR is trusted (~5 min at 1 Hz). */
     const val minHourHrSamples: Int = 300
+    /** Minimum distinct-time coverage required so a burst cannot impersonate an hour of data. */
+    const val minHourHrSpanSeconds: Long = 240L
+    const val minPlausibleBpm: Int = 30
+    const val maxPlausibleBpm: Int = 220
     /** Bucket width for the timeline, in seconds (one hour). */
     const val bucketSeconds: Long = 3_600L
     /** Band floor for "high" on the shared 0–3 scale (matches StressBand.High). */
@@ -146,15 +150,16 @@ object DaytimeStress {
      * Returns [Result.EMPTY] when there isn't a single hour with enough HR to score.
      */
     fun analyze(hr: List<HrSample>, rr: List<RrInterval>, tzOffsetSeconds: Long = 0L): Result {
-        if (hr.isEmpty()) return Result.EMPTY
+        val usableHr = hr.filter { it.bpm in minPlausibleBpm..maxPlausibleBpm }
+        if (usableHr.isEmpty()) return Result.EMPTY
 
         // 1) Bucket HR + R-R into LOCAL hour-of-day buckets, keyed by the bucket start
         //    (floored to the hour on the local clock).
-        val hrByBucket = HashMap<Long, MutableList<Double>>()
-        for (s in hr) {
+        val hrByBucket = HashMap<Long, MutableList<HrSample>>()
+        for (s in usableHr) {
             val localTs = s.ts + tzOffsetSeconds
             val bucket = floorDiv(localTs, bucketSeconds) * bucketSeconds
-            hrByBucket.getOrPut(bucket) { ArrayList() }.add(s.bpm.toDouble())
+            hrByBucket.getOrPut(bucket) { ArrayList() }.add(s)
         }
         val rrByBucket = HashMap<Long, MutableList<Double>>()
         for (s in rr) {
@@ -170,8 +175,11 @@ object DaytimeStress {
         val orderedBuckets = hrByBucket.keys.sorted()
         val aggs = ArrayList<HourAgg>(orderedBuckets.size)
         for (b in orderedBuckets) {
-            val hrs = hrByBucket[b] ?: emptyList<Double>()
-            val mHr = if (hrs.size >= minHourHrSamples) mean(hrs) else null
+            val hrs = (hrByBucket[b] ?: emptyList()).distinctBy { it.ts }
+            val span = (hrs.maxOfOrNull { it.ts } ?: 0L) - (hrs.minOfOrNull { it.ts } ?: 0L)
+            val mHr = if (hrs.size >= minHourHrSamples && span >= minHourHrSpanSeconds) {
+                mean(hrs.map { it.bpm.toDouble() })
+            } else null
             val rrRes = HrvAnalyzer.analyzeRaw(rrByBucket[b] ?: emptyList())
             aggs.add(HourAgg(b, mHr, rrRes.rmssd))
         }

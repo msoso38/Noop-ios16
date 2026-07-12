@@ -81,7 +81,8 @@ class NoopGlanceWidget : GlanceAppWidget() {
 
 // Per-scheme widget colours (mirror the app palette; deepened gold/amber/orange on light for contrast
 // on the warm-paper card). The widget is a separate surface, so these are local — not Palette reads.
-private fun widgetSurface(dark: Boolean) = ColorProvider(if (dark) Color(0xFF0A1322) else Color(0xFFF4F1EA))
+// Glass-leaning M3 expressive surfaces (translucent navy / paper) for home widgets.
+private fun widgetSurface(dark: Boolean) = ColorProvider(if (dark) Color(0xE60E1828) else Color(0xF0F7F4EE))
 private fun widgetTextPrimary(dark: Boolean) = ColorProvider(if (dark) Color(0xFFF4F6F8) else Color(0xFF1A2230))
 private fun widgetTextSecondary(dark: Boolean) = ColorProvider(if (dark) Color(0xFF8A94A4) else Color(0xFF7C8696))
 
@@ -109,7 +110,7 @@ private fun WidgetContent(snap: WidgetSnapshot, dark: Boolean) {
         modifier = GlanceModifier
             .fillMaxSize()
             .background(surface)
-            .cornerRadius(16.dp)
+            .cornerRadius(22.dp)
             .clickable(actionStartActivity<MainActivity>())
             .padding(horizontal = 14.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

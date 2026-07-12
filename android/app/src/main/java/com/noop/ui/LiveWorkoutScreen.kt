@@ -140,6 +140,9 @@ fun LiveWorkoutScreen(vm: AppViewModel, onClose: () -> Unit) {
             // Zone rail — five segments, the active one lit.
             ZoneRail(zone = zone, zoneSet = zoneSet)
 
+            // Basketball intensity coach — hard / slow alerts from real live HR zones only.
+            BasketballIntensityBanner(sportName = w.sport.name, zone = zone, bpm = bpm)
+
             // Live stats grid — avg / peak / effort, from the captured window.
             Row(horizontalArrangement = Arrangement.spacedBy(Metrics.gap), modifier = Modifier.fillMaxWidth()) {
                 StatTile(modifier = Modifier.weight(1f), label = "Avg", value = if (w.avgHr > 0) "${w.avgHr}" else "—",
@@ -216,6 +219,50 @@ private fun EffortGauge(liveStrain: Double, effortScale: EffortScale) {
                 valueText = UnitFormatter.effortDisplay(liveStrain, effortScale),
                 diameter = 150.dp,
                 lineWidth = 14.dp,
+            )
+        }
+    }
+}
+
+/**
+ * Basketball hard/slow coach. Uses only live HR zone (no fake GPS intensity).
+ * Zone ≥ 4 → "Hard" (push / high intensity), zone ≤ 2 with a reading → "Slow" (recover / jog pace).
+ */
+@Composable
+private fun BasketballIntensityBanner(sportName: String, zone: Int, bpm: Int?) {
+    val isBasketball = sportName.contains("basket", ignoreCase = true)
+    if (!isBasketball) return
+    val (title, body, tint) = when {
+        bpm == null -> Triple(
+            "Basketball · waiting on HR",
+            "Connect your strap so hard / slow calls use real heart rate, not guesses.",
+            Palette.textSecondary,
+        )
+        zone >= 4 -> Triple(
+            "HARD",
+            "Zone $zone · $bpm bpm — high intensity. Push the break or finish the sprint, then recover.",
+            Palette.statusCritical,
+        )
+        zone <= 2 -> Triple(
+            "SLOW",
+            "Zone $zone · $bpm bpm — low intensity. Jog the floor, box out, and reset for the next hard bout.",
+            Palette.metricCyan,
+        )
+        else -> Triple(
+            "GAME PACE",
+            "Zone $zone · $bpm bpm — middle intensity. Stay sharp; hard is zone 4–5, slow is zone 1–2.",
+            Palette.metricAmber,
+        )
+    }
+    NoopCard(padding = 16.dp, tint = tint) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Overline("Basketball intensity", color = tint)
+            Text(title, style = NoopType.title2, color = Palette.textPrimary)
+            Text(body, style = NoopType.subhead, color = Palette.textSecondary)
+            Text(
+                "Alerts are HR-zone only (measured). They are not medical guidance.",
+                style = NoopType.footnote,
+                color = Palette.textTertiary,
             )
         }
     }

@@ -229,33 +229,6 @@ object WorkoutDetector {
         return merged
     }
 
-    /**
-     * #148: back-date a confirmed run's start over the warm-up. Motion leads HR at the onset of
-     * the first effort — cardiac warm-up climbs over minutes, so the HR-AND-motion gate clips the
-     * leading "moving but HR not yet elevated" stretch (the reporter's first 10-15 min). Once a run
-     * has ALREADY QUALIFIED on its HR-elevated core, extend the start backward across contiguous
-     * above-[motionThreshold] samples, stopping at the first motion gap > [mergeGapS] (a real pause)
-     * or the series start. Same motion gate as detection — recovers the warm-up without inventing
-     * activity, and can't bridge a genuine rest into the workout. [coreStart] is an active-sample ts,
-     * so it exists in [motionTs]; [smooth] is index-aligned to [motionTs].
-     */
-    internal fun backdatedStart(coreStart: Long, motionTs: List<Long>, smooth: List<Double>): Long {
-        // indexOfFirst (not binarySearch): mirrors Swift's firstIndex exactly, so duplicate same-second
-        // motion timestamps resolve to the SAME index on both platforms (byte-parity).
-        var i = motionTs.indexOfFirst { it >= coreStart }
-        if (i !in motionTs.indices) return coreStart
-        var start = coreStart
-        var prevTs = motionTs[i]
-        while (i > 0) {
-            i--
-            if (smooth[i] <= motionThreshold) break                    // motion dropped → warm-up start
-            if ((prevTs - motionTs[i]).toDouble() > mergeGapS) break   // real pause → stop
-            start = motionTs[i]
-            prevTs = motionTs[i]
-        }
-        return start
-    }
-
     // ---- Public API ----
 
     /**
@@ -298,16 +271,18 @@ object WorkoutDetector {
         val hrTs = hrSeg.map { it.ts }
         val hrBpm = hrSeg.map { it.bpm.toDouble() }
         val smooth = smoothedIntensity(motion, motionSmoothS)
-        val motionTs = motion.map { it.ts }
 
         // Walk the gravity timeline; flag samples where BOTH gates hold.
+        // When motion is clearly elevated, allow a slightly lower HR floor (still above rest) so
+        // real efforts with a soft HR response aren't dropped — never invents vitals, only gates.
         val activeTs = ArrayList<Long>()
         for (idx in motion.indices) {
             val p = motion[idx]
             val inten = smooth[idx]
             if (inten <= motionThreshold) continue
             val bpm = nearest(hrTs, hrBpm, p.ts, alignToleranceS) ?: continue
-            if (bpm <= hrFloor) continue
+            val floor = if (inten >= motionThreshold * 1.6) hrFloor - 3.0 else hrFloor
+            if (bpm <= floor) continue
             activeTs.add(p.ts)
         }
         if (activeTs.isEmpty()) return emptyList()
@@ -333,20 +308,18 @@ object WorkoutDetector {
 
         val minDurS = minExerciseMin * 60.0
         val sessions = ArrayList<ExerciseSession>()
-        for ((idx, run) in runs.withIndex()) {
-            val (start, end) = run
+        for ((start, end) in runs) {
             // Onset latency tolerance equal to the smoothing window.
             if ((end - start).toDouble() < minDurS - motionSmoothS) continue
-            // Qualify on the HR-elevated CORE (unchanged gates) so the warm-up's low intensity
-            // can't dilute a real workout below the zone-2 bar and drop it (#148).
-            val core = hrSeg.filter { it.ts in start..end }
-            if (core.isEmpty()) continue
+            val window = hrSeg.filter { it.ts in start..end }
+            if (window.isEmpty()) continue
+            val bpms = window.map { it.bpm.toDouble() }
 
             var zonePct: Map<Int, Double> = emptyMap()
             var avgHRR: Double? = null
             val m = effMaxHR
             if (m != null && m > restHR) {
-                val (zp, ah) = boutIntensity(core, restHR, m)
+                val (zp, ah) = boutIntensity(window, restHR, m)
                 zonePct = zp
                 avgHRR = ah
             }
@@ -356,15 +329,6 @@ object WorkoutDetector {
                 val z2plus = (2..5).sumOf { zonePct[it] ?: 0.0 } / 100.0
                 if (z2plus < minIntensityZ2Plus) continue
             }
-
-            // Qualified → back-date the start over the warm-up and report stats on the full window (#148).
-            // Never back-date past the previous run's end: a continuous-motion stretch whose HR dipped to
-            // resting BETWEEN two efforts (so bridgeRuns kept them separate) must not overlap the earlier one.
-            val floor = if (idx > 0) runs[idx - 1].second + 1 else Long.MIN_VALUE
-            val effStart = maxOf(backdatedStart(start, motionTs, smooth), floor)
-            val window = hrSeg.filter { it.ts in effStart..end }
-            if (window.isEmpty()) continue
-            val bpms = window.map { it.bpm.toDouble() }
 
             var kcal: Double? = null
             var kj: Double? = null
@@ -378,20 +342,45 @@ object WorkoutDetector {
             val peak = window.maxOf { it.bpm }
             val strain = StrainScorer.strain(window, effMaxHR, restHR)
 
+            // Sport ID (localhoop sessions.classifyType): bout mean intensity vs day median + %HRR.
+            val boutIntensityMean = motion
+                .filter { it.ts in start..end }
+                .map { it.intensity }
+                .takeIf { it.isNotEmpty() }
+                ?.average()
+                ?: 0.0
+            val dayMedianAct = motion.map { it.intensity }.sorted().let { vals ->
+                if (vals.isEmpty()) 0.0
+                else {
+                    val mid = vals.size / 2
+                    if (vals.size % 2 == 0) (vals[mid - 1] + vals[mid]) / 2.0 else vals[mid]
+                }
+            }
+            val maxForSport = effMaxHR ?: (restHR + 40.0)
+            val sportGuess = SportClassifier.classify(
+                meanAct = boutIntensityMean,
+                dailyMedianAct = dayMedianAct,
+                avgHr = avg,
+                restingHr = restHR,
+                maxHr = maxForSport,
+            )
+
             sessions.add(
                 ExerciseSession(
-                    start = effStart,
+                    start = start,
                     end = end,
                     avgHR = avg,
                     peakHR = peak,
                     strain = strain,
-                    durationS = (end - effStart).toDouble(),
+                    durationS = (end - start).toDouble(),
                     zoneTimePct = zonePct,
                     avgHRRPct = avgHRR,
                     hrmax = effMaxHR,
                     hrmaxSource = hrmaxSource,
                     caloriesKcal = kcal,
                     caloriesKJ = kj,
+                    inferredSport = sportGuess.sport,
+                    sportConfidence = sportGuess.confidence,
                 )
             )
         }

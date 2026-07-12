@@ -1,6 +1,6 @@
 # WHOOP 5.0 / MG deep data — the "R22" unlock
 
-**Status:** experimental, opt-in, awaiting on-hardware confirmation.
+**Status:** experimental, opt-in, with live type-47 v18 observations. Deep-history retrieval and R22 output remain hardware-specific and unverified as a complete data source.
 **Tracking:** [#103](https://github.com/ryanbr/noop/issues/103) (raw HCI captures + new deep-record layouts).
 
 ## The problem
@@ -60,9 +60,7 @@ bytes, the value byte (an ASCII `'1'`/`'2'`) at offset 32, then 7 zeros. The exa
 values, is in [`Whoop5Config.swift`](../Packages/WhoopProtocol/Sources/WhoopProtocol/Whoop5Config.swift)
 and [`Whoop5Config.kt`](../android/app/src/main/java/com/noop/protocol/Whoop5Config.kt), golden-tested on
 both platforms. `enable_r22_packets` is the one that opens the type-`0x2F` biometric stream; the rest
-tune channel selection, wear detection and sleep behaviour. Flags 1–15 come from judes.club's
-frame-builder; the 16th, `enable_sig12`, was added from a real on-strap HCI capture ([#103](https://github.com/ryanbr/noop/issues/103))
-that otherwise reproduced flags 1–15 byte-for-byte in this order.
+tune channel selection, wear detection and sleep behaviour.
 
 ## How NOOP uses it (opt-in, reversible)
 
@@ -70,7 +68,7 @@ that otherwise reproduced flags 1–15 byte-for-byte in this order.
   *writes* to the strap.
 - A manual **"Send enable sequence to strap"** button (not auto-run on connect), enabled only when a
   5/MG is **bonded and worn** (the R22 stream is on-wrist gated).
-- The 16 flags are written with-response, ~80 ms apart.
+- The 15 flags are written with-response, ~80 ms apart.
 - It's **reversible** — it only changes which data the strap chooses to emit — and is the same thing the
   official app does on every connect.
 - **iOS / Android only on real hardware:** macOS CoreBluetooth can't complete the authenticated SMP bond
@@ -90,29 +88,6 @@ that otherwise reproduced flags 1–15 byte-for-byte in this order.
   we map the type-`0x2F` layout (documented as HR @ byte 14, accel x/y/z float32 @ 37/41/45) and feed the
   motion into NOOP's existing v25-style sleep stager.
 
-## Mapping the layout — ground-truth correlation
-
-An HCI capture on its own is a pile of un-labelled bytes. The fast way to label them is *known
-plaintext*: a tester's own **WHOOP data export** (app.whoop.com → Data Export) lists the official
-per-night values — HRV, resting HR, skin temperature, SpO₂, respiratory rate — for exactly the nights
-in the capture. Searching each record type for the byte offset + encoding that reproduces those known
-values across every night pins the field without guesswork.
-
-Two stdlib tools in [`Tools/linux-capture/`](../Tools/linux-capture/) do this:
-
-- **`hci_extract.py`** converts a phone HCI log (iOS `.pklg` / Android `btsnoop_hci.log`) of the
-  official app into the project's `capture.json` frame format — so an official-app full-sync capture
-  feeds the same decoder as a Linux capture. It keeps only CRC-valid WHOOP frames.
-- **`correlate_ground_truth.py`** cross-references those frames against the CSV export and reports
-  candidate `(record type, offset, encoding, scale)` tuples, requiring both breadth and a
-  distribution match so constants and coincidences don't score.
-
-Crucially this is **privacy-preserving**: both tools run locally and the correlation output is only
-offsets/encodings, never health values — so a 5/MG owner can contribute a confirmed field mapping to
-[#103](https://github.com/ryanbr/noop/issues/103) without posting their capture or their data export.
-A mapped offset still follows the project rule — *real captures, never invented offsets* — before it
-lands in `parseFrameWhoop5` / `whoop_protocol.json`.
-
 ## How to help (5.0 / MG owners)
 
 1. Update to the latest NOOP, **Settings → Experimental → "Unlock WHOOP 5/MG deep data (R22)"**.
@@ -123,7 +98,15 @@ lands in `parseFrameWhoop5` / `whoop_protocol.json`.
    packets actually flowing and their layout. Method: iOS **PacketLogger** (Bluetooth diagnostic profile → `.pklg`)
    or Android **Developer Options → Bluetooth HCI snoop log** → `btsnoop_hci.log`, opened in Wireshark — the
    same iOS-HCI approach the [judes.club write-up](https://judes.club/writing/cracking-the-whoop-5-bluetooth-protocol/)
-   used. Filter to just the WHOOP peripheral and attach it to [#103](https://github.com/ryanbr/noop/issues/103).
+used. Filter to just the WHOOP peripheral and attach it to [#103](https://github.com/ryanbr/noop/issues/103).
+
+## Practical retrieval order
+
+1. Connect and bond the strap, then use **Sync now**. NOOP always tries the guarded normal history path first.
+2. For a 5/MG, refresh the standard Battery Level characteristic separately; do not use a WHOOP 4 battery command.
+3. If history remains absent, enable raw capture only when intentionally debugging. Raw capture stays local and is exported only by user action.
+4. Use the R22 opt-in only while the strap is worn and bonded. It writes strap configuration, so keep the official app available and capture before/after logs.
+5. Treat missing deep data as missing. NOOP may still show live HR, a 5/MG step counter, and activity class from observed type-47 v18 frames, but it must not infer cloud scores, blood pressure, SpO2, ECG, or complete history from them.
 
 Credit to **judes.club**, **Asherlc/dofek**, and **b-nnett/goose** for the public protocol work this
 builds on.

@@ -13,17 +13,35 @@ import kotlin.math.sqrt
  */
 object Hrv {
     /**
+     * Longest IBI (ms) still treated as a single beat. Longer values almost always span a
+     * cleaned/missing beat; including them in successive diffs inflated overnight HRV ~2×
+     * (upstream NOOP 8.6.0 / #195 / #204 gap-aware RMSSD).
+     */
+    const val MAX_SINGLE_BEAT_IBI_MS: Int = 2000
+
+    /** Shortest plausible adult IBI (ms) — below this is noise. */
+    const val MIN_SINGLE_BEAT_IBI_MS: Int = 300
+
+    /**
      * Root mean square of successive differences over a list of R-R intervals (ms).
      *
-     * Returns 0.0 when fewer than two intervals are available (matching the Swift
-     * guard `rr.count >= 2`).
+     * Gap-aware (NOOP 8.6.0): skips successive pairs where either interval is outside the
+     * single-beat window, so a dropped/cleaned beat cannot manufacture a spike. Clean nights
+     * (all IBIs 300–2000 ms) match the classic formula exactly.
+     *
+     * Returns 0.0 when fewer than two usable intervals remain.
      */
     fun rmssd(rr: List<Int>): Double {
         if (rr.size < 2) return 0.0
         var sum = 0.0
         var n = 0
         for (i in 1 until rr.size) {
-            val d = (rr[i] - rr[i - 1]).toDouble()
+            val a = rr[i - 1]
+            val b = rr[i]
+            // Gap-aware: IBIs that span a removed beat are too long; exclude those pairs.
+            if (a < MIN_SINGLE_BEAT_IBI_MS || b < MIN_SINGLE_BEAT_IBI_MS) continue
+            if (a > MAX_SINGLE_BEAT_IBI_MS || b > MAX_SINGLE_BEAT_IBI_MS) continue
+            val d = (b - a).toDouble()
             sum += d * d
             n += 1
         }

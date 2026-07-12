@@ -42,10 +42,14 @@ object StandardHeartRate {
             idx += 1
         }
 
-        if (flags and 0x08 != 0) idx += 2                // skip Energy Expended (bit 3)
+        if (flags and 0x08 != 0) {                       // skip Energy Expended (bit 3)
+            if (idx + 1 >= data.size) return null
+            idx += 2
+        }
 
         val rr = ArrayList<Int>()
         if ((flags shr 4) and 0x01 != 0) {               // R-R present (bit 4)
+            if ((data.size - idx) % 2 != 0) return null
             while (idx + 1 < data.size) {
                 val raw = (data[idx].toInt() and 0xFF) or ((data[idx + 1].toInt() and 0xFF) shl 8)
                 rr.add(Math.round(raw / 1024.0 * 1000.0).toInt())   // 1/1024 s → ms (rounded)

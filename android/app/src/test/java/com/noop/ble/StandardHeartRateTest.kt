@@ -62,5 +62,9 @@ class StandardHeartRateTest {
         assertNull(StandardHeartRate.parse(ByteArray(0)))
         // flags claim a 16-bit HR but only one HR byte follows → truncated → null.
         assertNull(StandardHeartRate.parse(bytes(0x01, 0x40)))
+        // flags claim Energy Expended but the two-byte field is incomplete.
+        assertNull(StandardHeartRate.parse(bytes(0x18, 65)))
+        // R-R is a u16 sequence, so a dangling byte is a malformed packet, not a partial reading.
+        assertNull(StandardHeartRate.parse(bytes(0x10, 65, 0x00)))
     }
 }

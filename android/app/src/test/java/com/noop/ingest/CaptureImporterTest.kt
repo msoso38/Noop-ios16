@@ -47,10 +47,15 @@ class CaptureImporterTest {
 
     @Test
     fun hexToBytesRejectsOverlongFrameFromUntrustedFile() {
-        // A frame far longer than any real strap record (here 600 bytes) is junk in an untrusted file
-        // and must be skipped, not turned into a 600-byte ByteArray fed to the decoder.
-        val overlong = "ab".repeat(600)
+        // A frame beyond the 4 KiB research-record ceiling is junk in an untrusted file and must be
+        // skipped. Complete WHOOP 5 v20/v21 records (2,140/1,244 B) remain accepted below that cap.
+        val overlong = "ab".repeat(4_097)
         assertNull(CaptureImporter.hexToBytes(overlong))
+    }
+
+    @Test
+    fun hexToBytesAcceptsLargestKnownWhoop5ResearchRecord() {
+        assertEquals(2_140, CaptureImporter.hexToBytes("ab".repeat(2_140))!!.size)
     }
 
     @Test

@@ -57,6 +57,11 @@ object StrainScorer {
     /** Wall-clock coverage (seconds) qualifying a sparse stream. 600 s = 10 min, matching the dense
      *  gate's ≈10 min of 600 × 1 Hz samples, so both cadences trust the number at the same age. */
     const val minSpanSeconds: Int = 600
+    /** Live wrist PPG outside this range is a transport/artifact candidate, not Effort evidence. */
+    const val minPlausibleBpm: Int = 30
+    const val maxPlausibleBpm: Int = 220
+    /** A gap beyond this loses the continuous coverage needed to integrate an Effort window. */
+    const val maxSampleGapSeconds: Long = 90L
 
     /** Top of the Effort scale (was 21.0 — rescaled to 0–100 for "Effort"). */
     const val maxStrain: Double = 100.0
@@ -260,28 +265,35 @@ object StrainScorer {
         denominator: Double = strainDenominator,
     ): Double? {
         val effMax = maxHR ?: defaultMaxHR().toDouble()
+        // Do not let duplicate timestamps, implausible PPG values, or disconnected gaps fabricate load.
+        val usable = hr.asSequence()
+            .filter { it.bpm in minPlausibleBpm..maxPlausibleBpm }
+            .sortedBy { it.ts }
+            .distinctBy { it.ts }
+            .toList()
+        if (usable.zipWithNext().any { (a, b) -> b.ts - a.ts > maxSampleGapSeconds }) return null
         // Enough data to trust the score: a dense stream (≥ minReadings) OR a sparse-but-sustained
         // one spanning ≥ minSpanSeconds with a sample floor (#482 — the 5/MG's ~30 s HR cadence).
         val enoughData = when {
-            hr.size >= minReadings -> true
-            hr.size >= minSparseReadings -> {
-                val tss = hr.map { it.ts }
+            usable.size >= minReadings -> true
+            usable.size >= minSparseReadings -> {
+                val tss = usable.map { it.ts }
                 (tss.maxOrNull() ?: 0L) - (tss.minOrNull() ?: 0L) >= minSpanSeconds
             }
             else -> false
         }
         if (!enoughData || effMax <= restingHR) return null
 
-        val sampleDur = sampleDurationMinutes(hr)
+        val sampleDur = sampleDurationMinutes(usable)
         val hrReserve = effMax - restingHR
 
         val trimp: Double = when (method) {
             Method.BANISTER -> {
                 val b = if (sex.lowercase().startsWith("f")) banisterBWomen else banisterBMen
-                banisterTRIMP(hr, restingHR, hrReserve, sampleDur, b)
+                banisterTRIMP(usable, restingHR, hrReserve, sampleDur, b)
             }
             Method.EDWARDS -> {
-                edwardsTRIMP(hr, restingHR, hrReserve, sampleDur)
+                edwardsTRIMP(usable, restingHR, hrReserve, sampleDur)
             }
         }
         return trimpToStrain(trimp, denominator)

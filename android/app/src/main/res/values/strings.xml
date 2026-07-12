@@ -2,14 +2,13 @@
 <resources>
     <string name="app_name">NOOP</string>
     <string name="widget_description">Today\'s Rest, Charge and Effort, with live heart rate and strap battery at a glance.</string>
-    <string name="widget_compact_name">NOOP Compact</string>
-    <string name="widget_compact_description">Compact Rest, Charge and Effort widget, with live heart rate and strap battery.</string>
     <string name="widget_error">NOOP widget couldn\'t draw — it will recover on the next update.</string>
 
     <!-- Navigation: bottom-bar tabs, the More page rows, and the top-bar screen titles. These are the
          localized display labels for the Destination enum; the underlying route ids stay English and
          are never translated. -->
     <string name="nav_today">Today</string>
+    <string name="whoop_app_a11y_description">When you open the official WHOOP app, NOOP reads on-screen Recovery % and Day Strain (0–21) so our models can train against the app — not the bracelet alone. No passwords. Turn off in NOOP Settings → Auto-capture WHOOP app scores.</string>
     <string name="nav_intelligence">Intelligence</string>
     <string name="nav_coupled_view">Coupled view</string>
     <string name="nav_live">Live</string>
@@ -28,6 +27,9 @@
     <string name="nav_hydration">Hydration</string>
     <string name="nav_vital_signs">Vital Signs</string>
     <string name="nav_lab_book">Lab Book</string>
+    <string name="nav_period_calendar">Cycle</string>
+    <string name="nav_step_training">Step training</string>
+    <string name="nav_quick_start">Quick start</string>
     <string name="nav_rhythm">Rhythm</string>
     <string name="nav_apple_health">Apple Health</string>
     <string name="nav_automations">Automations</string>
@@ -40,6 +42,7 @@
     <string name="nav_support">Support</string>
     <string name="nav_settings">Settings</string>
     <string name="nav_test_centre">Test Centre</string>
+    <string name="nav_goals">Goals</string>
     <string name="nav_more">More</string>
 
     <!-- More-page section headers (DISPLAY only; the stored expand/collapse key stays the English
@@ -54,10 +57,6 @@
     <string name="action_start_workout">Start workout</string>
     <string name="action_log_journal">Log journal</string>
     <string name="action_breathe">Breathe</string>
-
-    <!-- Today screen: header of the workouts feed. Renamed from "Last Workouts" ("Last" read as
-         "final", #34/#53 follow-up); wording mirrored on iOS in Localizable.xcstrings. -->
-    <string name="today_latest_workouts">Latest Workouts</string>
 
     <!-- First-run Terms gate (clickwrap). Moved out of TermsGate.kt string literals so the gate is
          localizable (PR #984); English wording kept byte-identical to the macOS/iOS `Terms.points` /

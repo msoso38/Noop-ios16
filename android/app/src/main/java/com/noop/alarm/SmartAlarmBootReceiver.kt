@@ -22,6 +22,9 @@ class SmartAlarmBootReceiver : BroadcastReceiver() {
                 runCatching {
                     SmartAlarmScheduler.rearmPersisted(context, SmartAlarmStore.from(context))
                 }
+                runCatching {
+                    CustomAlarmScheduler.rescheduleAll(context, SmartAlarmStore.from(context))
+                }
                 // Re-schedule the (non-critical) wind-down nudge too — inexact repeating alarms are
                 // cleared by a reboot on many OEMs, so re-arm from the user's earliest wake time.
                 runCatching {

@@ -403,39 +403,18 @@ data, brick, or power-cycle the strap. NOOP must never send them.
 | Code | Command | Hazard |
 |-----:|---------|--------|
 | 25 | `FORCE_TRIM` | discards stored data |
-| 32 | `POWER_CYCLE_STRAP` | power-cycles (gated probe exception — see below) |
+| 29 | `REBOOT_STRAP` | reboots |
+| 32 | `POWER_CYCLE_STRAP` | power-cycles |
 | 36 | `START_FIRMWARE_LOAD` | firmware write |
 | 37 | `LOAD_FIRMWARE_DATA` | firmware write |
 | 38 | `PROCESS_FIRMWARE_IMAGE` | firmware write |
 | 45 | `ENTER_BLE_DFU` | enters DFU bootloader |
 | 99 | `RESET_FUEL_GAUGE` | resets battery fuel gauge |
 
-**Two guarded exceptions — both restarts, both non-destructive** (a restart keeps the strap's stored
-data and just re-advertises after boot). Neither is ever sent automatically or on any connect/offload path.
-
-- **`REBOOT_STRAP` (29)** — the normal Restart. NOOP already triggers a reboot today via
-  `SET_ADVERTISING_NAME_HARVARD` (rename applies on reboot). In `WhoopCommand` as `rebootStrap`, sent only
-  from the user-initiated, confirmation-gated "Restart strap" action (`BLEManager.rebootStrap()` /
-  `WhoopBleClient.rebootStrap()`) (#166).
-- **`POWER_CYCLE_STRAP` (32)** — a harder restart, in the enum as `powerCycleStrap` **only** as a candidate
-  for the WHOOP 4.0 reboot probe (below). Sent only from `rebootProbe(.powerCycle32Empty)`, itself gated
-  behind Test Centre → Connection + a confirmation, and 4.0-only. Never on a default install.
-
-Everything else in this table stays out of the enum entirely.
-
-**WHOOP 4.0 reboot probe (#235).** A real 4.0 silently ignores the production `REBOOT_STRAP` frame (see
-below) and the correct 4.0 reboot frame is unknown. The probe (Test Centre → Connection, 4.0 only) sends
-one non-destructive candidate at a time — `REBOOT_STRAP(29)` empty, `POWER_CYCLE_STRAP(32)` empty, or
-`REBOOT_STRAP(29)` with `[0x01]` — reusing the reboot watchdog so the strap log shows which one drops the
-link (worked) vs is ignored. The definitive fix is still an HCI capture of the official app rebooting a
-4.0 (the way the alarm frame was pinned, #535). Driven by `BLEManager.rebootProbe(_:)` /
-`WhoopBleClient.rebootProbe(...)`; candidates enumerated in `RebootProbeVariant`.
-
-**Payload forms** (decoded from the official app's command builders — recorded so the wire format is
-*known*: for the destructive commands, known-and-avoidable; for the one guarded exception,
-`REBOOT_STRAP`, known-and-used by `rebootStrap()`). The opcodes are shared across WHOOP 4 (harvard)
-and WHOOP 5/MG (puffin): the app's unified command enum (`EnumC58479e`) uses the same `25`/`29`/`32`
-on both transports — unlike haptics, which has a maverick-specific `0x13`.
+**Payload forms** (decoded from the official app's command builders — recorded here only so the
+wire format is *known and avoidable*, not so it can be sent). The opcodes are shared across WHOOP 4
+(harvard) and WHOOP 5/MG (puffin): the app's unified command enum (`EnumC58479e`) uses the same
+`25`/`29`/`32` on both transports — unlike haptics, which has a maverick-specific `0x13`.
 
 - `FORCE_TRIM` (25) — body is **two little-endian int32 range args**. The app's "erase everything"
   form sets both to `-16843010` (`0xFEFEFEFE`), an 8-byte sentinel that trims the entire stored
@@ -443,10 +422,8 @@ on both transports — unlike haptics, which has a maverick-specific `0x13`.
   payload. This wipes the rolling ~14-day flash history — anything not already offloaded is gone.
 - `REBOOT_STRAP` (29) — **empty body** (builder `rh0.C45476d0` passes a null payload). The strap drops
   the BLE link and re-advertises after boot; stored data is kept. Non-destructive, but interrupts any
-  in-flight offload. **WHOOP 5.0 (puffin): hardware-confirmed** — the empty-body frame reboots a 5.0
-  (fw 50.40.1.0, #227). **WHOOP 4.0 (harvard): NOT confirmed** — a real 4.0 silently ignores this
-  empty-body frame (#235: no reboot, no disconnect, no COMMAND_RESPONSE), so the correct 4.0 form (a
-  payload byte? a different opcode?) still needs an HCI capture of the official app rebooting a 4.0.
+  in-flight offload. 5/MG framing is not hardware-confirmed (haptics already showed 5/MG can diverge on
+  both opcode and payload), so treat the puffin form as unverified until a real wire capture exists.
 
 ---
 

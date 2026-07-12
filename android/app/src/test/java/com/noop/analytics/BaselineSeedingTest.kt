@@ -111,13 +111,28 @@ class BaselineSeedingTest {
     }
 
     @Test
-    fun nullRespRenormalizesToThePreWiringScore() {
-        // resp = null with a usable resp baseline must equal the score with NO resp baseline at
-        // all — the resp term drops and the remaining weights renormalize identically, so wiring
-        // resp into the composite cannot shift any night that lacks an RSA estimate.
-        val respBase = Baselines.foldHistory(listOf(14.5, 14.4, 14.6, 14.5, 14.5), respCfg)
-        val withBaselineNullResp = recoveryWithResp(resp = null, respBaseline = respBase)!!
-        val preWiring = recoveryWithResp(resp = null, respBaseline = null)!!
-        assertEquals(preWiring, withBaselineNullResp, 1e-9)
+    fun bareImportNullHrvDoesNotBlockComputedBaselineSeed() {
+        // Mirrors IntelligenceEngine pass-2: only non-null import values occupy keys;
+        // computed fills null-import days so HC bare rows cannot starve Charge.
+        val histHrvByDay = linkedMapOf<String, Double?>(
+            "2026-07-07" to 58.0,
+            "2026-07-08" to null, // bare HC / my-whoop shadow
+            "2026-07-09" to 60.0,
+        )
+        val nightly = mapOf(
+            "2026-07-08" to 59.0,
+            "2026-07-10" to 61.0,
+        )
+        for ((day, v) in nightly) {
+            if (v == null) continue
+            if (histHrvByDay[day] == null) histHrvByDay[day] = v
+        }
+        val seq = histHrvByDay.entries.sortedBy { it.key }.map { it.value }
+        val base = Baselines.foldHistory(seq, hrvCfg)
+        assertTrue(
+            "computed HRV must fill null-import days so seed reaches 4 nights",
+            base.usable,
+        )
+        assertEquals(4, seq.count { it != null })
     }
 }

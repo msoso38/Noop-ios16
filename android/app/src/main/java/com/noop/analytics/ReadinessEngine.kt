@@ -25,6 +25,8 @@ import kotlin.math.sqrt
  *   band is the "sweet spot"; >1.5 is associated with higher injury risk (Gabbett 2016).
  * - **Training monotony** — mean/SD of daily strain over a week; high monotony (low variety) is
  *   associated with higher strain and illness (Foster 1998).
+ * - **Form (Banister TSB)** — fitness EWMA(τ42) minus fatigue EWMA(τ7) before today (localhoop
+ *   fitness model / Banister 1975/1991). ESTIMATE freshness, not a VO₂ claim.
  *
  * Not medical advice. These are approximations from a consumer strap; they describe trends in
  * *your own* data, nothing more.
@@ -62,6 +64,8 @@ object ReadinessEngine {
         val acwr: Double?,
         /** Foster training monotony over the last week (null if not enough strain history). */
         val monotony: Double?,
+        /** Banister form / TSB (fitness − fatigue before today). Null until ≥7 strain days. */
+        val form: Double? = null,
     )
 
     // MARK: Tunables (named so the thresholds are auditable)
@@ -154,7 +158,7 @@ object ReadinessEngine {
                 level = Level.INSUFFICIENT,
                 headline = "Readiness",
                 summary = "Wear the strap for a few nights and your readiness read will appear here.",
-                signals = emptyList(), acwr = null, monotony = null,
+                signals = emptyList(), acwr = null, monotony = null, form = null,
             )
         }
         val history = sorted.filter { it.day < latest.day }   // everything before today
@@ -254,13 +258,44 @@ object ReadinessEngine {
             }
         }
 
+        // Banister form (localhoop fitness.ts) — freshness into today.
+        var form: Double? = null
+        val fitnessDays = sorted.mapNotNull { d ->
+            val s = d.strain ?: return@mapNotNull null
+            FitnessModel.DayStrain(d.day, s)
+        }
+        val fitness = FitnessModel.evaluate(fitnessDays)
+        if (fitness.form != null && fitness.confidence >= 0.25) {
+            form = fitness.form
+            val f = fitness.form
+            val flag = when {
+                f >= 5.0 -> Flag.GOOD
+                f >= -5.0 -> Flag.NEUTRAL
+                f >= -15.0 -> Flag.WATCH
+                else -> Flag.BAD
+            }
+            val detail = when (flag) {
+                Flag.GOOD -> "fresh - fitness ahead of recent fatigue"
+                Flag.NEUTRAL -> "balanced fitness vs fatigue"
+                Flag.WATCH -> "a bit flat - recent load catching up"
+                Flag.BAD -> "fatigued - chronic load ahead of fitness"
+            }
+            signals.add(
+                Signal(
+                    key = "form", label = "Form",
+                    detail = detail, flag = flag,
+                    evidence = "TSB ${fmt(f, 1)} (CTL ${fmt(fitness.fitness ?: 0.0, 1)} / ATL ${fmt(fitness.fatigue ?: 0.0, 1)})",
+                ),
+            )
+        }
+
         val (level, headline, summary) = synthesize(
             signals = signals,
-            hasHistory = history.isNotEmpty() || acwr != null,
+            hasHistory = history.isNotEmpty() || acwr != null || form != null,
         )
         return Readiness(
             level = level, headline = headline, summary = summary,
-            signals = signals, acwr = acwr, monotony = monotony,
+            signals = signals, acwr = acwr, monotony = monotony, form = form,
         )
     }
 

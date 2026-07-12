@@ -21,12 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.automirrored.filled.MenuBook
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
-import android.widget.Toast
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -59,7 +55,6 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -106,6 +101,7 @@ fun HealthScreen(
     onVitalClick: (String) -> Unit = {},
     onOpenLabBook: () -> Unit = {},
     onOpenFusedRecord: () -> Unit = {},
+    onOpenPeriodCalendar: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val profile = remember { ProfileStore.from(context.applicationContext) }
@@ -197,12 +193,16 @@ fun HealthScreen(
                     // #801: symmetric off-control. Cycle awareness could be turned ON here but only OFF from
                     // Automations; let the user turn it off in-place where they turned it on.
                     onTurnOffCycle = { vm.setCycleTrackingEnabled(false) },
+                    onOpenPeriodCalendar = onOpenPeriodCalendar,
                 )
             }
             // CONTRIBUTORS (README screen #5, recovery detail) — the signals behind recovery as
             // labelled progress bars in the shared stage/zone bar style, mirroring Today's section.
             item { Spacer(Modifier.height(Metrics.selectorTopUp)) }
             item { HealthContributorsSection(today) }
+            // Blood pressure — Lab Book / cuff only. Never invent WHOOP MG BP.
+            item { Spacer(Modifier.height(Metrics.selectorTopUp)) }
+            item { ManualBloodPressureCard(onOpenLabBook = onOpenLabBook) }
             // RECORDS & SOURCES (Swift parity) — deep-link rows into the local Lab Book and the
             // "Your Data, Fused" record, so both are discoverable from Health, not just the drawer.
             item { Spacer(Modifier.height(Metrics.selectorTopUp)) }
@@ -429,6 +429,7 @@ private fun SkinTempSuiteSection(
     onEnableCycle: () -> Unit,
     // #801: symmetric off-control, surfaced on the live card.
     onTurnOffCycle: () -> Unit,
+    onOpenPeriodCalendar: () -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
         SectionHeader("Skin Temperature", overline = "From your nightly readings")
@@ -444,7 +445,14 @@ private fun SkinTempSuiteSection(
         // opt-in invitation is shown ONLY for profiles it can apply to (sex-gated); a male profile that
         // previously enabled it still sees its existing card, only the invitation is gated.
         if (cycleEnabled) {
-            signals?.cycle?.let { CycleAwarenessCard(result = it, onTurnOff = onTurnOffCycle) }
+            signals?.cycle?.let {
+                CycleAwarenessCard(
+                    result = it,
+                    onLogPeriod = onOpenPeriodCalendar,
+                    onOpenDetail = onOpenPeriodCalendar,
+                    onTurnOff = onTurnOffCycle,
+                )
+            }
         } else if (cycleOptInApplies) {
             CycleAwarenessOptInCard(onEnable = onEnableCycle)
         }
@@ -470,6 +478,43 @@ private fun SkinTempSuiteSection(
 // recovery world and Sleep + Respiratory on the blue sleep world. A SOLID/CALIBRATING pill states data
 // confidence. Fractions are presentation-only normalisations of today's row to typical adult spans —
 // no scoring change. Mirrors the Today RecoveryContributorsSection so the two screens read identically.
+
+/**
+ * Honest BP + SpO2 surface.
+ * - BP: Lab Book cuff only. MG protected BP is not scientifically decoded yet → never invent.
+ * - SpO2 %: only when spo2Pct is banked from a trusted source. WHOOP raw red/IR ADC is not a %
+ *   (needs WHOOP calibration curve — see Spo2ReTrace). MG private SpO2 path needs encrypted bond.
+ */
+@Composable
+private fun ManualBloodPressureCard(onOpenLabBook: () -> Unit) {
+    // Impeccable product polish: one primary action, short honest copy, provenance pills — no essay.
+    Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
+        SectionHeader(title = "BP & oxygen", trailing = "Honest blanks")
+        HonestProvenanceLegend()
+        NoopCard(tint = Palette.metricRose) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    StatePill("BP → Lab Book", tone = StrandTone.Accent, showsDot = false)
+                    StatePill("SpO₂ → banked", tone = StrandTone.Neutral, showsDot = false)
+                }
+                Text(
+                    "Cuff BP belongs in Lab Book. SpO₂ % appears only when banked — never invented from open MG stream.",
+                    style = NoopType.subhead,
+                    color = Palette.textSecondary,
+                )
+                WetBounceButton(
+                    label = "Log cuff BP in Lab Book",
+                    modifier = Modifier.fillMaxWidth(),
+                    tint = Palette.metricRose,
+                    onClick = onOpenLabBook,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun HealthContributorsSection(day: DailyMetric?) {
@@ -582,40 +627,13 @@ private fun ContributorBar(
  *  same convention every screen uses for on-device-computed series (imported is plain "my-whoop"). */
 private const val COMPUTED_SOURCE = "my-whoop-noop"
 
-/** Fitness Age readiness from what a screen can see: RHR coverage over the last 7 merged daily rows
- *  (drives the "N more nights" countdown), a scored-strain day as the activity signal, and the profile
- *  basics. Shared by the Health hub's [FitnessAgeSection] and the Today card's [VitalDetailScreen]
- *  tap-through so ONE gate feeds both surfaces (no drift). Returns (rhrDays, readiness) — rhrDays also
- *  feeds the not-ready lead. Approximate by design; the weekly value is the authority, this explains gaps. */
-@Composable
-private fun rememberFitnessReadiness(days: List<DailyMetric>, profile: ProfileStore): Pair<Int, FitnessAgeReadiness> {
-    val rhrDays = remember(days) { days.takeLast(7).count { it.restingHr != null } }
-    val readiness = remember(days, profile.age, profile.sex, profile.waistCm) {
-        val activityDays = days.takeLast(7).count { it.strain != null }
-        FitnessAgeEngine.assessReadiness(
-            hasAge = profile.age > 0,
-            hasSex = profile.sex.isNotBlank(),
-            rhrDays = rhrDays,
-            activityDays = activityDays,
-            hasHeightWeight = profile.heightCm > 0 && profile.weightKg > 0,
-            hasWaist = profile.waistCm > 0,
-        )
-    }
-    return rhrDays to readiness
-}
-
 @Composable
 private fun FitnessAgeSection(vm: AppViewModel, days: List<DailyMetric>, profile: ProfileStore) {
-    val context = LocalContext.current
     // Latest weekly value + its optional VO₂max companion, read once (metricSeries has no Flow, so we
     // re-read whenever the merged history changes — a fresh sync/import is what moves these).
     var fitnessAge by remember { mutableStateOf<Double?>(null) }
     var vo2max by remember { mutableStateOf<Double?>(null) }
-    // Manual-refresh plumbing: the not-ready card's refresh button recomputes Fitness Age NOW and bumps
-    // this tick, which re-keys the read below so a freshly written value shows without waiting for a sync.
-    var refreshTick by remember { mutableStateOf(0) }
-    var refreshing by remember { mutableStateOf(false) }
-    LaunchedEffect(days, refreshTick) {
+    LaunchedEffect(days) {
         val fa = runCatching {
             vm.repo.metricSeries(COMPUTED_SOURCE, "fitness_age", "0000-01-01", "9999-12-31")
         }.getOrDefault(emptyList()).lastOrNull()?.value
@@ -630,9 +648,19 @@ private fun FitnessAgeSection(vm: AppViewModel, days: List<DailyMetric>, profile
     // age; activity (a scored strain day) is an enrichment signal; height/weight/waist sit under the
     // VO₂max role. Age/sex come from the profile. Approximate by design — the weekly value is the
     // authority; this just explains the gaps.
-    // rhrDays drives BOTH the readiness verdict AND the not-ready countdown lead. Shared with the Today
-    // card's tap-through (VitalDetailScreen) via one helper so a single gate feeds both surfaces.
-    val (rhrDays, readiness) = rememberFitnessReadiness(days, profile)
+    // rhrDays drives BOTH the readiness verdict AND the not-ready countdown lead, so hoist it out.
+    val rhrDays = remember(days) { days.takeLast(7).count { it.restingHr != null } }
+    val readiness = remember(days, profile.age, profile.sex, profile.waistCm) {
+        val activityDays = days.takeLast(7).count { it.strain != null }
+        FitnessAgeEngine.assessReadiness(
+            hasAge = profile.age > 0,
+            hasSex = profile.sex.isNotBlank(),
+            rhrDays = rhrDays,
+            activityDays = activityDays,
+            hasHeightWeight = profile.heightCm > 0 && profile.weightKg > 0,
+            hasWaist = profile.waistCm > 0,
+        )
+    }
 
     var showChecklist by remember { mutableStateOf(false) }
 
@@ -651,26 +679,9 @@ private fun FitnessAgeSection(vm: AppViewModel, days: List<DailyMetric>, profile
                 FitnessReadinessCard(readiness = readiness, headed = false)
             }
         } else {
-            // No weekly value yet — lead with a concrete countdown, then the checklist. The refresh button
-            // forces the weekly recompute now (from stored data), so a ready user doesn't have to wait.
-            FitnessReadinessCard(
-                readiness = readiness, headed = true,
-                lead = fitnessReadyLead(rhrDays, profile.age > 0, profile.sex.isNotBlank()),
-                refreshing = refreshing,
-                onRefresh = {
-                    refreshing = true
-                    vm.refreshFitnessAgeNow { wrote ->
-                        refreshing = false
-                        refreshTick++
-                        Toast.makeText(
-                            context,
-                            if (wrote) "Fitness Age updated."
-                            else "Not enough wear yet — keep your strap on overnight.",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    }
-                },
-            )
+            // No weekly value yet — lead with a concrete countdown, then the checklist.
+            FitnessReadinessCard(readiness = readiness, headed = true,
+                lead = fitnessReadyLead(rhrDays, profile.age > 0, profile.sex.isNotBlank()))
         }
     }
 }
@@ -894,7 +905,7 @@ private fun FitnessAgeHero(
                 }
                 if (vo2max != null) {
                     StatePill(
-                        title = "VO₂max ${vo2max.roundToInt()}",
+                        title = "VO₂ est. ${vo2max.roundToInt()}",
                         tone = StrandTone.Accent,
                         showsDot = false,
                     )
@@ -902,7 +913,7 @@ private fun FitnessAgeHero(
             }
 
             Text(
-                text = "± 5 yr · a fitness comparison, not a biological age",
+                text = "± 5 yr · fitness comparison only, not biological age. VO₂ is an on-device estimate from HR + activity — not a lab test.",
                 style = NoopType.footnote,
                 color = Palette.textTertiary,
             )
@@ -957,15 +968,7 @@ private fun fitnessReadyLead(rhrDays: Int, hasAge: Boolean, hasSex: Boolean): St
  *  "Drives your Fitness Age" and "Unlocks your VO₂max". When [headed] (no value yet) it leads with the
  *  [lead] countdown and floats the required-missing items to the top of their group. */
 @Composable
-private fun FitnessReadinessCard(
-    readiness: FitnessAgeReadiness,
-    headed: Boolean,
-    lead: String = "",
-    // When set (the headed/not-ready state), a small refresh affordance sits by the lead and forces an
-    // immediate Fitness Age recompute; [refreshing] swaps it for a spinner while that runs.
-    onRefresh: (() -> Unit)? = null,
-    refreshing: Boolean = false,
-) {
+private fun FitnessReadinessCard(readiness: FitnessAgeReadiness, headed: Boolean, lead: String = "") {
     val drivesAge = readiness.items
         .filter { it.role == FitnessReadinessRole.DRIVES_AGE }
         .sortedBy { if (headed) readinessSortKey(it) else 0 }
@@ -977,33 +980,11 @@ private fun FitnessReadinessCard(
         Column(verticalArrangement = Arrangement.spacedBy(Metrics.space16)) {
             if (headed) {
                 Column(verticalArrangement = Arrangement.spacedBy(Metrics.space4)) {
-                    Row(verticalAlignment = Alignment.Top) {
-                        Text(
-                            lead.ifBlank { "A few more days and we can show your Fitness Age." },
-                            style = NoopType.headline,
-                            color = Palette.textPrimary,
-                            modifier = Modifier.weight(1f),
-                        )
-                        // Force-recompute affordance: NOOP scores Fitness Age weekly, so this lets an
-                        // impatient user apply it NOW from stored data (no strap needed). Spinner while it runs.
-                        if (onRefresh != null) {
-                            if (refreshing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = Palette.accent,
-                                )
-                            } else {
-                                IconButton(onClick = onRefresh, modifier = Modifier.size(28.dp)) {
-                                    Icon(
-                                        Icons.Filled.Refresh,
-                                        contentDescription = "Refresh Fitness Age now",
-                                        tint = Palette.accent,
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    Text(
+                        lead.ifBlank { "A few more days and we can show your Fitness Age." },
+                        style = NoopType.headline,
+                        color = Palette.textPrimary,
+                    )
                     Text(
                         "It compares your resting heart rate and recent activity against people your age. " +
                             "Wear your strap for a full week and it appears here.",
@@ -1911,29 +1892,14 @@ private fun TileSparkline(values: List<Double>, color: Color, modifier: Modifier
     }
 }
 
-/** One windowed reading behind a vital's detail chart: its day ("YYYY-MM-DD"), the value, and the RAW
- *  source id it came from (a strap id, the "-noop" computed sibling, "apple-health", or "health-connect").
- *  The readings TABLE and the "N readings" header both derive from this ONE list, so they can never
- *  disagree; the raw source maps to a human label via [provenanceDisplayLabel] — the SAME resolver Today
- *  uses, so we never invent a source vocabulary (task #8). */
-internal data class VitalReading(
-    val day: String,
-    val value: Double,
-    val source: String,
-)
-
 private data class VitalDetailModel(
     val key: String,
     val title: String,
     val unit: String,
     val color: Color,
-    val readings: List<VitalReading>,
+    val points: List<Pair<String, Double>>,
     val format: (Double) -> String,
-) {
-    /** (day, value) projection the trend chart + range helpers consume — SAME order as [readings], so the
-     *  chart, the header count, and the table can never drift apart. */
-    val points: List<Pair<String, Double>> get() = readings.map { it.day to it.value }
-}
+)
 
 /** Metric-detail keys that are NOT plain DailyMetric columns but series the engines/importers persist
  *  (Fitness Age + Vitality under the computed strap, Steps estimate, Apple active energy). Each Today
@@ -1944,10 +1910,7 @@ private val SERIES_BACKED_VITAL_KEYS = setOf("fitness_age", "vitality", "steps_e
 @Composable
 fun VitalDetailScreen(vm: AppViewModel, key: String) {
     val days by vm.recentDays.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    val tempUnit = UnitPrefs.temperature(context)
-    // Profile drives the Fitness Age readiness/countdown shown when that vital has no value yet.
-    val profile = remember { ProfileStore.from(context.applicationContext) }
+    val tempUnit = UnitPrefs.temperature(LocalContext.current)
     val isSeriesBacked = key in SERIES_BACKED_VITAL_KEYS
 
     // Series-backed metrics are loaded async from metricSeries; the plain daily vitals build synchronously
@@ -1955,12 +1918,8 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
     // "not enough history" before its rows arrive.
     var seriesDetail by remember(key) { mutableStateOf<VitalDetailModel?>(null) }
     var seriesLoaded by remember(key) { mutableStateOf(false) }
-    // Manual-refresh plumbing for the Fitness Age not-ready state (readiness branch below): the refresh
-    // button recomputes then bumps this tick, re-running the series read so a fresh value shows at once.
-    var refreshTick by remember { mutableStateOf(0) }
-    var refreshing by remember { mutableStateOf(false) }
     if (isSeriesBacked) {
-        LaunchedEffect(key, refreshTick) {
+        LaunchedEffect(key) {
             seriesDetail = buildSeriesVitalDetail(vm, key)
             seriesLoaded = true
         }
@@ -1969,17 +1928,9 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
     else remember(days, key, tempUnit) { buildVitalDetail(days, key, tempUnit) }
     var range by remember { mutableStateOf(VitalDetailRange.MONTH) }
 
-    // The subtitle tracks how much history the metric has, so we never promise a "historical trend" the
-    // view isn't showing: Fitness Age with no reading yet -> what it still needs; ANY metric with a single
-    // reading -> that reading (trend to follow); two+ -> the trend. Pre-load falls through to trend.
-    val loadedPoints = if (seriesLoaded) (detail?.points?.size ?: 0) else -1
     ScreenScaffold(
         title = detail?.title ?: "Vital Signs",
-        subtitle = when {
-            key == "fitness_age" && loadedPoints == 0 -> "What your Fitness Age still needs."
-            loadedPoints == 1 -> "Your latest reading — trend to follow."
-            else -> "Historical trend from cached daily metrics."
-        },
+        subtitle = "Historical trend from cached daily metrics.",
     ) {
         if (isSeriesBacked && !seriesLoaded) {
             DataPendingNote(
@@ -1989,62 +1940,6 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
             return@ScreenScaffold
         }
         if (detail == null || detail.points.size < 2) {
-            // Fitness Age with NO value yet (zero points): show the readiness checklist + the "N more
-            // nights of wear" countdown — what it actually needs — instead of the generic "needs two
-            // readings to chart" note, which describes the trend line and left the Today card's tap-through
-            // a dead end. (A single reading is handled below, generically, for every metric.)
-            if (key == "fitness_age" && (detail?.points?.isEmpty() != false)) {
-                val (rhrDays, readiness) = rememberFitnessReadiness(days, profile)
-                FitnessReadinessCard(
-                    readiness = readiness, headed = true,
-                    lead = fitnessReadyLead(rhrDays, profile.age > 0, profile.sex.isNotBlank()),
-                    refreshing = refreshing,
-                    onRefresh = {
-                        refreshing = true
-                        vm.refreshFitnessAgeNow { wrote ->
-                            refreshing = false
-                            refreshTick++
-                            Toast.makeText(
-                                context,
-                                if (wrote) "Fitness Age updated."
-                                else "Not enough wear yet — keep your strap on overnight.",
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        }
-                    },
-                )
-                return@ScreenScaffold
-            }
-            // ANY metric with exactly ONE reading: the Today card already shows this value, so the generic
-            // "Not enough history yet" note read as a contradiction on tap-through — only the TREND CHART
-            // needs a second point. Show the value + when the chart fills in, never a no-data dead end.
-            // Matches iOS, which renders the value hero at a single point. First hit on Fitness Age, then
-            // Vitality — both weekly-ish computed scores that sit at one reading for a while.
-            if (detail != null && detail.points.size == 1) {
-                val one = detail.points.last()   // size 1: the single reading (last == the latest)
-                NoopCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Overline("Latest")
-                        Text(
-                            text = "${detail.format(one.second)} ${detail.unit}".trim(),
-                            style = NoopType.chartValueLarge,
-                            color = detail.color,
-                        )
-                        Text(
-                            text = "as of ${one.first}",
-                            style = NoopType.footnote,
-                            color = Palette.textTertiary,
-                        )
-                        Text(
-                            text = "One reading so far — your trend chart fills in here once a second " +
-                                "reading lands.",
-                            style = NoopType.subhead,
-                            color = Palette.textSecondary,
-                        )
-                    }
-                }
-                return@ScreenScaffold
-            }
             DataPendingNote(
                 title = "Not enough history yet",
                 body = "This vital needs at least two historical readings before NOOP can chart it.",
@@ -2057,11 +1952,7 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
         // coerces DOWN to the largest unlocked range so a calibrating user always has a live chart.
         val unlockedRanges = remember(detail) { unlockedVitalRanges(vitalHistorySpanDays(detail.points)) }
         val effectiveRange = coercedVitalRange(range, unlockedRanges)
-        // The trend chart, the "N readings" header, AND the readings table all derive from this ONE
-        // windowed list, so the count and the rows can never disagree (task #8). filteredPoints is just
-        // its (day, value) projection for the existing chart/stat code.
-        val filteredReadings = remember(detail, effectiveRange) { filterVitalReadings(detail.readings, effectiveRange) }
-        val filteredPoints = filteredReadings.map { it.day to it.value }
+        val filteredPoints = remember(detail, effectiveRange) { filterVitalPoints(detail.points, effectiveRange) }
         if (filteredPoints.size < 2) {
             DataPendingNote(
                 title = "Not enough history in this range",
@@ -2076,7 +1967,7 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
         val max = values.maxOrNull()
         val avg = values.average()
 
-        SectionHeader(detail.title, overline = "Vital Signs", trailing = "${filteredReadings.size} readings")
+        SectionHeader(detail.title, overline = "Vital Signs", trailing = "${filteredPoints.size} readings")
         NoopCard {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.Top) {
@@ -2136,131 +2027,6 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
                             )
                         }
                     }
-                }
-            }
-        }
-
-        // Per-reading breakdown so the provenance behind the trend is visible — whether each reading came
-        // from the WHOOP strap, a Health Connect / Apple Health import, or the on-device pipeline — not
-        // just the "N readings" count. Rows derive from the SAME [filteredReadings] the header counts,
-        // newest first, and reuse [provenanceDisplayLabel] for the source words (task #8).
-        val strapId = vm.activeStrapId
-        val readingRows = remember(filteredReadings, detail, strapId) {
-            vitalReadingRows(filteredReadings, detail.unit, strapId, detail.format)
-        }
-        VitalReadingsTable(rows = readingRows)
-    }
-}
-
-/** The rows of a vital detail's readings table: each reading's day (localized), its formatted value with
- *  unit, and a human source label. Plain strings so the composable is a thin renderer and the projection
- *  stays unit-testable. */
-internal data class VitalReadingRow(
-    val time: String,
-    val value: String,
-    val source: String,
-)
-
-/**
- * Project a vital's windowed [readings] into table rows, NEWEST FIRST — the same list (so the same count)
- * the "N readings" header shows, guaranteeing the two never drift. Each row pairs the reading's DAY (these
- * vital series carry one aggregated reading per night, so a row's "time" is its calendar date, localized;
- * the date always shows since a charted window spans 2+ days) with the model's own [format]ted value +
- * [unit] and the source label resolved by [provenanceDisplayLabel] — no new source vocabulary (a strap id
- * → "Whoop", its "-noop" sibling → "On-device", "apple-health" → "Apple Health", "health-connect" →
- * "Health Connect"). [strapDeviceId] is the active strap id the label resolver needs.
- */
-internal fun vitalReadingRows(
-    readings: List<VitalReading>,
-    unit: String,
-    strapDeviceId: String,
-    format: (Double) -> String,
-): List<VitalReadingRow> =
-    readings.asReversed().map { reading ->
-        VitalReadingRow(
-            time = vitalReadingDateLabel(reading.day),
-            value = "${format(reading.value)} $unit".trim(),
-            source = provenanceDisplayLabel(reading.source, strapDeviceId),
-        )
-    }
-
-/** "9 Jun" for a "YYYY-MM-DD" reading day (today / yesterday read as words to match the hero "as of"
- *  line); the verbatim string if it doesn't parse. Locale.US month, matching [asOfLabel]. */
-internal fun vitalReadingDateLabel(day: String): String {
-    val date = runCatching { LocalDate.parse(day) }.getOrNull() ?: return day
-    val today = LocalDate.now()
-    return when (date) {
-        today -> "Today"
-        today.minusDays(1) -> "Yesterday"
-        else -> date.format(DateTimeFormatter.ofPattern("d MMM", Locale.US))
-    }
-}
-
-/** The readings table below a vital's chart: one row per windowed reading (newest first), each showing
- *  its day, formatted value, and source (tinted by [provenanceLabelTint], so the same source reads the
- *  same colour as the Today rings). Empty [rows] render nothing. */
-@Composable
-private fun VitalReadingsTable(rows: List<VitalReadingRow>) {
-    if (rows.isEmpty()) return
-    NoopCard {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Overline("Readings")
-            // Slim column header naming the three columns — SAME weights as the data rows below so each
-            // label sits over its column. Swift twin (MetricExplorerView.readingsTable) mirrors this.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Date",
-                    style = NoopType.footnote,
-                    color = Palette.textSecondary,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    "Value",
-                    style = NoopType.footnote,
-                    color = Palette.textSecondary,
-                )
-                Text(
-                    "Source",
-                    style = NoopType.footnote,
-                    color = Palette.textSecondary,
-                    textAlign = TextAlign.End,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            rows.forEachIndexed { index, row ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        row.time,
-                        style = NoopType.subhead,
-                        color = Palette.textSecondary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        row.value,
-                        style = NoopType.bodyNumber,
-                        color = Palette.textPrimary,
-                    )
-                    Text(
-                        row.source,
-                        style = NoopType.footnote,
-                        color = provenanceLabelTint(row.source),
-                        textAlign = TextAlign.End,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                if (index < rows.size - 1) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(Metrics.divider)
-                            .background(Palette.hairline),
-                    )
                 }
             }
         }
@@ -2389,24 +2155,6 @@ internal fun filterVitalPoints(
     return filtered.ifEmpty { points.takeLast(windowDays.toInt()) }
 }
 
-/** [filterVitalPoints] for the source-carrying [VitalReading] list — the SAME latest-relative window, so
- *  the readings table and the chart always agree on which readings are in view (task #8). Kept as a twin
- *  of the point filter (identical windowing) rather than shared-generic to preserve the pinned-test shape
- *  of [filterVitalPoints]. */
-internal fun filterVitalReadings(
-    readings: List<VitalReading>,
-    range: VitalDetailRange,
-): List<VitalReading> {
-    val windowDays = range.days ?: return readings
-    val latestDate = readings.lastOrNull()?.day?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
-        ?: return readings.takeLast(windowDays.toInt())
-    val cutoff = latestDate.minusDays(windowDays - 1)
-    val filtered = readings.filter { reading ->
-        runCatching { LocalDate.parse(reading.day) }.getOrNull()?.let { !it.isBefore(cutoff) } ?: false
-    }
-    return filtered.ifEmpty { readings.takeLast(windowDays.toInt()) }
-}
-
 private fun buildVitalDetail(
     days: List<DailyMetric>,
     key: String,
@@ -2418,7 +2166,7 @@ private fun buildVitalDetail(
         title = "Respiratory Rate",
         unit = "rpm",
         color = Palette.metricCyan,
-        readings = days.mapNotNull { row -> row.respRateBpm?.let { VitalReading(row.day, it, row.deviceId) } },
+        points = days.mapNotNull { it.respRateBpm?.let { value -> it.day to value } },
         format = { String.format(Locale.US, "%.1f", it) },
     )
     "spo2" -> VitalDetailModel(
@@ -2426,7 +2174,7 @@ private fun buildVitalDetail(
         title = "Blood Oxygen",
         unit = "%",
         color = Palette.metricCyan,
-        readings = days.mapNotNull { row -> row.spo2Pct?.let { VitalReading(row.day, it, row.deviceId) } },
+        points = days.mapNotNull { it.spo2Pct?.let { value -> it.day to value } },
         format = { String.format(Locale.US, "%.0f", it) },
     )
     "rhr" -> VitalDetailModel(
@@ -2434,7 +2182,7 @@ private fun buildVitalDetail(
         title = "Resting Heart Rate",
         unit = "bpm",
         color = Palette.metricRose,
-        readings = days.mapNotNull { row -> row.restingHr?.toDouble()?.let { VitalReading(row.day, it, row.deviceId) } },
+        points = days.mapNotNull { it.restingHr?.toDouble()?.let { value -> it.day to value } },
         format = { it.roundToInt().toString() },
     )
     "hrv" -> VitalDetailModel(
@@ -2442,7 +2190,7 @@ private fun buildVitalDetail(
         title = "Heart Rate Variability",
         unit = "ms",
         color = Palette.metricPurple,
-        readings = days.mapNotNull { row -> row.avgHrv?.let { VitalReading(row.day, it, row.deviceId) } },
+        points = days.mapNotNull { it.avgHrv?.let { value -> it.day to value } },
         format = { it.roundToInt().toString() },
     )
     "skin" -> {
@@ -2462,10 +2210,10 @@ private fun buildVitalDetail(
             title = "Skin Temperature",
             unit = unit,
             color = Palette.metricAmber,
-            readings = days.mapNotNull { row ->
+            points = days.mapNotNull { row ->
                 row.skinTempDevC
                     ?.takeIf { VitalBands.isAbsoluteSkinTemp(it) == absolute }
-                    ?.let { value -> VitalReading(row.day, value, row.deviceId) }
+                    ?.let { value -> row.day to value }
             },
             format = format,
         )
@@ -2484,8 +2232,8 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
         title = "Fitness Age",
         unit = "yrs",
         color = Palette.chargeColor,
-        readings = vm.repo.metricSeries(COMPUTED_SOURCE, "fitness_age", "0000-01-01", "9999-12-31")
-            .map { VitalReading(it.day, it.value, it.deviceId) },
+        points = vm.repo.metricSeries(COMPUTED_SOURCE, "fitness_age", "0000-01-01", "9999-12-31")
+            .map { it.day to it.value },
         format = { it.roundToInt().toString() },
     )
     "vitality" -> VitalDetailModel(
@@ -2493,8 +2241,8 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
         title = "Vitality",
         unit = "",
         color = Palette.metricPurple,
-        readings = vm.repo.metricSeries(COMPUTED_SOURCE, "vitality", "0000-01-01", "9999-12-31")
-            .map { VitalReading(it.day, it.value, it.deviceId) },
+        points = vm.repo.metricSeries(COMPUTED_SOURCE, "vitality", "0000-01-01", "9999-12-31")
+            .map { it.day to it.value },
         format = { it.roundToInt().toString() },
     )
     "steps_est" -> VitalDetailModel(
@@ -2502,9 +2250,7 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
         title = "Steps",
         unit = "steps",
         color = Palette.metricCyan,
-        readings = vm.repo.resolvedSeries("steps_est", "my-whoop", "0000-00-00", "9999-99-99",
-            strapDeviceId = vm.activeStrapId)
-            .points.map { VitalReading(it.day, it.value, it.source) },
+        points = vm.repo.resolvedSeries("steps_est", "my-whoop", "0000-00-00", "9999-99-99").values,
         format = { it.roundToInt().toString() },
     )
     "active_kcal" -> {
@@ -2515,14 +2261,14 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
         // apple-health winning a tie (matching the card's newest-value read), ascending.
         val rows = vm.repo.appleDaily("apple-health", "0000-01-01", "9999-12-31") +
             vm.repo.appleDaily("health-connect", "0000-01-01", "9999-12-31")
-        val byDay = LinkedHashMap<String, VitalReading>()
-        for (r in rows) r.activeKcal?.let { byDay.putIfAbsent(r.day, VitalReading(r.day, it, r.deviceId)) }
+        val byDay = LinkedHashMap<String, Double>()
+        for (r in rows) r.activeKcal?.let { byDay.putIfAbsent(r.day, it) }
         VitalDetailModel(
             key = key,
             title = "Active Energy",
             unit = "kcal",
             color = Palette.metricAmber,
-            readings = byDay.entries.sortedBy { it.key }.map { it.value },
+            points = byDay.entries.sortedBy { it.key }.map { it.key to it.value },
             format = { it.roundToInt().toString() },
         )
     }

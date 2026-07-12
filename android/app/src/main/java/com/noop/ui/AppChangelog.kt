@@ -25,7 +25,7 @@ object AppChangelog {
      * Bump this when you add a release below. The "What's New" sheet shows automatically when the
      * stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
      */
-    const val CURRENT_VERSION = "8.6.2"
+    const val CURRENT_VERSION = "8.6.21"
 
     data class Release(
         val version: String,
@@ -37,73 +37,44 @@ object AppChangelog {
     /** Newest first. */
     val releases: List<Release> = listOf(
         Release(
-            version = "8.6.2",
-            title = "Apple Health export, sleep nights recovered, and imported-ride Effort",
+            version = "8.6.21",
+            title = "Planning and 5/MG lab, made visible",
             date = "July 2026",
             items = listOf(
-                "**Your data in Apple Health (iPhone) (#249).** Sleep stages, minute-by-minute heart rate, and your workouts now write to Apple Health, so other apps can read them. Thanks vishk23.",
-                "**Sleep nights no longer go missing (#268).** Nights with a few brief heart-rate spikes were being dropped as \"no sleep recorded\" — those nights are recovered now. Thanks tanarchytan.",
-                "**Sleep times and totals read right after an edit (#259).** A corrected bedtime no longer shows the wrong hour on the Sleep tab, and a night can never read as more sleep than time in bed.",
-                "**Imported rides count toward Effort (#137).** On a day you didn't wear the strap, an imported GPX / TCX / FIT ride's real heart rate now lights that day's Effort ring instead of being ignored.",
-                "**Low-battery heads-up (#250).** NOOP warns you when your strap has roughly a day of charge left, on iPhone, Mac and Android. Thanks vishk23.",
-                "**Automatic sync no longer stalls (#266).** A strap whose clock briefly read ahead could stop syncing and freeze the battery reading until you reconnected; it now recovers on its own. Thanks digitalerdude.",
+                "**Cycle planning says what it needs.** The Cycle screen now shows your logged-start progress until four starts unlock its conditional 12-month planning view, then names the planning horizon clearly.",
+                "**5/MG lab is easier to find.** On a 5/MG or debug tester build, Settings now labels the entry point **5/MG lab & Advanced**. Every experiment remains opt-in and off by default.",
+                "**No hidden certainty.** Planning windows remain estimates from your own logged history, widen with variation, and never become logged periods or contraception guidance.",
             ),
         ),
         Release(
-            version = "8.6.1",
-            title = "Restart your strap, lighter on battery, and Health Connect on Android 13",
+            version = "8.6.20",
+            title = "Completed-day learning + 5/MG test panel",
             date = "July 2026",
             items = listOf(
-                "**Restart your strap from NOOP (#166).** A new *Restart strap* option on the connected band in Devices — a clean way to reboot a misbehaving strap without the official app. Confirmation-gated, keeps your data, and shows a *Reconnecting…* state while it comes back. iPhone, Mac and Android.",
-                "**Lighter on battery (Android) (#228).** NOOP stops re-polling the strap on a fixed cadence once it keeps banking nothing, and backs off the reconnect churn when another app is holding the band — so the strap and phone last longer. Thanks tanarchytan.",
-                "**Health Connect works on Android 13 (#226).** NOOP now appears in Health Connect's app-permissions list on Android 13, so you can grant access and import your data. Android 14+ was already fine.",
-                "**Auto-detected workouts save now (Android) (#214).** Tapping *Save* on a \"looks like a workout\" suggestion was silently dropped mid-save; it now saves, shows up in your workouts, and stops re-prompting the same window.",
+                "**Cleaner learning inputs.** Current and future calendar days wait until they are complete before they can train the NOOP-to-WHOOP app alignment model.",
+                "**More honest signal gates.** Broken HR packets, duplicate readings, implausible heart rates, and noisy beat windows no longer create Effort or Stress evidence.",
+                "**WHOOP 5/MG test panel.** Debug testers can find the opt-in experimental controls under Settings → Advanced. Every switch stays off by default and only affects a 5/MG strap.",
             ),
         ),
         Release(
-            version = "8.6.0",
-            title = "HRV that reads true, and a tidier workout list",
+            version = "8.6.19",
+            title = "Full-screen charging + ding",
             date = "July 2026",
             items = listOf(
-                "**Overnight HRV reads true, not roughly twice as high (#195).** When cleaning drops a single noisy heartbeat, its neighbours no longer splice together into a phantom spike — the flaw that had some nights reading HRV about 2× too high, and skewing the recovery built on it. iPhone, Mac and Android.",
-                "**The deep-sleep HRV setting takes effect right away (#201).** Switching between whole-night and deep-sleep no longer drops Charge back to \"calibrating\" for several nights — with a few nights of history behind you, the change applies immediately. Thanks digitalerdude.",
-                "**Latest Workouts, tidied up (#200).** The Today workout section shows your true most-recent sessions in one clean list, drops the duplicate that appeared when a workout came from more than one source, keeps up when you re-pair your strap, and names more sports. Thanks TheBoroer.",
+                "**Full-screen charging.** When your strap starts charging, a full-screen AirPods-style ring opens: big %, pulse bolt, **time remaining to full**, runtime estimate, and honest “charge limit not on open BLE”.",
+                "**Ding on charge.** A short two-note chime plays when charging starts (honours silent/vibrate).",
+                "**Any screen.** The overlay works from Today, Live, or anywhere — not only the Live list card. Tap the Live charge card to re-open full screen.",
             ),
         ),
         Release(
-            version = "8.5.2",
-            title = "Your WHOOP journal in Insights, clearer metric taps",
+            version = "8.6.17",
+            title = "No random glows · dual-scale WHOOP · Impeccable",
             date = "July 2026",
             items = listOf(
-                "**Imported WHOOP journal now shows up in Insights (#136).** Journal entries from a WHOOP export were landing one day early, so Insights read every historic day as \"without\" the behaviour. They now line up with the night they belong to. Already-imported history: remove and re-add your WHOOP import to correct it.",
-                "**Tapping Fitness Age or Vitality shows the value, not \"Not enough history yet\" (#139/#146).** When a card shows a score from a single reading, tapping it now shows that value with a \"trend to follow\" note, instead of a dead-end that contradicted the card.",
-                "**HRV settings are together now (#155).** The HRV window (whole-night vs deep-sleep) moved from Units into the Strap section, next to the Continuous / Overnight HRV toggles.",
-                "**More of the app is translated.** Appearance settings (Sky behind cards, Card transparency) now show in your language.",
-            ),
-        ),
-        Release(
-            version = "8.5.1",
-            title = "WHOOP-style HRV, warm-ups counted, and clearer cards",
-            date = "July 2026",
-            items = listOf(
-                "**HRV, the WHOOP way (#141).** A new Settings option computes your nightly HRV over the deep-sleep window — the same slow-wave window WHOOP uses — so the number lines up with what your WHOOP app shows. Whole-night stays the default; switching re-learns your Charge baseline over a few nights.",
-                "**Workouts catch the warm-up (#148).** Auto-detected walks and rides no longer lose their first 10–15 minutes while your heart rate is still climbing — the start now reaches back over the warm-up to when you actually got moving.",
-                "**Fitness Age stops getting stuck on \"No Data\" (#139/#140).** When all your readiness inputs are in, Fitness Age now scores instead of showing an empty gauge, there's a refresh button to recompute on demand, and the card shows how many more nights it needs rather than a dead end.",
-                "**Trends can draw bars (#134).** A new Settings toggle renders the Trends graphs as bar charts, zero-anchored, instead of lines.",
-                "**Clearer Home cards (#150).** Hydration no longer shares an identical icon with Blood Oxygen.",
-            ),
-        ),
-        Release(
-            version = "8.5.0",
-            title = "Raw SpO₂, honest units, and a lighter app",
-            date = "July 2026",
-            items = listOf(
-                "**See your raw blood-oxygen signal (WHOOP 4.0).** The Health screen now surfaces the strap's raw red/IR SpO₂ sensor reading natively — honest, uncalibrated data, no export needed. It's not a clinical %, which needs WHOOP's own calibration.",
-                "**Skin temperature and Effort now respect your settings.** The Deep Timeline shows skin temp in °F when you've chosen Fahrenheit, and the Today \"Effort\" ring finally follows your 0–100 vs WHOOP 0–21 scale (with a decimal on the 21 scale).",
-                "**The \"workout in progress\" card is back on Home.** The Liquid redesign dropped it; an active manual workout is once again visible on the Home screen and taps straight through to Live.",
-                "**Apple Health steps count again.** Steps imported from an Apple Health export now reach your daily totals instead of quietly going missing.",
-                "**Steadier battery alerts and fresher widgets.** The low-battery alert no longer re-fires while you're charging, and the home-screen widget shows your current battery instead of a stale value.",
-                "**Lighter and faster.** A snappier Sleep screen, fewer per-frame allocations on Today, and export imports that can't balloon memory.",
+                "**What's new on open.** Dual-scale compare, battery soft reboot, cleaner chrome.",
+                "**NOOP vs WHOOP app is dual-scale.** Day Strain **14.7/21 · ≈70%** next to Effort **/100 · ≈/21**.",
+                "**No random glows.** Ring bloom and centre washes removed.",
+                "**Impeccable design system is on.** PRODUCT.md + DESIGN.md govern UI.",
             ),
         ),
         Release(
@@ -1768,7 +1739,7 @@ object AppChangelog {
             date = "June 2026",
             items = listOf(
                 "New (Android): start a workout straight from the Workouts screen, not only from Live - the same sport picker and GPS toggle, with a compact running banner and an End button while one's in progress.",
-                "Changed (Android): the Smart alarm now says plainly that it's experimental and that a WHOOP 5/MG only arms it when Experimental mode is on - so the wake time isn't silently saved against a strap that was never armed. Keep a backup alarm.",
+                "Changed (Android): the Alarm screen is now one path. It sets the phone wake alarm, arms connected WHOOP 3/4/MG strap buzz when available, and no longer asks for a hidden Experimental toggle to arm MG.",
             ),
         ),
         Release(

@@ -18,10 +18,10 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.noop.NoopApplication
 import com.noop.R
+import com.noop.alarm.RestedWakeEvaluator
 import com.noop.alarm.SleepWindowWatcher
 import com.noop.alarm.SmartAlarmScheduler
 import com.noop.alarm.SmartAlarmStore
-import com.noop.analytics.BatteryEstimator
 import com.noop.analytics.IllnessWatch
 import com.noop.analytics.RestScorer
 import com.noop.data.DailyMetric
@@ -104,11 +104,6 @@ class WhoopConnectionService : Service() {
      *  process restarts and the AppViewModel call site. */
     private var lastIllnessAlert: String? = null
 
-    /** Last battery % the predictive runtime alert was evaluated at. The live-state flow emits far
-     *  more often than the strap's ~8-min battery cadence; gating the Room read + estimator fit on an
-     *  actual SoC change keeps the predictive path as cheap as the SoC-only alert beside it. */
-    private var lastRuntimeEvalPct: Int? = null
-
     /** Smart-alarm light-sleep watcher (#207). Feeds the live HR while we're inside the wake window
      *  and, on a lighter-phase reading, advances the GUARANTEED alarm earlier. It can only ever move
      *  the alarm earlier within the window — the hard deadline scheduled via AlarmManager is the floor
@@ -116,6 +111,8 @@ class WhoopConnectionService : Service() {
      *  The detector is reset each time we (re)enter a window. */
     private val sleepWatcher = SleepWindowWatcher()
     private var inAlarmWindow = false
+    /** Wall-clock when the trough first locked this night (coarse sleep-onset proxy for rested wake). */
+    private var restedSleepAnchorMs: Long = 0L
 
     /** The smart-alarm HR collector, alive for the life of the service. */
     private var alarmJob: Job? = null
@@ -246,28 +243,6 @@ class WhoopConnectionService : Service() {
                     currPct = state.batteryPct?.roundToInt(),
                     charging = state.charging,
                 )
-                // Predictive runtime alert (iOS/macOS twin: BatteryNotifier.onRuntimeEstimate):
-                // re-fit the "~X left" estimate from the persisted SoC series and warn at ≤24 h of
-                // runtime, whatever the strap generation. Evaluated only when the battery % actually
-                // changes (~8-min strap cadence), so the Room read + slope fit never rides every
-                // live-state emission. Same samples/rated inputs as the Today badge, so the alert can
-                // never disagree with the number on screen.
-                val runtimePct = state.batteryPct?.roundToInt()
-                if (runtimePct != null && runtimePct != lastRuntimeEvalPct) {
-                    lastRuntimeEvalPct = runtimePct
-                    runCatching {
-                        val nowS = System.currentTimeMillis() / 1000
-                        val samples = repo.batterySamples("my-whoop", nowS - 14L * 86_400, nowS, limit = 2_000)
-                            .mapNotNull { s -> s.soc?.let { s.ts to it } }
-                        val rated = if (state.whoop5Detected) BatteryEstimator.ratedLifeHoursWhoop5
-                                    else BatteryEstimator.ratedLifeHoursWhoop4
-                        BatteryAlertNotifier.onRuntimeEstimate(
-                            this@WhoopConnectionService,
-                            remainingHours = BatteryEstimator.estimate(samples, rated)?.hoursRemaining,
-                            charging = state.charging,
-                        )
-                    }
-                }
                 // Feed the home-screen widget from the same stream — this service is its heartbeat
                 // while the app UI is closed. Throttled + no-op without a placed widget (the store
                 // checks both); runCatching so a Glance hiccup never tears down the connection.
@@ -335,13 +310,10 @@ class WhoopConnectionService : Service() {
                 }
         }
 
-        // Smart alarm light-sleep watcher (#207). While the alarm is enabled and we're inside the wake
-        // window, feed each live HR reading to the pure detector; on a lighter-phase reading, advance
-        // the GUARANTEED alarm earlier (the scheduler clamps to the window and can never move it later
-        // or cancel it — the hard deadline set via AlarmManager is independent of this collector). The
-        // FGS is the only long-lived BLE collector, so this is what lets the smart move happen with the
-        // app closed. If the service isn't running (user opted out of background) the hard deadline
-        // still fires — that's the point of the fallback.
+        // Smart alarm light-sleep + rested-wake watcher (#207). While the alarm is enabled and we're
+        // inside the wake window, feed each live HR reading to the pure detectors; either an early
+        // HR-rise cue or a rested (sleep-need / Charge) cue may advance the GUARANTEED alarm earlier
+        // (the scheduler clamps to the window and can never move it later or cancel it).
         alarmJob?.cancel()
         alarmJob = scope.launch {
             val store = SmartAlarmStore.from(this@WhoopConnectionService)
@@ -351,15 +323,46 @@ class WhoopConnectionService : Service() {
                 .collect { hr ->
                     if (!store.enabled || store.scheduledDeadlineMs <= 0L) {
                         inAlarmWindow = false
+                        restedSleepAnchorMs = 0L
                         return@collect
                     }
                     val now = System.currentTimeMillis()
                     val inWindow = now in store.scheduledWindowStartMs until store.scheduledDeadlineMs
-                    if (inWindow && !inAlarmWindow) sleepWatcher.reset()   // fresh night
+                    if (inWindow && !inAlarmWindow) {
+                        sleepWatcher.reset()
+                        restedSleepAnchorMs = 0L
+                    }
                     inAlarmWindow = inWindow
                     if (!inWindow) return@collect
+                    // Coarse sleep span: first plausible low HR in-window → now.
+                    if (hr in 35..90 && restedSleepAnchorMs == 0L) {
+                        restedSleepAnchorMs = now
+                    }
+                    var advanced = false
                     if (sleepWatcher.shouldWake(hr)) {
                         SmartAlarmScheduler.advanceTo(this@WhoopConnectionService, store, now)
+                        advanced = true
+                    }
+                    if (!advanced && store.wakeWhenRested) {
+                        val sleepMin = if (restedSleepAnchorMs > 0L) {
+                            ((now - restedSleepAnchorMs).coerceAtLeast(0L) / 60_000.0)
+                        } else 0.0
+                        // Prefer overnight Charge hint; fall back to window length as a sleep proxy so
+                        // rested-wake can still fire from sleep-need alone when Charge isn't scored yet.
+                        val charge = store.restedChargeHint.takeIf { it > 0 }?.toDouble()
+                        val sleepProxy = sleepMin.coerceAtLeast(
+                            ((now - store.scheduledWindowStartMs).coerceAtLeast(0L) / 60_000.0),
+                        )
+                        if (RestedWakeEvaluator.shouldWake(
+                                sleepMinutesSoFar = sleepProxy,
+                                sleepNeedMinutes = store.restedSleepNeedMinutes.toDouble(),
+                                chargeScore = charge,
+                                chargeThreshold = store.restedChargeThreshold.toDouble(),
+                                sleepFraction = store.restedSleepNeedPercent / 100.0,
+                            )
+                        ) {
+                            SmartAlarmScheduler.advanceTo(this@WhoopConnectionService, store, now)
+                        }
                     }
                 }
         }

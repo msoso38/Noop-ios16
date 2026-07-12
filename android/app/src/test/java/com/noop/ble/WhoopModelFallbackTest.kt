@@ -12,13 +12,21 @@ class WhoopModelFallbackTest {
 
     @Test
     fun fallbackRotatesBetweenFamilies() {
+        assertEquals(WhoopModel.WHOOP4, WhoopModel.WHOOP3.fallbackScanModel)
         assertEquals(WhoopModel.WHOOP5_MG, WhoopModel.WHOOP4.fallbackScanModel)
         assertEquals(WhoopModel.WHOOP4, WhoopModel.WHOOP5_MG.fallbackScanModel)
     }
 
     @Test
     fun fallbackIsInvolution() {
+        assertEquals(WhoopModel.WHOOP5_MG, WhoopModel.WHOOP3.fallbackScanModel.fallbackScanModel)
         assertEquals(WhoopModel.WHOOP4, WhoopModel.WHOOP4.fallbackScanModel.fallbackScanModel)
         assertEquals(WhoopModel.WHOOP5_MG, WhoopModel.WHOOP5_MG.fallbackScanModel.fallbackScanModel)
+    }
+
+    @Test
+    fun whoop3StaysOnLegacyService() {
+        assertEquals(WhoopBleClient.WHOOP4_SERVICE, WhoopModel.WHOOP3.service)
+        assertEquals(WhoopBleClient.WHOOP4_SERVICE, WhoopModel.WHOOP3.fallbackScanModel.service)
     }
 }

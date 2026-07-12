@@ -1245,6 +1245,10 @@ private const val KEY_BREATHE_AUDIO_CUES = "breathe.audioCues"
 enum class BreathTone(val frequencyHz: Double) {
     Inhale(440.0),   // A4, brighter for "in"
     Exhale(330.0),   // E4, lower for "out"
+    /** Charging overlay triad: B5 → D6 → E6 (richer than a thin two-beep). */
+    ChargeLo(987.8),
+    ChargeMid(1174.7),
+    ChargeHi(1318.5),
 }
 
 /**
@@ -1281,6 +1285,24 @@ class BreathTonePlayer(context: Context) {
         } catch (_: IllegalStateException) {
             // Audio is a nicety, never load-bearing — if the track is in a bad state we just stay silent.
         }
+    }
+
+    /** Peak / length for charging chimes vs breath pacer. */
+    private fun peakFor(tone: BreathTone): Double = when (tone) {
+        BreathTone.ChargeLo -> 0.32
+        BreathTone.ChargeMid -> 0.36
+        BreathTone.ChargeHi -> 0.40
+        else -> 0.28
+    }
+
+    private fun durationFor(tone: BreathTone): Double = when (tone) {
+        BreathTone.ChargeLo, BreathTone.ChargeMid, BreathTone.ChargeHi -> 0.30
+        else -> toneSeconds
+    }
+
+    private fun releaseFor(tone: BreathTone): Double = when (tone) {
+        BreathTone.ChargeLo, BreathTone.ChargeMid, BreathTone.ChargeHi -> 0.20
+        else -> 0.18
     }
 
     /** Release the underlying tracks. Idempotent. */
@@ -1328,19 +1350,29 @@ class BreathTonePlayer(context: Context) {
      */
     private val cache = HashMap<BreathTone, ShortArray>()
     private fun sampleData(tone: BreathTone): ShortArray = cache.getOrPut(tone) {
-        val total = (toneSeconds * sampleRate).toInt()
-        val attack = (0.02 * sampleRate).toInt()
-        val release = (0.18 * sampleRate).toInt()
-        val peak = 0.28  // kept quiet — a gentle cue, not a beep
+        val total = (durationFor(tone) * sampleRate).toInt()
+        val attack = (0.012 * sampleRate).toInt()
+        val release = (releaseFor(tone) * sampleRate).toInt()
+        val peak = peakFor(tone)
+        val charge = tone == BreathTone.ChargeLo || tone == BreathTone.ChargeMid || tone == BreathTone.ChargeHi
         ShortArray(total) { i ->
             val t = i.toDouble() / sampleRate
-            val s = sin(2.0 * PI * tone.frequencyHz * t)
+            val f = tone.frequencyHz
+            // Charge: fundamental + fifth + soft octave (glass depth). Breath: fund + quiet octave.
+            val s = if (charge) {
+                sin(2.0 * PI * f * t) +
+                    0.22 * sin(2.0 * PI * f * 1.5 * t) +
+                    0.12 * sin(2.0 * PI * f * 2.0 * t) +
+                    0.06 * sin(2.0 * PI * f * 3.0 * t)
+            } else {
+                sin(2.0 * PI * f * t) + 0.18 * sin(2.0 * PI * f * 2.0 * t)
+            }
             val env = when {
                 i < attack -> i.toDouble() / maxOf(attack, 1)
                 i > total - release -> (total - i).toDouble() / maxOf(release, 1)
                 else -> 1.0
             }
-            (s * env * peak * Short.MAX_VALUE).toInt().toShort()
+            (s * env * peak * Short.MAX_VALUE).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
     }
 }

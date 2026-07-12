@@ -1,5 +1,11 @@
 package com.noop.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -43,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.platform.LocalContext
@@ -67,12 +75,19 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
+import com.noop.analytics.BatteryEstimator
 import com.noop.analytics.HrZones
 import com.noop.analytics.SpotHrvReading
 import com.noop.analytics.Sport
 import com.noop.analytics.WorkoutSport
 import com.noop.ble.LiveState
 import com.noop.ble.WhoopModel
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.Size
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Live — the real-time strap view + hardware-test surface. A big smoothed HR number,
@@ -114,6 +129,8 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
     // REQUESTS it (rather than silently doing nothing), then connects once allowed. Shared with
     // Settings → Re-scan via rememberRequestScan so no entry point can forget the gate (issue #1).
     val requestConnect = rememberRequestScan { viewModel.connect() }
+    // Ding + full-screen charge UI are owned by StrapChargingHost in AppRoot (any tab).
+    // Live still shows a large hero card that can re-open the full-screen presentation.
 
     // Keep the realtime HR stream on while this screen is visible (ref-counted in the ViewModel, so
     // navigating to Health Monitor — which also wants it — doesn't stop it). Refresh battery on bond.
@@ -125,7 +142,8 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
         if (live.bonded) viewModel.getBattery()
     }
 
-    val activeConnection = live.connected && live.bonded
+    // Usable live link: full bond OR streaming HR (WHOOP 3 / MG HR-only paths).
+    val activeConnection = live.connected && (live.bonded || live.streamingLiveHR || live.heartRate != null)
 
     // Live HR zone for the focal readout's colour world (presentation only — same shared HrZones model
     // the live-workout screen uses). 0 = below Zone 1 / no HR yet.
@@ -176,7 +194,9 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
             // Driven off the picked strap model.
             val hrvSource = when (selectedModel) {
                 WhoopModel.WHOOP5_MG -> SpotHrvReading.Source.OPTICAL_PPG
-                WhoopModel.WHOOP4 -> SpotHrvReading.Source.CHEST_STRAP
+                // WHOOP 3.0 and 4.0 both stream optical wrist HR over the standard profile here.
+                WhoopModel.WHOOP3 -> SpotHrvReading.Source.OPTICAL_PPG
+                WhoopModel.WHOOP4 -> SpotHrvReading.Source.OPTICAL_PPG
             }
             HrvSnapshotScreen(
                 viewModel = viewModel,
@@ -322,6 +342,27 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
         }
         }
 
+        // AirPods-style charge hero when charging — tap re-opens full-screen overlay.
+        if (live.charging == true) {
+            item {
+                ChargingHeroCard(
+                    pct = live.batteryPct,
+                    model = selectedModel,
+                    viewModel = viewModel,
+                )
+            }
+        } else if (live.batteryPct != null && live.connected) {
+            // Always show a compact battery ETA strip when linked (days remaining / not charging).
+            item {
+                BatteryStatusStrip(
+                    pct = live.batteryPct,
+                    charging = live.charging == true,
+                    model = selectedModel,
+                    viewModel = viewModel,
+                )
+            }
+        }
+
         // Body console — focal live HR VESSEL + live physiology (R-R thread, rolling RMSSD, frame/event).
         item {
         BodyConsole(live = live, bpm = bpm, activeConnection = activeConnection, zone = liveZone, hrMax = profile.hrMax)
@@ -330,6 +371,28 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
         // Signal Trust rail — one tile per signal that has to be current for the console to be trusted.
         item {
         SignalTrustRail(live = live, bpm = bpm, activeConnection = activeConnection)
+        }
+
+        // Honest live datastream panel — what the strap is actually sending right now (no invented metrics).
+        item {
+        LiveDatastreamCard(
+            live = live,
+            bpm = bpm,
+            model = selectedModel,
+            deviceName = activeDeviceName,
+        )
+        }
+
+        // Live MG step counter (raw motion ticks + calibrated estimate when k is set).
+        if (selectedModel == WhoopModel.WHOOP5_MG || selectedModel == WhoopModel.WHOOP4) {
+            item {
+                LiveStepsCard(viewModel = viewModel, model = selectedModel, connected = live.connected)
+            }
+        }
+
+        // Honest live vitals board: only measured or clearly labeled estimates.
+        item {
+            HonestLiveVitalsCard(viewModel = viewModel, bpm = bpm, live = live)
         }
 
         // Max HR + the top-zone entry threshold (read-only; manage coaching in Automations).
@@ -778,22 +841,235 @@ private fun ConsoleHeader(live: LiveState, activeConnection: Boolean) {
     }
 }
 
+/**
+ * In-list AirPods-style charge hero. Tap opens full-screen (ding + remaining time live there).
+ * App-wide full-screen is [StrapChargingHost] in AppRoot.
+ */
+@Composable
+private fun ChargingHeroCard(
+    pct: Double?,
+    model: WhoopModel,
+    viewModel: AppViewModel,
+) {
+    val p = (pct ?: 0.0).coerceIn(0.0, 100.0)
+    val infinite = rememberInfiniteTransition(label = "chargeHero")
+    val pulse by infinite.animateFloat(
+        initialValue = 0.55f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "heroPulse",
+    )
+    var timeToFull by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(pct, model) {
+        val remain = 100.0 - p
+        timeToFull = if (remain <= 0.5) "Full"
+        else {
+            val hours = remain / 40.0
+            if (hours < 1.0) String.format("~%.0f min to full", hours * 60)
+            else String.format("~%.1f h to full", hours)
+        }
+    }
+    // Local re-open of full screen (same dialog as host).
+    var localFull by remember { mutableStateOf(false) }
+    if (localFull) {
+        FullScreenChargingDialog(
+            pct = pct,
+            model = model,
+            viewModel = viewModel,
+            onDismiss = { localFull = false },
+        )
+    }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { localFull = true }
+            .semantics { contentDescription = "Charging ${p.roundToInt()} percent. Tap for full screen." },
+    ) {
+    GlowCard(tint = Palette.statusPositive) {
+        Column(
+            Modifier.fillMaxWidth().padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Charging · tap for full screen", style = NoopType.footnote, color = Palette.statusPositive)
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(200.dp)) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val stroke = 14.dp.toPx()
+                    val pad = stroke / 2
+                    drawArc(
+                        color = Palette.hairline.copy(alpha = 0.35f),
+                        startAngle = -90f,
+                        sweepAngle = 360f,
+                        useCenter = false,
+                        topLeft = Offset(pad, pad),
+                        size = Size(size.minDimension - stroke, size.minDimension - stroke),
+                        style = Stroke(width = stroke, cap = StrokeCap.Round),
+                    )
+                    drawArc(
+                        brush = Brush.sweepGradient(
+                            listOf(Palette.statusPositive.copy(0.55f), Palette.statusPositive, Palette.metricCyan),
+                        ),
+                        startAngle = -90f,
+                        sweepAngle = (360f * (p / 100f).toFloat()).coerceIn(0f, 360f),
+                        useCenter = false,
+                        topLeft = Offset(pad, pad),
+                        size = Size(size.minDimension - stroke, size.minDimension - stroke),
+                        style = Stroke(width = stroke, cap = StrokeCap.Round),
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Filled.Bolt,
+                        contentDescription = null,
+                        tint = Palette.statusPositive.copy(alpha = 0.55f + 0.45f * pulse),
+                        modifier = Modifier.size(32.dp),
+                    )
+                    Text(
+                        "${p.roundToInt()}%",
+                        style = NoopType.display(48f),
+                        color = Palette.textPrimary,
+                    )
+                    Text("Charged", style = NoopType.footnote, color = Palette.textSecondary)
+                }
+            }
+            timeToFull?.let {
+                Text(it, style = NoopType.headline, color = Palette.statusPositive)
+            }
+            Text(
+                "Ding plays when charging starts · charge limit not on open BLE",
+                style = NoopType.footnote,
+                color = Palette.textTertiary,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+    }
+}
+
+@Composable
+private fun BatteryStatusStrip(
+    pct: Double?,
+    charging: Boolean,
+    model: WhoopModel,
+    viewModel: AppViewModel,
+) {
+    var daysLeft by remember { mutableStateOf("—") }
+    LaunchedEffect(pct, model) {
+        val rated = if (model == WhoopModel.WHOOP5_MG) BatteryEstimator.ratedLifeHoursWhoop5
+        else BatteryEstimator.ratedLifeHoursWhoop4
+        val now = System.currentTimeMillis() / 1000L
+        val samples = withContext(Dispatchers.IO) {
+            runCatching {
+                viewModel.repo.batterySamples("my-whoop", from = now - 14L * 86400L, to = now, limit = 400)
+                    .mapNotNull { r -> r.soc?.let { r.ts to it } }
+            }.getOrDefault(emptyList())
+        }
+        val est = BatteryEstimator.estimate(samples, rated)
+        daysLeft = est?.let {
+            if (it.daysRemaining >= 1) String.format("%.1fd left", it.daysRemaining)
+            else String.format("%.0fh left", it.remainingHours)
+        } ?: "—"
+    }
+    NoopCard(padding = 12.dp) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Battery ${pct?.roundToInt() ?: "—"}%",
+                style = NoopType.subhead,
+                color = if (charging) Palette.statusPositive else Palette.textPrimary,
+            )
+            Text(daysLeft, style = NoopType.subhead, color = Palette.textSecondary)
+            Text(
+                if (charging) "Charging" else "On wrist",
+                style = NoopType.footnote,
+                color = Palette.textTertiary,
+            )
+        }
+    }
+}
+
 @Composable
 private fun HeaderStat(title: String, value: String, charging: Boolean = false) {
+    // AirPods-style concentric soft rings + bolt while charging (or SoC rising on MG).
+    val infinite = rememberInfiniteTransition(label = "charge")
+    val pulse by infinite.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "chargePulse",
+    )
+    val ring by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "chargeRing",
+    )
+    val ring2 by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1400, delayMillis = 350, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "chargeRing2",
+    )
     Column(horizontalAlignment = Alignment.Start) {
         Text(title.uppercase(), style = NoopType.footnote, color = Palette.textTertiary)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                value, style = NoopType.captionNumber, color = Palette.textSecondary,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                value,
+                style = NoopType.captionNumber,
+                color = if (charging) Palette.statusPositive else Palette.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (charging) {
-                Icon(
-                    Icons.Filled.Bolt,
-                    contentDescription = "Charging",
-                    tint = Palette.statusPositive,
-                    modifier = Modifier.size(14.dp),
-                )
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(40.dp)) {
+                    // Two expanding soft rings (AirPods case energy feel)
+                    Box(
+                        modifier = Modifier
+                            .size((22 + 16 * ring).dp)
+                            .clip(CircleShape)
+                            .background(Palette.statusPositive.copy(alpha = 0.14f * (1f - ring))),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size((20 + 14 * ring2).dp)
+                            .clip(CircleShape)
+                            .background(Palette.statusPositive.copy(alpha = 0.12f * (1f - ring2))),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size((18 + 8 * pulse).dp)
+                            .clip(CircleShape)
+                            .background(
+                                Brush.radialGradient(
+                                    listOf(
+                                        Palette.statusPositive.copy(alpha = 0.40f * pulse),
+                                        Palette.statusPositive.copy(alpha = 0.10f),
+                                        Color.Transparent,
+                                    ),
+                                ),
+                            ),
+                    )
+                    Icon(
+                        Icons.Filled.Bolt,
+                        contentDescription = "Charging",
+                        tint = Palette.statusPositive.copy(alpha = 0.65f + 0.35f * pulse),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
     }
@@ -867,6 +1143,7 @@ private fun OfflineConnectCallout(scanning: Boolean, onConnect: () -> Unit) {
 private fun ringStreaming(live: LiveState): Boolean = live.connected && live.streamingLiveHR
 
 private fun connectionModeBadge(live: LiveState, activeConnection: Boolean): String = when {
+    live.alongsideMode && (activeConnection || live.connected || live.streamingLiveHR) -> "ALONGSIDE WHOOP"
     activeConnection && live.encryptedBond -> "FULL BOND"
     activeConnection -> "LIVE HR ONLY"
     ringStreaming(live) -> "STREAMING"
@@ -881,6 +1158,7 @@ private fun showsModeBadge(live: LiveState, activeConnection: Boolean): Boolean 
     !(!activeConnection && !live.connected && !live.encryptedBond)
 
 private fun connectionModeColor(live: LiveState, activeConnection: Boolean): Color = when {
+    live.alongsideMode && (activeConnection || live.connected || live.streamingLiveHR) -> Palette.accent
     (activeConnection && live.encryptedBond) || ringStreaming(live) -> Palette.accent
     activeConnection || live.connected -> Palette.statusWarning
     else -> Palette.metricRose
@@ -906,7 +1184,14 @@ private fun BodyConsole(live: LiveState, bpm: Int?, activeConnection: Boolean, z
             .padding(20.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            HeartReadout(live = live, bpm = bpm, activeConnection = activeConnection, zone = zone, hrMax = hrMax)
+            HeartReadout(
+                live = live,
+                bpm = bpm,
+                activeConnection = activeConnection,
+                zone = zone,
+                hrMax = hrMax,
+                charging = live.charging == true,
+            )
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -919,7 +1204,14 @@ private fun BodyConsole(live: LiveState, bpm: Int?, activeConnection: Boolean, z
 }
 
 @Composable
-private fun HeartReadout(live: LiveState, bpm: Int?, activeConnection: Boolean, zone: Int, hrMax: Int) {
+private fun HeartReadout(
+    live: LiveState,
+    bpm: Int?,
+    activeConnection: Boolean,
+    zone: Int,
+    hrMax: Int,
+    charging: Boolean = false,
+) {
     // Tint by the live HR zone when streaming, the Effort world otherwise — the workouts/live colour world
     // (UNCHANGED from the hand-drawn ring this replaced: same zone→colour math, same value-sampled tint).
     val tint = when {
@@ -936,21 +1228,47 @@ private fun HeartReadout(live: LiveState, bpm: Int?, activeConnection: Boolean, 
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Overline("Heart Rate")
+        Overline(if (charging) "Heart Rate · charging" else "Heart Rate")
         Box(
             modifier = Modifier
-                .fillMaxWidth(0.6f)
+                .fillMaxWidth(0.72f)
                 .aspectRatio(1f),
             contentAlignment = Alignment.Center,
         ) {
+            // AirPods-style soft energy rings when the pack is charging (or SoC rising on MG).
+            if (charging) {
+                val infinite = rememberInfiniteTransition(label = "hrCharge")
+                val r1 by infinite.animateFloat(
+                    0f, 1f,
+                    infiniteRepeatable(tween(1600, easing = FastOutSlowInEasing), RepeatMode.Restart),
+                    label = "hrR1",
+                )
+                val r2 by infinite.animateFloat(
+                    0f, 1f,
+                    infiniteRepeatable(tween(1600, delayMillis = 400, easing = FastOutSlowInEasing), RepeatMode.Restart),
+                    label = "hrR2",
+                )
+                Box(
+                    Modifier
+                        .fillMaxSize(0.55f + 0.45f * r1)
+                        .clip(CircleShape)
+                        .background(Palette.statusPositive.copy(alpha = 0.12f * (1f - r1))),
+                )
+                Box(
+                    Modifier
+                        .fillMaxSize(0.50f + 0.40f * r2)
+                        .clip(CircleShape)
+                        .background(Palette.statusPositive.copy(alpha = 0.10f * (1f - r2))),
+                )
+            }
             // The live HR GAUGE as a liquid VESSEL — fills to bpm/hrMax in the zone tint, sloshing live once
             // a real HR is streaming (animated only when bpm != null, so an idle console poses static and
             // doesn't churn an empty canvas). Mirrors the liquid Today HeroScoreVessel idiom.
             LiquidVessel(
                 value = fraction,
-                tint = tint,
-                animated = bpm != null,
-                modifier = Modifier.fillMaxSize(),
+                tint = if (charging) Palette.statusPositive else tint,
+                animated = bpm != null || charging,
+                modifier = Modifier.fillMaxSize(0.88f),
             )
             // The bpm number rolled up over the vessel — white, tabular, a soft shadow for legibility, and
             // hit-transparent (clearAndSetSemantics + no clickable) so the tap falls THROUGH to the vessel,
@@ -1090,6 +1408,315 @@ private fun LiveProofMetric(modifier: Modifier, label: String, value: String, ti
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+// MARK: - Live steps (MG counter / 4 estimate path)
+
+@Composable
+private fun LiveStepsCard(viewModel: AppViewModel, model: WhoopModel, connected: Boolean) {
+    val context = LocalContext.current
+    val profile = remember { ProfileStore.from(context) }
+    val live by viewModel.live.collectAsStateWithLifecycle()
+    // Prefer live type-47 v18 counter (MG notify stream); fall back to DB samples.
+    var dbCounter by remember { mutableStateOf<Int?>(null) }
+    var sessionStart by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(connected, model) {
+        while (true) {
+            if (live.liveStepCounter == null) {
+                dbCounter = runCatching {
+                    val now = System.currentTimeMillis() / 1000
+                    val dayStart = java.time.LocalDate.now().atStartOfDay(java.time.ZoneId.systemDefault()).toEpochSecond()
+                    viewModel.repo.stepSamples(viewModel.activeStrapId, dayStart, now, 30)
+                        .maxByOrNull { it.ts }?.counter
+                }.getOrNull()
+            }
+            delay(1000)
+        }
+    }
+    val counter = live.liveStepCounter ?: dbCounter
+    LaunchedEffect(counter) {
+        if (sessionStart == null && counter != null) sessionStart = counter
+    }
+    val delta = if (counter != null && sessionStart != null) {
+        val d = counter!! - sessionStart!!
+        if (d < 0) d + 65536 else d
+    } else 0
+    val est = if (delta > 0 && profile.stepTicksPerStep > 0) {
+        (delta / profile.stepTicksPerStep).roundToInt()
+    } else null
+    val act = when (live.liveActivityClass) {
+        0 -> "Still"
+        1 -> "Walk"
+        2 -> "Run"
+        else -> "—"
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
+        SectionHeader(
+            title = "Live steps",
+            overline = if (model == WhoopModel.WHOOP5_MG) "WHOOP MG type-47 @57 counter" else "WHOOP 4 estimate path",
+            trailing = if (live.liveStepCounter != null) "Live frame" else if (connected) "DB" else "Offline",
+        )
+        NoopCard(tint = Palette.effortColor) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    MiniStat("Counter", counter?.toString() ?: "—", Modifier.weight(1f), tint = Palette.effortColor)
+                    MiniStat("Session d", if (counter != null) "$delta" else "—", Modifier.weight(1f))
+                    MiniStat("Est steps", est?.toString() ?: "—", Modifier.weight(1f), tint = Palette.metricAmber)
+                    MiniStat("Class", act, Modifier.weight(1f))
+                }
+                Text(
+                    if (model == WhoopModel.WHOOP5_MG)
+                        "Decoded live from MG notify frames (type 47 v18). Est steps = session delta / training k. Settings -> Step training to improve k."
+                    else
+                        "WHOOP 4 has no BLE pedometer field. Daily steps use motion-volume calibration vs phone steps when available.",
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Honest live vitals board — never invents BP/SpO2%/AFib.
+ * Shows live HR; SpO2% only if banked; BP only Lab Book; VO2 estimate label if computed series exists.
+ */
+@Composable
+private fun HonestLiveVitalsCard(viewModel: AppViewModel, bpm: Int?, live: LiveState) {
+    var spo2 by remember { mutableStateOf<Double?>(null) }
+    var vo2 by remember { mutableStateOf<Double?>(null) }
+    var bpSys by remember { mutableStateOf<Double?>(null) }
+    var bpDia by remember { mutableStateOf<Double?>(null) }
+    var bpDay by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            runCatching {
+                val today = java.time.LocalDate.now().toString()
+                val days = viewModel.recentDays.value
+                val d = days.lastOrNull { it.day == today } ?: days.lastOrNull()
+                spo2 = d?.spo2Pct
+                vo2 = runCatching {
+                    viewModel.repo.metricSeries("my-whoop-noop", "vo2max_est", "0000-01-01", "9999-12-31")
+                        .maxByOrNull { it.day }?.value
+                }.getOrNull()
+                // Latest Lab Book BP if any (measured cuff only) — never invent open-stream BP.
+                runCatching {
+                    val sys = viewModel.repo.labMarkersByKey("my-whoop", "bp_systolic").maxByOrNull { it.day }
+                    val dia = viewModel.repo.labMarkersByKey("my-whoop", "bp_diastolic").maxByOrNull { it.day }
+                    if (sys != null && dia != null && sys.day == dia.day &&
+                        sys.value != null && dia.value != null
+                    ) {
+                        bpSys = sys.value
+                        bpDia = dia.value
+                        bpDay = sys.day
+                    } else {
+                        bpSys = null
+                        bpDia = null
+                        bpDay = null
+                    }
+                }
+            }
+            delay(5000)
+        }
+    }
+    val bp = remember(bpSys, bpDia, bpDay) { HonestVitalsLabels.bpLine(bpSys, bpDia, bpDay) }
+    val spo2Line = remember(spo2) { HonestVitalsLabels.spo2Line(spo2) }
+    val vo2Line = remember(vo2) { HonestVitalsLabels.vo2Line(vo2) }
+    val hrLine = remember(bpm) {
+        if (bpm != null) {
+            HonestVitalsLabels.VitalLine(
+                valueText = bpm.toString(),
+                provenance = HonestVitalsLabels.Provenance.MEASURED,
+                caption = "Live strap · 2A37 / v18",
+            )
+        } else {
+            HonestVitalsLabels.VitalLine(
+                valueText = "—",
+                provenance = HonestVitalsLabels.Provenance.BLANK,
+                caption = if (live.connected) "Waiting for HR frames" else "Connect strap",
+            )
+        }
+    }
+    // Impeccable polish: one frosted surface, HR hero, 2×2 grid with provenance pills — no nested cards,
+    // no multi-line protocol essay. Blank stays blank; never invent BP/SpO2/VO2.
+    Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
+        SectionHeader(
+            title = "Vitals",
+            trailing = if (live.bonded) "Bonded" else if (live.connected) "Linked" else "Offline",
+        )
+        HonestProvenanceLegend()
+        NoopCard(tint = Palette.metricRose) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                // Hero: live HR — the only always-on open-stream vital when connected
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Heart rate", style = NoopType.footnote, color = Palette.textSecondary)
+                        Text(
+                            hrLine.valueText,
+                            style = NoopType.number(48f),
+                            color = if (bpm != null) Palette.metricRose else Palette.textTertiary,
+                        )
+                        StatePill(
+                            title = HonestVitalsLabels.provenanceLabel(hrLine.provenance),
+                            tone = HonestVitalsLabels.provenanceTone(hrLine.provenance),
+                            pulsing = bpm != null,
+                            showsDot = bpm != null,
+                        )
+                        Text(hrLine.caption, style = NoopType.footnote, color = Palette.textTertiary)
+                    }
+                    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StatePill(
+                            title = when {
+                                live.bonded -> "Bonded"
+                                live.connected -> "Connected"
+                                live.scanning -> "Scanning"
+                                else -> "Offline"
+                            },
+                            tone = when {
+                                live.bonded -> StrandTone.Positive
+                                live.connected -> StrandTone.Accent
+                                else -> StrandTone.Neutral
+                            },
+                            pulsing = live.scanning || (live.connected && bpm == null),
+                        )
+                    }
+                }
+                // Secondary grid — BP / SpO2 / VO2 stay honest blanks when nothing banked
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HonestVitalTile(
+                        name = "Blood pressure",
+                        line = bp,
+                        modifier = Modifier.weight(1f),
+                        valueTint = Palette.statusPositive,
+                    )
+                    HonestVitalTile(
+                        name = "SpO₂",
+                        line = spo2Line,
+                        modifier = Modifier.weight(1f),
+                        valueTint = Palette.metricCyan,
+                    )
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HonestVitalTile(
+                        name = "VO₂ max",
+                        line = vo2Line,
+                        modifier = Modifier.weight(1f),
+                        valueTint = Palette.accent,
+                    )
+                    HonestVitalTile(
+                        name = "Open stream",
+                        line = HonestVitalsLabels.VitalLine(
+                            valueText = if (bpm != null) "HR+" else if (live.connected) "…" else "—",
+                            provenance = if (bpm != null) {
+                                HonestVitalsLabels.Provenance.MEASURED
+                            } else {
+                                HonestVitalsLabels.Provenance.BLANK
+                            },
+                            caption = "Steps @57 · no open BP/SpO₂",
+                        ),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Live datastream (what the strap is actually sending)
+
+@Composable
+private fun LiveDatastreamCard(
+    live: LiveState,
+    bpm: Int?,
+    model: WhoopModel,
+    deviceName: String?,
+) {
+    val linkLabel = when {
+        live.encryptedBond || (live.bonded && model != WhoopModel.WHOOP5_MG) -> "Fully bonded"
+        live.streamingLiveHR || live.heartRate != null -> "Live HR only"
+        live.connected -> "Connected · waiting for stream"
+        live.scanning -> "Scanning…"
+        else -> "Offline"
+    }
+    val hue = when {
+        bpm != null -> Palette.accent
+        live.connected -> Palette.metricAmber
+        else -> Palette.textSecondary
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
+        SectionHeader(
+            title = "Live datastream",
+            overline = model.displayName,
+            trailing = linkLabel,
+        )
+        NoopCard(tint = hue) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    deviceName ?: model.displayName,
+                    style = NoopType.headline,
+                    color = Palette.textPrimary,
+                )
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    MiniStat("HR", bpm?.let { "$it" } ?: "—", Modifier.weight(1f), tint = if (bpm != null) Palette.metricRose else Palette.textTertiary)
+                    MiniStat("R-R", if (live.rrRecent.isNotEmpty()) "${live.rrRecent.size}" else "—", Modifier.weight(1f))
+                    MiniStat("Battery", live.batteryPct?.let { "${it.roundToInt()}%" } ?: "—", Modifier.weight(1f))
+                    MiniStat(
+                        "Worn",
+                        when {
+                            !live.connected -> "—"
+                            live.worn -> "Yes"
+                            else -> "No"
+                        },
+                        Modifier.weight(1f),
+                    )
+                }
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    MiniStat("Bond", if (live.bonded) "Yes" else "No", Modifier.weight(1f))
+                    MiniStat("Encrypted", if (live.encryptedBond) "Yes" else "No", Modifier.weight(1f))
+                    MiniStat("Stream", if (live.streamingLiveHR || bpm != null) "On" else "Off", Modifier.weight(1f))
+                    MiniStat("Charge", live.charging?.let { if (it) "Yes" else "No" } ?: "—", Modifier.weight(1f))
+                }
+                live.lastEvent?.let {
+                    Text("Last event: $it", style = NoopType.footnote, color = Palette.textTertiary)
+                }
+                live.strapFirmware?.let {
+                    Text("Firmware: $it", style = NoopType.footnote, color = Palette.textTertiary)
+                }
+                // Exact BLE listen inventory — same proprietary channels WHOOP app uses when we hold exclusive bond.
+                if (live.rawPacketsThisSession > 0 || live.rawListenSummary != null) {
+                    Text(
+                        "RAW listen · ${live.rawPacketsThisSession} pkts",
+                        style = NoopType.subhead,
+                        color = Palette.accent,
+                    )
+                    live.rawListenSummary?.let {
+                        Text("UUIDs: $it", style = NoopType.footnote, color = Palette.textSecondary)
+                    }
+                    live.rawFrameTypesSummary?.let {
+                        Text("Types: $it", style = NoopType.footnote, color = Palette.textSecondary)
+                    }
+                    Text(
+                        if (live.encryptedBond || live.bonded)
+                            "Exclusive bond: listening on proprietary fd4b notify (type47 v18 etc.) — same path WHOOP app uses for live telemetry."
+                        else if (live.alongsideMode)
+                            "Alongside mode: open 2A37/2A19 + best-effort fd4b. Encrypted history stays with WHOOP app."
+                        else
+                            "Partial link — open stream only until encrypted bond.",
+                        style = NoopType.footnote,
+                        color = Palette.textTertiary,
+                    )
+                }
+                Text(
+                    "Values above are only what this phone received from the strap. Missing fields stay blank — never invented. Official Recovery/Strain/Stress numbers need WHOOP export or nights of bonded bank — not invented from UI screenshots.",
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+            }
+        }
     }
 }
 
