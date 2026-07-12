@@ -26,7 +26,8 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
 
     // --- HR / IBI (Tier A) ---
     case ibiAmplitude     = 0x60   // ibi_and_amplitude_event (bit-packed), OURA_PROTOCOL.md s6.1
-    case greenIbiAmp      = 0x71   // green_ibi_and_amp_event, OURA_PROTOCOL.md s6.2
+    case greenIbiAmp      = 0x71   // green_ibi_and_amp_event, OURA_PROTOCOL.md s6.2 — Tier B (#287): §6.2
+                                   // layout (5 deltas+6 amps) != 0x60; unverified, gated. See `tier` below.
     case spo2IbiAmplitude = 0x6E   // spo2_ibi_and_amplitude_event (REVERSE byte order), OURA_PROTOCOL.md s6.3
     case greenIbiQuality  = 0x80   // green_ibi_quality_event (bit-packed across bytes), OURA_PROTOCOL.md s6.4
     case ibi              = 0x44   // ibi event (Tier-A IBI tag per the brief), OURA_PROTOCOL.md s6 / s0

@@ -31,7 +31,9 @@ enum class OuraEventTag(val raw: Int) {
 
     // --- HR / IBI (Tier A) ---
     IBI_AMPLITUDE(0x60),      // ibi_and_amplitude_event (bit-packed), OURA_PROTOCOL.md s6.1
-    GREEN_IBI_AMP(0x71),      // green_ibi_and_amp_event, OURA_PROTOCOL.md s6.2
+    // green_ibi_and_amp_event, OURA_PROTOCOL.md s6.2 — Tier B (#287): §6.2 layout (5 deltas+6 amps)
+    // != 0x60; unverified, gated out of live emission. See `tier` below.
+    GREEN_IBI_AMP(0x71),
     SPO2_IBI_AMPLITUDE(0x6E), // spo2_ibi_and_amplitude_event (REVERSE byte order), OURA_PROTOCOL.md s6.3
     GREEN_IBI_QUALITY(0x80),  // green_ibi_quality_event (bit-packed across bytes), OURA_PROTOCOL.md s6.4
     IBI(0x44),                // ibi event (Tier-A IBI tag per the brief), OURA_PROTOCOL.md s6 / s0
