@@ -319,10 +319,10 @@ public enum AnalyticsEngine {
                                   // pure-function callers/tests free of it; IntelligenceEngine threads the
                                   // night window's persisted band state. (#531 / H8 consume)
                                   bandSleepState: [(ts: Int, state: Int)] = [],
-                                  // Opt-in experimental sleep staging (V2). When true, detected nights are
-                                  // staged by `SleepStagerV2` instead of V1. Default false keeps V1 the
-                                  // byte-identical default for pure-function callers/tests; IntelligenceEngine
-                                  // threads `PuffinExperiment.experimentalSleepV2Enabled`. (V7 / #690)
+                                  // Which staging engine runs: true -> `SleepStagerV2` (5.0/MG), false -> V1
+                                  // (WHOOP 4.0). Default false keeps V1 the byte-identical default for
+                                  // pure-function callers/tests; IntelligenceEngine resolves it by device
+                                  // family (`sleepStagerV2(family:)`). (#319 / #327)
                                   useSleepStagerV2: Bool = false,
                                   // Sleep PROVENANCE for the per-day sleep trace (CAPTURE-C / #799). The
                                   // measured BLE path is `.measured` (the default); the caller passes

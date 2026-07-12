@@ -53,20 +53,10 @@ enum PuffinExperiment {
     /// "Experimental sleep staging (V2)": re-stage each detected night with `SleepStagerV2` — a transparent
     /// cardiorespiratory recipe (reimplemented from contributor PR #600) — instead of the older V1 stager.
     /// Pure analysis switch: it changes ONLY which staging engine runs over an already-detected sleep window;
-    /// sleep DETECTION, scoring and the V1 path are all untouched. Model-agnostic (WHOOP 4 and 5). **Default
-    /// ON**: V2 was promoted to the default staging engine after a 44-subject cross-subject benchmark (AAUWSS
-    /// + Walch sleep-accel, leave-one-subject-out) showed V2 strictly dominates V1 (kappa 0.35 vs 0.03, deep
-    /// recall 55 % vs 1 %) — the multi-subject validation this recipe originally lacked. V1 remains available.
-    /// Read at the staging call site (Repository). Mirrors the Android `PuffinExperiment.KEY_EXPERIMENTAL_SLEEP_V2`.
-    static let experimentalSleepV2Key = "noopExperimentalSleepV2"
-
-    /// Default ON when the key is unset (mirrors the Android `getBoolean(KEY, true)`): a `bool(forKey:)` alone
-    /// reads a missing key as false, so an absent preference must resolve to the promoted V2 default explicitly.
-    static var experimentalSleepV2Enabled: Bool {
-        UserDefaults.standard.object(forKey: experimentalSleepV2Key) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: experimentalSleepV2Key)
-    }
+    // NOTE: the former "Experimental sleep staging (V2)" opt-in was REMOVED. The staging engine is now
+    // selected purely by DEVICE FAMILY (IntelligenceEngine.sleepStagerV2(family:)): V2 on 5.0/MG, V1 on
+    // WHOOP 4.0 (#319 / #327). A per-user override only caused confusion — a 4.0 owner "enabling V2"
+    // changed nothing because 4.0 is gated to V1 (issue #345). No UserDefaults key is read or written for it.
 
     /// Opt-in "Auto-detect workouts": after a sync / on Today appear, scan the last day or two of HR for a
     /// SUSTAINED-ELEVATED window (resting HR + 30 bpm held ≥ 12 min) that doesn't overlap a saved workout,

@@ -622,12 +622,9 @@ final class IntelligenceEngine: ObservableObject {
                                                                      from: from, to: to, store: store)
                 }
 
-                // #690: read the experimental-V2 toggle ONCE here (off the detached executor, matching the
-                // Repository self-heal call site) and capture the Bool, so the Settings toggle now drives the
-                // NORMAL detected-night staging path , not only the userEdited self-heal restage.
-                // #319: V2 is the default only on 5.0/MG (where #277 promoted it); WHOOP 4.0 always uses V1.
-                let useSleepStagerV2 = Self.sleepStagerV2(enabled: PuffinExperiment.experimentalSleepV2Enabled,
-                                                          family: skinFamily)
+                // #319: V2 is the default on 5.0/MG (where #277 promoted it); WHOOP 4.0 always uses V1. The
+                // selection is purely by device family now (the per-user "experimental V2" toggle is gone).
+                let useSleepStagerV2 = Self.sleepStagerV2(family: skinFamily)
 
                 // Already OFF the main actor , score directly (the prior nested `Task.detached` here only
                 // existed to hop off the main actor; the whole loop now runs off it, so the score is computed
@@ -1455,13 +1452,19 @@ final class IntelligenceEngine: ObservableObject {
     /// The strap family that wrote `owner`'s skin-temp rows (#938), so the nightly funnel converts the raw
     /// register on the right scale. The model-label → family mapping (and the `.whoop5` fallback for
     /// unknowns) lives in `DeviceFamily.forRegistryModel` (#171).
-    /// #319: whether V2 staging should run for a night owned by `family`. V2 is the default only on 5.0/MG
+    /// #319: whether V2 staging should run for a night owned by `family`. V2 is the default on 5.0/MG
     /// (where #277 promoted it after a benchmark on NON-WHOOP wrist sensors); WHOOP 4.0 always uses V1 — its
     /// SPARSE motion makes V2 both inflate the Rest restorative term AND manufacture deep/REM that DEFEATS
-    /// the H9 low-confidence guard, so a poor 4.0 night reads as a confident 85-100. Byte-parity twin of
-    /// Android `IntelligenceEngine.sleepStagerV2ForFamily`.
-    nonisolated static func sleepStagerV2(enabled: Bool, family: DeviceFamily) -> Bool {
-        enabled && family != .whoop4
+    /// the H9 low-confidence guard, so a poor 4.0 night reads as a confident 85-100. This is the SOLE
+    /// staging-engine selector: the former per-user "Experimental sleep V2" toggle was removed, because a
+    /// 4.0 owner "enabling V2" changed nothing yet looked broken (issue #345). Byte-parity twin of Android
+    /// `IntelligenceEngine.sleepStagerV2ForFamily`.
+    ///
+    /// 4.0 FOLLOW-UP — NEEDS REAL 4.0 RAW DATA: a motion-robust V2 that recovers wake from R-R when motion
+    /// is sparse could eventually unify both families, but un-gating this line MUST be validated on real
+    /// WHOOP 4.0 traces first (#271, #319). No 4.0+PSG data exists yet, so 4.0 stays on V1.
+    nonisolated static func sleepStagerV2(family: DeviceFamily) -> Bool {
+        family != .whoop4
     }
 
     nonisolated static func skinTempFamily(forOwner owner: String, devices: [PairedDevice]) -> DeviceFamily {

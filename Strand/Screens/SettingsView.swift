@@ -52,12 +52,6 @@ struct SettingsView: View {
     /// See [PuffinExperiment.continuousHrvOvernightOnlyKey].
     @AppStorage(PuffinExperiment.continuousHrvOvernightOnlyKey) private var continuousHrvOvernightOnly = false
 
-    /// "Experimental sleep staging (V2)" (ON by default, promoted after the 44-subject cross-subject
-    /// benchmark). When on, detected nights are re-staged with `SleepStagerV2` (the transparent
-    /// cardiorespiratory recipe) instead of the older V1 stager. Read at the staging call site in
-    /// `Repository`. See [PuffinExperiment.experimentalSleepV2Key].
-    @AppStorage(PuffinExperiment.experimentalSleepV2Key) private var experimentalSleepV2Enabled = true
-
     // Imperial/Metric display preference (D#103). Stored data is always SI; this only changes how
     // distances/weights/heights/temperatures are SHOWN — and lets the profile fields below take
     // imperial entry. Temperature has a separate override so °C/°F can be picked independently.
@@ -1216,21 +1210,15 @@ struct SettingsView: View {
         SettingsSection(
             icon: "bed.double.fill",
             title: "Sleep staging",
-            blurb: "How NOOP splits a night into light / deep / REM. The V2 recipe is the default; turn it off to fall back to the older V1 staging."
+            blurb: "How NOOP splits a night into light / deep / REM."
         ) {
-            VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
-                Toggle(isOn: $experimentalSleepV2Enabled) {
-                    Text("Sleep staging (V2)")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                Text("A transparent cardiorespiratory recipe that recovers deep and REM better than the older V1 staging, and is now the default. It only changes how already-detected nights are split into stages (detection and scores are unchanged); turn it off to fall back to V1. Takes effect on the next nights staged.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // The per-user "Experimental sleep V2" toggle was removed: the staging engine is selected purely
+            // by device family (V2 on 5.0/MG, V1 on WHOOP 4.0 — #319/#327), so a manual override only caused
+            // confusion (a 4.0 owner "enabling V2" changed nothing, issue #345).
+            Text("NOOP stages WHOOP 5.0/MG nights with the V2 cardiorespiratory recipe and WHOOP 4.0 nights with the V1 recipe, chosen automatically by your strap. There is no manual switch.")
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

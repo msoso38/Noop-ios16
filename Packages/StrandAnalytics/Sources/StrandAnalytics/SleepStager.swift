@@ -683,12 +683,11 @@ public enum SleepStager {
     /// re-onset (#531): a daytime block the strap itself scored predominantly "asleep" is KEPT even on a
     /// borderline HR dip. Default empty keeps pure-function callers/tests free of it; IntelligenceEngine
     /// passes the night window's persisted band state. It can only RESCUE a real-sleep block, never fabricate.
-    /// `useSleepStagerV2` (V7 / #690): when true, each accepted night is staged by the experimental
-    /// cardiorespiratory recipe `SleepStagerV2.stageSession` instead of V1's `stageSession`. DETECTION is
-    /// unchanged (same accepted windows); only the per-epoch hypnogram differs. Default false keeps V1 the
-    /// byte-identical default (the frozen-golden tests stay green). The live call site threads
-    /// `PuffinExperiment.experimentalSleepV2Enabled` so the Settings toggle now affects normal detected
-    /// nights, not just the self-heal restage path.
+    /// `useSleepStagerV2`: when true, each accepted night is staged by the cardiorespiratory recipe
+    /// `SleepStagerV2.stageSession` instead of V1's `stageSession`. DETECTION is unchanged (same accepted
+    /// windows); only the per-epoch hypnogram differs. Default false keeps V1 the byte-identical default
+    /// (the frozen-golden tests stay green). The live call site resolves this by DEVICE FAMILY (V2 on
+    /// 5.0/MG, V1 on WHOOP 4.0 — #319/#327), for both normal detected nights and the self-heal restage path.
     public static func detectSleep(hr: [HRSample] = [],
                                    rr: [RRInterval] = [],
                                    resp: [RespSample] = [],

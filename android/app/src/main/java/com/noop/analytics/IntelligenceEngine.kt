@@ -39,15 +39,23 @@ import kotlinx.coroutines.withContext
 object IntelligenceEngine {
 
     /**
-     * #319: whether V2 staging should run for a night owned by [family]. V2 is the default only on 5.0/MG
+     * #319: whether V2 staging should run for a night owned by [family]. V2 is the default on 5.0/MG
      * (where #277 promoted it after a benchmark on NON-WHOOP wrist sensors); WHOOP 4.0 always uses V1 —
      * its SPARSE motion (only ~1 in 5 records carries it) makes V2 both inflate the Rest restorative term
      * AND manufacture deep/REM that DEFEATS the H9 low-confidence guard, so a poor 4.0 night reads as a
-     * confident 85-100 (issue #319). An explicit toggle still enables/disables V2 on 5.0/MG. Pure;
-     * byte-parity twin of Swift `IntelligenceEngine.sleepStagerV2(enabled:family:)`.
+     * confident 85-100 (issue #319). This is the SOLE staging-engine selector: the former per-user
+     * "Experimental sleep V2" toggle was removed, because V2 is objectively right on 5.0/MG and wrong on
+     * 4.0, so a user override only caused confusion (a 4.0 owner "enabling V2" changed nothing yet looked
+     * broken — issue #345). Pure; byte-parity twin of Swift `IntelligenceEngine.sleepStagerV2(family:)`.
+     *
+     * 4.0 FOLLOW-UP — NEEDS REAL 4.0 RAW DATA: a motion-robust V2 that recovers wake from R-R when motion
+     * is sparse could eventually unify both families on one engine, but un-gating this line MUST be
+     * validated on real WHOOP 4.0 traces first (#271, #319). No 4.0+PSG data exists yet (the open datasets
+     * are Empatica/Apple-Watch, not 4.0), so 4.0 stays on V1 until real 4.0 nights confirm V2 does not
+     * reproduce the #319 inflation.
      */
-    internal fun sleepStagerV2ForFamily(enabled: Boolean, family: DeviceFamily): Boolean =
-        enabled && family != DeviceFamily.WHOOP4
+    internal fun sleepStagerV2ForFamily(family: DeviceFamily): Boolean =
+        family != DeviceFamily.WHOOP4
 
     /**
      * Serialises [analyzeRecent] against itself. The pass is launched from four independent coroutines: the
@@ -178,12 +186,6 @@ object IntelligenceEngine {
         // are unaffected; the AppViewModel wires it to the BLE client's strap log (ble.externalLog),
         // which PII-scrubs every line at the sink. Pure-JVM (a closure), matching persistStepsCalibration.
         diag: (String) -> Unit = {},
-        // Opt-in "Experimental sleep staging (V2)" flag (Settings → Experimental · Sleep staging). The
-        // analytics layer is Context-free, so the Context-aware caller (AppViewModel / WhoopBleClient) reads
-        // it off SharedPreferences (PuffinExperiment.experimentalSleepV2) and threads it down to the sleep
-        // self-heal, which re-stages with SleepStagerV2 when true. Default false → V1 (the default, untouched
-        // path), so existing callers / tests are unaffected. (V7 Pillar 3b)
-        useExperimentalSleepV2: Boolean = false,
         // Sleep & Rest test-mode trace sink (Test Centre E5). The analytics layer is Context-free, so the
         // Context-aware caller (AppViewModel / WhoopBleClient) reads TestCentre.active(SLEEP) and passes a
         // non-null sink ONLY when the mode is on, routing each line to the .sleep-tagged strap log. null (the
@@ -231,7 +233,7 @@ object IntelligenceEngine {
         analyzeGate.withLock {
             val (out, healed) = analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
                 nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
-                recoveryEpoch, diag, useExperimentalSleepV2, sleepTraceSink, recoveryTraceSink, stepsTraceSink,
+                recoveryEpoch, diag, sleepTraceSink, recoveryTraceSink, stepsTraceSink,
                 universalSink, workoutsTraceSink, hrvTraceSink, deepHrvWindow)
             if (healed == 0) out
             // #899 heal re-pass: the pass above deleted overlapping duplicate sleep sessions AFTER its days
@@ -241,7 +243,7 @@ object IntelligenceEngine {
             // are gone), so this can never loop. Mirrors the Swift pendingForcedRescore re-arm.
             else analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
                 nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
-                recoveryEpoch, diag, useExperimentalSleepV2, sleepTraceSink, recoveryTraceSink, stepsTraceSink,
+                recoveryEpoch, diag, sleepTraceSink, recoveryTraceSink, stepsTraceSink,
                 universalSink, workoutsTraceSink, hrvTraceSink, deepHrvWindow).first
         }
     }
@@ -301,8 +303,6 @@ object IntelligenceEngine {
         baselineEpoch: Double = 0.0,
         recoveryEpoch: Double = 0.0,
         diag: (String) -> Unit = {},
-        // Opt-in experimental staging (V2), threaded down to the sleep self-heal. Default false → V1. (3b)
-        useExperimentalSleepV2: Boolean = false,
         // Sleep & Rest test-mode trace sink (Test Centre E5). null = byte-identical default; when non-null
         // each scored day threads it into AnalyticsEngine.analyzeDay so detectSleep's gate trace + the Rest
         // sub-score line forward line-by-line to the .sleep-tagged strap log. Mirrors Swift.
@@ -556,11 +556,9 @@ object IntelligenceEngine {
                 wristOff = wristOff,
                 habitualMidsleepSec = habitualMidsleepSec,
                 bandSleepState = bandSleepState,
-                // #690: thread the V2 toggle into the NORMAL staging path so it affects detected nights,
-                // not just the userEdited self-heal restage. The Context-aware caller (AppViewModel/
-                // WhoopBleClient) supplied it from PuffinExperiment.from(context).experimentalSleepV2.
-                // #319: V2 is the default only on 5.0/MG (where #277 promoted it); WHOOP 4.0 always uses V1.
-                useSleepStagerV2 = sleepStagerV2ForFamily(useExperimentalSleepV2, skinFamily),
+                // #319: V2 is the default on 5.0/MG (where #277 promoted it); WHOOP 4.0 always uses V1. The
+                // selection is purely by device family now (the per-user "experimental V2" toggle is gone).
+                useSleepStagerV2 = sleepStagerV2ForFamily(skinFamily),
                 // Sleep & Rest test mode (Test Centre E5): thread the trace sink straight through. null (the
                 // default) keeps analyzeDay's byte-identical untraced path; when the caller passed a non-null
                 // sink (mode on), detectSleep's gate trace + the Rest sub-score line route to the .sleep-tagged
@@ -745,13 +743,18 @@ object IntelligenceEngine {
         // daily aggregate this same pass. A no-op for nights already staged from raw (idempotent) and for
         // imported nights (raw never dense). MUST run before `editsByStart` so healed stages flow into
         // Rest/recovery this run. Raw streams are read under the STRAP id; edited rows under COMPUTED.
+        // #327 follow-up: family-gate the self-heal restage too, so an EDITED WHOOP 4.0 night re-stages
+        // with V1 (not V2), matching the normal detected-night path. Resolve the healed strap's OWN family
+        // (correct for a multi-device user running both a 4.0 and a 5.0/MG). Before #327 the healer read the
+        // raw toggle, so an edited 4.0 night could still run V2 — the small follow-up #327 noted.
+        val healStagerFamily = ownerSource?.skinTempFamily(importedDeviceId) ?: DeviceFamily.WHOOP5
         val editedRows = SleepStageHealer.selfHealEditedStages(
             repo = repo,
             computedDeviceId = computedId,
             strapDeviceId = importedDeviceId,
             windowStart = windowStart,
             windowEnd = nowSeconds,
-            useExperimentalSleepV2 = useExperimentalSleepV2,
+            useSleepStagerV2 = sleepStagerV2ForFamily(healStagerFamily),
         )
         // #299: [editsByStart] / [editOnsetByStart] are now built PER DAY inside the scoring loop (scoped to
         // the day each edit belongs to), NOT window-wide here. sleepEditedDaily folds any edited row that

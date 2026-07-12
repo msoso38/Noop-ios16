@@ -99,9 +99,9 @@ class SleepStagerV2Test {
 
         val v1 = SleepStageHealer.restageFromSamples(start, end, grav, hr, rr, emptyList())
         val v1Default = SleepStageHealer.restageFromSamples(
-            start, end, grav, hr, rr, emptyList(), useExperimentalSleepV2 = false)
+            start, end, grav, hr, rr, emptyList(), useSleepStagerV2 = false)
         val v2 = SleepStageHealer.restageFromSamples(
-            start, end, grav, hr, rr, emptyList(), useExperimentalSleepV2 = true)
+            start, end, grav, hr, rr, emptyList(), useSleepStagerV2 = true)
 
         assertNotNull("dense raw must stage on both paths", v1)
         assertNotNull(v2)

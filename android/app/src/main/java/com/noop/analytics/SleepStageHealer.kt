@@ -53,10 +53,11 @@ object SleepStageHealer {
         deviceId: String,
         start: Long,
         end: Long,
-        // Opt-in experimental staging (Settings → Experimental · Sleep staging). The analytics layer is
-        // Context-free, so the flag is threaded in from the Context-aware caller (default false → V1, so
-        // existing callers / tests are unaffected). When true, stage with SleepStagerV2; else V1. (V7 3b)
-        useExperimentalSleepV2: Boolean = false,
+        // Which staging engine to run, resolved by DEVICE FAMILY at the caller (IntelligenceEngine
+        // sleepStagerV2ForFamily): true = SleepStagerV2 (5.0/MG), false = V1 (WHOOP 4.0). The former
+        // per-user "experimental V2" toggle is gone; #327 gated the normal path by family and this heals
+        // the follow-up so an edited 4.0 night also stays on V1. Default false → V1 (byte-identical path).
+        useSleepStagerV2: Boolean = false,
     ): String? {
         val lo = start - 3_600L
         val hi = end + 3_600L
@@ -66,7 +67,7 @@ object SleepStageHealer {
         val hr = repo.hrSamples(deviceId, lo, hi, IntelligenceEngine.STREAM_LIMIT)
         val rr = repo.rrIntervals(deviceId, lo, hi, IntelligenceEngine.STREAM_LIMIT)
         val resp = repo.respSamples(deviceId, lo, hi, IntelligenceEngine.STREAM_LIMIT)
-        return restageFromSamples(start, end, grav, hr, rr, resp, useExperimentalSleepV2)
+        return restageFromSamples(start, end, grav, hr, rr, resp, useSleepStagerV2)
     }
 
     /**
@@ -97,12 +98,12 @@ object SleepStageHealer {
         hr: List<HrSample>,
         rr: List<RrInterval>,
         resp: List<RespSample>,
-        // Opt-in experimental staging: V2 cardiorespiratory recipe when true, else default V1 (default false
-        // so existing callers / tests stay on V1 — the V1 path is byte-identical). (V7 Pillar 3b)
-        useExperimentalSleepV2: Boolean = false,
+        // V2 cardiorespiratory recipe when true (5.0/MG), else default V1 (WHOOP 4.0). Resolved by device
+        // family at the caller; default false so callers/tests that don't pass it stay on V1 (byte-identical).
+        useSleepStagerV2: Boolean = false,
     ): String? {
         if (!isDense(grav, start, end)) return null
-        val segs = if (useExperimentalSleepV2) {
+        val segs = if (useSleepStagerV2) {
             SleepStagerV2.stageSession(start = start, end = end, grav = grav, hr = hr, rr = rr, resp = resp)
         } else {
             SleepStager.stageSession(start = start, end = end, grav = grav, hr = hr, rr = rr, resp = resp)
@@ -129,9 +130,9 @@ object SleepStageHealer {
         strapDeviceId: String,
         windowStart: Long,
         windowEnd: Long,
-        // Opt-in experimental staging, threaded from IntelligenceEngine (read off SharedPreferences by the
-        // Context-aware caller). Default false → V1, so callers/tests that don't pass it are unaffected. (3b)
-        useExperimentalSleepV2: Boolean = false,
+        // Family-resolved staging engine, threaded from IntelligenceEngine (sleepStagerV2ForFamily of the
+        // healed strap's own family). Default false → V1, so callers/tests that don't pass it are unaffected.
+        useSleepStagerV2: Boolean = false,
     ): List<SleepSession> {
         suspend fun editedRows(): List<SleepSession> =
             repo.sleepSessions(computedDeviceId, windowStart, windowEnd).filter { it.userEdited }
@@ -144,7 +145,7 @@ object SleepStageHealer {
             // STRAP id (where the sensor streams live), not the computed namespace. Skip when the raw
             // isn't dense yet, or when the result already matches what's stored (steady state — no write).
             val newJSON = restageFromRaw(repo, strapDeviceId, row.effectiveStartTs, row.endTs,
-                useExperimentalSleepV2) ?: continue
+                useSleepStagerV2) ?: continue
             if (newJSON == row.stagesJSON) continue
             // Keyed by the IMMUTABLE detected startTs (never effectiveStartTs) so it lands on the right
             // primary-key row; the DAO scopes the write to userEdited = 1.

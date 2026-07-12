@@ -104,7 +104,7 @@ public enum TestCentre {
         // experimental flags, gathered by the IA but not domain activations), so the migration only
         // stamps the guard. The legacy keys are read in place through their existing accessors:
         //   PuffinExperiment.defaultsKey / .deepDataKey / .broadcastHrKey / .keepRealtimeForDataKey /
-        //   .experimentalSleepV2Key / .autoDetectWorkoutsKey, and the ScheduledDebugExport "debugExport.*"
+        //   .autoDetectWorkoutsKey, and the ScheduledDebugExport "debugExport.*"
         //   keys. Nothing is moved; the Test Centre screen reads them where they already live.
         UserDefaults.standard.set(true, forKey: migratedKey)
     }

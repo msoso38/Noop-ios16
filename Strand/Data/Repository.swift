@@ -1246,11 +1246,13 @@ final class Repository: ObservableObject {
         let hr = (try? await store.hrSamples(deviceId: deviceId, from: lo, to: hi, limit: 200_000)) ?? []
         let rr = (try? await store.rrIntervals(deviceId: deviceId, from: lo, to: hi, limit: 200_000)) ?? []
         let resp = (try? await store.respSamples(deviceId: deviceId, from: lo, to: hi, limit: 200_000)) ?? []
-        // Opt-in experimental staging (Settings → Experimental · Sleep staging): when the user has flipped
-        // the V2 flag on, re-stage with the cardiorespiratory recipe `SleepStagerV2`; otherwise the default
-        // V1 `SleepStager`. Read once here off the actor; the switch is purely which engine runs over the
-        // already-detected window , V1 stays the default and is untouched. (V7 Pillar 3b)
-        let useV2 = PuffinExperiment.experimentalSleepV2Enabled
+        // #327 follow-up: family-gate the self-heal restage too, so an EDITED WHOOP 4.0 night re-stages with
+        // V1 (matching the normal detected-night path). Resolve the healed strap's OWN family (correct for a
+        // multi-device user running both a 4.0 and a 5.0/MG). Before this the healer read the (now-removed)
+        // per-user toggle, so an edited 4.0 night could still run V2 — the small follow-up #327 noted. 4.0
+        // needs real raw data before V2 can run here (#271, #319).
+        let healFamily = Self.skinTempFamilies(store: store, ids: [deviceId])[deviceId] ?? .whoop5
+        let useV2 = IntelligenceEngine.sleepStagerV2(family: healFamily)
         let segs = await Task.detached(priority: .utility) {
             useV2
                 ? SleepStagerV2.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr, resp: resp)

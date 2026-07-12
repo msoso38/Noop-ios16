@@ -217,9 +217,9 @@ object AnalyticsEngine {
         // empty keeps pure-function callers/tests free of it; IntelligenceEngine threads the night window's
         // persisted band state. Mirrors Swift. (#531 / H8 consume)
         bandSleepState: List<Pair<Long, Int>> = emptyList(),
-        // Opt-in experimental sleep staging (V2). When true, detected nights are staged by [SleepStagerV2]
-        // instead of V1. Default false keeps V1 the byte-identical default for pure-function callers/tests;
-        // IntelligenceEngine threads PuffinExperiment.from(context).experimentalSleepV2. Mirrors Swift. (V7 / #690)
+        // Which staging engine runs for detected nights: true → [SleepStagerV2] (5.0/MG), false → V1 (WHOOP
+        // 4.0). Default false keeps V1 the byte-identical default for pure-function callers/tests;
+        // IntelligenceEngine resolves it by device family (sleepStagerV2ForFamily). Mirrors Swift. (#319/#327)
         useSleepStagerV2: Boolean = false,
         // Sleep & Rest test-mode trace sink (E11). null = byte-identical default. When non-null the gate
         // trace from detectSleep and the Rest sub-score line are forwarded line-by-line. Mirrors Swift.

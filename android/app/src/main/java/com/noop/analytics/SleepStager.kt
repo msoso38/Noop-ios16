@@ -822,11 +822,11 @@ object SleepStager {
         // HR dip. Default empty keeps pure-function callers/tests free of it; IntelligenceEngine passes the
         // night window's persisted band state. It can only RESCUE a real-sleep block, never fabricate. Mirrors Swift.
         bandSleepState: List<Pair<Long, Int>> = emptyList(),
-        // V7 / #690: when true, each accepted night is staged by the experimental cardiorespiratory recipe
-        // [SleepStagerV2.stageSession] instead of V1's [stageSession]. DETECTION is unchanged (same accepted
-        // windows); only the per-epoch hypnogram differs. Default false keeps V1 the byte-identical default
-        // (frozen-golden tests stay green). The live call site threads the experimentalSleepV2 flag so the
-        // Settings toggle now affects normal detected nights, not just the self-heal restage path. Mirrors Swift.
+        // When true, each accepted night is staged by the cardiorespiratory recipe [SleepStagerV2.stageSession]
+        // instead of V1's [stageSession]. DETECTION is unchanged (same accepted windows); only the per-epoch
+        // hypnogram differs. Default false keeps V1 the byte-identical default (frozen-golden tests stay green).
+        // The live call site resolves this by DEVICE FAMILY (V2 on 5.0/MG, V1 on WHOOP 4.0 — #319/#327), for
+        // both normal detected nights and the self-heal restage path. Mirrors Swift.
         useSleepStagerV2: Boolean = false,
         // Sleep & Rest test mode (E10): when non-null, each candidate run emits ONE gate verdict line
         // and the sparse-gravity bridge records its result. Side-effect-only; the returned list is
