@@ -6,15 +6,29 @@ The R-R optimization work improves the beat-to-beat interval processing that fee
 
 `HrvAnalyzer` gained gap-aware RMSSD and pNN50 (`cleanRRGapAware`, `rmssdGapAware`, `pnn50GapAware`). When cleaning drops an out-of-range or ectopic beat, its two neighbours become adjacent in the cleaned list, and the plain successive-difference RMSSD counts the difference across that splice as a real beat-to-beat delta. Because RMSSD squares each delta, one removed beat can bias RMSSD high. The gap-aware path skips any difference that straddles a dropped beat. On a series with no drops it is identical to the plain path, so clean data and the existing golden vectors are unchanged. Wired into `analyzeRaw` (spot and daytime and windowed HRV) and the nightly `SleepStager.sessionHrvWindows`.
 
-This composes with the seq storage fix (PR ryanbr/noop#163): the PK `(deviceId, ts, rrMs, seq)` stops two equal same-second intervals from colliding under INSERT IGNORE and being dropped, which also biased RMSSD high. The two fixes cover the same class of defect from opposite sides, one at storage and one at analysis.
+The gap-aware analysis path shipped as PR ryanbr/noop#204 (iOS/macOS twin #208). It composes with the seq storage fix (PR ryanbr/noop#163): the PK `(deviceId, ts, rrMs, seq)` stops two equal same-second intervals from colliding under INSERT IGNORE and being dropped, which also biased RMSSD high. The two fixes cover the same class of defect from opposite sides, one at storage and one at analysis.
 
 ## The harness
 
-Two tests under `app/src/test/java/com/noop/analytics/agreement`:
+Seven tests under `app/src/test/java/com/noop/analytics` (five in `.../agreement`), in two tiers: committed synthetic tests that run in CI, and fixture-backed tests that validate against real public datasets and skip via `assumeTrue` when their local fixtures are absent, so CI stays green.
 
-`RrVersionRundownTest` (synthetic, committed and CI-safe): reproduces the three algorithm versions from the tree's own public functions (`rmssdRaw`+`cleanRR` = pre-fix, `rmssdGapAware`+`cleanRRGapAware` = rr-opt, plus a `(ts,rrMs)` dedup that reproduces the old storage drop), replays identical synthetic sleep windows carrying both artifact classes, and writes `build/rr-rundown.md`. It asserts the accuracy ordering improves monotonically (ryanbr MAE >= +2PR MAE >= rr-opt MAE), so a regression in gap-aware fails the build. On synthetic data the MAE versus the true rhythm falls 0.41 to 0.17 to 0.11 ms across the three versions.
+Committed, CI-safe (synthetic, no fixtures):
 
-`RealDataRundownTest` (real, local-only): runs the real `HrvAnalyzer` over a fixture exported from a noop backup DB paired to a WHOOP CSV export. The fixture holds personal biometrics, so it is not committed: the test reads it from an absolute path (`-Dnoop.rrFixture=...`) and skips via `assumeTrue` when absent, so it never runs in CI.
+`RrVersionRundownTest` reproduces the three algorithm versions from the tree's own public functions (`rmssdRaw`+`cleanRR` = pre-fix, `rmssdGapAware`+`cleanRRGapAware` = rr-opt, plus a `(ts,rrMs)` dedup that reproduces the old storage drop), replays identical synthetic sleep windows carrying both artifact classes, and writes `build/rr-rundown.md`. It asserts the accuracy ordering improves monotonically (ryanbr MAE >= +2PR MAE >= rr-opt MAE), so a regression in gap-aware fails the build. On synthetic data the MAE versus the true rhythm falls 0.41 to 0.17 to 0.11 ms across the three versions.
+
+`HrvArtifactDensityTest` sweeps injected artifact density and asserts the gap-aware RMSSD and pNN50 stay monotonic and bounded as more beats are dropped — a property test pinning the gap-aware invariant with no external data.
+
+Fixture-backed, local-only (read `-Dnoop.hrvGoldFixtures` / `-Dnoop.rrFixture`; skip in CI):
+
+`HrvGoldAgreementTest` feeds range-cleaned NN windows from the public gold datasets (AAUWSS PSG-ECG, GalaxyPPG Polar-H10) through the pure primitives and asserts RMSSD/SDNN/pNN50 match a textbook reference to 1e-6, isolating the formula from the cleaning. It consumes only windows-shaped fixtures carrying a computed gold `refRmssd`, so it ignores the array-shaped and model-reference fixtures that share the directory.
+
+`HrvOpticalRobustnessTest` compares plain versus gap-aware RMSSD against the gold R-R under injected optical artifacts and asserts gap-aware cuts the mean absolute error on the regular-rhythm windows — the real point of the shipped fix.
+
+`HrvFreqAgreementTest` pins the frequency-domain LF/HF path against an independent reference.
+
+`RecoveryAgreementTest` feeds diverse driver-input cases through `RecoveryScorer.recovery` and asserts each matches an independent numpy replication of the exact z-score + logistic composite, pinning all recovery constants against silent regression.
+
+`RealDataRundownTest` runs the real `HrvAnalyzer` over a fixture exported from a noop backup DB paired to a WHOOP CSV export. The fixture holds personal biometrics, so it is not committed; it reads an absolute path (`-Dnoop.rrFixture=...`) and skips when absent.
 
 ## Findings from the real data
 
