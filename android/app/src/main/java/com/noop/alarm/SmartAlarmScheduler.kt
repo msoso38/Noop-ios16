@@ -47,7 +47,7 @@ object SmartAlarmScheduler {
      *
      * @return the scheduled hard-deadline epoch (ms), or null if exact alarms aren't permitted.
      */
-    fun arm(context: Context, store: SmartAlarmStore, afterFire: Boolean = false): Long? {
+    fun arm(context: Context, store: SmartAlarmStore): Long? {
         if (!canScheduleExact(context)) return null
 
         val deadlineMin = (store.targetMinutes + store.windowMinutes)
@@ -55,21 +55,12 @@ object SmartAlarmScheduler {
         // occurrence of that absolute minute-of-day, then derive the window-start from it so the two
         // edges stay on the same night even across the midnight boundary.
         val deadline = nextOccurrence(deadlineMin % SmartAlarmStore.MINUTES_PER_DAY)
-        // Re-arm after a fire (audit): when the smart alarm fires EARLY on a light-sleep phase (e.g. 06:35
-        // for a 07:00 deadline), the deadline's next occurrence is still TODAY 07:00 — so a plain re-arm
-        // scheduled a second guaranteed wake the SAME morning, waking the user again. We just woke them
-        // today, so the next wake must be tomorrow: push a same-day deadline forward one day.
-        if (afterFire) {
-            val now = Calendar.getInstance()
-            val sameDay = deadline.get(Calendar.YEAR) == now.get(Calendar.YEAR) &&
-                deadline.get(Calendar.DAY_OF_YEAR) == now.get(Calendar.DAY_OF_YEAR)
-            if (sameDay) deadline.add(Calendar.DAY_OF_YEAR, 1)
-        }
         val windowStartMs = deadline.timeInMillis - store.windowMinutes.toLong() * 60_000L
 
         scheduleExact(context, deadline.timeInMillis)
         store.scheduledDeadlineMs = deadline.timeInMillis
         store.scheduledWindowStartMs = windowStartMs
+        store.scheduledFireAtMs = deadline.timeInMillis
         return deadline.timeInMillis
     }
 
@@ -82,7 +73,7 @@ object SmartAlarmScheduler {
         val deadlineMs = store.scheduledDeadlineMs
         if (deadlineMs <= System.currentTimeMillis()) return
         if (!canScheduleExact(context)) return
-        scheduleExact(context, deadlineMs)
+        scheduleExact(context, store.scheduledFireAtMs.coerceIn(store.scheduledWindowStartMs, deadlineMs))
     }
 
     /**
@@ -100,10 +91,10 @@ object SmartAlarmScheduler {
         if (!canScheduleExact(context)) return
         // Clamp into [windowStart, deadline]. Anything outside the window is ignored.
         val clamped = fireAtMs.coerceIn(windowStartMs, deadlineMs)
-        // Only ever advance — re-scheduling at the same/later time would be pointless and could, in a
-        // pathological caller, nudge the alarm back toward the deadline. We keep the persisted deadline
-        // untouched so a later cancel/boot path still references the real hard edge.
+        val currentlyScheduled = store.scheduledFireAtMs.coerceIn(windowStartMs, deadlineMs)
+        if (!shouldAdvanceScheduledAlarm(fireAtMs, currentlyScheduled, windowStartMs, deadlineMs)) return
         scheduleExact(context, clamped, smart = true)
+        store.scheduledFireAtMs = clamped
     }
 
     /** Cancel the alarm and clear the persisted edges. Only the user-disable / post-fire paths call this. */
@@ -112,20 +103,33 @@ object SmartAlarmScheduler {
         am.cancel(firePendingIntent(context))
         store.scheduledDeadlineMs = 0L
         store.scheduledWindowStartMs = 0L
+        store.scheduledFireAtMs = 0L
     }
 
     /** True if the OS will honour an exact alarm right now (API 31+ gates this behind a permission). */
     fun canScheduleExact(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
-        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        return am.canScheduleExactAlarms()
+        val manager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S || manager.canScheduleExactAlarms()
+    }
+
+    /** Pure guard for the only smart-wake mutation: a cue may shorten the wait, never lengthen it. */
+    internal fun shouldAdvanceScheduledAlarm(
+        requestedMs: Long,
+        currentlyScheduledMs: Long,
+        windowStartMs: Long,
+        deadlineMs: Long,
+    ): Boolean {
+        if (deadlineMs < windowStartMs) return false
+        val candidate = requestedMs.coerceIn(windowStartMs, deadlineMs)
+        val current = currentlyScheduledMs.coerceIn(windowStartMs, deadlineMs)
+        return candidate < current
     }
 
     // MARK: - internals
 
     /** Schedule the guaranteed wake via setAlarmClock — the strongest exact-alarm primitive: Doze- and
-     *  kill-proof, and surfaced in the system's "next alarm" UI. [smart] only tags the fired intent so
-     *  the notification can say it woke you on a light-sleep phase rather than at the deadline. */
+     *  kill-proof, and surfaced in the system's "next alarm" UI. [smart] only tags an early HR-based cue;
+     *  it never claims sleep-stage detection. */
     private fun scheduleExact(context: Context, triggerAtMs: Long, smart: Boolean = false) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val show = PendingIntent.getActivity(

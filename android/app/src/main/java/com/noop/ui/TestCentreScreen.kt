@@ -12,10 +12,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Autorenew
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -24,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -37,6 +42,7 @@ import com.noop.BuildConfig
 import com.noop.analytics.Baselines
 import com.noop.ble.PuffinExperiment
 import com.noop.ble.WhoopModel
+import com.noop.data.NoopGoalBoard
 import com.noop.testcentre.CaptureAccumulator
 import com.noop.testcentre.CaptureKind
 import com.noop.testcentre.DisplayPerformanceMonitor
@@ -50,6 +56,7 @@ import com.noop.testcentre.TestModeRegistry
 import com.noop.testcentre.TestReportFlow
 import com.noop.testcentre.TestReportLink
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * Settings -> Test Centre (spec section 7), the Android twin of TestCentreView. Four sections: domain
@@ -101,10 +108,58 @@ fun TestCentreScreen(vm: AppViewModel) {
         if (testCentre.active(TestDomain.DISPLAY)) DisplayPerformanceMonitor.emitDataVolume()
     }
 
+    val (goalsDone, goalsPartial, goalsRest) = NoopGoalBoard.summary()
+
     ScreenScaffold(
         title = "Test Centre",
         subtitle = "Turn on a test for the thing that's wrong, wear the strap, then tap Report. Everything stays on this phone.",
     ) {
+        // Preview motion / overlays without a live strap (emulator UI iteration).
+        // Always shown — buried under More → App was too easy to miss when gated on DEBUG only.
+        UiDemoLabSection()
+
+        // Durable product goals (complete / not complete) — loops expire; this does not.
+        SettingsSectionTC(
+            icon = Icons.Filled.Flag,
+            title = "Goals board",
+            blurb = "Complete: $goalsDone · Partial: $goalsPartial · Not complete/blocked: $goalsRest. " +
+                "Open More → Goals for how to test, future impact, and whether each item actually works.",
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                NoopGoalBoard.all().take(6).forEach { g ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${g.id} ${g.title}",
+                            style = NoopType.footnote,
+                            color = Palette.textSecondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            NoopGoalBoard.statusLabel(g.status),
+                            style = NoopType.footnote,
+                            color = when (g.status) {
+                                NoopGoalBoard.Status.DONE -> Palette.statusPositive
+                                NoopGoalBoard.Status.PARTIAL -> Palette.metricAmber
+                                NoopGoalBoard.Status.NOT_DONE -> Palette.metricRose
+                                NoopGoalBoard.Status.BLOCKED -> Palette.textTertiary
+                            },
+                        )
+                    }
+                }
+                if (NoopGoalBoard.all().size > 6) {
+                    Text(
+                        "+${NoopGoalBoard.all().size - 6} more on Goals board…",
+                        style = NoopType.footnote,
+                        color = Palette.textTertiary,
+                    )
+                }
+            }
+        }
+
         // --- Section 1: Domain test modes ---
         SettingsSectionTC(
             icon = Icons.Filled.BugReport,
@@ -531,6 +586,52 @@ private fun ReportReviewDialog(
 
 // MARK: - Local section + toggle wrappers (Test Centre owns its own so it never reaches into the private
 // SettingsScreen.kt helpers; same NoopCard idiom).
+
+/** Debug-only motion / overlay previews for emulator iteration without a live strap. */
+@Composable
+private fun UiDemoLabSection() {
+    var chargePct by remember { mutableFloatStateOf(67f) }
+    SettingsSectionTC(
+        icon = Icons.Filled.Movie,
+        title = "UI demo lab",
+        blurb = "Preview animations and overlays on this build. No strap needed. Tune the value, tap Preview, iterate.",
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "Charging full-screen (AirPods-style)",
+                style = NoopType.body,
+                color = Palette.textPrimary,
+            )
+            Text(
+                "Battery ${chargePct.roundToInt()}%",
+                style = NoopType.footnote,
+                color = Palette.textSecondary,
+            )
+            Slider(
+                value = chargePct,
+                onValueChange = { chargePct = it },
+                valueRange = 1f..100f,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                listOf(12f, 35f, 67f, 92f, 100f).forEach { preset ->
+                    TextButton(onClick = { chargePct = preset }) {
+                        Text("${preset.roundToInt()}%", style = NoopType.footnote)
+                    }
+                }
+            }
+            NoopButton(
+                text = "Preview charging animation",
+                leadingIcon = Icons.Filled.Bolt,
+                fullWidth = true,
+                onClick = { ChargingUiPreview.show(chargePct.toDouble()) },
+            )
+        }
+    }
+}
 
 @Composable
 private fun SettingsSectionTC(

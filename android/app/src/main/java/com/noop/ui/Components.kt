@@ -20,7 +20,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -64,6 +66,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
@@ -114,51 +117,37 @@ fun Modifier.frostedCardSurface(
     cornerRadius: Dp = Metrics.cardRadius,
     washStrength: Float = 1f,
 ): Modifier = composed {
-    // "Card transparency" setting: scale the whole glass surface (fill + border + wash) by the user's
+    // "Card transparency" setting: scale the whole glass surface (fill + border) by the user's
     // opacity so cards fade toward the background. Reading the reactive value here makes the slider
     // live-preview. Content drawn above the surface is unaffected, so numbers/labels stay readable.
     val op = CardAppearance.opacity
     this
         // Elevation idiom: DARK is flat (the hairline + hue carry the edge). LIGHT raises the white card
         // off the warm-paper canvas with a soft drop shadow — the hairline alone is too faint on paper.
-        .then(
-            if (Palette.isLight)
-                Modifier.shadow(elevation = (6f * op).dp, shape = RoundedCornerShape(cornerRadius), clip = false)
-            else Modifier
+        .shadow(
+            elevation = ((if (Palette.isLight) 6f else 2f) * op.coerceAtLeast(0.35f)).dp,
+            shape = RoundedCornerShape(cornerRadius),
+            clip = false,
+            ambientColor = Color.Black.copy(alpha = if (Palette.isLight) 0.08f else 0.22f),
+            spotColor = Color.Black.copy(alpha = if (Palette.isLight) 0.06f else 0.12f),
         )
         .drawBehind {
             val radiusPx = cornerRadius.toPx()
             val corner = androidx.compose.ui.geometry.CornerRadius(radiusPx, radiusPx)
-            val fill = Palette.surfaceRaised.copy(alpha = Palette.surfaceRaised.alpha * op)
+            val base = Palette.surfaceRaised.copy(alpha = Palette.surfaceRaised.alpha * op)
             val border = Palette.hairline.copy(alpha = Palette.hairline.alpha * op)
-
-            if (tint == null) {
-                // NEUTRAL card (iOS FrostedCardSurface tint == nil): a FLAT raised surface — no vertical
-                // bevel gradient, no accent wash, and a PLAIN hairline border (no accent bias).
-                drawRoundRect(color = fill, cornerRadius = corner)
-                drawRoundRect(color = border, cornerRadius = corner, style = Stroke(width = 1.dp.toPx()))
+            // Flat Material3-style fill — no dual linear washes (those read as blocky gradient patches).
+            val fill = if (tint == null) {
+                base
             } else {
-                // TINTED card (iOS parity, 2026-06-23 "synthesis has the old blue style"): a FLAT raised
-                // surface — the SAME WHOOP grey as the neutral card, NO navy bevel gradient — carrying only
-                // a whisper of the domain tint as a diagonal hue wash so it stays in the grey family.
-                // 1) Flat raised fill — identical to the neutral card.
-                drawRoundRect(color = fill, cornerRadius = corner)
-                // 2) Faint diagonal accent hue wash over the flat fill (matches iOS FrostedCardSurface ~0.05).
-                drawRoundRect(
-                    brush = Brush.linearGradient(
-                        colorStops = arrayOf(
-                            0.0f to tint.copy(alpha = 0.05f * washStrength * op),
-                            0.5f to tint.copy(alpha = 0.015f * washStrength * op),
-                            1.0f to Color.Transparent,
-                        ),
-                        start = Offset(0f, 0f),
-                        end = Offset(size.width, size.height),
-                    ),
-                    cornerRadius = corner,
-                )
-                // 3) Plain 1px hairline (no accent bias) — matches the neutral card.
-                drawRoundRect(color = border, cornerRadius = corner, style = Stroke(width = 1.dp.toPx()))
+                androidx.compose.ui.graphics.lerp(
+                    base,
+                    tint.copy(alpha = 1f),
+                    (0.06f * washStrength).coerceIn(0f, 0.14f),
+                ).copy(alpha = base.alpha)
             }
+            drawRoundRect(color = fill, cornerRadius = corner)
+            drawRoundRect(color = border, cornerRadius = corner, style = Stroke(width = 1.dp.toPx()))
         }
 }
 
@@ -367,7 +356,8 @@ private fun DrawScope.drawCircleScaled(
 fun StatePill(
     title: String,
     tone: StrandTone = StrandTone.Neutral,
-    showsDot: Boolean = true,
+    /** Default false — a centre glow-dot on every pill looked busy and “samey”. Opt in for LIVE only. */
+    showsDot: Boolean = false,
     pulsing: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -396,8 +386,6 @@ fun SourceBadge(text: String, tint: Color = Palette.accent, modifier: Modifier =
         text = text.uppercase(),
         style = NoopType.overline.copy(fontSize = 10.sp, letterSpacing = 0.5.sp),
         color = tint,
-        maxLines = 1,                          // #74: e.g. "ON-DEVICE" stays on one line, never wraps the hero
-        overflow = TextOverflow.Ellipsis,
         modifier = modifier
             .clip(shape)
             .background(tint.copy(alpha = 0.14f))
@@ -668,10 +656,7 @@ fun BevelGauge(
         animationSpec = tween(Motion.durationSlow, easing = Motion.drawIn),
         label = "ringFill",
     )
-    // Outer bloom — a faint, STATIC glow. The breathing pulse is gone (matching iOS): it sits calm so
-    // the ring reads flat/Material, not glowing. Strength tracks the iOS bloomOpacity (0.05 + 0.13·frac)
-    // — a restrained additive halo, well down from the old (0.16 + 0.40·frac) pulse.
-    val bloomOpacity = 0.05f + 0.13f * frac
+    // No outer bloom / random glow (user: random glows). Crisp arc only on the track.
     val sweep = Brush.sweepGradient(*stops.toTypedArray())
 
     Box(
@@ -729,26 +714,8 @@ fun BevelGauge(
                     val arcSize = Size(radius * 2f, radius * 2f)
                     val sweepStroke = Stroke(width = stroke, cap = StrokeCap.Round)
 
-                    // Outer bloom — a soft, lower-opacity wide arc (drawn first, under the track).
-                    // A glow only reads on the dark canvas; on the white light card it just smears the
-                    // edge, so it's suppressed there (the deepened arc carries the ring on its own).
-                    // Drawn at the restrained, static [bloomOpacity] (≈0.05–0.18) — crisp, not glowing.
-                    if (animatedFraction > 0.001f && !Palette.isLight) {
-                        drawArc(
-                            brush = sweep,
-                            startAngle = startDeg,
-                            sweepAngle = spanDeg * animatedFraction,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = stroke * 1.15f, cap = StrokeCap.Round),
-                            alpha = bloomOpacity,
-                        )
-                    }
-
                     // Full-span track — the carved inset "well" the arc sits in (iOS: solid surfaceInset,
-                    // full opacity, same round cap), not a faint hairline. Stays here (over the bloom,
-                    // under the fill arc) to preserve the exact original z-order.
+                    // full opacity, same round cap), not a faint hairline.
                     drawArc(
                         color = Palette.surfaceInset,
                         startAngle = startDeg,
@@ -779,8 +746,8 @@ fun BevelGauge(
                             center.x + radius * cos(tipAngle).toFloat(),
                             center.y + radius * sin(tipAngle).toFloat(),
                         )
-                        drawCircle(color = Palette.tipCore, radius = stroke * 0.35f, center = bead)
-                        drawCircle(color = tipColor.copy(alpha = 0.35f), radius = stroke * 0.35f, center = bead)
+                        // Solid tip bead only — no soft coloured halo under it.
+                        drawCircle(color = tipColor, radius = stroke * 0.28f, center = bead)
                     }
 
                     // Brand glyph core: a small solid gold dot at the very centre — but ONLY in the
@@ -944,16 +911,7 @@ fun GlowRing(
                     // rings the maintainer flagged. Below the threshold we show just the clean full-circle
                     // track — exactly like the iOS GlowRing's empty state.
                     if (animFraction > 0.001f) {
-                        // Tight glow — a wider, low-alpha arc under the crisp one (minSdk-safe, no RenderEffect).
-                        // Gated on the dark canvas only, mirroring iOS AdditiveBloom hiding on the light field
-                        // (on white it just smears the edge); the crisp arc carries the ring on its own there.
-                        if (!Palette.isLight) {
-                            drawArc(
-                                color = color.copy(alpha = 0.45f), startAngle = -90f, sweepAngle = sweep, useCenter = false,
-                                topLeft = tl, size = arcSize, style = Stroke(width = stroke * 1.5f, cap = StrokeCap.Round),
-                            )
-                        }
-                        // The crisp, solid arc — from 12 o'clock clockwise.
+                        // Crisp arc only — no soft glow underlay (user: random glows).
                         drawArc(
                             color = color, startAngle = -90f, sweepAngle = sweep, useCenter = false,
                             topLeft = tl, size = arcSize, style = Stroke(width = stroke, cap = StrokeCap.Round),
@@ -1261,6 +1219,9 @@ fun LazyScreenScaffold(
     // When true, the [topBackground] fills the WHOLE scaffold (viewport) instead of the top band — the
     // "sky behind cards" mode, so a full-height backdrop shows behind every scrolling row.
     fullBleedBackground: Boolean = false,
+    // A caller may observe the scroll position to keep essential context available without inserting a
+    // sticky row into the document flow. Existing screens keep their own remembered state by default.
+    listState: LazyListState = rememberLazyListState(),
     content: LazyListScope.() -> Unit,
 ) {
     // The header row: optional leading action, the title/subtitle, optional trailing action. Omitted
@@ -1305,6 +1266,7 @@ fun LazyScreenScaffold(
     val list: @Composable () -> Unit = {
         LazyColumn(
             modifier = listModifier,
+            state = listState,
             contentPadding = PaddingValues(start = 28.dp, top = topPadding, end = 28.dp, bottom = 28.dp),
             // #765: the shared inter-card spacing token by default (Today/Explore + the eager screens share
             // one uniform card rhythm); a caller may pass a tighter [rowSpacing] (the liquid Today does, for

@@ -40,14 +40,15 @@ class TestModeRegistryParityTest {
 
     @Test fun sleepCaptureSet() {
         assertEquals(
-            listOf("gateTrace", "wristOff", "restSubScores"),
+            listOf("gateTrace", "gravityCoverage", "hrDensity", "wristOff", "perEpochFeatures",
+                "hypnogramV1V2", "ppgOnlyNight", "skinTempDsp", "restSubScores"),
             TestModeRegistry.mode(TestDomain.SLEEP)?.captures,
         )
     }
 
     @Test fun batteryCaptureSetAndReadout() {
         assertEquals(
-            listOf("socSeries", "chargeSteps", "dischargeRun", "fittedSlope",
+            listOf("socSeries", "chargeSteps", "offWristGaps", "dischargeRun", "fittedSlope",
                 "sourceMeasuredVsRated", "batteryGates"),
             TestModeRegistry.mode(TestDomain.BATTERY)?.captures,
         )
@@ -122,7 +123,7 @@ class TestModeRegistryParityTest {
             TestModeRegistry.mode(TestDomain.DISPLAY)?.captures,
         )
         assertEquals(
-            listOf("parserVersion", "perStageRows", "rejectCounts", "dayDeltas"),
+            listOf("parserVersion", "fileMeta", "perStageRows", "rejectCounts", "dayDeltas"),
             TestModeRegistry.mode(TestDomain.IMPORT)?.captures,
         )
         assertEquals(
@@ -131,11 +132,11 @@ class TestModeRegistryParityTest {
             TestModeRegistry.mode(TestDomain.STEPS)?.captures,
         )
         assertEquals(
-            listOf("chargeTermBreakdown", "baselinesPerNight", "termZScores", "nilTerm"),
+            listOf("chargeTermBreakdown", "baselinesPerNight", "termZScores", "nilTerm", "forecastInputs"),
             TestModeRegistry.mode(TestDomain.RECOVERY)?.captures,
         )
         assertEquals(
-            listOf("nInputCleanRejected", "rmssdSdnn", "minBeatsCleared"),
+            listOf("rawRR", "nInputCleanRejected", "rmssdSdnn", "minBeatsCleared", "spotVsContinuous", "respRsa"),
             TestModeRegistry.mode(TestDomain.HRV)?.captures,
         )
     }

@@ -146,15 +146,9 @@
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.NOOP">
-            <!-- Health Connect permissions-rationale route for Android 13 and below (#226). The standalone
-                 Health Connect APK on API ≤33 DISCOVERS + lists compatible apps by this intent-filter, so
-                 the action name must be the legacy `androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE`.
-                 The previous `androidx.health.connect.action.SHOW_PERMISSIONS_RATIONALE` is neither the
-                 API-33 nor API-34 form, so an Android-13 HC APK never enumerated NOOP — it was absent from
-                 Health Connect's "App permissions" entirely and permissions couldn't be granted. Android 14+
-                 (HC in the platform) uses the `ViewPermissionUsageActivity` alias below instead. -->
+            <!-- Health Connect permissions-rationale route (Android 13 and below). -->
             <intent-filter>
-                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+                <action android:name="androidx.health.connect.action.SHOW_PERMISSIONS_RATIONALE" />
             </intent-filter>
         </activity>
 
@@ -227,6 +221,20 @@
             </intent-filter>
         </service>
 
+        <!-- Auto-read Recovery / Day Strain from the official WHOOP app UI (opt-in Accessibility). -->
+        <service
+            android:name="com.noop.data.WhoopAppAccessibilityService"
+            android:label="NOOP WHOOP app capture"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/whoop_app_accessibility" />
+        </service>
+
         <!-- Home-screen widget (today's recovery + live HR + strap battery). exported=true is
              required so the launcher can deliver APPWIDGET_UPDATE; it renders only from our own
              SharedPreferences snapshot. -->
@@ -240,20 +248,6 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/noop_widget_info" />
-        </receiver>
-
-        <!-- Compact home-screen widget, offered as a separate picker entry so the existing 2x2 widget
-             remains available unchanged. -->
-        <receiver
-            android:name="com.noop.widget.NoopCompactWidgetReceiver"
-            android:exported="true"
-            android:label="@string/widget_compact_name">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/noop_compact_widget_info" />
         </receiver>
 
         <!-- Optional native phone-call alerts. The receiver only reacts to ringing/offhook/idle state
@@ -273,6 +267,10 @@
              PendingIntent triggers it — but it survives the app being killed so the wake is reliable. -->
         <receiver
             android:name="com.noop.alarm.SmartAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.noop.alarm.CustomAlarmReceiver"
             android:exported="false" />
 
         <!-- Re-arms the persisted hard-deadline alarm after a reboot so an overnight restart can't

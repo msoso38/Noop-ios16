@@ -26,18 +26,23 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
- * In-app connection walkthrough. The number-one reason a strap won't connect is the official
- * WHOOP app holding it (a strap only pairs with ONE app at a time), followed by Bluetooth being
- * off or the runtime permission not granted. This card detects each blocker and gives a one-tap
- * fix, including deep-linking straight to the WHOOP app's info screen so the user can Force stop it.
+ * In-app connection walkthrough.
  *
- * Shown on the Live screen whenever the strap isn't bonded yet; it disappears once connected.
+ * Exclusive mode: the official WHOOP app holding the encrypted bond is the #1 blocker; we guide
+ * Force-stop + re-pair.
+ *
+ * Alongside mode ([NoopPrefs.alongsideWhoopApp]): WHOOP may stay open. We collect open live HR /
+ * battery only and guide Heart Rate Broadcast instead of fighting the bond.
+ *
+ * Shown on the Live screen whenever the strap isn't bonded yet; it disappears once fully bonded
+ * (or while live HR is already streaming in alongside mode).
  */
 @Composable
 fun ConnectionHelp(viewModel: AppViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     // Re-read the live state so the checks below re-evaluate after the user fixes something.
     val live by viewModel.live.collectAsStateWithLifecycle()
+    val alongside = live.alongsideMode || NoopPrefs.alongsideWhoopApp(context)
 
     val perms = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
@@ -59,10 +64,15 @@ fun ConnectionHelp(viewModel: AppViewModel, modifier: Modifier = Modifier) {
         ActivityResultContracts.StartActivityForResult(),
     ) { /* user toggled Bluetooth; recomposition re-reads btOn */ }
 
+    // Live open-stream already working in alongside mode — no "force stop WHOOP" checklist needed.
+    if (alongside && live.connected && (live.heartRate != null || live.streamingLiveHR)) {
+        return
+    }
+
     // A WHOOP 5/MG strap is a different situation: it DID connect (battery reads), so the generic
     // "is it on / is the WHOOP app holding it" checklist is misleading. Tell the user the honest
     // truth instead — the strap and their setup are fine; the live-data handshake just isn't ready.
-    if (live.whoop5Detected) {
+    if (live.whoop5Detected && !alongside) {
         NoopCard(modifier = modifier) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("WHOOP 5 / MG (experimental)", style = NoopType.headline, color = Palette.textPrimary)
@@ -79,6 +89,62 @@ fun ConnectionHelp(viewModel: AppViewModel, modifier: Modifier = Modifier) {
         return
     }
 
+    if (alongside) {
+        NoopCard(modifier = modifier) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("Alongside official WHOOP", style = NoopType.headline, color = Palette.textPrimary)
+                Text(
+                    "NOOP collects open WHOOP data while the official app stays open, and uploads " +
+                        "RAW_GATT + ML_SAMPLE rows to your PC collector (LAN :8091) so we can reconstruct " +
+                        "algorithms offline. You get live HR, R-R and battery. Encrypted history, buzz, " +
+                        "SpO2 and BP stay with WHOOP. Keep the PC collectors running (KEEP_AWAKE_AND_COLLECT).",
+                    style = NoopType.footnote,
+                    color = Palette.textSecondary,
+                )
+                HelpStep(
+                    done = btOn,
+                    title = "Turn Bluetooth on",
+                    body = if (btOn) "Bluetooth is on." else "Bluetooth is currently off.",
+                    actionLabel = if (!btOn) "Turn on Bluetooth" else null,
+                    enabled = !btOn,
+                    onAction = {
+                        runCatching { enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) }
+                    },
+                )
+                HelpStep(
+                    done = permGranted,
+                    title = "Allow Nearby devices",
+                    body = if (permGranted) "Permission granted."
+                    else "On Android 12+, \"Nearby devices\" is the Bluetooth permission. NOOP needs it to find your strap.",
+                    actionLabel = if (!permGranted) "Grant permission" else null,
+                    enabled = !permGranted,
+                    onAction = { permLauncher.launch(perms) },
+                )
+                HelpStep(
+                    done = false,
+                    title = "Optional: Heart Rate Broadcast in WHOOP",
+                    body = "If live HR does not show here while WHOOP is connected, open the official " +
+                        "WHOOP app → More → Device settings → turn on Heart Rate Broadcast, then tap " +
+                        "Connect here again. That is WHOOP's supported path for a second app to read HR.",
+                    actionLabel = if (whoopInstalled) "Open WHOOP app" else null,
+                    enabled = whoopInstalled,
+                    onAction = {
+                        runCatching {
+                            context.packageManager.getLaunchIntentForPackage(WHOOP_PACKAGE)?.let {
+                                context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            }
+                        }
+                    },
+                )
+                OutlinedButton(
+                    onClick = { if (permGranted) viewModel.connect() else permLauncher.launch(perms) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Collect open WHOOP data", style = NoopType.body) }
+            }
+        }
+        return
+    }
+
     NoopCard(modifier = modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("Won't connect? Run through these", style = NoopType.headline, color = Palette.textPrimary)
@@ -86,8 +152,9 @@ fun ConnectionHelp(viewModel: AppViewModel, modifier: Modifier = Modifier) {
             HelpStep(
                 done = !whoopInstalled,
                 title = "Close the official WHOOP app",
-                body = "Your strap only pairs with ONE app at a time. If the WHOOP app is connected, " +
-                    "NOOP can't reach the strap. Force stop it (swiping it out of recents isn't enough).",
+                body = "Your strap only pairs with ONE app at a time for the encrypted bond. If the WHOOP app is connected, " +
+                    "NOOP can't fully pair. Force stop it (swiping it out of recents isn't enough). " +
+                    "Or turn on \"Run alongside official WHOOP app\" in Settings to collect live HR without taking the bond.",
                 actionLabel = if (whoopInstalled) "Open WHOOP app, then Force stop" else "WHOOP app isn't installed",
                 enabled = whoopInstalled,
                 onAction = { openAppInfo(context, WHOOP_PACKAGE) },

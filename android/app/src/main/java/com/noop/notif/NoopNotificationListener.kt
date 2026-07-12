@@ -26,6 +26,23 @@ class NoopNotificationListener : NotificationListenerService() {
         val ctx = applicationContext
         val n = sbn.notification ?: return
 
+        // Auto-capture official WHOOP app scores from notifications (Recovery / Strain text).
+        if (sbn.packageName == com.noop.data.WhoopAppAutoCapture.WHOOP_PACKAGE &&
+            com.noop.data.WhoopAppAutoCapture.isEnabled(ctx)
+        ) {
+            val extras = n.extras
+            val title = extras?.getCharSequence(Notification.EXTRA_TITLE)
+            val text = extras?.getCharSequence(Notification.EXTRA_TEXT)
+            val big = extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)
+            val parsed = com.noop.data.WhoopAppScoreParser.parseNotification(title, text, big)
+            if (parsed.recoveryPct != null || parsed.dayStrain021 != null) {
+                val repo = (application as? NoopApplication)?.repository
+                com.noop.data.WhoopAppAutoCapture.ingestParsed(
+                    ctx, parsed, source = "notification", repository = repo,
+                )
+            }
+        }
+
         if (VoipCallClassifier.isKnownVoipPackage(sbn.packageName)) {
             val metadata = VoipCallClassifier.metadataOf(n, isOngoing = sbn.isOngoing)
             if (VoipCallClassifier.isIncomingCallNotification(sbn.packageName, metadata)) {

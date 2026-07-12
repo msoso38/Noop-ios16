@@ -56,8 +56,12 @@ object CaptureImporter {
     /** Hard cap on frames kept from one file (~a year of dense offload is well under this). */
     private const val MAX_FRAMES = 5_000_000
 
-    /** A real strap frame is well under this; a longer hex string is junk and is skipped. */
-    private const val MAX_FRAME_BYTES = 512
+    /**
+     * Largest currently known WHOOP 5/MG record is v20 at 2,140 bytes. Keep the import ceiling slightly
+     * above that so lossless research captures retain v20/v21 raw channels, while still bounding untrusted
+     * input well below the live reassembler's 8 KiB limit.
+     */
+    private const val MAX_FRAME_BYTES = 4_096
 
     // ---- pure: char -> family ----
 
@@ -73,7 +77,8 @@ object CaptureImporter {
 
     /**
      * Lenient hex -> bytes. Returns null on odd length, a non-hex char, or a frame longer than
-     * [MAX_FRAME_BYTES] (an over-long hex string in an untrusted file is junk, not a real frame).
+     * [MAX_FRAME_BYTES] (an over-long hex string in an untrusted file is junk, not a real frame). This
+     * deliberately admits complete WHOOP 5/MG v20/v21 research records (2,140/1,244 bytes).
      */
     internal fun hexToBytes(hex: String): ByteArray? {
         val s = hex.trim()

@@ -105,7 +105,7 @@ class OuraLiveSource(
      * on RNG failure (then provisioning stays honest rather than installing a weak key).
      */
     private val randomKey: () -> IntArray? = { secureRandom16() },
-) : LiveHrSource {
+) {
 
     /**
      * The live outcome of an in-flight adopt (the wizard observes this to leave its Adopting step). Kotlin
@@ -456,7 +456,7 @@ class OuraLiveSource(
     // MARK: - Scanning
 
     /** Begin scanning for Oura rings advertising the ring's base service. */
-    override fun scan() {
+    fun scan() {
         seen.clear()
         _discovered.value = emptyList()
         _scanning.value = true
@@ -492,7 +492,7 @@ class OuraLiveSource(
     // MARK: - Connecting
 
     /** Connect to the chosen discovered ring (by address) and start the auth → enable → stream flow. */
-    override fun connect(address: String) {
+    fun connect(address: String) {
         stopScan()
         _needsPairing.value = null
         // Remember the paired ring so an involuntary drop auto-reconnects to it (#912). An explicit connect
@@ -550,7 +550,7 @@ class OuraLiveSource(
     }
 
     /** Tear down: cancel the connection and stop scanning, persisting anything still buffered. Idempotent. */
-    override fun stop() {
+    fun stop() {
         // A deliberate teardown (device switch / removal) must NOT auto-reconnect: mark it intentional and
         // drop the reconnect target so any pending backoff bails and no fresh one is scheduled (#912). Remove
         // any already-posted reconnect from the main-looper handler too, so it isn't retained for the full
@@ -1081,32 +1081,13 @@ class OuraLiveSource(
             is OuraEvent.Hrv -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             is OuraEvent.SleepPhaseEvent -> enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
             is OuraEvent.TimeSyncEvent -> {
-                // #91: a 0x42 whose epoch is outside the 2020–2035 plausibility window is silently ignored,
-                // so history samples stay unanchored (no sleep/daily). Log the rejection with the offending
-                // epoch; only announce "acquired" when the sync ACTUALLY anchored (the old unconditional
-                // "acquired" line fired even on a rejected sync). `epochMs` holds the raw wire value, which
-                // is unix SECONDS despite the name (s6.11).
-                if (d.isPlausibleAnchorEpoch(e.value.epochMs)) {
-                    if (!loggedAnchor) {
-                        loggedAnchor = true
-                        log("Oura: UTC time anchor acquired - history-fetched samples now get their real time")
-                    }
-                } else {
-                    log("Oura: 0x42 time-sync REJECTED - implausible epoch ${e.value.epochMs}s (outside the " +
-                        "2020–2035 anchor window); history samples stay unanchored (#91)")
+                if (!loggedAnchor) {
+                    loggedAnchor = true
+                    log("Oura: UTC time anchor acquired - history-fetched samples now get their real time")
                 }
                 // The 0x42 time-sync can arrive ANYWHERE in a history-fetch stream, not necessarily first.
                 // Anything parked while unanchored gets its real time retroactively the moment it lands.
                 drainPendingAnchorEvents()
-            }
-            is OuraEvent.RtcBeaconEvent -> {
-                // #91: the 0x85 beacon is the SECONDARY anchor (fills the gap only until a 0x42 arrives). A
-                // beacon ignored because a primary anchor already exists is NORMAL and not logged; only an
-                // IMPLAUSIBLE-epoch beacon is a real failure (it can never anchor), so log just that.
-                if (!d.isPlausibleAnchorEpoch(e.value.unixSeconds)) {
-                    log("Oura: 0x85 RTC beacon REJECTED - implausible epoch ${e.value.unixSeconds}s (outside " +
-                        "the 2020–2035 anchor window) (#91)")
-                }
             }
             is OuraEvent.TierB -> {
                 // INVESTIGATION ONLY (real_steps / activity-summary / sleep-summary / smoothed-SpO2,

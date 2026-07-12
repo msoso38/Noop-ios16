@@ -47,6 +47,12 @@ data class UserProfile(
      */
     val stepTicksPerStep: Double = 1.0,
     /**
+     * Shake-trained still-noise floor (ticks/sec). Production step accumulation discards
+     * slow counter creep at/under this rate when activity class is still/unknown.
+     * 0 = disabled. From Step Training shake sessions.
+     */
+    val noiseFloorTicksPerSec: Double = 0.0,
+    /**
      * Waist circumference (cm) for the Fitness Age VO₂max estimate (Phase 2). 0 = not set.
      * Optional — it UNLOCKS the VO₂max readout but does NOT sharpen the headline Fitness Age
      * (the body term cancels out of the age formula). Default param so existing call-sites compile.
@@ -144,6 +150,12 @@ data class ExerciseSession(
     val hrmaxSource: String,
     val caloriesKcal: Double?,
     val caloriesKJ: Double?,
+    /**
+     * Heuristic sport label (Walking / Running / Strength Training) from localhoop-style
+     * HR-reserve + motion thresholds. ESTIMATE — not a trained activity model.
+     */
+    val inferredSport: String = "detected",
+    val sportConfidence: Double = 0.4,
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

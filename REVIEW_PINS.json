@@ -1,0 +1,34 @@
+[
+  {
+    "id": "32309209",
+    "xFrac": 0.4749755859375,
+    "yFrac": 0.254150390625,
+    "note": "make it actually shrink and animate up",
+    "route": "today",
+    "createdAtMs": 1783802870930
+  },
+  {
+    "id": "bbc94e1f",
+    "xFrac": 0.5027470588684082,
+    "yFrac": 0.93121337890625,
+    "note": "separate the plus from the nav bar and make it 3 regions in one nav bar with clear oval separation",
+    "route": "today",
+    "createdAtMs": 1783802913955
+  },
+  {
+    "id": "8ab697ca",
+    "xFrac": 0.1518247276544571,
+    "yFrac": 0.086639404296875,
+    "note": "make the today\/calender allow me to hold and scroll through the days of the week with a futristic clear glass scroll between my logged days show me the previous logged day the current day in the middle as selected day then the next day if there is a logged next day but if the currently selected day is the day put let go to stay on currently selected day make that thin and small if no previous days similar concept",
+    "route": "today",
+    "createdAtMs": 1783803229569
+  },
+  {
+    "id": "b14e26fc",
+    "xFrac": 0.8036503791809082,
+    "yFrac": 0.087890625,
+    "note": "remove this since i already have nav bar plug button",
+    "route": "today",
+    "createdAtMs": 1783803256697
+  }
+]

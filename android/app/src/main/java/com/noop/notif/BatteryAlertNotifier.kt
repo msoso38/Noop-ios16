@@ -75,60 +75,50 @@ internal object BatteryAlertPolicy {
  */
 object BatteryAlertNotifier {
     private const val CHANNEL_ID = "noop_battery_alert"
-    // #297: each notifier posts under a DISTINCT id (notify() is tagless, so a shared id silently
-    // replaces an undismissed notification). Full map: 4201 connection, 4202 illness, 4203 inactivity,
-    // 4204 smart alarm, 4205/4206/4207 battery (runtime/low/full), 4208/4209 scheduled report.
-    private const val NOTIF_ID_RUNTIME = 4205
-    private const val NOTIF_ID_LOW = 4206
-    private const val NOTIF_ID_FULL = 4207
-
-    /**
-     * Predictive twin of [onBatteryUpdate]: run the runtime estimate against
-     * [com.noop.analytics.BatteryEstimator.runtimeAlert] (fire ≤24 h, re-arm ≥36 h — a runtime
-     * threshold gives the same warning lead time on a 4.0 and a 5.0/MG, which a fixed SoC line
-     * can't) and post at most one notification per discharge cycle. The 15% SoC alert stays as the
-     * safety net for straps with no usable estimate (null skips here). Same gating discipline as
-     * #368: persisted flag advances even when delivery is deferred; no-ops when battery alerts are
-     * off. iOS/macOS twin: BatteryNotifier.onRuntimeEstimate.
-     */
-    @SuppressLint("MissingPermission") // guarded by areNotificationsEnabled() + runCatching
-    fun onRuntimeEstimate(context: Context, remainingHours: Double?, charging: Boolean?) {
-        if (remainingHours == null) return
-        if (!NoopPrefs.batteryAlerts(context)) return
-        if (!NoopPrefs.predictiveBatteryAlerts(context)) return
-        runCatching {
-            val decision = com.noop.analytics.BatteryEstimator.runtimeAlert(
-                remainingHours = remainingHours,
-                charging = charging,
-                alerted = NoopPrefs.batteryRuntimeAlerted(context),
-            )
-            // ALWAYS persist the updated gate — re-arming must stick even when nothing fired.
-            NoopPrefs.setBatteryRuntimeAlerted(context, decision.newAlerted)
-            if (!decision.fire) return
-            if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
-            ensureChannel(context)
-            val label = com.noop.analytics.BatteryEstimator.label(remainingHours)
-            val n = NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_stat_heart)
-                .setContentTitle("Strap battery low")
-                .setContentText("$label left on your WHOOP — recharge tonight.")
-                .setContentIntent(openAppIntent(context))
-                .setAutoCancel(true)
-                .setCategory(NotificationCompat.CATEGORY_STATUS)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .build()
-            NotificationManagerCompat.from(context).notify(NOTIF_ID_RUNTIME, n)
-        }
-    }
+    private const val NOTIF_ID_LOW = 4203
+    private const val NOTIF_ID_FULL = 4204
+    private const val NOTIF_ID_CHARGING = 4205
 
     @SuppressLint("MissingPermission") // guarded by areNotificationsEnabled() + runCatching
     fun onBatteryUpdate(context: Context, currPct: Int?, charging: Boolean?) {
-        if (currPct == null) return
         if (!NoopPrefs.batteryAlerts(context)) return
         // Defensive: never let a notify() throw (revoked POST_NOTIFICATIONS, OEM quirk) crash a collector.
         runCatching {
             if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
             ensureChannel(context)
+
+            // Rising edge → "Charging" note (once per charge session). Useful when the app is
+            // backgrounded; foreground also gets the full-screen overlay from StrapChargingHost.
+            val wasCharging = NoopPrefs.chargingStartedAlerted(context)
+            if (charging == true && !wasCharging) {
+                NoopPrefs.setChargingStartedAlerted(context, true)
+                val pct = currPct
+                val eta = pct?.let { estimateChargerEta(it) }
+                val body = buildString {
+                    if (pct != null) append("$pct%")
+                    if (eta != null) {
+                        if (isNotEmpty()) append(" · ")
+                        append(eta)
+                    }
+                    if (isEmpty()) append("Strap on charger")
+                    append(" · Limit not on open Bluetooth")
+                }
+                val n = NotificationCompat.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_stat_heart)
+                    .setContentTitle("Charging")
+                    .setContentText(body)
+                    .setContentIntent(openAppIntent(context))
+                    .setAutoCancel(true)
+                    .setCategory(NotificationCompat.CATEGORY_STATUS)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .build()
+                NotificationManagerCompat.from(context).notify(NOTIF_ID_CHARGING, n)
+            } else if (charging != true && wasCharging) {
+                NoopPrefs.setChargingStartedAlerted(context, false)
+                NotificationManagerCompat.from(context).cancel(NOTIF_ID_CHARGING)
+            }
+
+            if (currPct == null) return
             val decision = BatteryAlertPolicy.evaluate(
                 pct = currPct,
                 charging = charging,
@@ -171,6 +161,15 @@ object BatteryAlertNotifier {
         }
     }
 
+    /** Rough charger ETA (~40%/h open-BLE estimate). */
+    internal fun estimateChargerEta(pct: Int): String? {
+        val remain = (100 - pct).coerceAtLeast(0)
+        if (remain <= 0) return "Full"
+        val hours = remain / 40.0
+        return if (hours < 2.0) String.format("~%.0f min left on charger", hours * 60)
+        else String.format("~%.1f h left on charger", hours)
+    }
+
     private fun openAppIntent(context: Context): PendingIntent =
         PendingIntent.getActivity(
             context, 3,
@@ -188,7 +187,7 @@ object BatteryAlertNotifier {
                     CHANNEL_ID, "Battery alerts",
                     NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
-                    description = "Alerts when the strap battery is low or fully charged."
+                    description = "Alerts when the strap battery is low, charging, or fully charged."
                 },
             )
         }

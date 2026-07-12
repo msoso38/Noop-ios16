@@ -141,12 +141,6 @@ object HealthConnectImporter {
         // Refile any legacy Health Connect data that landed in the shared "apple-health" bucket before
         // #34 BEFORE importing, so a re-import refiles cleanly instead of duplicating across both sources.
         try { repo.refileLegacyHealthConnect() } catch (_: Exception) { /* best-effort */ }
-        // #112 follow-up heal: purge the shadow rows earlier imports wrote while the covered-days
-        // gate missed active-strap ids — sparse HC-shaped "my-whoop" sleep/daily rows sitting over
-        // nights the strap's computed ("-noop") source already covers. Runs BEFORE this import's
-        // own gate is read so the healed coverage is what gets consulted. Idempotent, best-effort
-        // like the refile above.
-        try { repo.purgeHcShadowedStrapDays() } catch (_: Exception) { /* best-effort */ }
 
         val client = client(context)
 
@@ -247,14 +241,12 @@ object HealthConnectImporter {
                 val asleepMin = asleepMinutes(r)
                 val totalMin = if (asleepMin > 0.0) asleepMin
                 else (r.endTime.epochSecond - r.startTime.epochSecond) / 60.0
-                b.sleepMin += totalMin
+                b.sleepMin = maxOf(b.sleepMin, totalMin)
                 b.hasSleep = true
-                // #983: also keep the session itself so the Sleep screen has a night to show. startTs/endTs
-                // are epoch SECONDS (what repo.sleepSessions queries). Per-stage minutes -> stagesJSON in the
-                // same shape the WHOOP CSV / Xiaomi importers use; a generic-SLEEPING-only night has no
-                // sub-stage breakdown so stagesJSON is null and the row rides on totalSleepMin.
+                // Keep HC nights under health-connect always (even when strap covers the day) so we
+                // can align Rest toward WHOOP-app-via-HC without shadowing strap sessions on my-whoop.
                 hcSleepSessions.add(day to SleepSession(
-                    deviceId = WHOOP,
+                    deviceId = HC_DEVICE,
                     startTs = r.startTime.epochSecond,
                     endTs = r.endTime.epochSecond,
                     stagesJSON = hcStagesJson(r),
@@ -342,7 +334,8 @@ object HealthConnectImporter {
                 if (w.endTs <= w.startTs) continue
                 var sum = 0L
                 var n = 0L
-                var max = 0L
+                var maxBpm = 0
+                val samples = ArrayList<com.noop.data.HrSample>(512)
                 readAll(
                     client, HeartRateRecord::class,
                     TimeRangeFilter.between(
@@ -351,15 +344,30 @@ object HealthConnectImporter {
                     selfPackage,
                 ) { hr ->
                     for (s in hr.samples) {
-                        sum += s.beatsPerMinute
+                        val bpm = s.beatsPerMinute.toInt()
+                        sum += bpm
                         n += 1
-                        if (s.beatsPerMinute > max) max = s.beatsPerMinute
+                        if (bpm > maxBpm) maxBpm = bpm
+                        if (samples.size < 3600) {
+                            samples.add(
+                                com.noop.data.HrSample(
+                                    deviceId = HC_DEVICE,
+                                    ts = s.time.epochSecond,
+                                    bpm = bpm,
+                                ),
+                            )
+                        }
                     }
                 }
                 if (n >= 60) {
+                    val avg = round(sum.toDouble() / n).toInt()
+                    val effort = if (samples.size >= 20) {
+                        com.noop.analytics.StrainScorer.strain(samples, maxBpm.toDouble(), 60.0)
+                    } else null
                     workouts[i] = w.copy(
-                        avgHr = round(sum.toDouble() / n).toInt(),
-                        maxHr = max.toInt(),
+                        avgHr = avg,
+                        maxHr = maxBpm,
+                        strain = effort ?: w.strain,
                     )
                 }
             }
@@ -417,17 +425,12 @@ object HealthConnectImporter {
         }
 
         // Days the strap already covers: read ONCE so we never clobber richer strap data. This is
-        // the UNION across EVERY strap-native source id — the canonical raw "my-whoop" + computed
-        // "my-whoop-noop" pair AND any actively paired strap's "whoop-<mac>" / "whoop-<mac>-noop"
-        // rows (#112 follow-up: the gate previously knew only the canonical pair, so a re-paired
-        // strap's fresh nights were invisible to it and the sparse HC backfill shadowed them). The
-        // computed rows are the ONLY source for a strap-only WHOOP user (no raw daily rows exist),
-        // so without them the sparse HC backfill (recovery/strain/stages = null) shadows the computed
-        // day and blanks Today / regresses Sleep stages (#112). Each read is wrapped so a missing
-        // source is empty, not fatal; HC still gap-fills any day the strap did NOT cover.
-        val coveredDays: Set<String> = buildSet {
-            for (id in strapSourceIds(repo)) addAll(strapDays(repo, id))
-        }
+        // the UNION of raw imported "my-whoop" rows AND computed "my-whoop-noop" rows — the latter
+        // is the ONLY source for a strap-only WHOOP user (no raw daily rows exist), so without it
+        // the sparse HC backfill (recovery/strain/stages = null) shadows the computed day and blanks
+        // Today / regresses Sleep stages (#112). Each read is wrapped so a missing source is empty,
+        // not fatal; HC still gap-fills any day the strap did NOT cover.
+        val coveredDays: Set<String> = strapDays(repo, WHOOP) + strapDays(repo, WHOOP_COMPUTED)
 
         val appleRows = ArrayList<AppleDaily>(acc.size)
         val dailyRows = ArrayList<DailyMetric>(acc.size)
@@ -512,6 +515,7 @@ object HealthConnectImporter {
         }
 
         // Persist. Register the devices we write under so name() lookups resolve.
+        val sleepRows = hcSleepSessions.map { it.second }
         try {
             if (appleRows.isNotEmpty()) {
                 repo.upsertDevice(HC_DEVICE, name = "Health Connect")
@@ -522,11 +526,9 @@ object HealthConnectImporter {
                 repo.upsertDevice(WHOOP, name = "WHOOP")
                 repo.upsertDailyMetrics(dailyRows)
             }
-            // #983: write the collected sleep sessions under WHOOP, but ONLY for days the strap does not
-            // already cover (same guard as the daily rows) so a real strap night is never shadowed.
-            val sleepRows = hcSleepSessions.filter { it.first !in coveredDays }.map { it.second }
+            // HC sleep always lands under health-connect (reference / fusion), never shadows strap nights.
             if (sleepRows.isNotEmpty()) {
-                repo.upsertDevice(WHOOP, name = "WHOOP")
+                repo.upsertDevice(HC_DEVICE, name = "Health Connect")
                 repo.upsertSleepSessions(sleepRows)
             }
             if (workouts.isNotEmpty()) {
@@ -539,6 +541,7 @@ object HealthConnectImporter {
         val counts = buildMap {
             if (appleRows.isNotEmpty()) put("appleDaily", appleRows.size)
             if (dailyRows.isNotEmpty()) put("dailyMetric", dailyRows.size)
+            if (sleepRows.isNotEmpty()) put("sleepSession", sleepRows.size)
             if (workouts.isNotEmpty()) put("workout", workouts.size)
         }
 
@@ -672,7 +675,7 @@ object HealthConnectImporter {
     /**
      * The set of "YYYY-MM-DD" days the strap already covers under [deviceId], read defensively:
      * a missing/empty source (the normal case for raw "my-whoop" on a strap-only user) yields an
-     * empty set rather than throwing. The caller unions every strap-native source (#112).
+     * empty set rather than throwing. The caller unions the raw and computed sources (#112).
      */
     private suspend fun strapDays(repo: WhoopRepository, deviceId: String): Set<String> =
         try {
@@ -680,34 +683,6 @@ object HealthConnectImporter {
         } catch (e: Exception) {
             emptySet()
         }
-
-    /**
-     * Every source id whose daily rows count as STRAP coverage for the #112 skip-set: the discovered
-     * strap-native ids present in the daily cache, always unioned with the canonical
-     * [WHOOP] / [WHOOP_COMPUTED] pair (so an empty/failed discovery degrades to the old behaviour,
-     * never below it). Read defensively — a DB error must not fail the import.
-     */
-    private suspend fun strapSourceIds(repo: WhoopRepository): Set<String> =
-        try {
-            repo.dailyMetricDeviceIds().filterTo(hashSetOf(WHOOP, WHOOP_COMPUTED)) {
-                isStrapNativeSourceId(it)
-            }
-        } catch (e: Exception) {
-            setOf(WHOOP, WHOOP_COMPUTED)
-        }
-
-    /**
-     * True when [id] is a strap-native daily-metric source: the canonical raw "my-whoop", ANY
-     * on-device computed "-noop" source, or an actively paired strap's raw "whoop-<mac>" id.
-     * These are the sources whose days the HC backfill must never shadow; importer-owned sources
-     * ("health-connect", "apple-health", band importers) are NOT strap coverage. Internal (not
-     * private) so the #112 skip-set semantics stay unit-testable without Room/Context, like
-     * [coveredDaySet].
-     */
-    internal fun isStrapNativeSourceId(id: String): Boolean {
-        val s = id.lowercase()
-        return s == WHOOP || s.endsWith("-noop") || s.startsWith("whoop-")
-    }
 
     /**
      * Pure mapper: the distinct local days carried by [rows]. Factored out (and internal) so the
@@ -878,45 +853,6 @@ object HealthConnectImporter {
         ExerciseSessionRecord.EXERCISE_TYPE_BASKETBALL to "Basketball",
         ExerciseSessionRecord.EXERCISE_TYPE_SOCCER to "Soccer",
         ExerciseSessionRecord.EXERCISE_TYPE_WEIGHTLIFTING to "Weightlifting",
-        // Racket / team / misc sports that were missing from the map (found via a volleyball session
-        // that imported as a generic "Workout"): an untitled session of any type below used to lose
-        // its sport identity even though the record itself imported fine.
-        ExerciseSessionRecord.EXERCISE_TYPE_VOLLEYBALL to "Volleyball",
-        ExerciseSessionRecord.EXERCISE_TYPE_TENNIS to "Tennis",
-        ExerciseSessionRecord.EXERCISE_TYPE_TABLE_TENNIS to "Table Tennis",
-        ExerciseSessionRecord.EXERCISE_TYPE_SQUASH to "Squash",
-        ExerciseSessionRecord.EXERCISE_TYPE_RACQUETBALL to "Racquetball",
-        ExerciseSessionRecord.EXERCISE_TYPE_HANDBALL to "Handball",
-        ExerciseSessionRecord.EXERCISE_TYPE_ICE_HOCKEY to "Ice Hockey",
-        ExerciseSessionRecord.EXERCISE_TYPE_ROLLER_HOCKEY to "Roller Hockey",
-        ExerciseSessionRecord.EXERCISE_TYPE_FOOTBALL_AMERICAN to "Football",
-        ExerciseSessionRecord.EXERCISE_TYPE_FOOTBALL_AUSTRALIAN to "Football",
-        ExerciseSessionRecord.EXERCISE_TYPE_RUGBY to "Rugby",
-        ExerciseSessionRecord.EXERCISE_TYPE_CRICKET to "Cricket",
-        ExerciseSessionRecord.EXERCISE_TYPE_SOFTBALL to "Softball",
-        ExerciseSessionRecord.EXERCISE_TYPE_WATER_POLO to "Water Polo",
-        ExerciseSessionRecord.EXERCISE_TYPE_GOLF to "Golf",
-        ExerciseSessionRecord.EXERCISE_TYPE_DANCING to "Dancing",
-        ExerciseSessionRecord.EXERCISE_TYPE_MARTIAL_ARTS to "Martial Arts",
-        ExerciseSessionRecord.EXERCISE_TYPE_FENCING to "Fencing",
-        ExerciseSessionRecord.EXERCISE_TYPE_GYMNASTICS to "Gymnastics",
-        ExerciseSessionRecord.EXERCISE_TYPE_CALISTHENICS to "Calisthenics",
-        ExerciseSessionRecord.EXERCISE_TYPE_STRETCHING to "Stretching",
-        ExerciseSessionRecord.EXERCISE_TYPE_EXERCISE_CLASS to "Exercise Class",
-        ExerciseSessionRecord.EXERCISE_TYPE_BOOT_CAMP to "Boot Camp",
-        ExerciseSessionRecord.EXERCISE_TYPE_STAIR_CLIMBING to "Stair Climbing",
-        ExerciseSessionRecord.EXERCISE_TYPE_STAIR_CLIMBING_MACHINE to "Stair Climbing",
-        ExerciseSessionRecord.EXERCISE_TYPE_ROCK_CLIMBING to "Climbing",
-        ExerciseSessionRecord.EXERCISE_TYPE_SKIING to "Skiing",
-        ExerciseSessionRecord.EXERCISE_TYPE_SNOWBOARDING to "Snowboarding",
-        ExerciseSessionRecord.EXERCISE_TYPE_SNOWSHOEING to "Snowshoeing",
-        ExerciseSessionRecord.EXERCISE_TYPE_ICE_SKATING to "Skating",
-        ExerciseSessionRecord.EXERCISE_TYPE_SKATING to "Skating",
-        ExerciseSessionRecord.EXERCISE_TYPE_SURFING to "Surfing",
-        ExerciseSessionRecord.EXERCISE_TYPE_PADDLING to "Paddling",
-        ExerciseSessionRecord.EXERCISE_TYPE_SAILING to "Sailing",
-        ExerciseSessionRecord.EXERCISE_TYPE_SCUBA_DIVING to "Diving",
-        ExerciseSessionRecord.EXERCISE_TYPE_FRISBEE_DISC to "Frisbee",
     )
 
     private fun round1(x: Double) = round(x * 10.0) / 10.0

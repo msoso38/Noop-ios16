@@ -5,6 +5,7 @@ import com.noop.data.RrInterval
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -56,5 +57,15 @@ class DaytimeStressTest {
             "a calm desk day must not read as sustained high stress",
             withSleep.sustainedHigh,
         )
+    }
+
+    @Test
+    fun duplicateOrImplausibleHrDoesNotCreateStressEvidence() {
+        val duplicates = List(DaytimeStress.minHourHrSamples) {
+            HrSample(deviceId = "t", ts = 6L * 3_600L, bpm = 80)
+        }
+        val invalid = hourHr(hour = 6, bpm = 255)
+        assertTrue(DaytimeStress.analyze(duplicates, emptyList()).scored.isEmpty())
+        assertTrue(DaytimeStress.analyze(invalid, emptyList()).scored.isEmpty())
     }
 }

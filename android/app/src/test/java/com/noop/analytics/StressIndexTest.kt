@@ -52,6 +52,13 @@ class StressIndexTest {
     }
 
     @Test
+    fun noisyCaptureWithTooManyRejectedBeatsReturnsNull() {
+        val clean = List(24) { 760.0 + (it % 4) * 20.0 }
+        val rejected = List(16) { 100.0 }
+        assertNull(StressIndex.stressIndexRaw(clean + rejected))
+    }
+
+    @Test
     fun rrIntervalOverloadMatchesRaw() {
         val raw = listOf(700.0, 720.0, 740.0, 760.0, 780.0, 800.0, 820.0, 840.0, 860.0, 800.0, 800.0,
             800.0, 800.0, 820.0, 780.0, 800.0, 810.0, 790.0, 800.0, 800.0, 805.0, 795.0)

@@ -27,6 +27,22 @@ class ChargingAndReleaseTest {
         assertFalse(WhoopBleClient.shouldApplyChargingFromBatteryEvent(replayedOffload = true))
     }
 
+    @Test fun consoleBatteryPackInstalled_meansOnCharger() {
+        assertTrue(
+            WhoopBleClient.chargingHintFromConsole("36, 7204249: LISTENER: Battery Pack Installed\n") == true,
+        )
+    }
+
+    @Test fun consoleBatteryPackRemoved_meansOffCharger() {
+        assertTrue(
+            WhoopBleClient.chargingHintFromConsole("LISTENER: Battery Pack Uninstalled") == false,
+        )
+    }
+
+    @Test fun unrelatedConsole_isIgnored() {
+        assertNull(WhoopBleClient.chargingHintFromConsole("Fuel Gauge enabled"))
+    }
+
     // --- H3 / #520: released LiveState -----------------------------------------------------------------
 
     @Test fun releasedState_dropsTheLinkAndClearsLiveReadouts() {

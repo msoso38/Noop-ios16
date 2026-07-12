@@ -370,7 +370,7 @@ object Metrics {
     val space16 = 16.dp
     val space18 = 18.dp
     val space24 = 24.dp
-    val cardRadius = 18.dp   // Bevel continuous radius (18–22dp)
+    val cardRadius = 24.dp   // Bubblier continuous radius (was 18; 22–26 reads softer)
     val cornerXs = 2.dp
     val cornerSm = 12.dp
     val cornerBadge = 6.dp
@@ -399,14 +399,6 @@ object Metrics {
     val sparkHeight = 22.dp
     val stageStripHeight = 34.dp
     val motionStripHeight = 40.dp   // #407 — the subordinate movement/restlessness trace under the hypnogram
-    // iOS #988 port — WHOOP-style per-stage sleep timeline rows (design 2026-07-10).
-    val stageRowTrackHeight = 20.dp  // hatched night track + solid stage segments
-    val stageRowCorner = 10.dp       // row background rounding
-    val stageRowPadH = 10.dp         // row inner horizontal padding — MotionStrip/axis share it so epochs align
-    val stageRowPadV = 8.dp          // row inner vertical padding
-    val stageSegMinWidth = 2.dp      // width floor so a brief fragment reads as a block, not a hairline
-    val stageSegCorner = 1.5.dp      // solid segment rounding
-    val stageInsightHeight = 36.dp   // fixed insight slot height — selection never reflows the card
     val trendStripHeight = 120.dp
     val sparklineHeight = 28.dp
     val segmentBarHeight = 18.dp
@@ -541,7 +533,8 @@ fun NoopTheme(content: @Composable () -> Unit) {
         AppearanceMode.DARK -> true
         AppearanceMode.SYSTEM -> isSystemInDarkTheme()
     }
-    val tokens = if (dark) DarkTokens else LightTokens
+    val pack = ThemePackPrefs.current
+    val tokens = if (dark) pack.dark else pack.light
     if (Palette.active !== tokens) Palette.active = tokens
 
     // Status-/nav-bar icon appearance: light icons on the dark theme, dark icons on the warm-paper

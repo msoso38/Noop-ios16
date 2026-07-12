@@ -53,12 +53,6 @@ object WhoopCsvImporter {
     /** Per-CSV uncompressed ceiling (zip-bomb guard). Mirrors Swift maxEntryBytes = 256 MB. */
     private const val MAX_ENTRY_BYTES = 256L shl 20
 
-    /** Aggregate RAM ceiling across ALL retained CSVs from one import. The per-entry cap bounds a single
-     *  file but NOT the sum of the retained set — this backstops a crafted export from accumulating
-     *  unbounded ByteArray in the map before parsing. A real WHOOP bundle is a few MB, so 1 GB never trips
-     *  in practice. Mirrors the Swift WhoopExportImporter.maxTotalBytes (#70). */
-    internal const val MAX_TOTAL_BYTES = 1L shl 30
-
     /**
      * Charge/Effort/Rest redesign (2026-06-12): WHOOP "Day Strain" is on WHOOP's 0–21 scale, but
      * NOOP's "Effort" score lives on 0–100 (StrainScorer.maxStrain = 100). Rescale an imported Day
@@ -84,7 +78,7 @@ object WhoopCsvImporter {
         repo: WhoopRepository,
         deviceId: String = WHOOP_DEVICE,
     ): ImportSummary {
-        val (csvData, truncated) = try {
+        val csvData: Map<String, ByteArray> = try {
             loadCsvData(context, uri)
         } catch (e: Exception) {
             return ImportSummary.failure(SOURCE_LABEL, "Could not read export: ${e.message ?: "unknown error"}")
@@ -103,10 +97,7 @@ object WhoopCsvImporter {
         val sleepSessions = sleepParse?.sessions ?: emptyList()
         val sleepDaily = sleepParse?.daily ?: emptyList()
         val workouts = csvData[WORKOUTS_NAME]?.let { parseWorkouts(CsvTable.fromData(it), deviceId) } ?: emptyList()
-        // #136: journal rows key only by cycle_start; map that to the cycle's wake day so entries land on
-        // the same day as their recovery/sleep outcome (else they read one day early and never correlate).
-        val journalWake = csvData[CYCLES_NAME]?.let { journalWakeDayMap(CsvTable.fromData(it)) } ?: emptyMap()
-        val journal = csvData[JOURNAL_NAME]?.let { parseJournal(CsvTable.fromData(it), deviceId, journalWake) } ?: emptyList()
+        val journal = csvData[JOURNAL_NAME]?.let { parseJournal(CsvTable.fromData(it), deviceId) } ?: emptyList()
 
         // Merge cycle-derived and sleep-derived daily rows on (deviceId, day): cycle fields
         // (recovery / strain / RHR / HRV / SpO2 / skin-temp / resp) win where present, sleep
@@ -121,16 +112,24 @@ object WhoopCsvImporter {
         if (daily.isNotEmpty()) repo.upsertDailyMetrics(daily)
         if (sleepSessions.isNotEmpty()) repo.upsertSleepSessions(sleepSessions)
         if (workouts.isNotEmpty()) repo.upsertWorkouts(workouts)
-        if (journal.isNotEmpty()) {
-            // #136: the wake-day fix moves an entry's day, so a naive re-import would leave the pre-fix
-            // onset-keyed rows behind as duplicates. Atomically clear + re-write EXACTLY the day span we
-            // import ([min, max] of its days), so journal outside the imported range (e.g. from an earlier,
-            // wider export) is never touched, and a crash mid-import can't drop the range. Same
-            // "re-import replaces this period" semantics daily/sleep already have.
-            val jDays = journal.map { it.day }
-            repo.replaceJournalRange(deviceId, jDays.min(), jDays.max(), journal)
-        }
+        if (journal.isNotEmpty()) repo.upsertJournal(journal)
         if (cycleSeries.isNotEmpty()) repo.upsertMetricSeries(cycleSeries)
+
+        // Mirror export into deviceId "whoop-app" with **native** WHOOP app scales for compare UI:
+        // Recovery 0–100, Day Strain **0–21** (NOT rescaled). This is the official app's numbers from
+        // Data Export — not open BLE and not NOOP-computed Effort. Compare card reads ONLY this id.
+        if (daily.isNotEmpty()) {
+            val appId = com.noop.data.WhoopAppScoreStore.DEVICE_ID
+            repo.upsertDevice(appId, name = "WHOOP app (export)")
+            val native = daily.map { d ->
+                // Reverse Effort rescale if present: importer stored strain as *100/21 for my-whoop.
+                val strain021 = d.strain?.let { s ->
+                    if (s > 21.0 + 1e-6) s * 21.0 / 100.0 else s
+                }
+                d.copy(deviceId = appId, strain = strain021)
+            }
+            repo.upsertDailyMetrics(native)
+        }
 
         val counts = LinkedHashMap<String, Int>()
         if (daily.isNotEmpty()) counts["dailyMetric"] = daily.size
@@ -155,9 +154,6 @@ object WhoopCsvImporter {
             append(" WHOOP rows")
             if (firstDay != null && lastDay != null) append(" ($firstDay → $lastDay)")
             append(".")
-            // #70: never silently truncate. If the aggregate RAM budget tripped, the retained CSV set was
-            // partial — say so plainly instead of reporting a clean import over incomplete data.
-            if (truncated) append(" (partial — export exceeded the ${MAX_TOTAL_BYTES shr 30} GB import memory budget)")
         }
 
         return ImportSummary(
@@ -176,20 +172,17 @@ object WhoopCsvImporter {
      * Accepts a `.zip` (iterated with [ZipInputStream], routed by base filename) or a single
      * `.csv`. Mirrors Swift `loadCSVData` filename routing.
      */
-    private fun loadCsvData(
-        context: Context,
-        uri: Uri,
-        maxTotalBytes: Long = MAX_TOTAL_BYTES,
-    ): Pair<Map<String, ByteArray>, Boolean> {
+    private fun loadCsvData(context: Context, uri: Uri): Map<String, ByteArray> {
         val wanted = setOf(CYCLES_NAME, SLEEPS_NAME, WORKOUTS_NAME, JOURNAL_NAME)
         val result = LinkedHashMap<String, ByteArray>()
-        var total = 0L
-        var truncated = false
 
         // First attempt: treat as a zip. WHOOP exports are zips; this also covers a .zip Uri
         // whose displayName we cannot read. If the stream is not a valid zip, ZipInputStream
         // yields no entries and we fall through to single-CSV handling.
         val firstBytes: ByteArray = context.contentResolver.openInputStream(uri)?.use { it.readAllCapped(MAX_ENTRY_BYTES) }
+            ?: uri.path?.let { path ->
+                java.io.File(path).takeIf { it.isFile }?.inputStream()?.use { it.readAllCapped(MAX_ENTRY_BYTES) }
+            }
             ?: throw IllegalStateException("Could not open input stream for $uri")
 
         if (looksLikeZip(firstBytes)) {
@@ -213,9 +206,7 @@ object WhoopCsvImporter {
                                             else -> localizedAlias(base) ?: sniffCsvKind(bytes)
                                         }
                                         if (canonical != null && !result.containsKey(canonical)) {
-                                            if (total + bytes.size > maxTotalBytes) { truncated = true; break }
                                             result[canonical] = bytes
-                                            total += bytes.size
                                         }
                                     }
                                 }
@@ -226,7 +217,7 @@ object WhoopCsvImporter {
                     }
                 }
             }
-            if (result.isNotEmpty()) return result to truncated
+            if (result.isNotEmpty()) return result
         }
 
         // Not a (useful) zip — treat the input as a single CSV. Route by display name; if the
@@ -240,7 +231,7 @@ object WhoopCsvImporter {
         if (routed != null) {
             result[routed] = firstBytes
         }
-        return result to false   // single-CSV path holds one file — the budget can't trip here
+        return result
     }
 
     /** Whether the leading bytes are a local-file-header zip signature ("PK"). */
@@ -550,27 +541,7 @@ object WhoopCsvImporter {
 
     // MARK: - journal_entries.csv -> JournalEntry
 
-    /** #136: map each cycle's onset (cycle_start_time epoch) to its WAKE day, so journal entries — which
-     *  the export keys only by cycle_start — store on the same wake day as the cycle's recovery/sleep
-     *  outcome (and the native journal), not the onset evening. Same day rule as parseCycles. */
-    internal fun journalWakeDayMap(cycles: CsvTable): Map<Long, String> {
-        val out = HashMap<Long, String>()
-        for (row in cycles.rows) {
-            val tz = WhoopTime.tzOffsetMinutes(row["cycle_timezone"])
-            val start = WhoopTime.parseEpochSeconds(row.cell("cycle_start_time"), tz) ?: continue
-            val wake = WhoopTime.parseEpochSeconds(row.cell("wake_onset"), tz)
-                ?: WhoopTime.parseEpochSeconds(row.cell("cycle_end_time"), tz)
-                ?: continue
-            out[start] = epochSecondsToDay(wake, tz)
-        }
-        return out
-    }
-
-    internal fun parseJournal(
-        table: CsvTable,
-        deviceId: String,
-        wakeDayByStart: Map<Long, String> = emptyMap(),
-    ): List<JournalEntry> {
+    private fun parseJournal(table: CsvTable, deviceId: String): List<JournalEntry> {
         val out = ArrayList<JournalEntry>(table.rows.size)
         for (row in table.rows) {
             val tz = WhoopTime.tzOffsetMinutes(row["cycle_timezone"])
@@ -584,13 +555,10 @@ object WhoopCsvImporter {
             // Our JournalEntry PK is (deviceId, day, question); a question is required to store.
             if (question == null) continue
 
-            // #136: journal_entries.csv carries only cycle_start (the onset evening), no wake time. Key the
-            // entry to the cycle's WAKE day — the same day parseCycles/parseSleeps and the native journal
-            // use — via wakeDayByStart, so it lines up with the recovery/sleep outcome Insights correlates
-            // it against. Without this every imported entry sat one day early and never matched its outcome,
-            // so all historic days collapsed into "Without". Fall back to the onset day only when the cycle
-            // row isn't in the export.
-            val day = cycleStart?.let { wakeDayByStart[it] ?: epochSecondsToDay(it, tz) }
+            // journal_entries.csv carries only cycle_start (the onset evening), no wake time, so entries
+            // stay keyed to the onset day rather than the wake day the cycle metrics now use — a minor
+            // correlation-only offset (v8.2.1); aligning it needs the cycle's wake day threaded in.
+            val day = cycleStart?.let { epochSecondsToDay(it, tz) }
                 ?: epochSecondsToDay(System.currentTimeMillis() / 1000)
 
             val answeredYes = parseYesNo(answer)

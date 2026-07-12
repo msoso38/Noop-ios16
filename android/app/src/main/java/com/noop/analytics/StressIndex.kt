@@ -52,6 +52,9 @@ object StressIndex {
     fun componentsRaw(rawRR: List<Double>): Components? {
         val clean = HrvAnalyzer.cleanRR(rawRR)
         if (clean.size < MIN_BEATS) return null
+        // A short spot capture with mostly rejected beats is too noisy to label as stress.
+        if (clean.size.toDouble() / rawRR.size.coerceAtLeast(1) <
+            1.0 - HrvAnalyzer.DEFAULT_SPOT_MAX_REJECTED_FRACTION) return null
 
         val sec = clean.map { it / 1000.0 }
         val minV = sec.min()

@@ -56,11 +56,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import com.noop.data.DataBackup
-import com.noop.data.DeviceStatus
 import com.noop.data.ImportSummary
-import com.noop.data.Metric
-import com.noop.data.PairedDeviceRow
-import com.noop.data.SourceKind
 import com.noop.ingest.AppleHealthImporter
 import com.noop.ingest.HealthConnectImporter
 import com.noop.ingest.HealthConnectWriter
@@ -137,9 +133,11 @@ fun DataSourcesScreen(vm: AppViewModel) {
     var xiaomiDays by remember { mutableStateOf<Int?>(null) }
     // Imported Oura / Fitbit / Garmin exports write daily metrics under their own per-brand source.
     var wearableDays by remember { mutableStateOf<Int?>(null) }
+    var pairedDevices by remember { mutableStateOf<List<com.noop.data.PairedDeviceRow>>(emptyList()) }
 
     LaunchedEffect(Unit) {
         val now = System.currentTimeMillis() / 1000
+        pairedDevices = vm.pairedDevices()
         whoopDays = vm.repo.days("my-whoop").size
         whoopWorkouts = vm.repo.workouts("my-whoop", 0L, now).size
         whoopHasHr = vm.repo.latestHrSampleTs("my-whoop") != null
@@ -156,6 +154,7 @@ fun DataSourcesScreen(vm: AppViewModel) {
             vm.repo.metricSeries(it.sourceId, "rhr", "0000-01-01", "9999-12-31").size +
                 vm.repo.metricSeries(it.sourceId, "sleep_total_min", "0000-01-01", "9999-12-31").size
         }
+        pairedDevices = vm.pairedDevices()
     }
 
     // Whole-store backup: export to a user-created document; import from a picked one.
@@ -289,36 +288,7 @@ fun DataSourcesScreen(vm: AppViewModel) {
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) runImport {
-            ActivityFileImporter.importExport(context, uri, vm.repo).also { summary ->
-                vm.loadWorkouts()
-                // #137 (B1): on a SUCCESSFUL import, register `activity-file` as an `activityFile` device
-                // so the per-day owner resolver can pick it as the day owner on a strap-less day (it
-                // iterates the registry's paired devices — an unregistered source is invisible to it). The
-                // distinct kind ranks it at priority 3 — below whole-day imports (2) — so a full-day WHOOP
-                // import always wins a day it has HR for. status `paired`, NEVER `active` (makeActive =
-                // false), so it can never displace the live strap; capability `hr` marks what the source
-                // CAN provide (per-day presence is still gated by an actual HR read in the resolver).
-                // Idempotent (OnConflict.REPLACE). Twin of the Swift DataSourcesView `model.registerDevice`
-                // call. See ActivityFileImporter (A) for the matching per-sample HR persist.
-                if (summary.totalRows > 0) {
-                    val now = System.currentTimeMillis() / 1000
-                    vm.registerDevice(
-                        PairedDeviceRow(
-                            id = ActivityFileImporter.SOURCE_ID,
-                            brand = "Workout files",
-                            model = "",
-                            nickname = null,
-                            peripheralId = null,
-                            sourceKind = SourceKind.activityFile.name,
-                            capabilities = Metric.hr.name,
-                            status = DeviceStatus.paired.name,
-                            addedAt = now,
-                            lastSeenAt = now,
-                        ),
-                        makeActive = false,
-                    )
-                }
-            }
+            ActivityFileImporter.importExport(context, uri, vm.repo).also { vm.loadWorkouts() }
         }
     }
 
@@ -398,6 +368,10 @@ fun DataSourcesScreen(vm: AppViewModel) {
         title = "Data Sources",
         subtitle = "Everything stays on this phone. Bring your history in once, then it's yours.",
     ) {
+        item {
+            LiveDeviceStreamsCard(devices = pairedDevices, connectedName = live.advertisingName)
+        }
+
         // --- WHOOP data (cached history) ---
         item {
         SourceCard(
@@ -465,6 +439,83 @@ fun DataSourcesScreen(vm: AppViewModel) {
                 ) { confirmDeleteApple = true }
             }
         }
+        }
+
+        // --- One-tap consolidate (debug / Fold workflow) ---
+        item {
+            var consolidateMsg by remember { mutableStateOf<String?>(null) }
+            SourceCard(
+                title = "Combine into this app",
+                icon = Icons.Filled.FileDownload,
+                subtitle = "Pull Health Connect (WHOOP app sleep/steps), auto-import My Calendar .pc " +
+                    "and NOOP CSV zips from Downloads, so debug isn't empty while release holds history.",
+            ) {
+                consolidateMsg?.let {
+                    Text(it, style = NoopType.footnote, color = Palette.textSecondary)
+                }
+                BackupButton(
+                    label = "Consolidate now",
+                    icon = Icons.Filled.FileUpload,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    scope.launch {
+                        busy = true
+                        val notes = mutableListOf<String>()
+                        // 1) WHOOP app via Health Connect (requests perms if needed)
+                        startHealthConnect()
+                        notes += "Health Connect import started"
+                        val hits = withContext(Dispatchers.IO) {
+                            com.noop.data.DownloadsScanner.scan(context)
+                        }
+                        // Copy public Downloads hits into app files so we can always read them
+                        val appDl = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                            ?: context.filesDir
+                        hits.pcFiles.firstOrNull()?.let { src ->
+                            runCatching {
+                                val dest = java.io.File(appDl, src.name)
+                                if (src.absolutePath != dest.absolutePath) src.copyTo(dest, overwrite = true)
+                                val result = com.noop.ingest.PcCalendarImport.parse(dest.readBytes(), dest.name)
+                                if (result.events.isNotEmpty()) {
+                                    val store = com.noop.data.PeriodCalendarStore.from(context)
+                                    store.mergeImport(result.events)
+                                    store.savePrefs(store.loadPrefs().copy(enabled = true))
+                                    vm.setCycleTrackingEnabled(true)
+                                    vm.refreshCycleFromPeriodLog()
+                                    notes += "Cycle: ${result.events.size} starts from ${dest.name}"
+                                } else {
+                                    notes += "Cycle: ${result.message}"
+                                }
+                            }.onFailure { notes += "Cycle: ${it.message}" }
+                        } ?: notes.add("No .pc in Downloads — open Cycle and import, or drop My Calendar .pc in Downloads")
+                        hits.whoopCsvZips.firstOrNull()?.let { src ->
+                            runCatching {
+                                val dest = java.io.File(appDl, src.name)
+                                if (src.absolutePath != dest.absolutePath) src.copyTo(dest, overwrite = true)
+                                val summary = withContext(Dispatchers.IO) {
+                                    WhoopCsvImporter.importZip(
+                                        context,
+                                        android.net.Uri.fromFile(dest),
+                                        vm.repo,
+                                    )
+                                }
+                                notes += "CSV: ${summary.message}"
+                            }.onFailure { e ->
+                                notes += "CSV: ${e.message}"
+                            }
+                        }
+                        hits.noopBakFiles.firstOrNull()?.let { bak ->
+                            notes += "Found ${bak.name} — use Backup → Import below to load the full release DB"
+                        } ?: notes.add(
+                            "No .noopbak yet. Open release NOOP → Data sources → Export backup → save to Downloads, " +
+                                "then tap Consolidate again (or Backup → Import). CSV/.pc alone do not replace the release DB.",
+                        )
+                        consolidateMsg = notes.joinToString(" · ")
+                        Toast.makeText(context, consolidateMsg, Toast.LENGTH_LONG).show()
+                        busy = false
+                    }
+                }
+            }
         }
 
         // --- Health Connect (native Android health data) ---
@@ -988,6 +1039,56 @@ private fun CountLine(primary: String, secondary: String) {
         Text(secondary, style = NoopType.footnote, color = Palette.textTertiary)
     }
 }
+
+@Composable
+private fun LiveDeviceStreamsCard(
+    devices: List<com.noop.data.PairedDeviceRow>,
+    connectedName: String?,
+) {
+    SourceCard(
+        title = "Live straps",
+        icon = Icons.Filled.Watch,
+        subtitle = "Pick one active stream for scoring, while keeping your other paired straps visible as secondary sources.",
+    ) {
+        if (devices.isEmpty()) {
+            StatePill(title = "No paired straps yet", tone = StrandTone.Neutral, showsDot = true)
+            CountLine(primary = "Add WHOOP 3/4/MG", secondary = "Use Devices to pair your straps")
+            return@SourceCard
+        }
+        val active = devices.firstOrNull { it.status == com.noop.data.DeviceStatus.active.name }
+        val connected = connectedName?.trim()?.takeIf { it.isNotEmpty() }
+        val connectedMatchesPrimary = active != null && connected != null &&
+            deviceDisplayName(active).contains(connected, ignoreCase = true)
+        StatePill(
+            title = active?.let { "Primary: ${deviceDisplayName(it)}" } ?: "No primary selected",
+            tone = if (active != null) StrandTone.Positive else StrandTone.Neutral,
+            showsDot = true,
+        )
+        CountLine(
+            primary = "${devices.size} paired",
+            secondary = connectedName?.let { "Connected now: $it" } ?: "Connect a strap to stream live",
+        )
+        if (active != null && connected != null && !connectedMatchesPrimary) {
+            StatePill(
+                title = "Connected strap differs from primary",
+                tone = StrandTone.Warning,
+                showsDot = true,
+            )
+        }
+        devices.take(6).forEach { device ->
+            val role = if (device.status == com.noop.data.DeviceStatus.active.name) "Primary" else "Secondary"
+            val status = device.status.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+            CountLine(
+                primary = "$role · ${deviceDisplayName(device)}",
+                secondary = "$status status. ${device.capabilities.ifBlank { "No capabilities listed yet" }}",
+            )
+        }
+    }
+}
+
+private fun deviceDisplayName(device: com.noop.data.PairedDeviceRow): String =
+    device.nickname?.takeIf { it.isNotBlank() }
+        ?: listOfNotNull(device.brand, device.model).joinToString(" ").ifBlank { device.id }
 
 @Composable
 private fun RoadmapNote(text: String) {

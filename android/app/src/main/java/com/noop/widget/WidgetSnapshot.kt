@@ -48,15 +48,11 @@ object WidgetSnapshotStore {
         save(app, snap)
         PushGate.markPushed(snap)
 
-        val standardIds = runCatching {
+        val ids = runCatching {
             GlanceAppWidgetManager(app).getGlanceIds(NoopGlanceWidget::class.java)
         }.getOrDefault(emptyList())
-        val compactIds = runCatching {
-            GlanceAppWidgetManager(app).getGlanceIds(NoopCompactGlanceWidget::class.java)
-        }.getOrDefault(emptyList())
-        if (standardIds.isEmpty() && compactIds.isEmpty()) return
+        if (ids.isEmpty()) return
         runCatching { NoopGlanceWidget().updateAll(app) }
-        runCatching { NoopCompactGlanceWidget().updateAll(app) }
     }
 
     fun save(context: Context, snap: WidgetSnapshot) {

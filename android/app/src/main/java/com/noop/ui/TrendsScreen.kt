@@ -133,8 +133,7 @@ fun TrendsScreen(vm: AppViewModel) {
     var sleepPerfByDay by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
     LaunchedEffect(days) {
         sleepPerfByDay = runCatching {
-            vm.repo.resolvedSeries("sleep_performance", "my-whoop", "0000-00-00", "9999-99-99",
-                strapDeviceId = vm.activeStrapId)
+            vm.repo.resolvedSeries("sleep_performance", "my-whoop", "0000-00-00", "9999-99-99")
                 .values.associate { it.first to it.second }
         }.getOrDefault(emptyMap())
     }
@@ -392,7 +391,9 @@ private fun WeekNavBar(weekOffset: Int, minWeekOffset: Int, onStep: (Int) -> Uni
             onClick = { onStep(-1) },
             enabled = !atOldest,
             interactionSource = prevInteraction,
-            modifier = Modifier.liquidPress(prevInteraction),
+            modifier = Modifier
+                .size(48.dp)
+                .liquidPress(prevInteraction),
         ) {
             Icon(
                 Icons.Filled.ChevronLeft,
@@ -413,7 +414,9 @@ private fun WeekNavBar(weekOffset: Int, minWeekOffset: Int, onStep: (Int) -> Uni
             onClick = { onStep(1) },
             enabled = !atNewest,
             interactionSource = nextInteraction,
-            modifier = Modifier.liquidPress(nextInteraction),
+            modifier = Modifier
+                .size(48.dp)
+                .liquidPress(nextInteraction),
         ) {
             Icon(
                 Icons.Filled.ChevronRight,
@@ -444,34 +447,34 @@ private fun WeekInReviewCard(
     val restAvg = rest.values.averageOrNull()
     if (chargeAvg == null && effortAvg == null && restAvg == null) return
 
-    NoopCard(modifier = modifier, tint = Palette.chargeColor) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionHeader("Week in review", overline = "Charge · Effort · Rest")
-            if (chargeAvg != null) {
-                PipScoreRow(
-                    label = "Charge", value = chargeAvg, range = 0f..100f,
-                    tint = Palette.chargeColor, format = { "${it.roundToInt()}" },
-                )
-            }
-            if (effortAvg != null) {
-                // Effort is stored 0–100 but reads on the user's chosen scale: convert the displayed
-                // number AND the bar position so the pip fill and the count-up value agree. On WHOOP's
-                // 0–21 scale Effort reads to one decimal; on 0–100 it's a whole number.
-                val display = UnitFormatter.effortValue(effortAvg, effortScale)
-                val maxV = UnitFormatter.effortValue(100.0, effortScale)
-                val oneDecimal = effortScale == EffortScale.WHOOP
-                PipScoreRow(
-                    label = "Effort", value = display, range = 0f..maxV.toFloat(),
-                    tint = Palette.effortColor,
-                    format = { if (oneDecimal) String.format(Locale.US, "%.1f", it) else "${it.roundToInt()}" },
-                )
-            }
-            if (restAvg != null) {
-                PipScoreRow(
-                    label = "Rest", value = restAvg, range = 0f..100f,
-                    tint = Palette.restColor, format = { "${it.roundToInt()}" },
-                )
-            }
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Metrics.space4, vertical = Metrics.space12),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SectionHeader("Week in review", overline = "Charge · Effort · Rest")
+        if (chargeAvg != null) {
+            PipScoreRow(
+                label = "Charge", value = chargeAvg, range = 0f..100f,
+                tint = Palette.chargeColor, format = { "${it.roundToInt()}" },
+            )
+        }
+        if (effortAvg != null) {
+            val display = UnitFormatter.effortValue(effortAvg, effortScale)
+            val maxV = UnitFormatter.effortValue(100.0, effortScale)
+            val oneDecimal = effortScale == EffortScale.WHOOP
+            PipScoreRow(
+                label = "Effort", value = display, range = 0f..maxV.toFloat(),
+                tint = Palette.effortColor,
+                format = { if (oneDecimal) String.format(Locale.US, "%.1f", it) else "${it.roundToInt()}" },
+            )
+        }
+        if (restAvg != null) {
+            PipScoreRow(
+                label = "Rest", value = restAvg, range = 0f..100f,
+                tint = Palette.restColor, format = { "${it.roundToInt()}" },
+            )
         }
     }
 }
@@ -764,10 +767,6 @@ private fun ChartWithAxes(
     val maxV = values.max()
     val avgV = values.average()
     val minV = values.min()
-    // Trend chart style (line vs bar). Read here at the single chart choke point (every trend card routes
-    // through ChartWithAxes); SharedPreferences isn't reactive, but returning from Settings recomposes the
-    // Trends screen, which re-reads it — the same read-on-recompose the Effort scale toggle relies on.
-    val chartStyle = UnitPrefs.trendChartStyle(LocalContext.current)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
             modifier = Modifier.height(IntrinsicSize.Min),
@@ -797,30 +796,17 @@ private fun ChartWithAxes(
                 contentAlignment = Alignment.BottomCenter,
             ) {
                 Box(modifier = Modifier.fillMaxWidth().height(plotHeight)) {
-                    if (chartStyle == TrendChartStyle.BAR) {
-                        // Bar mode: value-ramp bars from the baseline. No GlowEndCap (the "now" halo is a
-                        // line idiom). selectionEnabled is OFF so BarChart mean-bins a dense window (the
-                        // multi-year "ALL" span) down to the pixel width — a clean silhouette instead of a
-                        // 1000-bar sub-pixel smear. The max/avg/min axis column + footer carry the numbers.
-                        BarChart(
-                            values = values,
-                            modifier = Modifier.fillMaxSize(),
-                            color = color,
-                            selectionEnabled = false,
-                        )
-                    } else {
-                        LineChart(
-                            values = values,
-                            modifier = Modifier.fillMaxSize(),
-                            color = color,
-                            fill = true,
-                            selectionEnabled = true,
-                            // #463: the pinpoint label goes through the SAME formatter as the axis column,
-                            // so a tapped Effort day can't print the stored 0-100 value beside a 0-21 axis.
-                            formatValue = formatY,
-                        )
-                        GlowEndCap(values = values, tipColor = tipColor)
-                    }
+                    LineChart(
+                        values = values,
+                        modifier = Modifier.fillMaxSize(),
+                        color = color,
+                        fill = true,
+                        selectionEnabled = true,
+                        // #463: the pinpoint label goes through the SAME formatter as the axis column,
+                        // so a tapped Effort day can't print the stored 0-100 value beside a 0-21 axis.
+                        formatValue = formatY,
+                    )
+                    GlowEndCap(values = values, tipColor = tipColor)
                 }
             }
         }
@@ -862,7 +848,7 @@ private fun MetricTrendCard(
 ) {
     val avg = resolved.values.averageOrNull()
     ChartCard(
-        title = title,
+        title = if (unit.isBlank()) title else "$title · $unit",
         subtitle = null,
         trailing = avg?.let { fmt(it) },
         color = color,
@@ -875,9 +861,8 @@ private fun MetricTrendCard(
         higherIsBetter = higherIsBetter,
         changeFmt = fmt,
         footer = listOf(
-            // Plain "Mean" to match the bare Min/Max columns; the unit moves into the value
-            // (e.g. "58 ms") so uppercasing can't render a shouty "MEAN MS".
-            "Mean" to (avg?.let { "${fmt(it)} $unit" } ?: EM_DASH),
+            // Unit lives in the title once; Mean/Min/Max stay bare formatted numbers.
+            "Mean" to (avg?.let { fmt(it) } ?: EM_DASH),
             "Min" to (resolved.values.minOrNull()?.let { fmt(it) } ?: EM_DASH),
             "Max" to (resolved.values.maxOrNull()?.let { fmt(it) } ?: EM_DASH),
         ),
@@ -940,8 +925,11 @@ private fun RecoveryHistoryCard(days: List<DailyMetric>, range: TrendsRange) {
         "Charge , past year"
     }
 
-    NoopCard(tint = Palette.chargeColor) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    NoopCard(tint = null, padding = 0.dp) {
+        Column(
+            modifier = Modifier.padding(horizontal = Metrics.space4, vertical = Metrics.space12),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             SectionHeader(title, overline = "Calendar", trailing = "${recovery.size} days")
             if (recovery.size >= 2) {
                 BarChart(
@@ -952,10 +940,8 @@ private fun RecoveryHistoryCard(days: List<DailyMetric>, range: TrendsRange) {
             } else {
                 SparsePlaceholder(height = Metrics.trendStripHeight)
             }
-            HorizontalDivider(color = Palette.hairline)
             Text(
-                "Each bar is one day's Charge score, low to high. The 53-week calendar " +
-                    "heat-grid is part of the desktop app.",
+                "Each bar is one day's Charge. Desktop has the 53-week heat grid.",
                 style = NoopType.footnote,
                 color = Palette.textTertiary,
             )

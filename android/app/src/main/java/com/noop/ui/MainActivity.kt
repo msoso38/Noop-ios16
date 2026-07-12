@@ -90,16 +90,27 @@ class MainActivity : ComponentActivity() {
         // Load the Light/Dark/System + chart-colour preferences before first composition so the theme
         // and chart ramps are correct from the very first frame (no flash).
         AppearancePrefs.load(this)
+        ThemePackPrefs.load(this)
         ChartStylePrefs.load(this)
         // Decode the optional on-device profile photo (if set) before first composition so the Today
         // header + Settings avatars show it from the first frame. No-op when no photo is set.
         ProfileAvatarStore.load(this)
+
+        if (BuildConfig.DEBUG) {
+            ChargingUiPreview.showFromIntent(intent)
+        }
 
         setContent {
             NoopTheme {
                 NoopRoot()
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (BuildConfig.DEBUG) ChargingUiPreview.showFromIntent(intent)
     }
 
     /** Request the BLE permissions appropriate to the running OS version. */
@@ -201,6 +212,15 @@ object NoopPrefs {
      *  via [AppViewModel]. Distinct from the WHOOP strap's own "broadcast HR" firmware config. */
     const val KEY_HR_BROADCAST = "noop.hrBroadcast"
 
+    /**
+     * "Run alongside official WHOOP app" — when on, NOOP does **not** fight for the encrypted bond.
+     * It connects for open/standard data only (0x2A37 live HR + R-R, 0x2A19 battery, best-effort open
+     * notify chars) so the official WHOOP app can stay open and keep the strap's private bond.
+     * Encrypted history, buzz, SpO2, and BP remain locked until you exclusive-pair with NOOP.
+     * Default ON for the `.debug` package (collectors stay useful with WHOOP running); OFF for main.
+     */
+    const val KEY_ALONGSIDE_WHOOP_APP = "noop.alongsideWhoopApp"
+
     const val KEY_ANALYZE_WATERMARK = "noop.analyzeWatermark"
 
     fun of(context: Context): SharedPreferences =
@@ -256,6 +276,23 @@ object NoopPrefs {
 
     fun setHrBroadcast(context: Context, enabled: Boolean) {
         of(context).edit().putBoolean(KEY_HR_BROADCAST, enabled).apply()
+    }
+
+    /**
+     * Whether NOOP coexists with the official WHOOP app (open data only; no encrypted-bond fight).
+     * Default: true on debug builds (applicationId ends with `.debug`), false on release.
+     */
+    fun alongsideWhoopApp(context: Context): Boolean {
+        val prefs = of(context)
+        if (prefs.contains(KEY_ALONGSIDE_WHOOP_APP)) {
+            return prefs.getBoolean(KEY_ALONGSIDE_WHOOP_APP, false)
+        }
+        // First launch default: debug package wants collectors while WHOOP stays open.
+        return context.packageName.endsWith(".debug")
+    }
+
+    fun setAlongsideWhoopApp(context: Context, enabled: Boolean) {
+        of(context).edit().putBoolean(KEY_ALONGSIDE_WHOOP_APP, enabled).apply()
     }
 
     /** "Buzz WHOOP 4" (#536): arm the strap's firmware alarm at the phone smart alarm's earliest wake
@@ -564,18 +601,6 @@ object NoopPrefs {
         of(context).edit().putBoolean(KEY_BATTERY_ALERTS, enabled).apply()
     }
 
-    /** Predictive "recharge tonight" warning at ~24h of estimated runtime left. Sub-gate under
-     *  KEY_BATTERY_ALERTS (both must be on). Default ON so pre-toggle behavior is unchanged.
-     *  iOS/macOS twin key: behavior.batteryPredictiveAlerts. */
-    const val KEY_BATTERY_PREDICTIVE_ALERTS = "noop.batteryPredictiveAlerts"
-
-    fun predictiveBatteryAlerts(context: Context): Boolean =
-        of(context).getBoolean(KEY_BATTERY_PREDICTIVE_ALERTS, true)
-
-    fun setPredictiveBatteryAlerts(context: Context, enabled: Boolean) {
-        of(context).edit().putBoolean(KEY_BATTERY_PREDICTIVE_ALERTS, enabled).apply()
-    }
-
     /** Persisted once-per-crossing flags behind BatteryAlertPolicy, they survive process death so a
      *  battery hovering near a threshold fires exactly once per cycle (low re-arms above 25%, full
      *  re-arms below 100%). */
@@ -596,16 +621,14 @@ object NoopPrefs {
         of(context).edit().putBoolean(KEY_BATTERY_FULL_ALERTED, alerted).apply()
     }
 
-    /** Persisted once-per-discharge gate behind BatteryEstimator.runtimeAlert (the predictive
-     *  "~X left" alert; fires ≤24 h, re-arms ≥36 h). Same survive-process-death contract as the
-     *  SoC flags above. */
-    const val KEY_BATTERY_RUNTIME_ALERTED = "noop.batteryRuntimeAlerted"
+    /** Once-per-charge-session flag for the "Charging" system notification. */
+    const val KEY_CHARGING_STARTED_ALERTED = "noop.chargingStartedAlerted"
 
-    fun batteryRuntimeAlerted(context: Context): Boolean =
-        of(context).getBoolean(KEY_BATTERY_RUNTIME_ALERTED, false)
+    fun chargingStartedAlerted(context: Context): Boolean =
+        of(context).getBoolean(KEY_CHARGING_STARTED_ALERTED, false)
 
-    fun setBatteryRuntimeAlerted(context: Context, alerted: Boolean) {
-        of(context).edit().putBoolean(KEY_BATTERY_RUNTIME_ALERTED, alerted).apply()
+    fun setChargingStartedAlerted(context: Context, alerted: Boolean) {
+        of(context).edit().putBoolean(KEY_CHARGING_STARTED_ALERTED, alerted).apply()
     }
 
     /** Scheduled report notifications (#517), opt-in, default OFF, no AI. Two independent toggles:
@@ -771,20 +794,6 @@ fun NoopRoot() {
     val context = LocalContext.current
     val prefs = remember { NoopPrefs.of(context) }
     val appViewModel: AppViewModel = viewModel()
-
-    // #267: app-wide "came to foreground" hook, mirrors the iOS/macOS scenePhase == .active trigger.
-    // requestSync(FOREGROUND) is a safe no-op when nothing's connected/bonded yet (e.g. during
-    // onboarding), so this is placed above the onboarding/terms gates rather than duplicated below them.
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner, appViewModel) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                appViewModel.ble.onForeground()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
 
     var onboarded by remember {
         mutableStateOf(prefs.getBoolean(NoopPrefs.KEY_ONBOARDED, false))

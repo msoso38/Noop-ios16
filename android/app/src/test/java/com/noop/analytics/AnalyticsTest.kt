@@ -38,6 +38,32 @@ class AnalyticsTest {
         assertEquals(50.0, Hrv.rmssd(listOf(900, 950)), 1e-9)
     }
 
+    @Test
+    fun rmssd_gapSpanningIbiDoesNotInflate() {
+        // Clean IBIs ~800ms, then a 1600ms gap-spanning IBI (missing beat), then clean again.
+        // Without gap-aware cleaning the 800→1600 successive diff spikes RMSSD; with it, the
+        // pairs involving 1600 are skipped (NOOP 8.6.0 #195).
+        // 2500 ms is above MAX_SINGLE_BEAT_IBI_MS (2000) — classic missing-beat merged IBI.
+        val withGap = listOf(800, 810, 2500, 805, 795)
+        val cleanedOnly = listOf(800, 810, 805, 795)
+        val gapAware = Hrv.rmssd(withGap)
+        val baseline = Hrv.rmssd(cleanedOnly)
+        // Gap-aware result should be near the cleaned-only series, not wildly larger.
+        assertTrue("gap-aware RMSSD should stay near cleaned baseline", gapAware < baseline * 1.5 + 5.0)
+        // And clearly lower than a naive full-series RMSSD that includes the 1600 gap.
+        val naive = run {
+            var sum = 0.0
+            var n = 0
+            for (i in 1 until withGap.size) {
+                val d = (withGap[i] - withGap[i - 1]).toDouble()
+                sum += d * d
+                n++
+            }
+            kotlin.math.sqrt(sum / n)
+        }
+        assertTrue("gap-aware must be lower than naive across a missing beat", gapAware < naive)
+    }
+
     // --- Zones --------------------------------------------------------------
 
     @Test

@@ -616,18 +616,15 @@ fun TrendsReportExportSection(vm: AppViewModel, modifier: Modifier = Modifier) {
         stressByDay = rows.associate { it.day to it.value }
     }
 
-    NoopCard(modifier = modifier, tint = Palette.accent) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Overline("Export")
+    NoopCard(modifier = modifier, tint = null) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Trends report (PDF)", style = NoopType.title2, color = Palette.textPrimary)
             Text(
-                "A clean, shareable one-page PDF of your recovery, sleep, HRV, resting heart rate " +
-                    "and strain over a date range. Built and saved on your phone - nothing leaves the device.",
-                style = NoopType.subhead,
-                color = Palette.textSecondary,
+                "One-page PDF of Charge, sleep, HRV, resting HR and Effort for a date range. Stays on this phone.",
+                style = NoopType.footnote,
+                color = Palette.textTertiary,
             )
 
-            Overline("Range", color = Palette.textTertiary)
             SegmentedPillControl(
                 items = ReportRange.entries.toList(),
                 selection = range,

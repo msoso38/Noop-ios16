@@ -11,6 +11,7 @@ import java.util.UUID
  * protocol-layer DeviceFamily (which carries CRC/characteristic detail).
  */
 enum class WhoopModel(val displayName: String, val service: UUID) {
+    WHOOP3("WHOOP 3.0", WhoopBleClient.WHOOP4_SERVICE),
     WHOOP4("WHOOP 4.0", WhoopBleClient.WHOOP4_SERVICE),
     WHOOP5_MG("WHOOP 5.0 / MG", WhoopBleClient.WHOOP5_SERVICE);
 
@@ -23,6 +24,7 @@ enum class WhoopModel(val displayName: String, val service: UUID) {
      */
     val fallbackScanModel: WhoopModel
         get() = when (this) {
+            WHOOP3 -> WHOOP4
             WHOOP4 -> WHOOP5_MG
             WHOOP5_MG -> WHOOP4
         }

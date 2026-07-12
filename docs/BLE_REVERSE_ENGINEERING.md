@@ -779,11 +779,9 @@ unparsed region — describing the frame faithfully without inventing structure.
 ### Safety rule
 
 `WhoopCommand` in `Commands.swift` is a **deliberately curated subset**. Destructive or dangerous
-commands — firmware load, force-trim, ship-mode, power-cycle, fuel-gauge reset, BLE DFU — are
-**excluded by design** so the in-app command sender can never brick or wipe a device. The one guarded
-exception is `rebootStrap` (a plain, non-destructive restart that keeps stored data), sent only from a
-user-initiated, confirmation-gated action — never automatically (#166). When extending the command
-set, keep it reversible and non-destructive.
+commands — reboot, firmware load, force-trim, ship-mode, power-cycle, fuel-gauge reset, BLE DFU — are
+**excluded by design** so the in-app command sender can never brick or wipe a device. When extending
+the command set, keep it reversible and non-destructive.
 
 ---
 

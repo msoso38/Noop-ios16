@@ -30,8 +30,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Bolt
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -61,7 +64,10 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -140,39 +146,14 @@ import kotlin.math.roundToInt
  */
 class ProfileStore(private val prefs: SharedPreferences) {
 
-    /**
-     * Current age in whole years (#146), DERIVED from [dateOfBirthMillis] so it advances on its own
-     * instead of going stale until the user bumps a number. Read-only; change age via [setAge] (the
-     * +/- stepper) or [dateOfBirthMillis] directly. Every existing reader (Fitness Age / Vitality /
-     * Tanaka) keeps reading `profile.age` unchanged.
-     */
-    val age: Int
-        get() = yearsFromDob(dateOfBirthMillis).coerceIn(AGE_MIN, AGE_MAX)
+    /** Presentation-only identity. It never reaches BLE, analytics, exports, or shareable backups. */
+    var displayName: String
+        get() = normalizedDisplayName(prefs.getString(KEY_DISPLAY_NAME, ""))
+        set(v) = prefs.edit().putString(KEY_DISPLAY_NAME, normalizedDisplayName(v)).apply()
 
-    /**
-     * Date of birth as epoch millis — the canonical source of truth for [age] (#146). The getter
-     * lazily migrates a pre-#146 stored age (or a restored legacy `age`, see [applyBackup]) into an
-     * anchored DOB the first time it's read, then persists it so the derivation is stable. The setter
-     * mirrors the derived Int age under the legacy [KEY_AGE] so the `.noopbak` backup whitelist keeps
-     * exporting an age with no change to the cross-platform contract.
-     */
-    var dateOfBirthMillis: Long
-        get() {
-            if (prefs.contains(KEY_DOB)) return prefs.getLong(KEY_DOB, 0L)
-            val legacyAge = (if (prefs.contains(KEY_AGE)) prefs.getInt(KEY_AGE, 30) else 30)
-                .coerceIn(AGE_MIN, AGE_MAX)
-            val dob = dobForAge(legacyAge)
-            prefs.edit().putLong(KEY_DOB, dob).putInt(KEY_AGE, legacyAge).apply()
-            return dob
-        }
-        set(v) = prefs.edit()
-            .putLong(KEY_DOB, v)
-            .putInt(KEY_AGE, yearsFromDob(v).coerceIn(AGE_MIN, AGE_MAX))
-            .apply()
-
-    /** Set age by anchoring a date of birth `years` before today (the +/- stepper and backup restore
-     *  both go through here, so age always flows from a DOB). Clamped to [AGE_MIN]..[AGE_MAX]. */
-    fun setAge(years: Int) { dateOfBirthMillis = dobForAge(years.coerceIn(AGE_MIN, AGE_MAX)) }
+    var age: Int
+        get() = prefs.getInt(KEY_AGE, 30).coerceIn(AGE_MIN, AGE_MAX)
+        set(v) = prefs.edit().putInt(KEY_AGE, v.coerceIn(AGE_MIN, AGE_MAX)).apply()
 
     /** "male" | "female" | "nonbinary" — matches the macOS tag values. */
     var sex: String
@@ -263,10 +244,7 @@ class ProfileStore(private val prefs: SharedPreferences) {
     /** The user-SET profile fields, keyed canonically, for the backup exporter. */
     fun backupSnapshot(): Map<String, Any> {
         val out = LinkedHashMap<String, Any>()
-        // #146: age is now derived from a DOB; export the current derived Int under the legacy
-        // `profile.age` key (the whitelist carries an Int, not a Date). A never-touched profile
-        // (neither key set) still stays out of the snapshot.
-        if (prefs.contains(KEY_DOB) || prefs.contains(KEY_AGE)) out["profile.age"] = age
+        if (prefs.contains(KEY_AGE)) out["profile.age"] = age
         if (prefs.contains(KEY_SEX)) out["profile.sex"] = sex
         if (prefs.contains(KEY_WEIGHT)) out["profile.weightKg"] = weightKg
         if (prefs.contains(KEY_HEIGHT)) out["profile.heightCm"] = heightCm
@@ -281,10 +259,7 @@ class ProfileStore(private val prefs: SharedPreferences) {
      * through the property setters, so the usual range clamps apply.
      */
     fun applyBackup(values: Map<String, Any>) {
-        // #146: a restore carries only an Int age. Route it through setAge so the restored age
-        // re-anchors this device's DOB (clearing any stale local DOB) and then advances on its own —
-        // the deterministic twin of the Apple side clearing `profile.dateOfBirth` on apply.
-        (values["profile.age"] as? Number)?.let { setAge(it.toInt()) }
+        (values["profile.age"] as? Number)?.let { age = it.toInt() }
         (values["profile.sex"] as? String)?.let { sex = it }
         (values["profile.weightKg"] as? Number)?.let { weightKg = it.toDouble() }
         (values["profile.heightCm"] as? Number)?.let { heightCm = it.toDouble() }
@@ -294,11 +269,8 @@ class ProfileStore(private val prefs: SharedPreferences) {
 
     companion object {
         private const val PREFS = "noop_profile"
-        /** Date of birth as epoch millis — the #146 source of truth for [age]. */
-        private const val KEY_DOB = "date_of_birth"
-        /** Pre-#146 age key, now kept mirrored from the DOB so the `.noopbak` whitelist (Int age)
-         *  keeps round-tripping unchanged. */
         private const val KEY_AGE = "age"
+        private const val KEY_DISPLAY_NAME = "display_name"
         private const val KEY_SEX = "sex"
         private const val KEY_WEIGHT = "weight_kg"
         private const val KEY_HEIGHT = "height_cm"
@@ -320,6 +292,10 @@ class ProfileStore(private val prefs: SharedPreferences) {
         private const val WAIST_MAX = 200.0
         private const val STEP_SCALE_MIN = 0.5
         private const val STEP_SCALE_MAX = 30.0
+        private const val MAX_DISPLAY_NAME = 40
+
+        /** Pure local-name policy, kept outside analytics and backups by design. */
+        internal fun normalizedDisplayName(value: String?): String = value?.trim().orEmpty().take(MAX_DISPLAY_NAME)
 
         /**
          * Variable step for the calibration stepper so high values stay reachable: fine near the
@@ -333,24 +309,6 @@ class ProfileStore(private val prefs: SharedPreferences) {
             value < 2.0 -> 0.1
             value < 5.0 -> 0.5
             else -> 1.0
-        }
-
-        // ── #146 age <-> date-of-birth ──────────────────────────────────────────────────────────
-        /** Whole years between the DOB and today (floor — a birthday not yet reached doesn't count).
-         *  Uses the device's default zone so the rollover matches the user's local calendar. Mirrors
-         *  the Apple `ProfileStore.years(from:to:)`. */
-        fun yearsFromDob(dobMillis: Long): Int {
-            val zone = java.time.ZoneId.systemDefault()
-            val dob = java.time.Instant.ofEpochMilli(dobMillis).atZone(zone).toLocalDate()
-            return java.time.temporal.ChronoUnit.YEARS.between(dob, java.time.LocalDate.now(zone)).toInt()
-        }
-
-        /** A date of birth `age` whole years before today (anchored to today's month/day, so the
-         *  derived age is exactly `age`). Mirrors the Apple `ProfileStore.dateOfBirth(forAge:)`. */
-        fun dobForAge(age: Int): Long {
-            val zone = java.time.ZoneId.systemDefault()
-            return java.time.LocalDate.now(zone).minusYears(age.toLong())
-                .atStartOfDay(zone).toInstant().toEpochMilli()
         }
 
         /**
@@ -376,7 +334,10 @@ class ProfileStore(private val prefs: SharedPreferences) {
 fun SettingsScreen(
     vm: AppViewModel,
     onOpenTestCentre: () -> Unit = {},
+    onOpenGoals: () -> Unit = {},
     onOpenBackupSync: () -> Unit = {},
+    onOpenStepTraining: () -> Unit = {},
+    onOpenQuickStart: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -455,7 +416,8 @@ fun SettingsScreen(
         context.getSharedPreferences(NoopPrefs.NAME, Context.MODE_PRIVATE)
             .getString("noop.selectedWhoopModel", null)
     }
-    val showFiveMGControls = selectedModelName == WhoopModel.WHOOP5_MG.name || live.whoop5Detected
+    val showFiveMGControls = selectedModelName == WhoopModel.WHOOP5_MG.name ||
+        live.whoop5Detected || BuildConfig.DEBUG
 
     // "Keep connected in the background" — drives WhoopConnectionService (foreground service). Default
     // on. SharedPreferences isn't reactive, so the Switch mirrors into a local state.
@@ -471,6 +433,12 @@ fun SettingsScreen(
 
     // "Debug logging" — mirror the strap log to logcat (adb). Default OFF so normal users don't.
     var debugLogging by remember { mutableStateOf(NoopPrefs.debugLogging(context)) }
+
+    // "Run alongside official WHOOP app" — open HR/battery only; no encrypted-bond fight. Default on debug.
+    var alongsideWhoopApp by remember { mutableStateOf(NoopPrefs.alongsideWhoopApp(context)) }
+
+    // Auto-read Recovery/Strain from official WHOOP app (Accessibility + notifications).
+    var autoWhoopApp by remember { mutableStateOf(com.noop.data.WhoopAppAutoCapture.isEnabled(context)) }
 
     // --- v5 Health & wellness toggle group. All SharedPreferences-backed (not reactive), so each Switch
     // drives a local mirror that writes straight through to the same keys the v5 engine readers use.
@@ -522,12 +490,6 @@ fun SettingsScreen(
     var themeMode by remember { mutableStateOf(AppearancePrefs.mode) }
     // Chart colours (Titanium / Classic) — re-colours gauges + charts; ChartStylePrefs mirrors it live.
     var chartStyle by remember { mutableStateOf(ChartStylePrefs.style) }
-    // Trend charts (Line / Bar) — flips the Trends tab between the gradient line and value-ramp bars.
-    // Display-only; SharedPreferences isn't reactive, so mirror into local state and persist on select.
-    var trendChartStyle by remember { mutableStateOf(UnitPrefs.trendChartStyle(context)) }
-    // HRV window (#141) — whole-night vs deep-sleep (WHOOP-style). NOT display-only: it changes the computed
-    // avgHrv, so a switch clears the analyze watermark to force a re-score + re-baseline on the next pass.
-    var hrvWindow by remember { mutableStateOf(UnitPrefs.hrvWindow(context)) }
     // Day-cycle background (#698) — the time-of-day scene behind Today. Default ON. SharedPreferences
     // isn't reactive, so the Switch mirrors into local state; TodayScreen reads the same pref on entry.
     var showDayCycleBackground by remember { mutableStateOf(NoopPrefs.showDayCycleBackground(context)) }
@@ -693,15 +655,42 @@ fun SettingsScreen(
             blurb = "These power your heart-rate zones, calorie estimates and recovery baselines. Keep them accurate.",
         ) {
             Column {
+                var displayNameDraft by remember { mutableStateOf(profile.displayName) }
+                FormRow(label = "Display name") {
+                    OutlinedTextField(
+                        value = displayNameDraft,
+                        onValueChange = {
+                            displayNameDraft = it.take(40)
+                            mutate { profile.displayName = displayNameDraft }
+                        },
+                        singleLine = true,
+                        placeholder = { Text("How NOOP addresses this profile") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Palette.textPrimary,
+                            unfocusedTextColor = Palette.textPrimary,
+                            focusedBorderColor = Palette.accent,
+                            unfocusedBorderColor = Palette.hairline,
+                            focusedContainerColor = Palette.surfaceInset,
+                            unfocusedContainerColor = Palette.surfaceInset,
+                        ),
+                        modifier = Modifier.widthIn(min = 176.dp).semantics { contentDescription = "Profile display name" },
+                    )
+                }
+                Text(
+                    "Local to this phone. It does not change your strap, training data, exports, or backups.",
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+                RowDivider()
                 FormRow(label = "Age") {
                     StepperField(
                         value = profile.age.toString(),
                         accessibility = "Age, ${profile.age} years",
-                        // #146: age is derived from a stored date of birth, so it advances on its own. The
-                        // stepper re-anchors the DOB via setAge (which clamps to 13..100 — age feeds the
-                        // Fitness Age + Vitality engines that gate on age > 0, so it must never go 0/negative).
-                        onMinus = { mutate { profile.setAge(profile.age - 1) } },
-                        onPlus = { mutate { profile.setAge(profile.age + 1) } },
+                        // Bound to 13..100 to match iOS — and, since v4, age feeds the Fitness Age + Vitality
+                        // engines which gate on age > 0, an unbounded stepper let an Android user drive age to
+                        // 0/negative and silently switch both cards off with no explanation (code review).
+                        onMinus = { mutate { profile.age = (profile.age - 1).coerceIn(13, 100) } },
+                        onPlus = { mutate { profile.age = (profile.age + 1).coerceIn(13, 100) } },
                     )
                 }
                 RowDivider()
@@ -960,9 +949,9 @@ fun SettingsScreen(
         SettingsSection(
             icon = Icons.Filled.Brightness6,
             title = "Appearance",
-            blurb = "Choose Light, Dark, or follow your system. Dark is the signature near-black; Light keeps the same clean look on a bright canvas.",
+            blurb = "Light / Dark / System, plus named theme packs (Pink Blossom, Ocean Glass, and more). Frosted nav comes with packs that enable it.",
         ) {
-            FormRow(label = "Theme") {
+            FormRow(label = "Brightness") {
                 SegmentedPillControl(
                     items = listOf(AppearanceMode.SYSTEM, AppearanceMode.LIGHT, AppearanceMode.DARK),
                     selection = themeMode,
@@ -973,8 +962,72 @@ fun SettingsScreen(
                     },
                 )
             }
-            RowDivider()   // #79 parity: the hairline every other section has between FormRows (Android rows
-                           // were already 16dp-spaced, unlike iOS where they touched — this matches both)
+            RowDivider()
+            Text("Theme pack", style = NoopType.subhead, color = Palette.textPrimary)
+            Text(
+                "Pick a named finish. Frosted nav comes with packs that enable it.",
+                style = NoopType.footnote,
+                color = Palette.textTertiary,
+            )
+            Spacer(Modifier.height(8.dp))
+            var packMenuOpen by remember { mutableStateOf(false) }
+            val selectedPack = ThemePacks.byId(ThemePackPrefs.packId)
+            Box(Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = selectedPack.label,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Theme pack") },
+                    trailingIcon = {
+                        IconButton(onClick = { packMenuOpen = !packMenuOpen }) {
+                            Icon(
+                                Icons.Filled.KeyboardArrowDown,
+                                contentDescription = null,
+                                modifier = Modifier.rotate(if (packMenuOpen) 180f else 0f),
+                            )
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { packMenuOpen = true },
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Palette.textPrimary,
+                        unfocusedTextColor = Palette.textPrimary,
+                    ),
+                )
+                DropdownMenu(
+                    expanded = packMenuOpen,
+                    onDismissRequest = { packMenuOpen = false },
+                    modifier = Modifier.fillMaxWidth(0.92f),
+                ) {
+                    ThemePacks.all.forEach { pack ->
+                        DropdownMenuItem(
+                            text = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Box(
+                                        Modifier
+                                            .size(14.dp)
+                                            .clip(CircleShape)
+                                            .background(pack.swatch),
+                                    )
+                                    Column {
+                                        Text(pack.label, style = NoopType.subhead, color = Palette.textPrimary)
+                                        Text(pack.blurb, style = NoopType.caption, color = Palette.textTertiary, maxLines = 1)
+                                    }
+                                }
+                            },
+                            onClick = {
+                                ThemePackPrefs.set(context, pack)
+                                packMenuOpen = false
+                            },
+                        )
+                    }
+                }
+            }
+            RowDivider()
             FormRow(label = "Chart colours") {
                 // Titanium = brand gold/amber/blue ramps; Classic = throwback red→green readiness scale
                 // (cool→hot zones, green→red stress). Re-colours every gauge/chart, in both schemes.
@@ -985,20 +1038,6 @@ fun SettingsScreen(
                     onSelect = { style ->
                         chartStyle = style
                         ChartStylePrefs.set(context, style)
-                    },
-                )
-            }
-            RowDivider()
-            // Trend chart style (line vs bar). Display-only: flips the Trends tab's charts between the
-            // gradient line and value-ramp bars. The plotted data is identical either way.
-            FormRow(label = "Trend charts") {
-                SegmentedPillControl(
-                    items = listOf(TrendChartStyle.LINE, TrendChartStyle.BAR),
-                    selection = trendChartStyle,
-                    label = { if (it == TrendChartStyle.BAR) "Bars" else "Line" },
-                    onSelect = { style ->
-                        trendChartStyle = style
-                        UnitPrefs.setTrendChartStyle(context, style)
                     },
                 )
             }
@@ -1191,16 +1230,15 @@ fun SettingsScreen(
                     )
                 }
 
-                // Rename the strap's BLE advertising name (WHOOP 4.0 only). Writes the name to the strap
-                // firmware (cmd 77); it reboots to apply, so the new name shows on the next connect. Handy
-                // for a second-hand band stuck on the previous owner's name. Reversible.
+                // Hardware advertising-name command (WHOOP 4.0 only). The reliable name for every device is
+                // the Room-backed "Name in NOOP" alias in Devices; this command is a separate 4.0 request.
                 if (live.connected && !live.whoop5Detected) {
                     var nameDraft by remember(live.advertisingName) { mutableStateOf(live.advertisingName ?: "") }
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Strap name", style = NoopType.subhead, color = Palette.textPrimary)
+                        Text("Bluetooth strap name (WHOOP 4.0)", style = NoopType.subhead, color = Palette.textPrimary)
                         Text(
-                            "Rename your strap's Bluetooth name, useful for a second-hand band. The strap " +
-                                "reboots to apply, then reconnects with the new name.",
+                            "Sends the observed WHOOP 4.0 advertising-name command. The strap reboots; confirm " +
+                                "the new Bluetooth name after reconnecting. WHOOP 5/MG uses your local NOOP alias instead.",
                             style = NoopType.footnote,
                             color = Palette.textTertiary,
                         )
@@ -1234,6 +1272,90 @@ fun SettingsScreen(
                         }
                     }
                 }
+
+                // Coexist with the official WHOOP app: open live HR/battery only, no bond steal.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Run alongside official WHOOP app",
+                            style = NoopType.subhead,
+                            color = Palette.textPrimary,
+                        )
+                        Text(
+                            "Leave the official WHOOP app open. NOOP collects open live heart rate, beat-to-beat R-R and battery only — it will not fight for the encrypted bond. History sync, buzz, SpO2 and blood pressure stay with WHOOP. Turn off when you want NOOP to take the full private bond instead. Takes effect on the next Connect.",
+                            style = NoopType.footnote,
+                            color = Palette.textTertiary,
+                        )
+                    }
+                    Switch(
+                        checked = alongsideWhoopApp,
+                        onCheckedChange = {
+                            alongsideWhoopApp = it
+                            vm.setAlongsideWhoopApp(it)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Palette.surfaceBase,
+                            checkedTrackColor = Palette.accent,
+                            uncheckedThumbColor = Palette.textSecondary,
+                            uncheckedTrackColor = Palette.surfaceInset,
+                            uncheckedBorderColor = Palette.hairline,
+                        ),
+                    )
+                }
+
+                // Auto-capture Recovery / Day Strain from WHOOP *app* UI (for model training labels).
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Auto-capture WHOOP app scores",
+                            style = NoopType.subhead,
+                            color = Palette.textPrimary,
+                        )
+                        Text(
+                            "When you open the official WHOOP app, NOOP reads on-screen Recovery % and Day Strain (0–21) for model labels — not from the bracelet. Also parses WHOOP notifications. Grant Accessibility + Notification access below.",
+                            style = NoopType.footnote,
+                            color = Palette.textTertiary,
+                        )
+                    }
+                    Switch(
+                        checked = autoWhoopApp,
+                        onCheckedChange = {
+                            autoWhoopApp = it
+                            com.noop.data.WhoopAppAutoCapture.setEnabled(context, it)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Palette.surfaceBase,
+                            checkedTrackColor = Palette.accent,
+                            uncheckedThumbColor = Palette.textSecondary,
+                            uncheckedTrackColor = Palette.surfaceInset,
+                            uncheckedBorderColor = Palette.hairline,
+                        ),
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(com.noop.data.WhoopAppAutoCapture.accessibilitySettingsIntent())
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Open Accessibility settings", style = NoopType.footnote) }
+                OutlinedButton(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(com.noop.data.WhoopAppAutoCapture.notificationListenerSettingsIntent())
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Open Notification access", style = NoopType.footnote) }
 
                 // Keep streaming when the app is closed (Android foreground service). On Mac, NOOP
                 // already keeps your strap connected from the menu bar — just close the window.
@@ -1347,45 +1469,6 @@ fun SettingsScreen(
                     }
                 }
 
-                // HRV window (#141) — grouped with the other HRV settings (#155). Measure nightly HRV over
-                // the whole night (NOOP's long-standing value) or DEEP sleep only (WHOOP-style, reads lower
-                // and more comparable to WHOOP/Polar). Unlike the Effort scale this CHANGES the number, so a
-                // switch forces a re-score + re-baseline.
-                FormRow(label = "HRV window") {
-                    SegmentedPillControl(
-                        items = listOf(HrvWindow.WHOLE_NIGHT, HrvWindow.DEEP_SLEEP),
-                        selection = hrvWindow,
-                        // #153: "Night" (not "Whole night") so the two-segment pill reads the same as the iOS
-                        // picker and stays short — keeps the label consistent across platforms.
-                        label = { if (it == HrvWindow.DEEP_SLEEP) "Deep sleep" else "Night" },
-                        onSelect = {
-                            hrvWindow = it
-                            UnitPrefs.setHrvWindow(context, it)
-                            // #201: the new window shifts every night's avgHrv, so the HRV baseline must reflect
-                            // it too — but a plain re-score already achieves that. analyzeRecent re-scores the
-                            // recent ~21 nights' avgHrv under the new window AND re-folds the HRV baseline from
-                            // them in the same pass, and the baseline's 14-night-half-life EWMA is dominated by
-                            // that fresh re-scored tail. So DON'T re-anchor the baseline epoch: doing so would
-                            // drop all history and force a multi-night "calibrating" reset for someone who already
-                            // has plenty of nights (that reset reading as "the setting is broken" was #195). Clear
-                            // the analyze watermark so the re-score runs even though the raw HR fingerprint is
-                            // unchanged. A genuine cold-start user (<4 valid nights) still calibrates honestly.
-                            NoopPrefs.setAnalyzeWatermark(context, "")
-                            vm.syncNow()
-                            Toast.makeText(
-                                context,
-                                "Re-scoring your recent nights over the ${if (it == HrvWindow.DEEP_SLEEP) "deep-sleep" else "whole-night"} window. Charge updates as soon as it's done.",
-                                Toast.LENGTH_LONG,
-                            ).show()
-                        },
-                    )
-                }
-                Text(
-                    "Whole night is NOOP's default measure; Deep sleep pools HRV over slow-wave sleep only, reading lower and matching WHOOP. Switching re-scores your recent nights over the new window and takes effect right away once you have a few nights of data.",
-                    style = NoopType.footnote,
-                    color = Palette.textTertiary,
-                )
-
                 // Diagnostics: "Debug logging" mirrors the strap log to logcat (adb). Default OFF — a
                 // normal user never needs to write the connection log to the system log; the in-app log
                 // (and the "Share strap log" export below) work regardless. Developers flip this on to
@@ -1483,13 +1566,17 @@ fun SettingsScreen(
         // the experimental probes, diagnostics, raw-capture export and Trends report all stay one tap
         // away. Mirrors the iOS SettingsView "Advanced" disclosure and the Test Centre Advanced group.
         SettingsDisclosure(
-            title = "Advanced",
-            subtitle = "Experimental probes, diagnostics, raw-sensor export, and the Trends report. Tucked away to keep the everyday screen tidy.",
+            title = if (showFiveMGControls) "5/MG lab & Advanced" else "Advanced",
+            subtitle = if (showFiveMGControls) {
+                "WHOOP 5/MG opt-ins, diagnostics, raw-sensor export, and the Trends report. Every experiment starts off."
+            } else {
+                "Experimental probes, diagnostics, raw-sensor export, and the Trends report. Tucked away to keep the everyday screen tidy."
+            },
             expanded = advancedOpen,
             onToggle = { advancedOpen = !advancedOpen; SettingsDisclosurePrefs.write(NoopPrefs.of(context), advancedOpen) },
         ) {
         Column(verticalArrangement = Arrangement.spacedBy(Metrics.screenRowSpacing)) {
-        // --- Experimental · WHOOP 5 / MG --- (hidden when the user is confidently on a 4.0, #22)
+        // Debug builds expose the opt-in panel for 5/MG testers; toggles stay off and only affect 5/MG hardware.
         if (showFiveMGControls) {
         SettingsSection(
             icon = Icons.Filled.Science,
@@ -1707,15 +1794,14 @@ fun SettingsScreen(
             blurb = "A read-only export of the decoded sensor streams NOOP already stores. Works on any strap. Nothing is written to your device, and nothing is uploaded.",
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // --- Sleep staging (V2) — the DEFAULT engine after the 44-subject benchmark; toggle off to
-                //     fall back to V1. Every model. (V7 Pillar 3b) ---
+                // --- Experimental sleep staging (V2) — opt-in, default OFF, every model. (V7 Pillar 3b) ---
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     Text(
-                        "Sleep staging (V2)",
+                        "Experimental sleep staging (V2 · research)",
                         style = NoopType.subhead,
                         color = Palette.textPrimary,
                         modifier = Modifier.weight(1f),
@@ -1734,15 +1820,16 @@ fun SettingsScreen(
                             uncheckedBorderColor = Palette.hairline,
                         ),
                         modifier = Modifier.semantics {
-                            contentDescription = "Sleep staging V2"
+                            contentDescription = "Experimental sleep staging V2"
                         },
                     )
                 }
                 Text(
-                    "A transparent cardiorespiratory recipe that recovers deep and REM better than the older " +
-                        "V1 staging, and is now the default. It only changes how already-detected nights are " +
-                        "split into stages (detection and scores are unchanged); turn it off to fall back to " +
-                        "V1. Takes effect on the next nights staged.",
+                    "A transparent cardiorespiratory recipe that recovers deep and REM better than the " +
+                        "default staging. Opt-in and experimental: it only changes how already-detected " +
+                        "nights are split into stages (detection and scores are unchanged). " +
+                        "Research path: PhysioNet sleep-accel / DREAMT for κ benchmarks; future ML models " +
+                        "stay opt-in. Default staging stays if you leave this off. Next nights staged.",
                     style = NoopType.caption,
                     color = Palette.textTertiary,
                 )
@@ -1913,8 +2000,8 @@ fun SettingsScreen(
                 // Settings toggle was the one surface that was missed, so a male profile could enable it here.
                 if (cycleTracking || cycleOptInApplies(profile.sex)) {
                     ToggleRow(
-                        title = "Cycle awareness",
-                        detail = "Reads a coarse menstrual-cycle phase from your nightly skin-temperature shift, on this device only. Awareness only: not contraception, not a fertility predictor, not a medical service.",
+                        title = "Cycle calendar + tab",
+                        detail = "Shows the Cycle tab on the bottom bar and enables period logging. Off removes the tab (Cycle stays under More → For your body). Awareness only — not contraception.",
                         checked = cycleTracking,
                         onCheckedChange = {
                             cycleTracking = it
@@ -2021,6 +2108,35 @@ fun SettingsScreen(
         // A nav row into the Test Centre: the single home for the diagnostic, log and test controls (spec
         // section 7). The strap log, recalibrate, scheduled export and experimental toggles also live there
         // on the same bindings, so this is a faster door to the full set without growing this screen.
+        SettingsSection(
+            icon = Icons.AutoMirrored.Filled.DirectionsWalk,
+            title = "Steps & training",
+            blurb = "Live MG step counter, tap-to-count and shake sessions that evolve your personal ticks-per-step model. Re-train weekly for best accuracy.",
+        ) {
+            NoopButton(
+                text = "Open step training",
+                leadingIcon = Icons.AutoMirrored.Filled.DirectionsWalk,
+                kind = NoopButtonKind.Secondary,
+                fullWidth = true,
+                onClick = onOpenStepTraining,
+            )
+            // Quick Start removed — Goals board is the durable checklist (answers must weight real tests).
+        }
+
+        SettingsSection(
+            icon = Icons.Filled.Flag,
+            title = "Goals",
+            blurb = "Honest complete / partial / not complete for WHOOP compare, sleep ML, BLE listen, and UI. Each card says how to test, what breaks later if unfinished, and why it feels better when done.",
+        ) {
+            NoopButton(
+                text = "Open Goals board",
+                leadingIcon = Icons.Filled.Flag,
+                kind = NoopButtonKind.Secondary,
+                fullWidth = true,
+                onClick = onOpenGoals,
+            )
+        }
+
         SettingsSection(
             icon = Icons.Filled.BugReport,
             title = "Test Centre",
@@ -2797,8 +2913,8 @@ private fun SettingsDisclosure(
 // MARK: - Section card (ports SettingsView's private SettingsSection)
 
 /**
- * A grouped settings card: a "Settings" overline + icon + title header, an explanatory blurb, then
- * content. A faint brand-green wash anchors the card to NOOP's neutral chrome (mirrors macOS).
+ * A grouped settings card: icon + title header, an explanatory blurb, then content.
+ * No repeating "Settings" overline on every card (page title already says Settings).
  */
 @Composable
 private fun SettingsSection(
@@ -2807,19 +2923,16 @@ private fun SettingsSection(
     blurb: String,
     content: @Composable () -> Unit,
 ) {
-    NoopCard(padding = 20.dp, tint = Palette.accent) {
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Overline("Settings")
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Icon(icon, contentDescription = null, tint = Palette.accent, modifier = Modifier.size(18.dp))
-                    Text(title, style = NoopType.title2, color = Palette.textPrimary)
-                }
+    NoopCard(padding = 16.dp, tint = null) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(icon, contentDescription = null, tint = Palette.accent, modifier = Modifier.size(18.dp))
+                Text(title, style = NoopType.title2, color = Palette.textPrimary)
             }
-            Text(blurb, style = NoopType.subhead, color = Palette.textSecondary)
+            Text(blurb, style = NoopType.footnote, color = Palette.textTertiary)
             content()
         }
     }

@@ -39,11 +39,18 @@ class SmartAlarmReceiver : BroadcastReceiver() {
         store.scheduledDeadlineMs = 0L
         store.scheduledWindowStartMs = 0L
         // ...then, if the alarm is still enabled, re-arm the GUARANTEED deadline for the NEXT day so
-        // the smart alarm recurs each morning. `afterFire = true` forces tomorrow even on the EARLY
-        // (light-sleep) fire path, where today's hard deadline is still in the future and a plain
-        // re-arm would schedule a SECOND wake the same morning. A disabled-but-fired alarm does NOT
-        // resurrect itself.
-        runCatching { if (store.enabled) SmartAlarmScheduler.arm(context, store, afterFire = true) }
+        // the smart alarm recurs each morning. arm() computes the next occurrence (tomorrow, since
+        // today's just passed). A disabled-but-fired alarm does NOT resurrect itself.
+        runCatching { if (store.enabled) SmartAlarmScheduler.arm(context, store) }
+        if (store.turnBackEnabled) {
+            val watchMs = store.turnBackWatchMinutes * 60_000L
+            store.postWakeWatchUntilMs = System.currentTimeMillis() + watchMs
+            store.postWakeHighBpm = 0
+            store.postWakeLastBuzzMs = System.currentTimeMillis()
+        } else {
+            store.postWakeWatchUntilMs = 0L
+        }
+        runCatching { (context.applicationContext as? com.noop.NoopApplication)?.ble?.buzz(4) }
 
         ensureChannel(context)
         // Defensive: a notify() throw (OEM quirk / revoked POST_NOTIFICATIONS) must not crash the
@@ -61,7 +68,7 @@ class SmartAlarmReceiver : BroadcastReceiver() {
         )
         val title = "Good morning"
         val body = if (smart) {
-            "You're in a lighter sleep phase. Time to wake up."
+            "An early heart-rate cue arrived in your wake window. Time to wake up."
         } else {
             "Your wake window has ended. Time to get up."
         }
@@ -110,7 +117,7 @@ class SmartAlarmReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        const val CHANNEL_ID = "noop_smart_alarm"
+        const val CHANNEL_ID = "noop_smart_alarm_v2"
         private const val NOTIF_ID = 4307
     }
 }

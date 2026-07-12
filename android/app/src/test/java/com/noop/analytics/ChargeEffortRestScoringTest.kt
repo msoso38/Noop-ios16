@@ -111,6 +111,21 @@ class ChargeEffortRestScoringTest {
     }
 
     @Test
+    fun effortRejectsInvalidOrDuplicateHrEvidence() {
+        val duplicates = List(600) { HrSample(deviceId = "t", ts = 1L, bpm = 155) }
+        val invalid = hrEvery(320, 600, stepS = 1)
+        assertNull(StrainScorer.strain(duplicates, maxHR = 160.0, restingHR = 60.0))
+        assertNull(StrainScorer.strain(invalid, maxHR = 160.0, restingHR = 60.0))
+    }
+
+    @Test
+    fun effortRejectsDisconnectedSparseStream() {
+        val first = hrEvery(155, 10, stepS = 30)
+        val second = hrEvery(155, 10, stepS = 30).map { it.copy(ts = it.ts + 1_000L) }
+        assertNull(StrainScorer.strain(first + second, maxHR = 160.0, restingHR = 60.0))
+    }
+
+    @Test
     fun effort_lightDayHonestlyScoresZeroNotFabricated() {
         // HR below ~50% HRR earns ZERO, by design — the sparse path must not invent load. With
         // max 184 / rest 60, zone 1 starts at 122 bpm; 105 bpm stays below it on both cadences.

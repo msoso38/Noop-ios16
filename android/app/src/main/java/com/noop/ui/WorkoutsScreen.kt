@@ -2,6 +2,7 @@ package com.noop.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +69,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -77,8 +79,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -98,6 +102,7 @@ import java.time.format.FormatStyle
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -211,6 +216,14 @@ fun WorkoutsScreen(vm: AppViewModel) {
         WorkoutStartSection(vm)
         }
 
+        // Strength Trainer is always reachable (even before any import / session log).
+        item {
+            StrengthTrainerSection(rows = allRows, effectiveRange = WorkoutRange.All)
+        }
+        item {
+            CustomStrengthPlansSection()
+        }
+
         if (allRows.isEmpty()) {
             item {
             EmptyWorkouts(loaded, onAdd = { dialog = DialogTarget(null) })
@@ -247,6 +260,7 @@ fun WorkoutsScreen(vm: AppViewModel) {
             postLogNote?.let { item { PostLogNoteBanner(it) } }
             item { EffortHero(rows = windowRows, effectiveRange = resolved, groups = groups) }
             item { SummarySection(rows = windowRows, effectiveRange = resolved, groups = groups) }
+            // StrengthTrainerSection is rendered once above the empty/list branch so it is never hidden.
             item { BreakdownSection(groups = groups, rows = windowRows) }
             item { ZonesSection(windowRows) }
             item {
@@ -320,11 +334,12 @@ private data class DialogTarget(val editing: WorkoutRow?)
 
 @Composable
 private fun EmptyWorkouts(loaded: Boolean, onAdd: () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        DataPendingNote(
-            title = "No workouts yet",
-            body = "No workouts yet. They come from your WHOOP and Apple Health history. " +
-                "Import in Data Sources to bring them in, or add one you tracked elsewhere.",
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("No workouts yet", style = NoopType.headline, color = Palette.textPrimary)
+        Text(
+            "Import WHOOP / Health Connect history in Data Sources, or log a session you tracked elsewhere.",
+            style = NoopType.footnote,
+            color = Palette.textTertiary,
         )
         if (loaded) AddWorkoutButton(onAdd)
     }
@@ -577,15 +592,7 @@ private fun MergeSportDialog(onDismiss: () -> Unit, onPick: (String) -> Unit) {
             }
         },
         confirmButton = {
-            val context = LocalContext.current
-            TextButton(onClick = {
-                if (sport.isNotBlank()) {
-                    // #297: naming a merge is a real selection too — parity with the macOS/iOS sheet,
-                    // whose reused StartWorkoutSheet records on its action button.
-                    RecentSportsPrefs.record(context, sport.trim())
-                    onPick(sport.trim())
-                }
-            }, enabled = sport.isNotBlank()) {
+            TextButton(onClick = { if (sport.isNotBlank()) onPick(sport.trim()) }, enabled = sport.isNotBlank()) {
                 Text("Merge", style = NoopType.body, color = if (sport.isNotBlank()) Palette.accent else Palette.textTertiary)
             }
         },
@@ -784,6 +791,173 @@ private fun SummarySection(
     }
 }
 
+// MARK: - Strength trainer (imported lifting sessions)
+
+@Composable
+private fun StrengthTrainerSection(rows: List<WorkoutRow>, effectiveRange: WorkoutRange) {
+    val summary = remember(rows) { strengthSummary(rows) }
+    val heat = remember(rows) { muscleHeatFromRows(rows) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
+        SectionHeader(
+            title = "Strength Trainer",
+            overline = "Lifting",
+            trailing = if (summary.sessions > 0) effectiveRange.caption else "Import",
+        )
+        // Soft glow card — always visible so the tab is discoverable even before imports.
+        val shape = RoundedCornerShape(18.dp)
+        val hue = DomainTheme.Effort.color
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(hue.copy(alpha = 0.10f))
+                .border(1.dp, hue.copy(alpha = 0.28f), shape)
+                .padding(16.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .background(hue.copy(alpha = 0.18f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.FitnessCenter,
+                            contentDescription = null,
+                            tint = hue,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (summary.sessions > 0) "Strength sessions" else "Strength Trainer",
+                            style = NoopType.headline,
+                            color = Palette.textPrimary,
+                        )
+                        Text(
+                            if (summary.sessions > 0)
+                                "Volume stays separate from cardio Effort unless a session has real HR."
+                            else
+                                "Import Hevy CSV or Liftosaur JSON in Data Sources — then volume, sets, and muscle heat light up here.",
+                            style = NoopType.footnote,
+                            color = Palette.textTertiary,
+                        )
+                    }
+                }
+                CardDivider()
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    MiniStat("Sessions", "${summary.sessions}", Modifier.weight(1f), tint = hue)
+                    MiniStat("Volume", summary.volumeLabel, Modifier.weight(1f), tint = Palette.metricAmber)
+                    MiniStat("Sets", summary.setsLabel, Modifier.weight(1f))
+                    MiniStat("Minutes", if (summary.minutes > 0) "${summary.minutes}" else "n/a", Modifier.weight(1f))
+                }
+                StrengthMuscleMap(summary, heat)
+                if (summary.sessions > 0) {
+                    Text(
+                        "Recovery note: heavy volume days often need an easier next day. Muscle heat is inferred from exercise names in your lifting log — not EMG.",
+                        style = NoopType.footnote,
+                        color = Palette.textTertiary,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private data class MuscleHeat(
+    val chest: Float = 0f,
+    val back: Float = 0f,
+    val shoulders: Float = 0f,
+    val arms: Float = 0f,
+    val core: Float = 0f,
+    val quads: Float = 0f,
+    val hammies: Float = 0f,
+    val glutes: Float = 0f,
+)
+
+/** Infer relative muscle emphasis from free-text notes / sport labels — honest "inferred", not measured. */
+private fun muscleHeatFromRows(rows: List<WorkoutRow>): MuscleHeat {
+    val lifting = rows.filter {
+        WorkoutEditing.classify(it.source) == WorkoutSource.LIFTING ||
+            WorkoutEditing.displaySport(it.sport).contains("strength", ignoreCase = true)
+    }
+    if (lifting.isEmpty()) return MuscleHeat()
+    var chest = 0f; var back = 0f; var shoulders = 0f; var arms = 0f
+    var core = 0f; var quads = 0f; var hammies = 0f; var glutes = 0f
+    for (row in lifting) {
+        val t = (row.notes.orEmpty() + " " + row.sport).lowercase(Locale.US)
+        fun hit(vararg keys: String): Boolean = keys.any { t.contains(it) }
+        if (hit("bench", "chest", "pec", "push-up", "pushup", "fly")) chest += 1f
+        if (hit("row", "pull-up", "pullup", "lat", "deadlift", "back")) back += 1f
+        if (hit("shoulder", "ohp", "press", "lateral raise", "delt")) shoulders += 1f
+        if (hit("curl", "tricep", "bicep", "arm", "skull")) arms += 1f
+        if (hit("core", "ab", "plank", "crunch")) core += 1f
+        if (hit("squat", "leg press", "lunge", "quad", "leg extension")) quads += 1f
+        if (hit("hamstring", "rdl", "leg curl", "good morning")) hammies += 1f
+        if (hit("glute", "hip thrust", "bridge")) glutes += 1f
+    }
+    val max = listOf(chest, back, shoulders, arms, core, quads, hammies, glutes).maxOrNull()?.coerceAtLeast(0.01f) ?: 1f
+    fun n(v: Float) = (v / max).coerceIn(0f, 1f)
+    return MuscleHeat(n(chest), n(back), n(shoulders), n(arms), n(core), n(quads), n(hammies), n(glutes))
+}
+
+@Composable
+private fun StrengthMuscleMap(summary: StrengthTrainerSummary, heat: MuscleHeat) {
+    val active = DomainTheme.Effort.color
+    val outline = Palette.hairline
+    val base = if (summary.sessions > 0) 0.12f else 0.08f
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(200.dp)
+            .semantics { contentDescription = "Inferred strength muscle map" },
+    ) {
+        val scale = min(size.width / 260f, size.height / 200f)
+        val cx = size.width / 2f
+        fun sx(v: Float) = cx + v * scale
+        fun sy(v: Float) = 6f * scale + v * scale
+        fun fillFor(weight: Float): Color = active.copy(alpha = base + weight * 0.55f)
+        fun oval(x: Float, y: Float, rw: Float, rh: Float, color: Color) {
+            drawOval(color, topLeft = Offset(sx(x - rw), sy(y - rh)), size = Size(rw * 2 * scale, rh * 2 * scale))
+            drawOval(outline, topLeft = Offset(sx(x - rw), sy(y - rh)), size = Size(rw * 2 * scale, rh * 2 * scale), style = Stroke(1.1f * scale))
+        }
+        fun limb(x: Float, y: Float, rw: Float, rh: Float, color: Color) {
+            val corner = androidx.compose.ui.geometry.CornerRadius(14f * scale, 14f * scale)
+            drawRoundRect(color, topLeft = Offset(sx(x - rw), sy(y - rh)), size = Size(rw * 2 * scale, rh * 2 * scale), cornerRadius = corner)
+            drawRoundRect(outline, topLeft = Offset(sx(x - rw), sy(y - rh)), size = Size(rw * 2 * scale, rh * 2 * scale), cornerRadius = corner, style = Stroke(1.1f * scale))
+        }
+
+        // Proportional figure — head, neck, torso, arms, hips, legs (symmetric).
+        oval(0f, 14f, 12f, 13f, Palette.surfaceInset) // head
+        limb(0f, 30f, 5f, 6f, Palette.surfaceInset) // neck
+        oval(0f, 52f, 26f, 30f, fillFor(maxOf(heat.chest, heat.core))) // torso / chest+core
+        // shoulders + arms
+        oval(-28f, 42f, 12f, 10f, fillFor(heat.shoulders))
+        oval(28f, 42f, 12f, 10f, fillFor(heat.shoulders))
+        limb(-44f, 58f, 9f, 28f, fillFor(heat.arms))
+        limb(44f, 58f, 9f, 28f, fillFor(heat.arms))
+        // upper back hint (slightly behind torso center)
+        oval(0f, 48f, 18f, 14f, fillFor(heat.back).copy(alpha = fillFor(heat.back).alpha * 0.7f))
+        // hips / glutes
+        oval(0f, 86f, 20f, 12f, fillFor(heat.glutes))
+        // quads
+        limb(-16f, 118f, 11f, 30f, fillFor(heat.quads))
+        limb(16f, 118f, 11f, 30f, fillFor(heat.quads))
+        // hammies (rear overlay on lower thigh)
+        limb(-16f, 128f, 8f, 16f, fillFor(heat.hammies))
+        limb(16f, 128f, 8f, 16f, fillFor(heat.hammies))
+        // calves
+        limb(-16f, 158f, 8f, 16f, fillFor(0.25f))
+        limb(16f, 158f, 8f, 16f, fillFor(0.25f))
+        // center glow
+        drawCircle(active.copy(alpha = 0.35f), radius = 5f * scale, center = Offset(sx(0f), sy(52f)))
+    }
+}
+
 // MARK: - Activity breakdown (per-sport NoopCards, identical layout)
 
 @Composable
@@ -801,9 +975,8 @@ private fun BreakdownSection(groups: List<SportGroup>, rows: List<WorkoutRow>) {
 
 @Composable
 private fun SportCard(g: SportGroup, zones: ZoneSummary?) {
-    // Frosted Effort-tinted card with the sport glyph in the Effort world, plus an HR-zone mini-bar
-    // when the sessions carry imported zones.
-    NoopCard(tint = Palette.effortColor) {
+    // Untinted frosted card — Effort hue stays on the glyph/count, not a wash behind the whole card.
+    NoopCard(tint = null) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             // Identical header for every card.
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -846,7 +1019,7 @@ private fun SportCard(g: SportGroup, zones: ZoneSummary?) {
 }
 
 @Composable
-private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier, tint: Color = Palette.textPrimary) {
+internal fun MiniStat(label: String, value: String, modifier: Modifier = Modifier, tint: Color = Palette.textPrimary) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Overline(label)
         Text(
@@ -870,7 +1043,7 @@ private fun ZonesSection(rows: List<WorkoutRow>) {
             overline = "Whoop import",
             trailing = "${z.sessionsWithZones} of ${rows.size} session${if (rows.size == 1) "" else "s"}",
         )
-        NoopCard(tint = Palette.effortColor) {
+        NoopCard(tint = null) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 // Proportional stacked bar — the Hypnogram geometry with zone colors.
                 SegmentBar(
@@ -878,17 +1051,15 @@ private fun ZonesSection(rows: List<WorkoutRow>) {
                         Palette.hrZoneColor(i + 1) to (m / z.totalMinutes).toFloat()
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    height = 24.dp,
+                    height = 20.dp,
                 )
-                CardDivider()
-                // 5-up stat strip, identical rhythm to the sport cards' MiniStat row.
                 Row(modifier = Modifier.fillMaxWidth()) {
                     z.minutes.forEachIndexed { i, m ->
                         ZoneStat(i + 1, m, z.totalMinutes, Modifier.weight(1f))
                     }
                 }
                 Text(
-                    "Share of imported zone time, duration-weighted across sessions (approximate).",
+                    "Share of imported zone time across sessions.",
                     style = NoopType.footnote,
                     color = Palette.textTertiary,
                 )
@@ -1390,7 +1561,7 @@ private fun SessionEffortCard(strain: Double, effortScale: EffortScale) {
     val shown = UnitFormatter.effortValue(strain, effortScale)
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.space8)) {
         SectionHeader("Effort", overline = "This session")
-        NoopCard(tint = Palette.effortColor) {
+        NoopCard(tint = null) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(18.dp),
@@ -1641,14 +1812,7 @@ private fun ManualWorkoutDialog(
                 val c = WorkoutEditing.classify(it.source)
                 c == WorkoutSource.MANUAL || c == WorkoutSource.DETECTED
             }
-            val context = LocalContext.current
-            TextButton(onClick = {
-                built?.let {
-                    // #297: a confirmed save is a real selection — fold the (validated) sport into the recents.
-                    RecentSportsPrefs.record(context, it.sport)
-                    onSave(it, replacing)
-                }
-            }, enabled = built != null) {
+            TextButton(onClick = { built?.let { onSave(it, replacing) } }, enabled = built != null) {
                 Text(if (editing == null) "Add" else "Save",
                     style = NoopType.body, color = if (built != null) Palette.accent else Palette.textTertiary)
             }
@@ -1719,7 +1883,6 @@ private fun StartTimeField(millis: Long, onPick: (Long) -> Unit) {
 
 @Composable
 private fun SportPickerField(value: String, onChange: (String) -> Unit) {
-    val context = LocalContext.current
     val sportScroll = rememberScrollState()
     val q = value.trim()
     val matches = if (q.isEmpty()) WorkoutSport.all
@@ -1728,10 +1891,6 @@ private fun SportPickerField(value: String, onChange: (String) -> Unit) {
     // free-typed sport with no partial matches — so the dialog isn't permanently half-covered.
     val exact = WorkoutSport.all.any { it.name.equals(q, ignoreCase = true) }
     val showList = matches.isNotEmpty() && !exact
-    // #297: the user's last selections, one tap away above the full catalogue. Raw stored names —
-    // this picker allows free text, so an off-catalogue recent stays selectable here (it just
-    // carries no GPS hint). Only rendered while the field is empty (typing means searching).
-    val recents = if (q.isEmpty()) RecentSportsPrefs.recent(context) else emptyList()
 
     DialogField("Sport", value, onChange = onChange, placeholder = "e.g. Running")
     if (showList) {
@@ -1742,39 +1901,21 @@ private fun SportPickerField(value: String, onChange: (String) -> Unit) {
                 .verticalScroll(sportScroll),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            if (recents.isNotEmpty()) {
-                Overline("Recent", modifier = Modifier.padding(top = 6.dp))
-                recents.forEach { name ->
-                    SportSuggestionRow(
-                        name = name,
-                        isDistance = WorkoutSport.all
-                            .firstOrNull { it.name.equals(name, ignoreCase = true) }?.isDistanceSport == true,
-                        onPick = { onChange(name) },
-                    )
-                }
-                Overline("All activities", modifier = Modifier.padding(top = 6.dp))
-            }
             matches.forEach { sp ->
-                SportSuggestionRow(name = sp.name, isDistance = sp.isDistanceSport, onPick = { onChange(sp.name) })
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onChange(sp.name) }
+                        .padding(vertical = 8.dp),
+                ) {
+                    Text(sp.name, style = NoopType.body, color = Palette.textPrimary)
+                    if (sp.isDistanceSport) {
+                        Spacer(Modifier.width(6.dp))
+                        Text("· GPS", style = NoopType.footnote, color = Palette.textTertiary)
+                    }
+                }
             }
-        }
-    }
-}
-
-/** One tappable suggestion row — shared by the #297 Recent block and the full catalogue list. */
-@Composable
-private fun SportSuggestionRow(name: String, isDistance: Boolean, onPick: () -> Unit) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onPick)
-            .padding(vertical = 8.dp),
-    ) {
-        Text(name, style = NoopType.body, color = Palette.textPrimary)
-        if (isDistance) {
-            Spacer(Modifier.width(6.dp))
-            Text("· GPS", style = NoopType.footnote, color = Palette.textTertiary)
         }
     }
 }
@@ -1962,6 +2103,63 @@ internal fun zoneSummary(rows: List<WorkoutRow>): ZoneSummary? {
     return if (n > 0 && mins.sum() > 0.0) ZoneSummary(mins, n) else null
 }
 
+internal data class StrengthTrainerSummary(
+    val sessions: Int,
+    val volumeLoadKg: Double,
+    val sets: Int,
+    val exercises: Int,
+    val minutes: Int,
+) {
+    val volumeLabel: String get() = if (volumeLoadKg > 0.0) "${grouped(volumeLoadKg)} kg" else "n/a"
+    val setsLabel: String get() = if (sets > 0) "$sets" else "n/a"
+    val exercisesLabel: String get() = if (exercises > 0) "$exercises" else "n/a"
+}
+
+private val STRENGTH_NUMBER = Regex("([0-9][0-9,]*(?:\\.[0-9]+)?)")
+
+internal fun strengthSummary(rows: List<WorkoutRow>): StrengthTrainerSummary {
+    val lifting = rows.filter {
+        WorkoutEditing.classify(it.source) == WorkoutSource.LIFTING ||
+            WorkoutEditing.displaySport(it.sport).contains("strength", ignoreCase = true)
+    }
+    var volume = 0.0
+    var sets = 0
+    var exercises = 0
+    var minutes = 0
+    for (row in lifting) {
+        val notes = row.notes.orEmpty()
+        volume += numberAfter(notes, "volume load") ?: 0.0
+        sets += (numberBefore(notes, "sets") ?: 0.0).roundToInt()
+        exercises += (numberBefore(notes, "exercises") ?: 0.0).roundToInt()
+        minutes += ((row.durationS ?: (row.endTs - row.startTs).toDouble()) / 60.0).roundToInt()
+    }
+    return StrengthTrainerSummary(
+        sessions = lifting.size,
+        volumeLoadKg = volume,
+        sets = sets,
+        exercises = exercises,
+        minutes = minutes,
+    )
+}
+
+private fun numberAfter(text: String, label: String): Double? {
+    val i = text.indexOf(label, ignoreCase = true)
+    if (i < 0) return null
+    return STRENGTH_NUMBER.find(text.substring(i + label.length))
+        ?.groupValues?.getOrNull(1)
+        ?.replace(",", "")
+        ?.toDoubleOrNull()
+}
+
+private fun numberBefore(text: String, label: String): Double? {
+    val i = text.indexOf(label, ignoreCase = true)
+    if (i <= 0) return null
+    return STRENGTH_NUMBER.findAll(text.substring(0, i)).lastOrNull()
+        ?.groupValues?.getOrNull(1)
+        ?.replace(",", "")
+        ?.toDoubleOrNull()
+}
+
 /**
  * The Src-column badge (label + tint). "HC" is abbreviated to fit the narrow column (Apple is
  * likewise short for "Apple Health"); Data Sources / Today spell out "Health Connect". Tints match
@@ -2038,5 +2236,126 @@ internal fun sportIcon(sport: String): ImageVector {
         s.contains("soccer") || s.contains("football") -> Icons.Filled.SportsSoccer
         s.contains("basketball") -> Icons.Filled.SportsBasketball
         else -> Icons.Filled.FitnessCenter
+    }
+}
+
+// MARK: - Custom strength plans (user-authored sets/reps/muscles)
+
+@Composable
+private fun CustomStrengthPlansSection() {
+    val context = LocalContext.current
+    val store = remember { com.noop.data.StrengthPlanStore.from(context) }
+    var plans by remember { mutableStateOf(store.loadPlans()) }
+    var draftName by remember { mutableStateOf("Push day") }
+    var draftMuscle by remember { mutableStateOf("chest") }
+    var draftExercise by remember { mutableStateOf("Bench press") }
+    var draftSets by remember { mutableIntStateOf(3) }
+    var draftReps by remember { mutableIntStateOf(8) }
+    var liveNote by remember { mutableStateOf<String?>(null) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
+        SectionHeader(
+            title = "My strength plans",
+            overline = "Sets � reps � muscles",
+            trailing = "${plans.size}",
+        )
+        GlowCard(tint = DomainTheme.Effort.color) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Build your own lifting templates. These are plans only � they never invent HR, Effort, or clinical data. Live sessions still use real strap HR when connected.",
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    WetBounceButton(
+                        label = "+ Plan",
+                        tint = DomainTheme.Effort.color,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        val plan = com.noop.data.StrengthPlanStore.Plan(
+                            id = System.currentTimeMillis(),
+                            name = draftName.ifBlank { "Workout" },
+                            exercises = listOf(
+                                com.noop.data.StrengthPlanStore.Exercise(
+                                    id = System.currentTimeMillis() + 1,
+                                    name = draftExercise.ifBlank { "Exercise" },
+                                    muscleGroup = draftMuscle,
+                                    sets = draftSets.coerceIn(1, 20),
+                                    reps = draftReps.coerceIn(1, 50),
+                                ),
+                            ),
+                        )
+                        store.upsert(plan)
+                        plans = store.loadPlans()
+                        liveNote = "Saved plan \"${plan.name}\" with ${plan.exercises.size} exercise(s)."
+                    }
+                    WetBounceButton(
+                        label = "Workout",
+                        tint = Palette.metricAmber,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        val plan = plans.lastOrNull()
+                        liveNote = if (plan == null) {
+                            "No plan yet � tap + Plan first. Starting a live cardio workout is on the Live / Start workout control above."
+                        } else {
+                            val sets = plan.exercises.sumOf { it.sets }
+                            "Live strength plan: ${plan.name} � ${plan.exercises.size} moves � $sets sets. " +
+                                "Log as you go; Effort only appears if the strap records real HR."
+                        }
+                    }
+                }
+                // Compact editor fields
+                Text("Name: $draftName", style = NoopType.subhead, color = Palette.textSecondary)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Push day", "Pull day", "Legs", "Full body").forEach { name ->
+                        Text(
+                            name,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (draftName == name) DomainTheme.Effort.color.copy(0.25f) else Palette.surfaceInset)
+                                .clickable { draftName = name }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            style = NoopType.footnote,
+                            color = Palette.textPrimary,
+                        )
+                    }
+                }
+                Text("Muscle: $draftMuscle � $draftSets�$draftReps � $draftExercise", style = NoopType.footnote, color = Palette.textTertiary)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    com.noop.data.StrengthPlanStore.MUSCLE_GROUPS.take(6).forEach { g ->
+                        Text(
+                            g,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (draftMuscle == g) Palette.metricAmber.copy(0.28f) else Palette.surfaceInset)
+                                .clickable { draftMuscle = g }
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                            style = NoopType.footnote,
+                            color = Palette.textPrimary,
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TextButton(onClick = { draftSets = (draftSets - 1).coerceAtLeast(1) }) { Text("Sets -") }
+                    TextButton(onClick = { draftSets = (draftSets + 1).coerceAtMost(12) }) { Text("Sets +") }
+                    TextButton(onClick = { draftReps = (draftReps - 1).coerceAtLeast(1) }) { Text("Reps -") }
+                    TextButton(onClick = { draftReps = (draftReps + 1).coerceAtMost(30) }) { Text("Reps +") }
+                }
+                liveNote?.let {
+                    Text(it, style = NoopType.subhead, color = Palette.textSecondary)
+                }
+                if (plans.isNotEmpty()) {
+                    CardDivider()
+                    plans.takeLast(6).asReversed().forEach { p ->
+                        val sets = p.exercises.sumOf { it.sets }
+                        Text(
+                            "${p.name} � ${p.exercises.size} moves � $sets sets � ${p.exercises.firstOrNull()?.muscleGroup ?: "�"}",
+                            style = NoopType.footnote,
+                            color = Palette.textSecondary,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
