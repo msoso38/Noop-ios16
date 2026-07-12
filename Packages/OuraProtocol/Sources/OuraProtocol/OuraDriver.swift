@@ -159,8 +159,11 @@ public final class OuraDriver {
                 phase = .streaming
                 return []
             }
-            // Ack-fetch (max=0) at the new cursor advances without re-pulling data (s5.3 step 4).
-            return [OuraCommands.getEvents(cursor: cursor, maxEvents: 0)]
+            // Continuation fetch at the ADVANCED cursor (max seen ring-time + 1), same shape as the
+            // initial request — open_oura `drain_events` re-issues `req_get_event(start, 255, -1)` every
+            // batch. The old open_ring "ack-fetch" (max=0 at a non-advancing cursor) made the ring
+            // RESTART serving from that cursor: the observed same-window re-serve loop (s5.3).
+            return [OuraCommands.getEvents(cursor: cursor, maxEvents: 255)]
         }
     }
 

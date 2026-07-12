@@ -290,6 +290,18 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private var resumeCursorAtFetchStart: UInt32 = 0
     /// Wall-clock start of the current drain; `drain`'s deadline guard force-stops one running too long.
     private var drainStartedAt: Date?
+    /// The cursor the LAST GetEvents request was issued at — the `start` of open_oura's progress test
+    /// (`next > start`). Continuation requests must advance past it or the drain stops.
+    private var lastRequestCursor: UInt32 = 0
+    /// True between a `0x11` summary that wants more data and the batch-quiet continuation request. The
+    /// ring emits the summary EARLY (observed before its batch finished streaming), so the next request
+    /// waits for the stream to go quiet — open_oura's `transact()` collects until a 1.5 s silence for the
+    /// same reason. Re-requesting mid-stream at a stale cursor restarts the ring's serve (the re-serve loop).
+    private var pendingContinuation = false
+    /// Debounce for the batch-quiet window: restarted on every history record while a continuation is
+    /// pending; fires = the ring finished streaming the batch and the next request can go out.
+    private var batchQuietTimer: Timer?
+    private let batchQuietInterval: TimeInterval = 1.5
     /// Periodic re-fetch while connected, so an overnight-connected session (or one left open after a nap)
     /// picks up freshly-banked sleep data without needing a reconnect. Mirrors BLEManager's ~15 min
     /// periodic WHOOP history-offload floor.
@@ -306,6 +318,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         resumeCursorAtFetchStart = historyCursor
         drainStartedAt = Date()
         drain.reset()
+        lastRequestCursor = historyCursor
+        pendingContinuation = false
+        stopBatchQuietTimer()
         log("Oura: fetching history from cursor \(historyCursor) (\(describeCursor(historyCursor))) [cursor-fix]")
         advance(.startHistoryFetch(cursor: historyCursor))
     }
@@ -344,17 +359,61 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 : "bytes_left stalled"
             log("Oura: history drain force-stopped - \(reason) at bytes_left \(summary.bytesLeft) (guard)")
         }
-        if !continueDrain {
-            // Close the in-progress hypnogram burst BEFORE committing the cursor, so its banked
-            // ring-time can advance the resume point in the same drain.
-            if let burst = hypnogramAssembler.flush() {
-                persistHypnogramBurst(burst)
-            }
-            commitResumeCursor(drainCompleted: !summary.moreData)
-            logActivityEstimateSummary()
+        guard continueDrain else {
+            finishDrain(completed: !summary.moreData)
+            return
         }
-        // The continuation cursor is the resume point; the ring streams the remainder (maxEvents=0 ack).
-        advance(.historyCursorAdvanced(cursor: historyCursor, moreData: continueDrain))
+        // More data behind this batch. Do NOT re-request yet: the ring emits the 0x11 summary EARLY
+        // (observed arriving before its batch finished streaming), and a mid-stream request at a stale
+        // cursor restarts the serve from that cursor (the 5x same-window re-serve, 2026-07-12). Wait for
+        // the batch to go quiet, then continue from max-seen-ring-time + 1 (open_oura drain_events).
+        pendingContinuation = true
+        restartBatchQuietTimer()
+    }
+
+    /// The batch went quiet after a more-data summary: issue the next GetEvents at the ADVANCED cursor,
+    /// or end the drain when the batch made no progress (open_oura `!progressed → break` — re-sending a
+    /// non-advancing cursor is exactly what loops the ring).
+    private func continueDrainAfterQuiet() {
+        stopBatchQuietTimer()
+        guard pendingContinuation else { return }
+        pendingContinuation = false
+        guard let driver, driver.phase == .fetchingHistory else { return }
+        if let next = drain.continuationCursor(lastRequestCursor: lastRequestCursor) {
+            lastRequestCursor = next
+            log("Oura: history batch done - continuing from cursor \(next) [\(describeCursor(next))]")
+            advance(.historyCursorAdvanced(cursor: next, moreData: true))
+        } else {
+            log("Oura: history batch made no cursor progress - stopping drain (ring would re-serve)")
+            finishDrain(completed: false)
+        }
+    }
+
+    /// Common drain-end path: close the in-progress hypnogram burst BEFORE committing the cursor (so its
+    /// banked ring-time can advance the resume point in the same drain), commit, log the estimates, and
+    /// return the driver to `.streaming`.
+    private func finishDrain(completed: Bool) {
+        pendingContinuation = false
+        stopBatchQuietTimer()
+        if let burst = hypnogramAssembler.flush() {
+            persistHypnogramBurst(burst)
+        }
+        commitResumeCursor(drainCompleted: completed)
+        logActivityEstimateSummary()
+        advance(.historyCursorAdvanced(cursor: historyCursor, moreData: false))
+    }
+
+    private func restartBatchQuietTimer() {
+        batchQuietTimer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: batchQuietInterval, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.continueDrainAfterQuiet() }
+        }
+        batchQuietTimer = t
+    }
+
+    private func stopBatchQuietTimer() {
+        batchQuietTimer?.invalidate()
+        batchQuietTimer = nil
     }
 
     /// Commit the durable resume cursor at drain end. Only a cursor that (a) moved forward, (b) is below
@@ -628,6 +687,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         drain.reset()
         resumeCursorAtFetchStart = 0
         drainStartedAt = nil
+        lastRequestCursor = 0
+        pendingContinuation = false
+        stopBatchQuietTimer()
         reachedStreaming = false
         pendingInstallKey = nil
         adoptPhase = .idle
@@ -804,6 +866,21 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// mis-recorded as happening right now; when no anchor has arrived yet this session, we park the event
     /// until one does (`pendingAnchorEvents`), rather than immediately guessing wall-clock. Out-of-range
     /// HR/temp is dropped, never shown.
+    /// Fold TLV records decoded from the notify stream — these are HISTORY-LOG records (the live-HR path
+    /// is `ingestLiveHRPush`): every envelope ring-time advances the drain's in-session continuation
+    /// cursor (open_oura `drain_events` tracks the max timestamp of EVERY batch event), and while a
+    /// continuation is pending the batch-quiet window stays open as long as records keep arriving.
+    private func ingestHistory(_ events: [OuraEvent]) {
+        guard !events.isEmpty else { return }
+        for e in events {
+            if let rt = e.envelopeRingTimestamp {
+                drain.noteSeenRingTime(rt)
+            }
+        }
+        if pendingContinuation { restartBatchQuietTimer() }
+        ingest(events)
+    }
+
     private func ingest(_ events: [OuraEvent]) {
         guard !events.isEmpty, let driver else { return }
         let now = Int(Date().timeIntervalSince1970)
@@ -994,8 +1071,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     }
 
     /// Re-send the live-HR enable+subscribe so the ~20 s auto-revert never silently stops the stream.
+    /// Skipped while a history drain is in flight: the Oura app never runs live mode during a sync, and
+    /// interleaving enable writes with the batch stream is off-model noise (live HR resumes on the next
+    /// 15 s tick after the drain returns to `.streaming`).
     private func reengageLiveHR() {
-        guard let driver, reachedStreaming else { return }
+        guard let driver, reachedStreaming, driver.phase != .fetchingHistory else { return }
         write(driver.reengageLiveHRCommands())
     }
 
@@ -1134,6 +1214,9 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         drain.reset()
         resumeCursorAtFetchStart = 0
         drainStartedAt = nil
+        lastRequestCursor = 0
+        pendingContinuation = false
+        stopBatchQuietTimer()
         // Resume the GetEvents cursor from where the LAST connection to this ring left off (s5.1/5.3), so
         // a routine reconnect doesn't re-fetch the ring's entire banked history every time. A persisted
         // value above the plausibility ceiling is garbage banked by a pre-fix build (a bytes_left count or
@@ -1173,6 +1256,8 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         }
         stopReengageTimer()
         stopHistoryFetchTimer()
+        stopBatchQuietTimer()
+        pendingContinuation = false
         // Drain BEFORE driver.stop() clears its anchor (same reasoning as stop()); a hypnogram burst
         // still accumulating flushes first for the same reason.
         if let burst = hypnogramAssembler.flush() {
@@ -1324,12 +1409,12 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
             let tlvBytes = frames.filter { $0.op != OuraFraming.secureSessionOp && $0.op != Self.setAuthKeyRespOp }
                                  .flatMap { [$0.op, UInt8($0.body.count)] + $0.body }
             if !tlvBytes.isEmpty {
-                ingest(driver.ingest(notification: tlvBytes, reassembler: reassembler))
+                ingestHistory(driver.ingest(notification: tlvBytes, reassembler: reassembler))
             }
             return
         }
         // No secure frame in this notification: treat the whole value as TLV record bytes.
-        ingest(driver.ingest(notification: bytes, reassembler: reassembler))
+        ingestHistory(driver.ingest(notification: bytes, reassembler: reassembler))
     }
 
     /// Act on what the driver resolved a 0x2F secure sub-frame to.

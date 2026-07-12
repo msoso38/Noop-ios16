@@ -155,7 +155,7 @@ final class OuraDriverTests: XCTestCase {
 
     // MARK: - History fetch loop
 
-    func testHistoryFetchFlushesThenFetchesThenAcks() {
+    func testHistoryFetchFlushesThenFetchesThenContinues() {
         let d = OuraDriver(ringGen: .gen3, authKey: key)
         let start = d.nextStep(after: .startHistoryFetch(cursor: 0))
         XCTAssertEqual(d.phase, .fetchingHistory)
@@ -163,10 +163,11 @@ final class OuraDriverTests: XCTestCase {
         // get_events cursor 0, max 255, flags FFFFFFFF.
         XCTAssertEqual(start[1].bytes, [0x10, 0x09, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
 
-        // More data -> ack-fetch (max 0) at the advanced cursor.
-        let ack = d.nextStep(after: .historyCursorAdvanced(cursor: 0x12345678, moreData: true))
-        XCTAssertEqual(ack.count, 1)
-        XCTAssertEqual(ack[0].bytes, [0x10, 0x09, 0x78, 0x56, 0x34, 0x12, 0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+        // More data -> continuation fetch at the ADVANCED cursor, SAME shape as the initial request
+        // (max 255, open_oura drain_events). The old max=0 "ack" made the ring restart its serve.
+        let cont = d.nextStep(after: .historyCursorAdvanced(cursor: 0x12345678, moreData: true))
+        XCTAssertEqual(cont.count, 1)
+        XCTAssertEqual(cont[0].bytes, [0x10, 0x09, 0x78, 0x56, 0x34, 0x12, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
 
         // No more -> back to streaming.
         let stop = d.nextStep(after: .historyCursorAdvanced(cursor: 0x12345678, moreData: false))

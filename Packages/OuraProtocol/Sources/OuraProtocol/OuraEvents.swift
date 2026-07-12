@@ -210,4 +210,26 @@ public enum OuraEvent: Equatable, Sendable {
         default: return false
         }
     }
+
+    /// The record's envelope ring-time, when it carries one (battery is a plain response, not a log
+    /// record). Feeds the history drain's in-session continuation cursor: open_oura's `drain_events`
+    /// advances `start` past the max timestamp of EVERY event in a batch, whatever its tag.
+    public var envelopeRingTimestamp: UInt32? {
+        switch self {
+        case .hr(let v): return v.ringTimestamp
+        case .ibi(let v): return v.ringTimestamp
+        case .hrv(let v): return v.ringTimestamp
+        case .spo2(let v): return v.ringTimestamp
+        case .temp(let v): return v.ringTimestamp
+        case .battery: return nil
+        case .sleepPhase(let v): return v.ringTimestamp
+        case .motion(let v): return v.ringTimestamp
+        case .state(let v): return v.ringTimestamp
+        case .timeSync(let v): return v.ringTimestamp
+        case .rtcBeacon(let v): return v.ringTimestamp
+        case .debugText(let rt, _): return rt
+        case .tierB(let v): return v.ringTimestamp
+        case .activityInfo(let v): return v.ringTimestamp
+        }
+    }
 }

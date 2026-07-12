@@ -239,15 +239,31 @@ Gen 5 example `0912 020100 020103 010001 090329 665544332211`. [open_oura-r5]
 
 ### 5.2 GetEvents response / summary (`0x11`)
 ```
-11 08 <status:1> <sub_status:1> <last_ring_timestamp:4 LE> <pad:2>
+11 08 <events_received:1> <progress:1> <bytes_left:4 LE> <pad:2>
 ```
-[open_ring]
-- `status` - `0x00` = empty/no more; `0xFF` = data follows (event records arrive as inner TLV stream, §2.3). [open_ring]
-- `last_ring_timestamp` - new cursor value to use next fetch.
+[open_oura `EventBatchSummary`]
+- `events_received` - COUNT of events in the batch (`0xFF` = 255, the legacy max). NOT a status byte.
+- `progress` - `sleepAnalysisProgress`, informational only (never a block).
+- `bytes_left` - the ring's remaining buffered bytes; the drain is done at `bytes_left == 0`.
+- The summary carries **no cursor**. An earlier revision read bytes 2–5 as `last_ring_timestamp` — that
+  value is `bytes_left`, and persisting it as a cursor caused the #91 full re-dump loop.
+- Observed on-device (2026-07-12): the `0x11` can arrive BEFORE its batch finishes streaming.
 
-### 5.3 Canonical fetch loop (NOOP)
-1. SyncTime (§5.4). 2. Send `0x10` with stored cursor, `max=255`. 3. Receive inner TLV records (§6). 4. ~100 ms later send ack-fetch (`max=0`, cursor = `last_ring_timestamp`) to advance. 5. Repeat until `status=0x00`. [open_ring]
-6. Optionally `28 01 00` to flush flash-buffered events first. [open_ring]
+### 5.3 Canonical fetch loop (NOOP, aligned with open_oura `drain_events`)
+1. SyncTime (§5.4). 2. Optionally `28 01 00` to flush flash-buffered events first. [open_ring]
+3. Send `0x10` with the stored cursor, `max=255`, flags `FF FF FF FF` (open_oura's `flags=-1`).
+4. Collect the batch until the stream goes QUIET (~1.5 s of no records — open_oura's `transact()`
+   window). The `0x11` summary is NOT an end-of-batch marker (§5.2); never re-request mid-stream.
+5. Next cursor = max envelope ring-time seen across ALL batch records + 1. If the batch had no records,
+   or the cursor did not advance past the previous request's, STOP (open_oura `!progressed`).
+6. Repeat from step 3 while the summary reports `bytes_left > 0`; done at `bytes_left == 0`.
+
+**SUPERSEDED (open_ring):** an earlier revision taught an ack-fetch (`max=0`, cursor =
+`last_ring_timestamp`) ~100 ms after the records. Re-sending `0x10` at a non-advancing cursor — and
+especially mid-stream — makes the ring RESTART serving from that cursor: observed on-device 2026-07-12
+as five identical ~955 KB re-serves of one window while the tail (`bytes_left` 409 KB) was never
+reached. open_oura has no ack-fetch; every request is the same `(cursor, max=255, flags=-1)` shape
+with the cursor advanced per batch.
 
 ### 5.4 SyncTime (`0x12`)
 ```
