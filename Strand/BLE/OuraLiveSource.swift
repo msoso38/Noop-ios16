@@ -142,6 +142,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private var driver: OuraDriver?
     /// Reassembles notification fragments into complete TLV inner records across feeds.
     private let reassembler = OuraReassembler()
+    /// Accumulates the ring's burst-written sleep-phase records so a night's hypnogram can be laid out
+    /// backward at the 30 s SleepNet epoch from the anchored burst end (the envelope time marks the
+    /// analysis WRITE moment, not the sleep). Flushed at drain end and teardown; reset per connection.
+    private let hypnogramAssembler = OuraHypnogramAssembler()
 
     /// Logs the FIRST live HR sample of a connection only (never every push); reset on stop/disconnect.
     private var loggedFirstHR = false
@@ -335,6 +339,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             log("Oura: history drain force-stopped - \(reason) at bytes_left \(summary.bytesLeft) (guard)")
         }
         if !continueDrain {
+            // Close the in-progress hypnogram burst BEFORE committing the cursor, so its banked
+            // ring-time can advance the resume point in the same drain.
+            if let burst = hypnogramAssembler.flush() {
+                persistHypnogramBurst(burst)
+            }
             commitResumeCursor(drainCompleted: !summary.moreData)
             logActivityEstimateSummary()
         }
@@ -363,6 +372,32 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         } else {
             log("Oura: history \(how) (resume cursor unchanged \(historyCursor) [\(describeCursor(historyCursor))])")
         }
+    }
+
+    /// Persist a closed hypnogram burst with its RECONSTRUCTED time axis: codes laid backward at the
+    /// 30 s SleepNet epoch from the anchored burst end (the last record's envelope time = the analysis
+    /// write moment ≈ minutes after wake). Falls back to wall-clock as the burst end when no anchor
+    /// exists (rare since the SyncTime send; the sequence and spacing stay honest, only the end drifts
+    /// by the connect delay). Logs the reconstructed window + stage minutes so a capture is self-evident.
+    private func persistHypnogramBurst(_ burst: OuraHypnogramBurst) {
+        guard let driver, burst.totalCodes > 0 else { return }
+        let anchored = driver.unixSeconds(forRingTimestamp: burst.lastRingTimestamp)
+        let end = anchored ?? Int(Date().timeIntervalSince1970)
+        let laid = burst.codesWithTimes(endUnixSeconds: end)
+        for code in laid {
+            enqueue([.sleepPhase(code.phase)], ts: code.ts)
+        }
+        if anchored != nil {
+            noteStoredHistoryRingTime(burst.lastRingTimestamp)   // banked → the resume cursor may advance
+        }
+        var mins = [0.0, 0.0, 0.0, 0.0]
+        for code in laid { mins[code.phase.stage.rawValue] += 0.5 }   // 30 s/code = 0.5 min
+        let fmt = Self.cursorDateFormatter
+        let startStr = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(laid.first!.ts)))
+        let endStr = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(end)))
+        let basis = anchored != nil ? "anchored" : "wall-clock fallback"
+        log(String(format: "Oura: hypnogram reconstructed [%@ → %@, %@] codes=%d deep/light/rem/awake=%.0f/%.0f/%.0f/%.0f min",
+                   startStr, endStr, basis, burst.totalCodes, mins[0], mins[1], mins[2], mins[3]))
     }
 
     /// Record a STORED history sample's ring-time toward the resume cursor (open_oura `nextEventToSync`).
@@ -530,7 +565,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         peripheral = nil
         writeCharacteristic = nil
         // Drain BEFORE driver.stop() clears its anchor, so a pending event still gets a real anchored
-        // time if one exists rather than always falling back to wall-clock at teardown.
+        // time if one exists rather than always falling back to wall-clock at teardown. Same for a
+        // hypnogram burst still accumulating (e.g. the session ended mid-drain).
+        if let burst = hypnogramAssembler.flush() {
+            persistHypnogramBurst(burst)
+        }
         drainPendingAnchorEvents()
         driver?.stop()
         driver = nil
@@ -750,6 +789,14 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 lastPhaseUtc = utc
                 lastPhaseCodeCount = phases.count
             }
+            // TIME-AXIS RECONSTRUCTION: the ring writes a night's whole hypnogram in one burst AFTER
+            // wake, every record stamped with the WRITE moment — so the codes are accumulated here and
+            // laid out backward (30 s/code from the anchored burst end) when the burst closes, instead
+            // of being persisted at the (meaningless for sleep) envelope time. A returned burst means a
+            // ring-time gap just closed the previous one.
+            if let closed = hypnogramAssembler.feed(ringTimestamp: firstPhase.ringTimestamp, phases: phases) {
+                persistHypnogramBurst(closed)
+            }
         }
         for e in events {
             switch e {
@@ -815,13 +862,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                     pendingAnchorEvents.append((e, v.ringTimestamp))
                 }
 
-            case .sleepPhase(let v):
-                if let ts = driver.unixSeconds(forRingTimestamp: v.ringTimestamp) {
-                    enqueue([e], ts: ts)
-                    noteStoredHistoryRingTime(v.ringTimestamp)
-                } else {
-                    pendingAnchorEvents.append((e, v.ringTimestamp))
-                }
+            case .sleepPhase:
+                // Handled at the record level above (hypnogramAssembler): the envelope time marks the
+                // analysis WRITE moment, not the sleep, so per-code enqueue here would mis-place the
+                // night. Codes persist when the burst closes (persistHypnogramBurst).
+                break
 
             case .timeSync(let ts):
                 // #91: a 0x42 whose epoch is outside the 2020–2035 plausibility window is silently ignored,
@@ -1041,6 +1086,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedAnchor = false
         loggedTierBKinds.removeAll()
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
+        hypnogramAssembler.reset()        // ditto for a half-accumulated burst from a dead session
         pendingInstallKey = nil
         adoptPhase = .idle
         reassembler.reset()
@@ -1087,7 +1133,11 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         }
         stopReengageTimer()
         stopHistoryFetchTimer()
-        // Drain BEFORE driver.stop() clears its anchor (same reasoning as stop()).
+        // Drain BEFORE driver.stop() clears its anchor (same reasoning as stop()); a hypnogram burst
+        // still accumulating flushes first for the same reason.
+        if let burst = hypnogramAssembler.flush() {
+            persistHypnogramBurst(burst)
+        }
         drainPendingAnchorEvents()
         driver?.stop()
         driver = nil
