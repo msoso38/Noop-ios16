@@ -4866,13 +4866,14 @@ class WhoopBleClient(
                     "consecutive empty syncs = ${emptySyncTracker.consecutiveEmptySyncs}.",
             )
         }
-        // #324/#928: parity with the Swift log — a completed sync that banked records dated implausibly in
-        // the future (RTC relatched ahead) shows the future-clock banner below; name it in the export too.
-        if (reason == "HISTORY_COMPLETE" && !bankedNothing &&
-            futureDatedStrapBanner(strapNewestTs, nowSec) != null
-        ) {
+        // #324/#928: a strap whose newest banked record is dated in the FUTURE (RTC relatched ahead) is
+        // future-dated regardless of HOW this offload ended — a deep future-dated backlog TIMES OUT as
+        // readily as it completes (the reporter's #324 session ended on timeout, not HISTORY_COMPLETE).
+        // Compute the banner once so BOTH outcomes name the real cause instead of "strap went quiet".
+        val futureClockBanner = futureDatedStrapBanner(strapNewestTs, nowSec)
+        if (futureClockBanner != null) {
             val aheadH = ((strapNewestTs ?: 0L) - nowSec) / 3600
-            log("Backfill: completed but the strap's newest banked record is ${aheadH}h AHEAD of the wall clock (#324/#928) - clock set in the future; showing the future-clock banner and importing nothing from this range.")
+            log("Backfill: the strap's newest banked record is ${aheadH}h AHEAD of the wall clock (#324/#928) - clock set in the future; showing the future-clock banner and importing nothing from this range.")
         }
         // PR #556 reimpl: persist the HISTORY_COMPLETE instant so "Last synced N ago" survives a BLE-client
         // recreation / process restart and stops reverting to "Never".
@@ -4919,7 +4920,7 @@ class WhoopBleClient(
                 // #324/#928: the strap banked records but its newest is dated implausibly in the future
                 // (RTC relatched ahead). #773 drops the samples so nothing is misfiled, but this path would
                 // otherwise report a clean sync and leave the user with no data and no reason. Name it.
-                else futureDatedStrapBanner(strapNewestTs, nowSec),
+                else futureClockBanner,
                 historySyncExperimental = whoop5HistoryExperimental,
             )
             "timeout" -> it.copy(
@@ -4927,8 +4928,10 @@ class WhoopBleClient(
                 syncChunksThisSession = ackedChunksThisSession,
                 // #580: on a history-experimental 5/MG this isn't a sync failure — suppress the "went quiet"
                 // error (it's just the empty offload), and surface the experimental flag instead.
+                // #324/#928: a future-dated WHOOP-4 TIMES OUT on its deep future-dated backlog — prefer the
+                // honest future-clock banner over "strap went quiet" (the reporter's #324 case timed out).
                 lastSyncError = if (isWhoop5) null
-                    else "Sync interrupted - the strap went quiet. It will retry on the next sync.",
+                    else futureClockBanner ?: "Sync interrupted - the strap went quiet. It will retry on the next sync.",
                 historySyncExperimental = whoop5HistoryExperimental,
             )
             else -> it.copy(
