@@ -313,6 +313,8 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showRecalibrate by remember { mutableStateOf(false) }
+    // "Debug logging" moved here from Settings: dev-only, mirrors the strap log to logcat over adb.
+    var debugLogging by remember { mutableStateOf(NoopPrefs.debugLogging(context)) }
     SettingsSectionTC(
         icon = Icons.Filled.Info,
         title = "Diagnostic tools",
@@ -335,6 +337,27 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
                 fullWidth = true,
                 onClick = { showRecalibrate = true },
             )
+            // Debug logging (moved here from Settings): mirror the strap log to logcat for adb
+            // development. Dev-only, off by default; the in-app log and "Share strap log" above work either way.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Debug logging", style = NoopType.subhead, color = Palette.textPrimary)
+                    Text(
+                        "Also write the strap log to the system log (logcat) for development over adb. Off by default.",
+                        style = NoopType.footnote,
+                        color = Palette.textTertiary,
+                    )
+                }
+                Switch(
+                    checked = debugLogging,
+                    onCheckedChange = { debugLogging = it; vm.setDebugLogging(it) },
+                    colors = settingsSwitchColors(),
+                )
+            }
         }
     }
     if (showRecalibrate) {
