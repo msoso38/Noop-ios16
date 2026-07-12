@@ -85,7 +85,14 @@ public enum OuraEventTag: UInt8, Sendable, CaseIterable, Codable {
         switch self {
         case .sleepSummary1, .sleepSummaryC, .sleepSummaryD, .sleepSummaryE,
              .sleepSummaryF, .activityInfo, .activitySummary1, .activitySummary2,
-             .realSteps1, .realSteps2, .spo2Smoothed:
+             .realSteps1, .realSteps2, .spo2Smoothed,
+             // #287: 0x71 green_ibi_and_amp is NOT corpus-verified — there is no captured 0x71 fixture,
+             // and OURA_PROTOCOL.md §6.2 documents a DIFFERENT layout (5 IBI deltas + 6 amplitudes,
+             // shift [2:0]) than the 0x60 decoder it was wired to (6 absolute IBIs, 4-bit shift). Decoding
+             // it with the 0x60 layout fabricates a 6th phantom R-R and reads deltas as absolute intervals,
+             // silently corrupting reconstructed HRV. Demote to Tier B so it is gated out of live emission
+             // until a real 0x71 capture lets us write + verify a dedicated decoder. (tierA == corpus-verified.)
+             .greenIbiAmp:
             return .tierB
         default:
             return .tierA
