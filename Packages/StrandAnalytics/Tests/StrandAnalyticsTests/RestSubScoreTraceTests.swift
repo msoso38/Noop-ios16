@@ -1,4 +1,5 @@
 import XCTest
+import WhoopProtocol
 @testable import StrandAnalytics
 
 final class RestSubScoreTraceTests: XCTestCase {
@@ -49,5 +50,43 @@ final class RestSubScoreTraceTests: XCTestCase {
             restorativeSeconds: restorative, needHours: need, consistency: 0.7, deepSeconds: deep)
         let r2 = (composite * 100.0).rounded() / 100.0
         XCTAssertTrue(line.contains("composite=\(r2)"), line)
+    }
+
+    // #319: byte-parity with Android SleepMotionLineTest — identical expected strings.
+    func testSleepMotionLine() {
+        XCTAssertEqual(
+            AnalyticsEngine.sleepMotionLine(day: "2026-07-12", grav: 118, hr: 590, sparse: true,
+                                            useSleepStagerV2: false, family: .whoop4),
+            "sleep-motion day=2026-07-12 grav=118 hr=590 sparse=true stager=V1 family=whoop4")
+        XCTAssertEqual(
+            AnalyticsEngine.sleepMotionLine(day: "2026-07-12", grav: 800, hr: 590, sparse: false,
+                                            useSleepStagerV2: true, family: .whoop5),
+            "sleep-motion day=2026-07-12 grav=800 hr=590 sparse=false stager=V2 family=whoop5")
+    }
+
+    // MARK: - #271 onset trace (over-early WHOOP 4.0 bedtime)
+
+    func testMedianBpm() {
+        XCTAssertNil(AnalyticsEngine.medianBpm([]))
+        XCTAssertEqual(AnalyticsEngine.medianBpm([60]), 60)
+        XCTAssertEqual(AnalyticsEngine.medianBpm([50, 70, 60]), 60)        // sorted 50,60,70 → idx 1
+        XCTAssertEqual(AnalyticsEngine.medianBpm([50, 60, 70, 80]), 70)    // count 4 → idx 2 (upper-middle)
+    }
+
+    func testSleepOnsetLineHrNotDipped() {
+        // HR still near baseline at onset → ratio ~1.0 → suspected pre-onset-awake over-staging.
+        let line = AnalyticsEngine.sleepOnsetLine(onsetTs: 1_700_000_000, hrAtOnsetBpm: 58, baselineHrBpm: 60)
+        XCTAssertEqual(line, "sleep-onset onsetTs=1700000000 hrAtOnset=58 baselineHr=60 hrRatio=0.97")
+    }
+
+    func testSleepOnsetLineHrDipped() {
+        // A real onset: HR dipped well below baseline → ratio < 0.9 (cf. morningReonsetRestingHRMult).
+        let line = AnalyticsEngine.sleepOnsetLine(onsetTs: 1_700_000_000, hrAtOnsetBpm: 48, baselineHrBpm: 64)
+        XCTAssertTrue(line.contains("hrRatio=0.75"), line)
+    }
+
+    func testSleepOnsetLineZeroBaselineIsSafe() {
+        let line = AnalyticsEngine.sleepOnsetLine(onsetTs: 1, hrAtOnsetBpm: 50, baselineHrBpm: 0)
+        XCTAssertTrue(line.contains("hrRatio=0.0"), line)
     }
 }

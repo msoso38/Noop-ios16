@@ -116,9 +116,12 @@ enum AICoachError: LocalizedError {
     case network(String)
     case decode
     case keySaveFailed
+    case badCustomURL(String)
 
     var errorDescription: String? {
         switch self {
+        case .badCustomURL(let message):
+            return message
         case .noKey:
             return "Add your own API key first to use the coach."
         case .keySaveFailed:
@@ -355,8 +358,7 @@ final class AICoachEngine: ObservableObject {
     }
 
     /// Store the user's pasted key securely. Clears any prior error. If the Keychain write fails the
-    /// key is NOT saved, so surface that to the UI instead of silently proceeding (#872), and skip the
-    /// model refresh (it would only hit `.noKey`).
+    /// key is NOT saved, so surface that to the UI instead of silently proceeding (#872).
     func setKey(_ key: String) {
         guard AIKeyStore.save(key, owner: provider.rawValue) else {
             errorText = AICoachError.keySaveFailed.errorDescription
@@ -365,8 +367,11 @@ final class AICoachEngine: ObservableObject {
         }
         errorText = nil
         objectWillChange.send() // `hasKey` is computed; nudge SwiftUI to re-read it.
-        // Pull the user's ACTUAL current models from the provider so the picker is never stale.
-        Task { await refreshModels() }
+        // #288: do NOT auto-fetch the provider's model list on key-save. For a cloud provider that GET
+        // egresses to the provider the MOMENT a key is saved (IP + request timing + key-validity) — before
+        // any send, in an app that is zero-network by default. The picker shows the curated models; the LIVE
+        // list is pulled only when the user taps Refresh (an explicit action that is its own consent) or
+        // sends. Local Custom servers still refresh on Connect.
     }
 
     /// Forget the stored key.

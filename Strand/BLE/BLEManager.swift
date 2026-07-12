@@ -606,6 +606,16 @@ public final class BLEManager: NSObject, ObservableObject {
     /// this guard those re-entries re-blasted hello/SET_CLOCK at the strap mid-offload and stopped it
     /// from streaming type-47 — THE iOS "won't serve" root cause. Reset on disconnect.
     private var connectHandshakeDone = false
+    /// #34: true once the cmd-notify characteristic (61080003) has CONFIRMED it's subscribed
+    /// (`didUpdateNotificationStateFor` fired for it with `isNotifying == true`) — as opposed to merely
+    /// requested. Together with `connectHandshakeDone`, gates `state.connectSettled` (see LiveState.swift)
+    /// so the alarm re-arm doesn't fire GET_ALARM_TIME before the strap's reply channel is actually live.
+    /// Reset on disconnect alongside `connectHandshakeDone`.
+    private var cmdNotifyConfirmedActive = false
+    /// #34: latches once `state.connectSettled` has been bumped for the CURRENT connection, so a
+    /// didUpdateNotificationStateFor re-fire (or any other later call into the check) can't double-bump.
+    /// Reset on disconnect.
+    private var connectSettledSignaled = false
     /// Re-entrancy guard for captureRawAccel: true while a bounded on-demand window is running.
     /// A second tap is a no-op until the active capture's asyncAfter block fires and clears this.
     private var rawCaptureInFlight = false
@@ -1679,6 +1689,17 @@ public final class BLEManager: NSObject, ObservableObject {
         let currentTrim = backfiller?.lastAckedTrim
         let trimAdvanced = currentTrim != nil && currentTrim != lastSessionEndTrim
         lastSessionEndTrim = currentTrim
+        // #324/#928: a strap whose newest banked record is dated in the FUTURE (RTC relatched ahead) is
+        // future-dated regardless of HOW this offload ended — a deep future-dated backlog TIMES OUT as
+        // readily as it completes (the reporter's #324 session ended on timeout, not HISTORY_COMPLETE).
+        // Compute the banner once so BOTH outcomes name the real cause instead of "strap went quiet".
+        let wallNowForBanner = Int(Date().timeIntervalSince1970)
+        let futureClockBanner = BLEManager.futureDatedStrapBanner(
+            strapNewestTs: strapNewestTs, wallNowUnix: wallNowForBanner)
+        if futureClockBanner != nil {
+            let aheadH = ((strapNewestTs ?? 0) - wallNowForBanner) / 3600
+            log("Backfill: the strap's newest banked record is \(aheadH)h AHEAD of the wall clock (#324/#928) - clock set in the future; showing the future-clock banner and importing nothing from this range.")
+        }
         // Honest sync outcome for a cloud-free user (mirrors Android exitBackfilling, ed6a31d):
         // HISTORY_COMPLETE stamps lastSyncedAt + clears any error; the idle-watchdog timeout surfaces
         // a non-silent error. A disconnect mid-sync bypasses this path (didDisconnectPeripheral resets
@@ -1729,6 +1750,12 @@ public final class BLEManager: NSObject, ObservableObject {
                 state.lastSyncError = sustainedEmpty
                     ? "Synced, but your strap had no stored history to hand over - only its diagnostic output. This usually means its clock has lost sync, so it isn't saving data to flash. Fully charge it to 100%, then reconnect, and it should start banking again."
                     : nil
+            } else if let futureBanner = futureClockBanner {
+                // #324/#928: the strap banked records but its newest is dated implausibly in the FUTURE
+                // (RTC relatched ahead). #773 drops the future-dated samples so nothing is misfiled, but
+                // the "banked something" path above would otherwise report a clean sync and leave the
+                // user with no data and no reason. Name the real cause + the strap-side remedy.
+                state.lastSyncError = futureBanner
             } else {
                 state.lastSyncError = nil
             }
@@ -1771,7 +1798,11 @@ public final class BLEManager: NSObject, ObservableObject {
                     state.lastSyncError = nil
                 }
             } else {
-                state.lastSyncError = "Sync interrupted - the strap went quiet. It will retry on the next sync."
+                // #324/#928: a future-dated strap TIMES OUT on its deep future-dated backlog — that's not
+                // "the strap went quiet", it's the clock being set ahead. Prefer the honest future-clock
+                // banner so the reporter's timeout case (the common one) names the real cause + remedy.
+                state.lastSyncError = futureClockBanner
+                    ?? "Sync interrupted - the strap went quiet. It will retry on the next sync."
             }
         }
         checkStrapLiveness()         // safety-net: strap ahead of us AND our frontier frozen ⇒ stuck?
@@ -1928,6 +1959,23 @@ public final class BLEManager: NSObject, ObservableObject {
         let bankedSensorRecords = decodedChunks > 0 || archivedFrames > 0 || unarchivedFrames > 0
         let bankedNothing = !bankedSensorRecords && (consoleChunks >= 3 || rowsPersisted == 0)
         return (bankedSensorRecords, bankedNothing)
+    }
+
+    /// #324/#928: the post-sync banner for a strap whose clock is set in the FUTURE. Unlike the
+    /// "clock lost / not banking" case (`bankedNothing`), this strap DOES bank records every pass — but
+    /// its RTC relatched to a future base, so every banked timestamp reads ahead of the wall clock and
+    /// NOOP won't import them (importing would misfile the night days or years ahead). The existing
+    /// clock-lost banner is gated on empty syncs and never fires here, so this failure mode was silent
+    /// (#324). Returns the user-facing string when the strap-reported newest record is future-dated
+    /// beyond the 48 h skew allowance (`BackfillContinuation.isFutureDatedNewest`), else nil. Pure and
+    /// deterministic — one detection is decisive (nothing legitimate banks 48 h ahead), so no streak
+    /// gate is needed. Mirrors Android `futureDatedStrapBanner`.
+    nonisolated static func futureDatedStrapBanner(strapNewestTs: Int?, wallNowUnix: Int) -> String? {
+        guard BackfillContinuation.isFutureDatedNewest(strapNewestTs, wallNowUnix: wallNowUnix) else { return nil }
+        return "Synced, but your strap's clock is set in the future - its banked history is dated ahead of "
+            + "today, so NOOP can't trust those timestamps and didn't import them (importing them would "
+            + "misfile your data days or years ahead). Fully charge the strap to 100% and power-cycle it so "
+            + "its clock re-syncs, then reconnect."
     }
 
     /// Start (or restart) the periodic backfill timer. Each tick re-runs the type-47 historical
@@ -3002,6 +3050,8 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         whoop5SessionStarted = false
         clockRequested = false
         connectHandshakeDone = false
+        cmdNotifyConfirmedActive = false   // #34: a fresh connection needs its own notify-confirm + settle
+        connectSettledSignaled = false
         realtimeArmedAt = nil   // cleared after the marginal-radio detector above read it (#80)
         // Reset backfill state so the next connect starts a fresh offload (incl. the syncing pill —
         // a dropped link mid-offload must not leave "Syncing strap history…" stuck on, #77).
@@ -3417,6 +3467,15 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 // connectHandshakeDone, so a racing foreground/restore trigger can't fire it early.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.requestSync(.connect) }
                 startBackfillTimer()            // re-offload the type-47 store every backfillIntervalSeconds
+                // #34: signal settled directly (skip the cmd-notify gate `maybeSignalConnectSettled()`
+                // uses) — armStrapAlarm's 5/MG branch never sends GET_ALARM_TIME (log-only readback is
+                // WHOOP4-only, and the 5/MG alarm itself stays behind the Experimental toggle), so there's
+                // no reply-channel race to wait out here; this just keeps the re-arm-on-bond signal firing
+                // for 5/MG the way it did before `connectSettled` replaced raw `bonded`.
+                if !connectSettledSignaled {
+                    connectSettledSignaled = true
+                    state.connectSettled &+= 1
+                }
             }
             return
         }
@@ -3500,6 +3559,25 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 realtimeArmedAt = Date()   // start the arm→drop stopwatch for the marginal-radio detector
             }
         }
+        // #34: the handshake body above (hello, SET_CLOCK, notify-resubscribe requests) has now been
+        // fully ISSUED — check whether the cmd-notify characteristic has also CONFIRMED (the other half
+        // may already have landed, e.g. from the discovery-phase subscribe, or may still be in flight and
+        // land via didUpdateNotificationStateFor below).
+        maybeSignalConnectSettled()
+    }
+
+    /// #34: bump `state.connectSettled` once, per connection, the first moment BOTH `connectHandshakeDone`
+    /// (hello + SET_CLOCK sent) AND `cmdNotifyConfirmedActive` (cmd-notify characteristic confirmed
+    /// subscribed) are true — whichever lands second. Called from the tail of the WHOOP4 handshake and
+    /// from `didUpdateNotificationStateFor` on a cmd-notify confirmation; a no-op until both are true, and
+    /// latched by `connectSettledSignaled` so it can't double-bump on a second call. This is the signal
+    /// the alarm re-arm (AppModel's `live.$connectSettled` sink) waits on instead of raw `bonded`, so
+    /// SET_ALARM_TIME/GET_ALARM_TIME go out on a link whose reply channel is confirmed live (#34).
+    private func maybeSignalConnectSettled() {
+        guard connectHandshakeDone, cmdNotifyConfirmedActive, !connectSettledSignaled else { return }
+        connectSettledSignaled = true
+        state.connectSettled &+= 1
+        log("Connect settled: handshake done + cmd-notify confirmed — alarm re-arm (if due) can fire now")
     }
 
     /// SET_CLOCK(10) payload — the 8-byte form `[seconds u32 LE][subseconds u32 LE]`, subseconds in
@@ -3739,6 +3817,14 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             log("Notify enable failed for \(characteristic.uuid): \(error.localizedDescription)")
         } else {
             log("Notify \(characteristic.isNotifying ? "active" : "off") \(characteristic.uuid)")
+            // #34: the cmd-notify channel carries GET_ALARM_TIME's (and every other COMMAND_RESPONSE's)
+            // reply. Once IT confirms subscribed, check whether the handshake side of connectSettled is
+            // also done — this is the "notify confirmed" half arriving AFTER the handshake body, the
+            // ordering a v8.6.2 strap log showed actually happens.
+            if characteristic === cmdNotifyCharacteristic, characteristic.isNotifying {
+                cmdNotifyConfirmedActive = true
+                maybeSignalConnectSettled()
+            }
         }
     }
 }

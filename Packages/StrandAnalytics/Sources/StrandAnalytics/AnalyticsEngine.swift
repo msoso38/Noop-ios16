@@ -448,6 +448,13 @@ public enum AnalyticsEngine {
                 restorativeSeconds: deepS + remS, needHours: sleepNeedHours,
                 consistency: sleepConsistency, deepSeconds: deepS,
                 groupFragments: mainGroup.count, groupInBedSeconds: inBedS))
+            // #319: the motion-coverage + staging context behind the Rest number, so a high score on a poor
+            // night can be explained from an export (WHOOP 4.0 banks motion coarsely → sparse=true → most
+            // epochs default to sleep → over-counted duration → high Rest). `stager` says whether V1/V2 ran.
+            traceSink(AnalyticsEngine.sleepMotionLine(
+                day: day, grav: gravity.count, hr: hr.count,
+                sparse: SleepStager.isGravitySparse(gravity, hr: hr),
+                useSleepStagerV2: useSleepStagerV2, family: skinTempFamily))
             // CAPTURE-C (#799): append the sleep PROVENANCE so an imported row winning the merge is visible
             // (not silently swapped for the measured night). hoursAsleep = the scored night's tst in minutes;
             // sourceRowId = the main-night's start ts for the measured path (stable per night), else the
@@ -456,6 +463,22 @@ public enum AnalyticsEngine {
             traceSink(sleepProvenanceLine(provenance: sleepProvenance,
                                           hoursAsleepMin: tstS / 60.0,
                                           sourceRowId: String(mainStart)))
+            // #271: the ONSET decision — did HR actually dip when the window opened, or did it open on a
+            // still-but-awake stretch (HR still ~baseline)? Both the day-median baseline AND the at-onset
+            // window read from the SAME HR that DETECTION ran over (`dayHr ?? hr` — the full calendar day
+            // when the caller supplies it, else the night window), so the onset instant is guaranteed to be
+            // inside it and the baseline reads as a real DAY median (a real onset sits BELOW it, matching the
+            // daytime/re-onset guards). Emitted only when both have HR, so a motion-only night stays silent.
+            let onsetHr = dayHr ?? hr
+            if mainStart > 0,
+               let baselineHr = AnalyticsEngine.medianBpm(onsetHr.map { $0.bpm }),
+               let hrAtOnset = AnalyticsEngine.medianBpm(
+                   onsetHr.filter { $0.ts >= mainStart && $0.ts < mainStart + AnalyticsEngine.onsetTraceWindowSec }
+                     .map { $0.bpm }) {
+                traceSink(AnalyticsEngine.sleepOnsetLine(onsetTs: mainStart,
+                                                         hrAtOnsetBpm: hrAtOnset,
+                                                         baselineHrBpm: baselineHr))
+            }
         }
 
         // #525 NOTE: the sleep-DURATION figures above are main-night-only (the headline "your night"),
