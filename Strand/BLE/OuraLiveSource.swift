@@ -1076,12 +1076,41 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                         let utc = driver.unixSeconds(forRingTimestamp: summary.ringTimestamp)
                         let when = utc.map { Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval($0))) } ?? "no anchor yet"
                         let hex = summary.rawPayload.map { String(format: "%02x", $0) }.joined(separator: " ")
-                        log("Oura: 0x71 green_ibi_amp #\(greenIbiAmpCount) [\(when)] rt=\(summary.ringTimestamp) len=\(summary.rawPayload.count) raw: \(hex)")
+                        var line = "Oura: 0x71 green_ibi_amp #\(greenIbiAmpCount) [\(when)] rt=\(summary.ringTimestamp) len=\(summary.rawPayload.count) raw: \(hex)"
+                        // Side-by-side CANDIDATE decode (ringverse p_green_ibi_and_amp @0x503960, Tier-B):
+                        // printed for the R-R cross-check only, never stored. nil = gate failed (length /
+                        // reserved bit), which is itself capture evidence.
+                        if let cand = OuraDecoders.decodeGreenIBIAmpCandidate(payload: summary.rawPayload,
+                                                                              ringTimestamp: summary.ringTimestamp) {
+                            let ibis = cand.samples.dropFirst().map { String($0.ibiMs) }.joined(separator: ",")
+                            let amps = cand.samples.map { String($0.amplitude ?? 0) }.joined(separator: ",")
+                            line += " | candidate [ringverse]: shift=\(cand.shift) ibis_ms=[\(ibis)] amps=[\(amps)]"
+                        } else {
+                            line += " | candidate [ringverse]: GATE FAILED (len != 14 or reserved bit set)"
+                        }
+                        log(line)
                         if greenIbiAmpCount == Self.greenIbiAmpLogCap {
                             log("Oura: 0x71 log cap (\(Self.greenIbiAmpLogCap)) reached - further records counted, summarized at drain end")
                         }
                     }
                     break
+                }
+                // 0x49 sleep_summary_1 window candidate (ringverse, VALIDATED against our own samples:
+                // 600/10 on the 2026-07-11→12 night = write−600 min → write−10 min = 23:30→09:20, matching
+                // the reconstructed hypnogram): both uint16 LE fields are MINUTES BEFORE the event time —
+                // start_offset / end_offset of the ring's tracked sleep window. Logged EVERY occurrence
+                // (one per night) as an independent cross-check of the burst reconstruction axis. Tier-B:
+                // log-only, never persisted. Falls through to the once-per-kind raw line below.
+                if summary.tag == 0x49, summary.rawPayload.count >= 4 {
+                    let startOff = Int(summary.rawPayload[0]) | (Int(summary.rawPayload[1]) << 8)
+                    let endOff = Int(summary.rawPayload[2]) | (Int(summary.rawPayload[3]) << 8)
+                    if let utc = driver.unixSeconds(forRingTimestamp: summary.ringTimestamp) {
+                        let startStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(utc - startOff * 60)))
+                        let endStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(utc - endOff * 60)))
+                        log("Oura: 0x49 sleep window candidate [ringverse] \(startStr) -> \(endStr) (event-\(startOff)/-\(endOff) min)")
+                    } else {
+                        log("Oura: 0x49 sleep window candidate [ringverse] offsets start-\(startOff)min end-\(endOff)min [no anchor yet]")
+                    }
                 }
                 // Other Tier-B tags (real_steps / activity-summary / sleep-summary / smoothed-SpO2,
                 // OURA_PROTOCOL.md s7.3; PR #960): logged ONCE PER KIND with the raw bytes so we can see

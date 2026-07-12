@@ -313,9 +313,35 @@ All records share the §2.3 TLV header (`type`, `len`, 4-byte `ringTimestamp`). 
 - Each **IBI** = 11-bit value (1 LSB bit + an 8-bit byte shifted left 3 + a 2-bit high field) → milliseconds. [ringverse]
 - Each **amplitude** = 7-bit mantissa (byte bits `[7:1]`) shifted left by the exponent. [ringverse]
 - Per-sample timestamp: walk backward from event UTC by each IBI duration. [ringverse]
+- **WARNING (2026-07-12, ringverse ingest):** ringverse's `p_ibi_and_amplitude` shows the byte order
+  is **SCRAMBLED** (each 11-bit IBI rebuilt from three non-adjacent pieces, exact indices in
+  parse.js), while NOOP's `decodeIBIAmplitude` reads the fields with a naive SEQUENTIAL BitReader —
+  the two do not agree, so our 0x60 IBI values are SUSPECT until cross-checked against concurrent
+  live-HR R-R (same method as the 0x71 fixture plan). Part of the parked history-IBI work.
 
 ### 6.2 Green-LED IBI+amp - `0x71` `green_ibi_and_amp_event` (18 B)
-- 5 IBI deltas + 6 amplitudes; shift from byte19 bits `[2:0]`; same 11-bit IBI / 7-bit amplitude structure. [ringverse]
+Full layout per ringverse `p_green_ibi_and_amp` (parse.js, firmware `@0x503960`); payload = 14 body
+bytes (indices below are payload offsets = spec offsets − 6). Strict length gate: wire len == 18.
+- `p13` (spec byte 19): bit `[3]` RESERVED — set means a firmware-layout mismatch, do not decode;
+  `s = p13 & 7`, `shift = (s == 7) ? 0 : s + 1`.
+- 5 IBIs, each an **11-bit** value from three scrambled pieces (bit 0 | bits 2:1 | bits 10:3):
+```
+ibi0 = (p10 & 1) | (p4 << 3) | ((p13 >> 5) & 6)
+ibi1 = (p9  & 1) | (p3 << 3) | ((p12 & 3) << 1)
+ibi2 = (p8  & 1) | (p2 << 3) | ((p12 >> 1) & 6)
+ibi3 = (p7  & 1) | (p1 << 3) | ((p12 >> 3) & 6)
+ibi4 = (p6  & 1) | (p0 << 3) | ((p12 >> 5) & 6)
+```
+- 5 amplitudes: `amp[i] = (p[6+i] >> 1) << shift` (7-bit mantissa in bits `[7:1]` of `p6..p10`).
+- Emission order: first entry is **amplitude-only** (`ibi = 0`, `amp[0]`), then 5 entries
+  `{ibi[i], amp[i]}`; per-sample timestamps walk BACKWARD from the event UTC by each IBI (same
+  model as 0x60). `p5`/`p11` unused. [ringverse]
+- NOOP: `OuraDecoders.decodeGreenIBIAmpCandidate` implements this verbatim as a **Tier-B CANDIDATE**
+  (#287) — used only in the 0x71 fixture-capture log, side by side with the raw bytes, until a real
+  capture cross-checked against concurrent live-HR R-R validates it.
+- CORRECTION: an earlier revision summarized this as "5 IBI deltas + 6 amplitudes" — the five values
+  are full 11-bit IBIs (0–2047 ms) used as backward TIME deltas, and only 5 amplitude bytes exist
+  (the first emitted entry reuses `amp[0]`).
 
 ### 6.3 SpO2 IBI+amp - `0x6E` `spo2_ibi_and_amplitude_event` (17 B)
 - Byte 6: bits `[7:6]` = flag(1)+shift(3); bits `[3:0]` = mode(4). [ringverse]
@@ -368,7 +394,14 @@ bits 14–15 : qual_b
 - **`0x4B` / `0x4E` / `0x5A` `sleep_phase_details`** (≥19 B): byte6 = header; phase codes are **2-bit**, 4 per byte (bits `[7:6][5:4][3:2][1:0]`); codes **0=deep, 1=light, 2=rem, 3=awake** per open_oura's VALIDATED `decode_sleep_phases` (events.rs `PHASE = ["deep","light","rem","awake"]`). **CORRECTION:** an earlier revision of this line taught `0=awake, 1=light, 2=deep, 3=REM` from [ringverse] (unverified); live captures contradicted it (records decoded at wake carry code 3 = awake under open_oura's mapping), and both platform decoders inherited the bug from this exact text. [open_oura]
 - **`0x6A` `sleep_period_info`** (14 B): bytes6–9 four int8 metrics; bytes10–11 `uint8/8.0`; byte12 motion-seconds uint8; byte13 sleep-state int8; bytes14–15 `uint16 LE / 65536`. [ringverse]
 - **`0x72` `sleep_acm_period`** (16 B): values0–2 = `whole(8)+frac(8)/255`; values3–5 = `whole(4)+frac(12)/4095`. [ringverse]
-- **`0x49` `sleep_summary_1`**: start/end as uint16 LE minutes-before-event. [ringverse]
+- **`0x49` `sleep_summary_1`**: `start_offset_min` / `end_offset_min`, both uint16 LE **minutes
+  before the event time** — the ring's tracked sleep window is
+  `[event_utc − start_offset·60 s, event_utc − end_offset·60 s]`. [ringverse]
+  **VALIDATED against NOOP captures 2026-07-12**: the `600/10` sample on the 7/11→12 night decodes
+  to 23:30→09:20, matching the reconstructed 1196-code hypnogram (23:32→09:30 write-anchored) and
+  the reported sleep (23:35–09:00). Earlier samples fit the same shape (688/101, 584/108, 716/164).
+  Note the window END trails the SleepNet WRITE by `end_offset` minutes — a future refinement can
+  anchor the hypnogram burst end at `event − end_offset` instead of the write moment.
 - **`0x76` `bedtime_period`**: start/end as uint32 LE ringTimestamps → map to UTC (§5.5). [ringverse]
 - Tags `0x48,0x4A–0x4D,0x4F,0x57,0x58` are additional sleep summary/feature variants in the dictionary; layouts **(UNVERIFIED)** - decode only after fixtures. [ringverse]
 
