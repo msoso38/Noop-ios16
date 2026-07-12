@@ -34,8 +34,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Air
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.automirrored.filled.BatteryUnknown
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Functions
@@ -1021,6 +1023,8 @@ fun TodayScreen(
                 batteryPct = if (liveSnap.connected) liveSnap.batteryPct else null,
                 backfilling = liveSnap.backfilling,
                 syncChunksThisSession = liveSnap.syncChunksThisSession,
+                lastSyncAt = liveSnap.lastSyncAt,
+                historySyncExperimental = liveSnap.historySyncExperimental,
                 onPickDay = { offset -> selectedDayOffset = offset },
                 onQuickActions = onQuickActions,
                 onOpenSettings = onOpenSettings,
@@ -1885,9 +1889,11 @@ private fun LiquidTodayHeader(
     humanDate: String,
     selectedDay: LocalDate,
     batteryPct: Double?,
-    // #245: sync-progress for the compact header chip (twin of iOS SyncStatusChip).
+    // #245: sync state for the compact header chip (twin of iOS SyncStatusChip).
     backfilling: Boolean = false,
     syncChunksThisSession: Int = 0,
+    lastSyncAt: Long? = null,
+    historySyncExperimental: Boolean = false,
     onPickDay: (Int) -> Unit,
     onQuickActions: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -1971,7 +1977,10 @@ private fun LiquidTodayHeader(
         ) {
             // #245: compact "syncing history" chip, shown for EVERY user while the strap offloads (the
             // full SyncingHistoryNote is gated on recovery == null). Twin of iOS SyncStatusChip.
-            SyncStatusChip(backfilling = backfilling, chunks = syncChunksThisSession)
+            SyncStatusChip(
+                backfilling = backfilling, chunks = syncChunksThisSession,
+                lastSyncAt = lastSyncAt, historySyncExperimental = historySyncExperimental,
+            )
             // (a) Profile avatar (the photo set in Settings, or the NOOP loop mark) → Settings. Mirrors iOS.
             Box(
                 modifier = Modifier
@@ -1996,13 +2005,36 @@ private fun LiquidTodayHeader(
     }
 }
 
-/** #245: compact "syncing history" chip for the Today top bar, shown for EVERY user while the strap
- *  offloads history — the full-width SyncingHistoryNote is gated on `recovery == null`, so an established
- *  user (and especially a WHOOP 5/MG owner, whose offloads are already rare) saw no sync feedback on
- *  Today. Renders nothing when idle. Twin of iOS SyncStatusChip. DRAFT (#245): placement/style TBD. */
+/** #245: compact sync-status chip for the Today top bar, shown to EVERY user. The full-width
+ *  SyncingHistoryNote is gated on `recovery == null`, so an established user (and especially a WHOOP 5/MG
+ *  owner, whose history offloads are rare) saw no sync feedback on Today. THREE states so the ABSENCE of
+ *  active syncing reads as "caught up", not "missing indicator" (the real #245 confusion): actively
+ *  offloading → ⟳ N; idle with a known last-sync → ✓ Xm; a 5/MG whose history sync is experimental
+ *  (live-connected, no completed offload yet) → ✓ live. Nothing shows only on a true cold start (the
+ *  building-scores note owns that). Twin of iOS SyncStatusChip. DRAFT (#245): final styling/wording TBD. */
 @Composable
-private fun SyncStatusChip(backfilling: Boolean, chunks: Int) {
-    if (!backfilling) return
+private fun SyncStatusChip(
+    backfilling: Boolean,
+    chunks: Int,
+    lastSyncAt: Long?,
+    historySyncExperimental: Boolean,
+) {
+    when {
+        backfilling -> ChipCapsule(
+            Icons.Filled.Autorenew, "$chunks", Palette.accent, "Syncing strap history, $chunks chunks")
+        lastSyncAt != null -> ChipCapsule(
+            Icons.Filled.Check, shortSyncAgo(lastSyncAt), Palette.textSecondary,
+            "Strap history synced ${shortSyncAgo(lastSyncAt)} ago")
+        historySyncExperimental -> ChipCapsule(
+            Icons.Filled.Check, "live", Palette.textSecondary,
+            "Connected; strap history sync is experimental on this strap")
+        // else: cold start — render nothing; the building-scores note covers it.
+    }
+}
+
+/** The shared sync-chip capsule (icon + terse label). Twin of the iOS `SyncStatusChip.chip`. */
+@Composable
+private fun ChipCapsule(icon: ImageVector, text: String, tint: Color, desc: String) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -2011,13 +2043,20 @@ private fun SyncStatusChip(backfilling: Boolean, chunks: Int) {
             .background(Palette.surfaceInset)
             .padding(horizontal = 8.dp, vertical = 5.dp),
     ) {
-        Icon(
-            Icons.Filled.History,
-            contentDescription = "Syncing strap history",
-            tint = Palette.accent,
-            modifier = Modifier.size(14.dp),
-        )
-        Text("$chunks", style = NoopType.caption, color = Palette.accent)
+        Icon(icon, contentDescription = desc, tint = tint, modifier = Modifier.size(14.dp))
+        Text(text, style = NoopType.caption, color = tint)
+    }
+}
+
+/** Compact relative age for the header chip ("now" / "Nm" / "Nh" / "Nd") from a unix-SECONDS timestamp —
+ *  deliberately terse. Twin of the iOS `SyncStatusChip.shortAgo`. */
+private fun shortSyncAgo(unixSec: Long): String {
+    val secs = (System.currentTimeMillis() / 1000L - unixSec).coerceAtLeast(0)
+    return when {
+        secs < 60 -> "now"
+        secs < 3600 -> "${secs / 60}m"
+        secs < 86_400 -> "${secs / 3600}h"
+        else -> "${secs / 86_400}d"
     }
 }
 
