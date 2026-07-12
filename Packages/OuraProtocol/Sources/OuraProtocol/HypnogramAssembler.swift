@@ -33,11 +33,23 @@ public struct OuraHypnogramBurst: Equatable, Sendable {
     /// its END to, and the resume-cursor note for the whole burst.
     public var lastRingTimestamp: UInt32 { records.last?.ringTimestamp ?? 0 }
 
+    /// True when any record's envelope ring-time is LOWER than its predecessor's within this burst —
+    /// the one signal that the arrival order (which the layout trusts as the sequence ground truth)
+    /// might not be chronological. Surfaced so the caller can LOG it rather than fail silently;
+    /// re-sorting is deliberately not done (envelope ring-times of a burst are near-identical write
+    /// moments, so a sort on them could scramble the true code sequence).
+    public var hasNonMonotonicRingTimes: Bool {
+        zip(records, records.dropFirst()).contains { $1.ringTimestamp < $0.ringTimestamp }
+    }
+
     /// Lay the burst's codes out backward from `endUnixSeconds` at `secondsPerCode`. Code j of N gets
     /// `ts = end - (N - j) * secondsPerCode` — i.e. each ts marks the START of that code's interval and
     /// the final code's interval ends exactly at the burst end. Order: records in arrival order, codes
     /// by their in-record index (the sequence is the ground truth; the spacing is the documented 30 s
-    /// SleepNet epoch).
+    /// SleepNet epoch). Arrival order is deliberately NOT re-sorted by envelope ring-time: the envelopes
+    /// mark the near-identical WRITE moments of a finalization burst, so they are useless as a sort key
+    /// (an unstable sort on near-equal keys could scramble the true sequence) — see
+    /// `hasNonMonotonicRingTimes` for the surfaced escape hatch.
     public func codesWithTimes(endUnixSeconds: Int, secondsPerCode: Int = 30)
         -> [(phase: OuraSleepPhase, ts: Int)] {
         let n = totalCodes

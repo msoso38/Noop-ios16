@@ -132,18 +132,30 @@ class DecoderGoldenTest {
 
     @Test
     fun testSleepPhase0x4E() {
-        // header 0x00, phase byte 0x6C = bits 01 10 11 00 -> light, deep, rem, awake.
+        // header 0x00, phase byte 0x6C = bits 01 10 11 00 = codes 1,2,3,0. Per open_oura's VALIDATED
+        // mapping (0=deep, 1=light, 2=rem, 3=awake) -> light, rem, awake, deep. PARITY: byte-identical
+        // to the Swift golden (DecoderGoldenTests.testSleepPhase0x4E).
         val rec = record("4e0602000100006c")
         val phases = OuraDecoders.decodeSleepPhase(rec)
         assertEquals(
             listOf(
                 OuraSleepPhase(ringTimestamp = rt, index = 0, stage = OuraSleepStage.LIGHT),
-                OuraSleepPhase(ringTimestamp = rt, index = 1, stage = OuraSleepStage.DEEP),
-                OuraSleepPhase(ringTimestamp = rt, index = 2, stage = OuraSleepStage.REM),
-                OuraSleepPhase(ringTimestamp = rt, index = 3, stage = OuraSleepStage.AWAKE),
+                OuraSleepPhase(ringTimestamp = rt, index = 1, stage = OuraSleepStage.REM),
+                OuraSleepPhase(ringTimestamp = rt, index = 2, stage = OuraSleepStage.AWAKE),
+                OuraSleepPhase(ringTimestamp = rt, index = 3, stage = OuraSleepStage.DEEP),
             ),
             phases,
         )
+    }
+
+    @Test
+    fun testSleepStageRawValuesMatchOpenOura() {
+        // Pin the validated open_oura order (0=deep, 1=light, 2=rem, 3=awake) so a regression to the
+        // old unverified mapping (0=awake/2=deep/3=REM) breaks loudly. Twin of the Swift enum.
+        assertEquals(0, OuraSleepStage.DEEP.raw)
+        assertEquals(1, OuraSleepStage.LIGHT.raw)
+        assertEquals(2, OuraSleepStage.REM.raw)
+        assertEquals(3, OuraSleepStage.AWAKE.raw)
     }
 
     // MARK: - 0x6B motion period (2-bit MOTION_STATE codes; 2 header bytes skipped)

@@ -73,7 +73,6 @@ public struct OuraBattery: Equatable, Sendable, Codable {
     }
 }
 
-/// Sleep phase code (OURA_PROTOCOL.md s6.12): 2-bit codes 0=awake, 1=light, 2=deep, 3=REM.
 /// The 2-bit sleep-phase code values, per open_oura's VALIDATED `decode_sleep_phases` mapping
 /// (events.rs `PHASE = ["deep", "light", "rem", "awake"]`): 0=deep, 1=light, 2=rem, 3=awake.
 ///

@@ -80,6 +80,25 @@ final class HypnogramAssemblerTests: XCTestCase {
         XCTAssertEqual(a.pendingRecordCount, 0)
     }
 
+    func testNonMonotonicRingTimesAreSurfacedNotResorted() {
+        // A record whose envelope rt steps BACKWARD (within the burst gap) must be flagged — but the
+        // layout still trusts arrival order (envelope rts of a burst are near-identical write moments;
+        // re-sorting on them could scramble the true code sequence).
+        let a = OuraHypnogramAssembler()
+        XCTAssertNil(a.feed(ringTimestamp: 5_010, phases: phases([.light, .deep], rt: 5_010)))
+        XCTAssertNil(a.feed(ringTimestamp: 5_000, phases: phases([.rem, .awake], rt: 5_000)))   // backward
+        let burst = a.flush()!
+        XCTAssertTrue(burst.hasNonMonotonicRingTimes)
+        // Arrival order preserved in the layout.
+        XCTAssertEqual(burst.codesWithTimes(endUnixSeconds: 1_000).map { $0.phase.stage },
+                       [.light, .deep, .rem, .awake])
+        // And a clean forward burst is NOT flagged.
+        let b = OuraHypnogramAssembler()
+        _ = b.feed(ringTimestamp: 100, phases: phases([.light], rt: 100))
+        _ = b.feed(ringTimestamp: 110, phases: phases([.deep], rt: 110))
+        XCTAssertFalse(b.flush()!.hasNonMonotonicRingTimes)
+    }
+
     func testEmptyRecordIsIgnored() {
         let a = OuraHypnogramAssembler()
         XCTAssertNil(a.feed(ringTimestamp: 10, phases: []))

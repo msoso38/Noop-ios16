@@ -146,6 +146,12 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// backward at the 30 s SleepNet epoch from the anchored burst end (the envelope time marks the
     /// analysis WRITE moment, not the sleep). Flushed at drain end and teardown; reset per connection.
     private let hypnogramAssembler = OuraHypnogramAssembler()
+    /// Closed bursts that could not anchor yet (no 0x42 this session so far) — held and reconstructed
+    /// the moment the anchor lands, mirroring the pendingAnchorEvents hold-until-anchor discipline.
+    /// NEVER persisted at wall-clock (the burst end IS the night's time axis); if the session ends
+    /// unanchored they are dropped honestly — the resume cursor did not advance, so the ring re-serves
+    /// the same records next drain. Reset per connection.
+    private var pendingUnanchoredBursts: [OuraHypnogramBurst] = []
 
     /// Logs the FIRST live HR sample of a connection only (never every push); reset on stop/disconnect.
     private var loggedFirstHR = false
@@ -381,23 +387,54 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// by the connect delay). Logs the reconstructed window + stage minutes so a capture is self-evident.
     private func persistHypnogramBurst(_ burst: OuraHypnogramBurst) {
         guard let driver, burst.totalCodes > 0 else { return }
-        let anchored = driver.unixSeconds(forRingTimestamp: burst.lastRingTimestamp)
-        let end = anchored ?? Int(Date().timeIntervalSince1970)
+        // HOLD-UNTIL-ANCHOR (same discipline as pendingAnchorEvents): the burst end IS the night's whole
+        // time axis, so guessing it from wall-clock would persist real stage codes at fabricated times.
+        // An unanchored burst is parked and re-tried when the 0x42 anchor lands; if the session ends
+        // without one it is DROPPED honestly — safe, because the resume cursor only advances on an
+        // anchored persist, so the ring re-serves the same records next drain.
+        guard let end = driver.unixSeconds(forRingTimestamp: burst.lastRingTimestamp) else {
+            pendingUnanchoredBursts.append(burst)
+            log("Oura: hypnogram burst (\(burst.totalCodes) codes) held - no anchor yet; reconstructs when the 0x42 lands")
+            return
+        }
+        if burst.hasNonMonotonicRingTimes {
+            // The layout trusts arrival order as the code sequence; a backwards envelope ring-time inside
+            // a burst is the one signal that assumption may not hold. Surface it, never fail silent.
+            log("Oura: hypnogram burst has NON-MONOTONIC envelope ring-times (\(burst.records.count) records) - sequence order taken from arrival order")
+        }
         let laid = burst.codesWithTimes(endUnixSeconds: end)
         for code in laid {
             enqueue([.sleepPhase(code.phase)], ts: code.ts)
         }
-        if anchored != nil {
-            noteStoredHistoryRingTime(burst.lastRingTimestamp)   // banked → the resume cursor may advance
-        }
+        noteStoredHistoryRingTime(burst.lastRingTimestamp)   // banked → the resume cursor may advance
         var mins = [0.0, 0.0, 0.0, 0.0]
         for code in laid { mins[code.phase.stage.rawValue] += 0.5 }   // 30 s/code = 0.5 min
         let fmt = Self.cursorDateFormatter
         let startStr = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(laid.first!.ts)))
         let endStr = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(end)))
-        let basis = anchored != nil ? "anchored" : "wall-clock fallback"
-        log(String(format: "Oura: hypnogram reconstructed [%@ → %@, %@] codes=%d deep/light/rem/awake=%.0f/%.0f/%.0f/%.0f min",
-                   startStr, endStr, basis, burst.totalCodes, mins[0], mins[1], mins[2], mins[3]))
+        log(String(format: "Oura: hypnogram reconstructed [%@ → %@, anchored] codes=%d deep/light/rem/awake=%.0f/%.0f/%.0f/%.0f min",
+                   startStr, endStr, burst.totalCodes, mins[0], mins[1], mins[2], mins[3]))
+    }
+
+    /// Re-try bursts parked while unanchored (called right after the 0x42 anchor lands, alongside
+    /// drainPendingAnchorEvents). A burst that still cannot resolve goes back on the pending list.
+    private func drainPendingHypnogramBursts() {
+        guard !pendingUnanchoredBursts.isEmpty else { return }
+        let held = pendingUnanchoredBursts
+        pendingUnanchoredBursts.removeAll()
+        for burst in held {
+            persistHypnogramBurst(burst)
+        }
+    }
+
+    /// Teardown for bursts that never anchored this session: DROP them with an honest log instead of
+    /// persisting a wall-clock-guessed time axis. Nothing is lost — the resume cursor only advances on
+    /// an anchored persist, so the ring re-serves the same records on the next drain.
+    private func dropUnanchoredHypnogramBursts() {
+        guard !pendingUnanchoredBursts.isEmpty else { return }
+        let codes = pendingUnanchoredBursts.reduce(0) { $0 + $1.totalCodes }
+        log("Oura: dropping \(pendingUnanchoredBursts.count) unanchored hypnogram burst(s) (\(codes) codes) - no anchor this session; cursor did not advance, so they re-arrive next drain")
+        pendingUnanchoredBursts.removeAll()
     }
 
     /// Record a STORED history sample's ring-time toward the resume cursor (open_oura `nextEventToSync`).
@@ -571,6 +608,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             persistHypnogramBurst(burst)
         }
         drainPendingAnchorEvents()
+        dropUnanchoredHypnogramBursts()   // never wall-clock a night's time axis; they re-arrive next drain
         driver?.stop()
         driver = nil
         reassembler.reset()
@@ -885,6 +923,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // The 0x42 time-sync can arrive ANYWHERE in a history-fetch stream, not necessarily first.
                 // Anything parked while unanchored gets its real time retroactively the moment an anchor lands.
                 drainPendingAnchorEvents()
+                drainPendingHypnogramBursts()
 
             case .rtcBeacon(let r):
                 // #91: the 0x85 beacon is the SECONDARY anchor (fills the gap only until a 0x42 arrives). A
@@ -1087,6 +1126,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedTierBKinds.removeAll()
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
         hypnogramAssembler.reset()        // ditto for a half-accumulated burst from a dead session
+        pendingUnanchoredBursts.removeAll()
         pendingInstallKey = nil
         adoptPhase = .idle
         reassembler.reset()
@@ -1139,6 +1179,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
             persistHypnogramBurst(burst)
         }
         drainPendingAnchorEvents()
+        dropUnanchoredHypnogramBursts()   // never wall-clock a night's time axis; they re-arrive next drain
         driver?.stop()
         driver = nil
         reassembler.reset()

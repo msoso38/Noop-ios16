@@ -331,8 +331,9 @@ public enum OuraDecoders {
     // MARK: - Sleep phase, 2-bit codes (0x4E / 0x5A; s6.12)
 
     /// Decode the 0x4E/0x5A sleep_phase_details: byte6 = header; phase codes are 2-bit, 4 per byte
-    /// (bits [7:6][5:4][3:2][1:0]); codes 0=awake,1=light,2=deep,3=REM. Per OURA_PROTOCOL.md s6.12.
-    /// Returns nil on a short body. The header byte is skipped; phase bytes follow.
+    /// (bits [7:6][5:4][3:2][1:0]); codes 0=deep, 1=light, 2=rem, 3=awake per open_oura's VALIDATED
+    /// `decode_sleep_phases` mapping (see OuraSleepStage). Returns nil on a short body. The header
+    /// byte is skipped; phase bytes follow.
     public static func decodeSleepPhase(_ rec: OuraRecord) -> [OuraSleepPhase]? {
         let b = rec.payload
         // body[0] is the header (spec offset 6); phase codes begin at body[1].
