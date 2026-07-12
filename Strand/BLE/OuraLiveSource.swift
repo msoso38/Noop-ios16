@@ -173,6 +173,15 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// captures to validate these layouts; nothing here ever persists or scores. Reset on stop/disconnect.
     private var loggedTierBKinds: Set<String> = []
 
+    /// 0x71 green_ibi_amp fixture capture (upstream #287/#333): EVERY occurrence is logged with its
+    /// anchored time + envelope rt + length + full raw bytes (a verified decoder needs several real
+    /// payloads, and the anchored time aligns each with concurrent live-HR R-R). Capped per session so a
+    /// night-long green-IBI wall can't flood the log; the count + observed lengths are summarized at
+    /// drain end regardless. Reset on stop/disconnect/connect.
+    private var greenIbiAmpCount = 0
+    private var greenIbiAmpLengths: Set<Int> = []
+    private static let greenIbiAmpLogCap = 50
+
     // MARK: - Activity (0x50 MET) estimate accumulation — INVESTIGATION ONLY
     // Aggregate the decoded 0x50 MET stream into an honest, clearly-labeled per-day estimate
     // (OuraActivityEstimator) logged at drain-end, for eyeballing against WHOOP active minutes / Apple
@@ -302,6 +311,15 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// pending; fires = the ring finished streaming the batch and the next request can go out.
     private var batchQuietTimer: Timer?
     private let batchQuietInterval: TimeInterval = 1.5
+    /// Self-chained drain passes: when a drain ends with KNOWN remaining work — a detected ring reboot
+    /// (cursor honestly reset to 0, full pull pending) or a deadline-guard stop with banked progress —
+    /// the next pass starts itself a few seconds later instead of waiting for a manual reconnect or the
+    /// 15 min periodic timer. Capped per session; a stall/no-progress stop never chains (that is the
+    /// ring looping, and re-asking would loop with it).
+    private var chainedDrainPasses = 0
+    private static let maxChainedDrainPasses = 6
+    /// One-shot delay before a self-chained drain pass (see `finishDrain`). Invalidated on teardown.
+    private var chainedDrainTimer: Timer?
     /// Periodic re-fetch while connected, so an overnight-connected session (or one left open after a nap)
     /// picks up freshly-banked sleep data without needing a reconnect. Mirrors BLEManager's ~15 min
     /// periodic WHOOP history-offload floor.
@@ -360,7 +378,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             log("Oura: history drain force-stopped - \(reason) at bytes_left \(summary.bytesLeft) (guard)")
         }
         guard continueDrain else {
-            finishDrain(completed: !summary.moreData)
+            // A deadline stop with more data behind it is resumable backlog (progress banked, the ring
+            // is healthy — we just chose to breathe); a STALL stop is the ring looping and must not chain.
+            let deadlineBacklog = summary.moreData && elapsed > OuraHistoryDrain.maxDrainSeconds
+            finishDrain(completed: !summary.moreData, resumeBacklog: deadlineBacklog)
             return
         }
         // More data behind this batch. Do NOT re-request yet: the ring emits the 0x11 summary EARLY
@@ -385,22 +406,43 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             advance(.historyCursorAdvanced(cursor: next, moreData: true))
         } else {
             log("Oura: history batch made no cursor progress - stopping drain (ring would re-serve)")
-            finishDrain(completed: false)
+            finishDrain(completed: false, resumeBacklog: false)
         }
     }
 
     /// Common drain-end path: close the in-progress hypnogram burst BEFORE committing the cursor (so its
     /// banked ring-time can advance the resume point in the same drain), commit, log the estimates, and
-    /// return the driver to `.streaming`.
-    private func finishDrain(completed: Bool) {
+    /// return the driver to `.streaming`. When the drain ends with KNOWN remaining work — a detected ring
+    /// reboot (`sawPreResumeData` just reset the cursor to 0; the full pull is pending) or a deadline stop
+    /// with backlog (`resumeBacklog`) — the next pass self-schedules a few seconds later, so catching up
+    /// never needs a manual reconnect (progress banks between passes).
+    private func finishDrain(completed: Bool, resumeBacklog: Bool) {
         pendingContinuation = false
         stopBatchQuietTimer()
         if let burst = hypnogramAssembler.flush() {
             persistHypnogramBurst(burst)
         }
+        let rebootFullPullPending = drain.sawPreResumeData
         commitResumeCursor(drainCompleted: completed)
         logActivityEstimateSummary()
         advance(.historyCursorAdvanced(cursor: historyCursor, moreData: false))
+        if rebootFullPullPending || resumeBacklog {
+            guard chainedDrainPasses < Self.maxChainedDrainPasses else {
+                log("Oura: drain pass cap (\(Self.maxChainedDrainPasses)) reached with work remaining - next periodic fetch / reconnect continues from the banked cursor")
+                return
+            }
+            chainedDrainPasses += 1
+            let why = rebootFullPullPending
+                ? "ring reboot detected - starting the honest full re-pull"
+                : "backlog remains after the deadline guard"
+            log("Oura: \(why); next drain pass in 5 s (\(chainedDrainPasses)/\(Self.maxChainedDrainPasses))")
+            let t = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+                Task { @MainActor in self?.fetchHistoryIfIdle() }
+            }
+            chainedDrainTimer = t
+        } else if completed {
+            chainedDrainPasses = 0   // healthy full completion re-arms the cap for future backlogs
+        }
     }
 
     private func restartBatchQuietTimer() {
@@ -511,6 +553,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// reports the ring's real per-sample spacing so `activityEpochSeconds` can be pinned. Never
     /// persisted, never scored, never a step count.
     private func logActivityEstimateSummary() {
+        // 0x71 fixture-capture roll-up (#287): even when the per-record cap truncated the stream, the
+        // session total + observed payload lengths are what a decoder verification needs to plan with.
+        if greenIbiAmpCount > 0 {
+            log("Oura: 0x71 green_ibi_amp capture - \(greenIbiAmpCount) record(s) this session, payload lengths \(greenIbiAmpLengths.sorted()) (fixture material, #287)")
+        }
         // Sleep-phase cadence (investigation): pins the ring's per-code phase epoch from the stream,
         // exactly like the activity 60 s pin. Logged whenever any hypnogram records arrived this drain.
         if !phaseCadenceObs.isEmpty {
@@ -677,6 +724,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         loggedFirstSpo2 = false
         loggedAnchor = false
         loggedTierBKinds.removeAll()
+        greenIbiAmpCount = 0
+        greenIbiAmpLengths.removeAll()
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
@@ -690,6 +739,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         lastRequestCursor = 0
         pendingContinuation = false
         stopBatchQuietTimer()
+        chainedDrainPasses = 0
+        chainedDrainTimer?.invalidate()
+        chainedDrainTimer = nil
         reachedStreaming = false
         pendingInstallKey = nil
         adoptPhase = .idle
@@ -1011,12 +1063,31 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 }
 
             case .tierB(let summary):
-                // INVESTIGATION ONLY (real_steps / activity-summary / sleep-summary / smoothed-SpO2,
-                // OURA_PROTOCOL.md s7.3 Tier B; PR #960). Logged ONCE PER KIND with the raw bytes so we
-                // can see whether the ring sends these tags at all and collect capture material - e.g.
-                // real_steps 0x7E/0x7F is server-flag-gated OFF by default ([open_oura-feat]), so its
-                // continued absence here is the ring's doing, not a decode gap. Never persisted, never
-                // scored (OuraStreamMapping drops .tierB unconditionally regardless of this log).
+                // 0x71 green_ibi_amp FIXTURE CAPTURE (upstream #287/#333): unlike the other Tier-B tags,
+                // EVERY occurrence is logged (up to a flood cap) with its anchored time, envelope rt,
+                // length, and full raw bytes — a verified decoder needs several real payloads (5 IBI
+                // deltas + 6 amplitudes + [2:0] shift per open_oura decode_green_ibi_and_amp), and the
+                // anchored time is what aligns each record with concurrent live-HR R-R (the ground truth).
+                // Never persisted, never scored (OuraStreamMapping drops .tierB unconditionally).
+                if summary.kind == "green_ibi_amp" {
+                    greenIbiAmpCount += 1
+                    greenIbiAmpLengths.insert(summary.rawPayload.count)
+                    if greenIbiAmpCount <= Self.greenIbiAmpLogCap {
+                        let utc = driver.unixSeconds(forRingTimestamp: summary.ringTimestamp)
+                        let when = utc.map { Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval($0))) } ?? "no anchor yet"
+                        let hex = summary.rawPayload.map { String(format: "%02x", $0) }.joined(separator: " ")
+                        log("Oura: 0x71 green_ibi_amp #\(greenIbiAmpCount) [\(when)] rt=\(summary.ringTimestamp) len=\(summary.rawPayload.count) raw: \(hex)")
+                        if greenIbiAmpCount == Self.greenIbiAmpLogCap {
+                            log("Oura: 0x71 log cap (\(Self.greenIbiAmpLogCap)) reached - further records counted, summarized at drain end")
+                        }
+                    }
+                    break
+                }
+                // Other Tier-B tags (real_steps / activity-summary / sleep-summary / smoothed-SpO2,
+                // OURA_PROTOCOL.md s7.3; PR #960): logged ONCE PER KIND with the raw bytes so we can see
+                // whether the ring sends these tags at all and collect capture material - e.g. real_steps
+                // 0x7E/0x7F is server-flag-gated OFF by default ([open_oura-feat]), so its continued
+                // absence here is the ring's doing, not a decode gap.
                 if !loggedTierBKinds.contains(summary.kind) {
                     loggedTierBKinds.insert(summary.kind)
                     let hex = summary.rawPayload.map { String(format: "%02x", $0) }.joined(separator: " ")
@@ -1204,6 +1275,8 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedFirstSpo2 = false
         loggedAnchor = false
         loggedTierBKinds.removeAll()
+        greenIbiAmpCount = 0
+        greenIbiAmpLengths.removeAll()
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
         hypnogramAssembler.reset()        // ditto for a half-accumulated burst from a dead session
         pendingUnanchoredBursts.removeAll()
@@ -1217,6 +1290,9 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         lastRequestCursor = 0
         pendingContinuation = false
         stopBatchQuietTimer()
+        chainedDrainPasses = 0
+        chainedDrainTimer?.invalidate()
+        chainedDrainTimer = nil
         // Resume the GetEvents cursor from where the LAST connection to this ring left off (s5.1/5.3), so
         // a routine reconnect doesn't re-fetch the ring's entire banked history every time. A persisted
         // value above the plausibility ceiling is garbage banked by a pre-fix build (a bytes_left count or
@@ -1258,6 +1334,9 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         stopHistoryFetchTimer()
         stopBatchQuietTimer()
         pendingContinuation = false
+        chainedDrainPasses = 0
+        chainedDrainTimer?.invalidate()
+        chainedDrainTimer = nil
         // Drain BEFORE driver.stop() clears its anchor (same reasoning as stop()); a hypnogram burst
         // still accumulating flushes first for the same reason.
         if let burst = hypnogramAssembler.flush() {
@@ -1275,6 +1354,8 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedFirstSpo2 = false
         loggedAnchor = false
         loggedTierBKinds.removeAll()
+        greenIbiAmpCount = 0
+        greenIbiAmpLengths.removeAll()
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
