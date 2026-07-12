@@ -424,12 +424,6 @@ class WhoopBleClient(
          *  stays un-backed-off. The ordinary involuntary-reconnect paths use the capped-exponential
          *  [ReconnectBackoff] instead (#48). (BLEManager: "rescanning in 3s".) */
         private const val RECONNECT_DELAY_MS = 3_000L
-        /** A connection must SURVIVE this long before it's "healthy" enough to clear the involuntary-
-         *  reconnect backoff (see the STATE_CONNECTED handler). A band whose ACL is contended by the
-         *  official WHOOP app reaches STATE_CONNECTED briefly each cycle; without this dwell the backoff
-         *  reset there would pin it at attempt 1 = active DIRECT reconnect (#173) forever, churning the
-         *  phone + strap radios. 8s matches the bond-loop quick-timeout window (a link this short is a flap). */
-        private const val RECONNECT_HEALTHY_DWELL_MS = 8_000L
         /** PR #588: after this many CONSECUTIVE involuntary reconnect attempts, drop the scan from the
          *  battery-hungry LOW_LATENCY mode to a lower-power mode. A strap that's genuinely out of range
          *  (left at home, dead battery) would otherwise hold the radio at full power indefinitely while
@@ -711,6 +705,18 @@ class WhoopBleClient(
         }
 
         /**
+         * #312: when the write queue DROPS a frame after [MAX_WRITE_RETRIES] busy-retries, should the
+         * realtime stream be re-armed? True ONLY for [CommandNumber.TOGGLE_REALTIME_HR] — that write enables
+         * live R-R (→ HRV / Autonomic), and reconcileRealtime latched `realtimeArmed` optimistically when it
+         * queued the write, so a silent drop leaves R-R off with no re-send (plain HR keeps flowing on the
+         * standard 0x2A37 profile — the exact #312 symptom on a 5/MG whose toggle lost a GATT-write race).
+         * Every other dropped frame (haptics, offload-ack, clock, …) has its own recovery and must NOT poke
+         * the realtime latch. Pure + instance-free so the unit harness can pin it without a live GATT stack.
+         */
+        fun shouldReArmRealtimeAfterDrop(droppedCmd: CommandNumber?): Boolean =
+            droppedCmd == CommandNumber.TOGGLE_REALTIME_HR
+
+        /**
          * The LiveState the teardown path publishes after the link drops (#314). Pure model of the
          * `connected = false` + biometrics-cleared transition so a test can assert the UI flips to
          * disconnected without a live instance. Mirrors what `handleDisconnect` applies via
@@ -797,39 +803,21 @@ class WhoopBleClient(
          * record. Mirrors Swift `BLEManager.dataRangeNewestUnix`: scan u32 LE words in the response
          * body (starts at frame[7], after [type,seq,cmd]), keep those in the unix range, return max.
          */
-        fun dataRangeNewestUnix(frame: ByteArray): Long? {
-            if (frame.size <= 7) return null
-            var newest: Long? = null
-            var i = 7
-            while (i + 4 <= frame.size) {
-                val w = (frame[i].toLong() and 0xFFL) or
-                    ((frame[i + 1].toLong() and 0xFFL) shl 8) or
-                    ((frame[i + 2].toLong() and 0xFFL) shl 16) or
-                    ((frame[i + 3].toLong() and 0xFFL) shl 24)
-                if (w in 1_700_000_000L..1_900_000_000L) newest = maxOf(newest ?: 0L, w)
-                i += 4
-            }
-            return newest
-        }
+        // #286 follow-up: delegate to the pure, twin-tested com.noop.protocol.DataRange (byte-identical to
+        // Swift WhoopProtocol.DataRange) so this parity-critical read — it gates auto-sync via
+        // isFutureDatedNewest → BackfillPolicy — is CI-pinned on BOTH platforms. Thin wrapper so existing
+        // call sites + DataRangeScanTest are unchanged.
+        fun dataRangeNewestUnix(
+            frame: ByteArray,
+            wallNowUnix: Long = System.currentTimeMillis() / 1000L,
+        ): Long? = com.noop.protocol.DataRange.newestUnix(frame, wallNowUnix, AUTO_CONTINUE_FUTURE_SKEW_SECONDS)
 
         /** OLDEST plausible record timestamp in a GET_DATA_RANGE frame — the start of the strap's stored
          *  history. Same scan as [dataRangeNewestUnix] but keeps the minimum, so one connect can report the
          *  full banked SPAN (oldest…newest) = the backlog DEPTH a deep oldest-first drain must cover before
          *  recent nights land (#364). Mirrors Swift `BLEManager.dataRangeOldestUnix`. */
-        fun dataRangeOldestUnix(frame: ByteArray): Long? {
-            if (frame.size <= 7) return null
-            var oldest: Long? = null
-            var i = 7
-            while (i + 4 <= frame.size) {
-                val w = (frame[i].toLong() and 0xFFL) or
-                    ((frame[i + 1].toLong() and 0xFFL) shl 8) or
-                    ((frame[i + 2].toLong() and 0xFFL) shl 16) or
-                    ((frame[i + 3].toLong() and 0xFFL) shl 24)
-                if (w in 1_700_000_000L..1_900_000_000L) oldest = minOf(oldest ?: Long.MAX_VALUE, w)
-                i += 4
-            }
-            return oldest
-        }
+        // #286 follow-up: delegate to the pure, twin-tested com.noop.protocol.DataRange (byte-identical Swift).
+        fun dataRangeOldestUnix(frame: ByteArray): Long? = com.noop.protocol.DataRange.oldestUnix(frame)
 
         /** #364 auto-continue cap: consecutive immediate re-kicks per connection before falling back to
          *  the 900s periodic timer. 6 × ~60s ≈ 6 min of back-to-back draining without letting a
@@ -1532,7 +1520,7 @@ class WhoopBleClient(
      * leaned on CoreBluetooth's internal queue; here we serialise writes ourselves. Each queued
      * item is the fully-framed byte array + its write type (with/without response).
      */
-    private data class PendingWrite(val frame: ByteArray, val withResponse: Boolean)
+    private data class PendingWrite(val frame: ByteArray, val withResponse: Boolean, val cmd: CommandNumber? = null)
     private val writeQueue = ConcurrentLinkedQueue<PendingWrite>()
     // @Volatile: read on the main looper in drainWriteQueue but CLEARED from the GATT binder thread in the
     // write-completion callbacks - the barrier guarantees the main-thread drain sees the flag flip promptly
@@ -2060,14 +2048,14 @@ class WhoopBleClient(
                 byteArrayOf(0x01, 47, 152.toByte(), 0, 0, 0, 0, 0, 0, 0, 0, 0) else payload
             val s = seq.incrementAndGet() and 0xFF
             val frame = Framing.puffinCommandFrame(cmd = puffinCmd, seq = s, payload = puffinPayload)
-            enqueueWrite(PendingWrite(frame, withResponse))
+            enqueueWrite(PendingWrite(frame, withResponse, cmd))
             val cmdNote = if (isHaptics) " cmd=0x13" else ""
             log("→ ${cmd.name} payload=${puffinPayload.toHex()} (puffin$cmdNote)")
             return
         }
         val s = seq.incrementAndGet() and 0xFF
         val frame = Framing.buildCommand(cmd, payload, s)
-        enqueueWrite(PendingWrite(frame, withResponse))
+        enqueueWrite(PendingWrite(frame, withResponse, cmd))
         log("→ ${cmd.name} payload=${payload.toHex()}")
     }
 
@@ -2754,8 +2742,9 @@ class WhoopBleClient(
 
     /** Run [action] after [delayMs], but ONLY if the SAME continuous connection is still up when it fires.
      *  A reconnect (or bond-loop cycle) bumps [connectGeneration], so a transient cycle-connect can't
-     *  satisfy the guard even though the device address is identical across cycles. Both STATE_CONNECTED
-     *  survived-the-dwell timers use it: the re-pair-guide clear (#711) and the reconnect-backoff reset. */
+     *  satisfy the guard even though the device address is identical across cycles. Used by the
+     *  STATE_CONNECTED re-pair-guide clear (#711) — clear the guide only once the link proves it survived
+     *  the bond-loop's quick-timeout window. */
     private fun runIfConnectionSurvives(delayMs: Long, action: () -> Unit) {
         val gen = connectGeneration
         handler.postDelayed({
@@ -3096,12 +3085,16 @@ class WhoopBleClient(
                     // #1030 (ryanbr): a real link is up — cancel any pending involuntary reconnect so a
                     // stale backoff timer can't fire and reset+close this connection.
                     cancelPendingReconnect()
-                    // A successful connect clears the reconnect backoff (iOS didConnect:
-                    // failedConnectAttempts=0, #48) — but DEFERRED behind the connectGeneration guard below
-                    // (see the reset after the re-pair-guide block) so it only fires once THIS connection has
-                    // SURVIVED [RECONNECT_HEALTHY_DWELL_MS]. Resetting immediately would let a WHOOP-app-
-                    // contended band that flaps through STATE_CONNECTED every few seconds churn active DIRECT
-                    // reconnects forever (#173); deferring lets the backoff escalate to PASSIVE instead.
+                    // A successful connect clears the reconnect backoff — the next involuntary drop starts
+                    // the 3,6,12…s schedule afresh (iOS didConnect: failedConnectAttempts=0, #48). Reset
+                    // IMMEDIATELY, not behind a survival dwell: a band the OS holds bonded/ACL-connected
+                    // (co-resident with the official WHOOP app) can ONLY be recovered by the fast DIRECT
+                    // reconnect (failedReconnectAttempts < 3). The PASSIVE autoConnect a dwell-gate escalates
+                    // to STALLS on such a band — it waits for an advertisement/connection-complete the OS
+                    // never re-emits (see handleDisconnect, "passive mode stalls"). So letting the counter
+                    // climb on a flapping co-resident band froze the link, and with it the keep-alive battery
+                    // poll and every historical offload: sync + battery stopped updating (regression of #173).
+                    resetReconnectBackoff()
                     // A connect succeeded → clear the stale-bond re-pair guide UNLESS we are in a known
                     // bond-loop (#617). In that loop the strap "connects" every ~3 s before timing out
                     // again, so clearing here wiped the guide on EVERY cycle: it flashed for ~1 s and
@@ -3124,14 +3117,6 @@ class WhoopBleClient(
                             _state.update { it.copy(reconnectGuide = null) }
                         }
                     }
-                    // Clear the involuntary-reconnect backoff only once THIS connection has SURVIVED the dwell
-                    // — same connectGeneration guard as the guide-clear above. A flapping (ACL-contended) band
-                    // bumps connectGeneration on its next brief connect, so this no-ops and failedReconnect-
-                    // Attempts keeps accumulating → the involuntary reconnect escalates to low-power PASSIVE
-                    // autoConnect (>= 3) instead of hammering active DIRECT connects. A genuinely healthy link
-                    // survives the dwell and resets, keeping the snappy 3s first retry. Android hardening for
-                    // the shared-ACL flap; no iOS analogue (iOS isn't co-resident with the WHOOP app).
-                    runIfConnectionSurvives(RECONNECT_HEALTHY_DWELL_MS) { resetReconnectBackoff() }
                     // Multi-WHOOP: publish the connected strap's stable BLE address so SourceCoordinator can
                     // adopt it onto the active registry device's peripheralId on first connect. Additive twin
                     // of macOS BLEManager.connectedPeripheralUUID (set in didConnect). Decoupled from the
@@ -4340,6 +4325,19 @@ class WhoopBleClient(
             } else {
                 // Genuinely stuck after several tries — drop this one frame so it can't wedge the queue.
                 log("writeCharacteristic rejected by stack; dropping one frame (after $MAX_WRITE_RETRIES retries)")
+                // #312: a dropped TOGGLE_REALTIME_HR would leave live R-R (→ HRV / Autonomic) off FOREVER.
+                // Whoever queued it latched [realtimeArmed] = the value it SENT (reconcileRealtime, or the
+                // direct arm-on-connect / keep-alive paths), so it — and the 30s keep-alive tick that also
+                // reconciles — see no edge (want == armed) and never re-send, while plain HR keeps flowing
+                // over the standard 0x2A37 profile. But the write never reached the strap, so the strap's
+                // TRUE state is the OPPOSITE of the latched value — flip it back, and the next keep-alive
+                // reconcile detects the edge and re-sends the CURRENT want (recovers a dropped ARM *or* a
+                // dropped disarm) within ~30s. Bounded by construction: the re-send rides the keep-alive
+                // cadence, not this drop path, so a persistently-busy stack retries once per tick, never in a loop.
+                if (shouldReArmRealtimeAfterDrop(item.cmd)) {
+                    realtimeArmed = !realtimeArmed
+                    log("realtime toggle dropped — reconciling on the next keep-alive tick (#312)")
+                }
                 writeRetries = 0
                 drainWriteQueue()
             }

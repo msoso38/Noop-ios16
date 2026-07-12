@@ -651,6 +651,10 @@ public final class BLEManager: NSObject, ObservableObject {
     /// Non-nil signals that `centralManagerDidUpdateState` should reconnect this
     /// specific peripheral rather than starting a fresh scan.
     private var restoredPeripheral: CBPeripheral?
+    /// #280: true while `lastSyncError` currently holds a radio-state message (off / unauthorized /
+    /// unsupported) that `centralManagerDidUpdateState` set. Lets the poweredOn transition clear ONLY
+    /// that message, never a genuine mid-sync error (e.g. "Sync interrupted").
+    private var radioStateErrorShown = false
     private var cmdCharacteristic: CBCharacteristic?
     private var cmdNotifyCharacteristic: CBCharacteristic?
     private var eventNotifyCharacteristic: CBCharacteristic?
@@ -2759,7 +2763,47 @@ public final class BLEManager: NSObject, ObservableObject {
 extension BLEManager: @preconcurrency CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         log("Central state: \(central.state.rawValue) (5 = poweredOn)")
-        guard central.state == .poweredOn else { return }
+        guard central.state == .poweredOn else {
+            // #280: a non-poweredOn radio state used to be a SILENT return — the strap log showed only
+            // "Central state: 3" and the UI just read "not connected", so a user whose Mac had denied NOOP
+            // Bluetooth (.unauthorized == raw 3) had nothing explaining why no strap was ever found. This is
+            // the #280 case: an unsigned universal rebuild (8.4.0) gets a new code identity, so the earlier
+            // macOS Bluetooth TCC grant no longer applied and CoreBluetooth reported .unauthorized before
+            // any scan/connect. Surface the actionable states via lastSyncError (shown in Live + Today);
+            // leave .unknown/.resetting alone — they're transient and the next state update resolves them.
+            // Android already surfaces all three (WhoopBleClient: no-LE / off / permission), so this brings
+            // iOS+macOS up to that parity rather than adding a new behaviour.
+            switch central.state {
+            case .unauthorized:
+                // #295: an unsigned/ad-hoc build's code identity changes on every release, so a Bluetooth
+                // toggle that already reads "on" from a PRIOR build's grant may not carry over — the
+                // message needs to tell the user to re-toggle it, not just check that it's on.
+                #if os(macOS)
+                state.lastSyncError = "NOOP isn't allowed to use Bluetooth. Open System Settings → Privacy & Security → Bluetooth — if NOOP is already listed there, toggle it off and back on (a new NOOP build needs a fresh grant), then quit and reopen NOOP."
+                #else
+                state.lastSyncError = "NOOP isn't allowed to use Bluetooth. Open iPhone Settings → NOOP → Bluetooth — if it's already on, toggle it off and back on, then quit and reopen NOOP."
+                #endif
+                log("Bluetooth permission not granted (unauthorized) — cannot scan or connect")
+                radioStateErrorShown = true
+            case .poweredOff:
+                state.lastSyncError = "Bluetooth is off. Turn it on to connect to your strap."
+                log("Bluetooth is off — cannot scan or connect")
+                radioStateErrorShown = true
+            case .unsupported:
+                state.lastSyncError = "This device can't use Bluetooth Low Energy."
+                log("Bluetooth LE unsupported on this device")
+                radioStateErrorShown = true
+            default:
+                break
+            }
+            return
+        }
+        // #280: radio is back — clear a stale radio-state banner (only one WE set), so a "Bluetooth is off"
+        // message doesn't outlive the radio coming on. A genuine sync error is left untouched.
+        if radioStateErrorShown {
+            state.lastSyncError = nil
+            radioStateErrorShown = false
+        }
         // Bootstrap the async store once on first poweredOn (idempotent if already set).
         Task { @MainActor in await bootstrapStore() }
         if let p = restoredPeripheral {
@@ -3499,15 +3543,13 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
     /// Newest plausible-unix marker in a GET_DATA_RANGE COMMAND_RESPONSE = the strap's newest stored
     /// record. Mirrors re/diagnose_biometrics.py: scan u32 LE words in the response body (data starts at
     /// frame[7], after [type,seq,cmd]), keep those in the unix range, return the max. nil if none.
-    static func dataRangeNewestUnix(from frame: [UInt8]) -> Int? {
-        guard frame.count > 7 else { return nil }
-        let body = Array(frame[7...]); var newest: Int? = nil; var i = 0
-        while i + 4 <= body.count {
-            let w = Int(body[i]) | Int(body[i+1]) << 8 | Int(body[i+2]) << 16 | Int(body[i+3]) << 24
-            if w >= 1_700_000_000 && w <= 1_900_000_000 { newest = max(newest ?? 0, w) }
-            i += 4
-        }
-        return newest
+    static func dataRangeNewestUnix(from frame: [UInt8],
+                                    wallNowUnix: Int = Int(Date().timeIntervalSince1970)) -> Int? {
+        // #286 follow-up: delegate to the pure, twin-tested WhoopProtocol.DataRange (byte-identical to the
+        // Kotlin com.noop.protocol.DataRange) so this parity-critical read — it gates auto-sync via
+        // isFutureDatedNewest → BackfillPolicy — is CI-pinned on BOTH platforms, not the Kotlin side only.
+        DataRange.newestUnix(from: frame, wallNowUnix: wallNowUnix,
+                             futureSkewSeconds: BackfillContinuation.defaultFutureSkewSeconds)
     }
 
     /// The OLDEST plausible record timestamp in a GET_DATA_RANGE frame — the start of the strap's stored
@@ -3515,15 +3557,9 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
     /// full banked SPAN (oldest…newest). For the recurring "last night didn't sync" reports (#364) that
     /// span is the backlog DEPTH at a glance: a strap that banked weeks of un-synced history has a wide
     /// span and simply needs time to drain oldest-first, vs. a narrow span that should clear quickly.
+    // #286 follow-up: delegate to the pure, twin-tested WhoopProtocol.DataRange (byte-identical Swift/Kotlin).
     static func dataRangeOldestUnix(from frame: [UInt8]) -> Int? {
-        guard frame.count > 7 else { return nil }
-        let body = Array(frame[7...]); var oldest: Int? = nil; var i = 0
-        while i + 4 <= body.count {
-            let w = Int(body[i]) | Int(body[i+1]) << 8 | Int(body[i+2]) << 16 | Int(body[i+3]) << 24
-            if w >= 1_700_000_000 && w <= 1_900_000_000 { oldest = min(oldest ?? .max, w) }
-            i += 4
-        }
-        return oldest
+        DataRange.oldestUnix(from: frame)
     }
 
     public func peripheral(_ peripheral: CBPeripheral,

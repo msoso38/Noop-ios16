@@ -64,6 +64,10 @@ private struct DevicesContent: View {
 
     private var activeDevices: [PairedDevice] { registry.devices.filter { $0.status != .archived } }
     private var removedDevices: [PairedDevice] { registry.devices.filter { $0.status == .archived } }
+    /// I-1: `activeDevices` minus import sources (cloud/file) — the candidates actually eligible for
+    /// "make active". An import source is a data partition, not a live device; offering it here would let
+    /// activating it demote the live WHOOP driving BLE routing + day-owner priority 0.
+    private var activatableDevices: [PairedDevice] { activeDevices.filter { !$0.isImportSource } }
 
     /// #987: the active+connected strap's clock state, from the SAME pure ConnectionReadout parsers the
     /// Test Centre Connection panel binds (one source of truth). nil (no row at all) until the WHOOP path
@@ -74,7 +78,8 @@ private struct DevicesContent: View {
         guard live.connected else { return nil }
         let deviceClock = ConnectionReadout.clockCorrelatedDevice(logLines: live.log)
         guard deviceClock != nil || live.strapRange != nil || live.lastFrameAtUnix != nil else { return nil }
-        let latched = ConnectionReadout.clockLatchedLabel(deviceClockUnix: deviceClock)
+        let latched = ConnectionReadout.clockLatchedLabel(deviceClockUnix: deviceClock,
+                                                          strapNewestUnix: live.strapRange?.newestUnix)
         let frame = ConnectionReadout.lastFrameLabel(lastFrameUnix: live.lastFrameAtUnix,
                                                      nowUnix: Int(Date().timeIntervalSince1970))
         let warning = ConnectionReadout.rtcWarning(deviceClockUnix: deviceClock,
@@ -118,7 +123,13 @@ private struct DevicesContent: View {
                     onMakeActive: { switchTarget = device },
                     onRename: { renameDraft = device.nickname ?? device.displayName; renameTarget = device },
                     onRemove: { removeTarget = device },
-                    onReboot: { rebootTarget = device },
+                    // Restart is offered only for a live-connected WHOOP that is NOT a 4.0: the strap-log
+                    // analysis on #275 showed no safe frame reboots a 4.0 (empty bodies are ignored; any
+                    // non-empty body just wedges the BLE link for ~7s, sensor stays on), so a 4.0 Restart
+                    // button could never work. 5.0/MG reboot on the production frame. nil otherwise.
+                    onReboot: (device.status == .active && live.connected
+                               && SourceCoordinator.isWhoop(device)
+                               && !model.ble.isWhoop4) ? { rebootTarget = device } : nil,
                     // 4.0 reboot probe: only offered when Test Centre → Connection is on AND the live
                     // strap is a WHOOP 4.0 (a 5.0 already reboots on the production frame). nil otherwise.
                     onRebootProbe: (device.status == .active && live.connected
@@ -187,7 +198,7 @@ private struct DevicesContent: View {
             Button("Cancel", role: .cancel) { rebootTarget = nil }
             Button("Restart") { model.rebootStrap(); rebootTarget = nil }
         } message: { device in
-            Text("Restart \(device.displayName)? It disconnects for about 30 seconds while it reboots, then reconnects on its own. Your recorded data is kept. Confirmed on WHOOP 5.0; on WHOOP 4.0 the reboot command isn't confirmed yet — if nothing happens, your strap log helps us pin it down.")
+            Text("Restart \(device.displayName)? It disconnects for about 30 seconds while it reboots, then reconnects on its own. Your recorded data is kept.")
         }
         // WHOOP 4.0 reboot probe (#235): only reachable with Test Centre → Connection on and a 4.0 connected.
         // Tries each candidate frame one at a time so the strap log shows which one actually reboots.
@@ -227,7 +238,9 @@ private struct DevicesContent: View {
         .confirmationDialog("Pick a new active strap",
                             isPresented: $pickNewActive,
                             titleVisibility: .visible) {
-            ForEach(activeDevices) { device in
+            // I-1: import sources (Oura cloud import, file imports) are excluded — they're data
+            // partitions, not live devices, and must never be offered as an active-strap candidate.
+            ForEach(activatableDevices) { device in
                 Button(device.displayName) { registry.setActive(device.id) }
             }
             Button("Leave none active", role: .cancel) { }
@@ -304,8 +317,9 @@ private struct DevicesContent: View {
         registry.archive(device.id)
         removeTarget = nil
         if wasActive {
-            // Other paired devices left → ask which becomes active; otherwise no active device remains.
-            if !activeDevices.isEmpty {
+            // Other ACTIVATABLE devices left → ask which becomes active; otherwise (none left, or only
+            // import sources remain) no active device remains and there's nothing to offer (I-1).
+            if !activatableDevices.isEmpty {
                 pickNewActive = true
             }
         }
@@ -520,16 +534,20 @@ private struct DeviceCard: View {
 
     /// The card's primary tap action, or nil when there isn't one. A paired-but-not-active band → make it
     /// active; a removed band → re-add it as active. The active band and any card without those callbacks
-    /// have no whole-card tap (their controls live entirely in the ⋮ menu).
+    /// have no whole-card tap (their controls live entirely in the ⋮ menu). I-1: an import source (Oura
+    /// cloud import, file imports) never offers activation — it's a data partition, not a live device;
+    /// making it "active" would demote whatever live device drives BLE routing + day-owner priority 0.
     private var primaryAction: (() -> Void)? {
+        if device.isImportSource { return nil }
         if device.status == .archived { return onReAdd }
         if !isActive { return onMakeActive }
         return nil
     }
 
     /// Short accent hint mirroring the primary tap, shown in the footer row. nil when the card has no
-    /// whole-card action (active band / menu-only removed band).
+    /// whole-card action (active band / menu-only removed band / I-1 import source).
     private var primaryActionHint: String? {
+        if device.isImportSource { return nil }
         if device.status == .archived { return onReAdd == nil ? nil : String(localized: "Make active") }
         if !isActive { return String(localized: "Make active") }
         return nil
@@ -576,7 +594,9 @@ private struct DeviceCard: View {
     private var actionsMenu: some View {
         Menu {
             if device.status == .archived {
-                if let onReAdd {
+                // I-1: a removed import source (e.g. Oura cloud import, archived on Disconnect) never
+                // offers "Make active" reactivation — it's a data partition, not a live device.
+                if let onReAdd, !device.isImportSource {
                     Button { onReAdd() } label: { Label("Make active", systemImage: "bolt.fill") }
                 }
                 Button { onRename() } label: { Label("Rename", systemImage: "pencil") }
@@ -587,7 +607,7 @@ private struct DeviceCard: View {
                     }
                 }
             } else {
-                if !isActive {
+                if !isActive && !device.isImportSource {
                     Button { onMakeActive() } label: { Label("Make active", systemImage: "bolt.fill") }
                 }
                 Button { onRename() } label: { Label("Rename", systemImage: "pencil") }

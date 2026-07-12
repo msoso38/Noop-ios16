@@ -154,4 +154,82 @@ class SleepStagerV2Test {
         assertTrue("V2 night should express deep", "deep" in v2Stages)
         assertTrue("V2 night should express REM", "rem" in v2Stages)
     }
+
+    // ── #277 frozen golden: pin the tuned V2 recipe (deepGateThresh / deep emission / transition row) ──────
+
+    /** Fixed integer "breathing" wave — no float rounding, so Swift + Kotlin build byte-identical samples
+     *  (Kotlin roundToInt is half-up, Swift .rounded() is half-away-from-zero; integers avoid the gap). */
+    private fun rsaWave(ph: Int, i: Int): Int {
+        val amp = intArrayOf(12, 60, 30, 20)[ph]
+        return intArrayOf(0, amp, 0, -amp)[i % 4]
+    }
+
+    /**
+     * A crafted 4-phase night (deep-favorable → high-RSA → mild → restless) staged by V2 must reproduce this
+     * EXACT hypnogram. This locks the recipe's END-TO-END behaviour and — because the Swift twin
+     * (`SleepStagerV2Tests.testFrozenGoldenHypnogram`) asserts the SAME sequence from byte-identical input —
+     * proves the full staging path stays Swift↔Kotlin parity-identical (the whole Viterbi path, not just the
+     * constants). It catches GROSS regressions; it is deliberately NOT the guard for the exact #277 tuned
+     * VALUES — on this stark input reverting deepGateThresh/emission/transition doesn't move a boundary — those
+     * are pinned directly in [tunedDeepBoundaryConstantsArePinned]. Input is integer-only / fixed-literal so the
+     * two languages build identical samples. Regenerate deliberately if the recipe is intentionally retuned.
+     */
+    @Test
+    fun frozenGoldenHypnogramPinsTheRecipeShapeAndParity() {
+        val start = refMidnight + 3_600L
+        val phase = 90 * 60
+        val dur = phase * 4
+        val grav = ArrayList<GravitySample>()
+        val hr = ArrayList<HrSample>()
+        val rr = ArrayList<RrInterval>()
+        for (i in 0 until dur) {
+            val ts = start + i
+            val ph = i / phase
+            val restless = ph == 3 && (i % 20) < 6
+            grav.add(
+                if (restless) GravitySample(dev, ts, x = 0.2, y = 0.15, z = 0.96)
+                else GravitySample(dev, ts, x = 0.0, y = 0.0, z = 1.0))
+            val bpm = when (ph) {
+                0 -> 50
+                1 -> 54 + intArrayOf(0, 1, 2, 3, 2, 1)[(i / 20) % 6]
+                2 -> 56 + ((i / 60) % 4)
+                else -> 66 + ((i / 30) % 6)
+            }
+            hr.add(HrSample(dev, ts, bpm = bpm))
+            rr.add(RrInterval(dev, ts, rrMs = (60_000 / bpm) + rsaWave(ph, i)))
+        }
+        val segs = SleepStagerV2.stageSession(start, start + dur, grav, hr, rr, emptyList())
+        val golden = listOf(
+            Triple(0L, 5070L, "deep"),
+            Triple(5070L, 5310L, "light"),
+            Triple(5310L, 5550L, "rem"),
+            Triple(5550L, 10740L, "light"),
+            Triple(10740L, 16290L, "rem"),
+            Triple(16290L, 21600L, "wake"))
+        assertEquals("segment count", golden.size, segs.size)
+        for (k in golden.indices) {
+            assertEquals("seg $k start", start + golden[k].first, segs[k].start)
+            assertEquals("seg $k end", start + golden[k].second, segs[k].end)
+            assertEquals("seg $k stage", golden[k].third, segs[k].stage)
+        }
+    }
+
+    /**
+     * Directly pin the #277 deep-boundary tune — the reliable guard the end-to-end golden can't be (a golden is
+     * only sensitive where the input sits near a decision boundary). Asserts the exact tuned VALUES and their
+     * Swift↔Kotlin equality (twin: `SleepStagerV2Tests.testTunedDeepBoundaryConstantsArePinned`), so a fat-finger
+     * or a one-sided edit to deepGateThresh / the deep transition row fails immediately. The row-sum invariant
+     * catches a renormalisation typo in the hand-edited matrix. (The inline deep EMISSION weights aren't named
+     * constants, so they stay guarded only at the gross level by the golden — retune deliberately.)
+     */
+    @Test
+    fun tunedDeepBoundaryConstantsArePinned() {
+        assertEquals(0.25, SleepStagerV2.deepGateThresh, 0.0)
+        assertEquals(
+            mapOf("deep" to 0.86, "rem" to 0.007, "light" to 0.126, "awake" to 0.007),
+            SleepStagerV2.transition["deep"])
+        for ((from, row) in SleepStagerV2.transition) {
+            assertEquals("transition row '$from' must sum to 1.0", 1.0, row.values.sum(), 1e-9)
+        }
+    }
 }
