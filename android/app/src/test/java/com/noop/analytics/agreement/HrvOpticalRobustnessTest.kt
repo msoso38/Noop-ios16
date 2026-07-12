@@ -36,7 +36,10 @@ class HrvOpticalRobustnessTest {
         val files = File(dir).listFiles { f -> f.extension == "json" }?.sortedBy { it.name }.orEmpty()
         val out = ArrayList<Pair<List<Double>, Double>>()
         for (f in files) {
-            val obj = JSONObject(f.readText())
+            val text = f.readText().trimStart()
+            if (!text.startsWith("{")) continue          // skip array fixtures (recovery_cases / hrv_freq_cases)
+            val obj = JSONObject(text)
+            if (!obj.has("windows")) continue
             if (!isGoldTruth(obj.optString("source", f.name))) continue
             val ws = obj.getJSONArray("windows")
             for (i in 0 until ws.length()) {

@@ -44,12 +44,16 @@ class HrvGoldAgreementTest {
         val perSource = StringBuilder()
 
         for (f in fixtures) {
-            val obj = JSONObject(f.readText())
+            val text = f.readText().trimStart()
+            if (!text.startsWith("{")) continue          // skip array fixtures (recovery_cases / hrv_freq_cases have their own tests)
+            val obj = JSONObject(text)
+            if (!obj.has("windows")) continue
             val src = obj.optString("source", f.nameWithoutExtension)
             val ws = obj.getJSONArray("windows")
             var srcWin = 0
             for (i in 0 until ws.length()) {
                 val w = ws.getJSONObject(i)
+                if (!w.has("refRmssd")) continue          // skip non-gold windows (whoop5-real carries a WHOOP-model ref, not a computed gold ref)
                 val nnArr = w.getJSONArray("nn")
                 if (nnArr.length() < 2) continue
                 val nn = ArrayList<Double>(nnArr.length())
