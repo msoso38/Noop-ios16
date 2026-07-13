@@ -718,7 +718,13 @@ struct StressModel {
     /// Build from oldest→newest daily metrics plus any stored "stress" series.
     /// Returns nil only when there is no usable signal at all.
     init?(days: [DailyMetric], stored: [(day: String, value: Double)]) {
-        guard let today = days.last else { return nil }
+        // Carry (#543): today's own row is often vitals-less until the overnight is analyzed —
+        // especially right after an app update relaunches and re-runs the pass — so score the NEWEST
+        // day that actually has RHR or HRV (the same last-night carry every other Today vital uses)
+        // instead of calibrating. Falls back to the last row when no day has vitals (cold start).
+        guard let idx = days.lastIndex(where: { $0.restingHr != nil || $0.avgHrv != nil }) ?? days.indices.last
+        else { return nil }   // no days at all
+        let today = days[idx]
 
         // Stored values keyed by day, clamped to 0–3.
         let storedByDay: [String: Double] = Dictionary(
@@ -726,10 +732,9 @@ struct StressModel {
             uniquingKeysWith: { _, b in b }
         )
 
-        // Baseline window: up to 30 days ending the day BEFORE today, so "today"
-        // is measured against its own recent past rather than itself.
-        let history = Array(days.dropLast())
-        let baseline = Array(history.suffix(30))
+        // Baseline window: up to 30 days ending the day BEFORE the scored day, so it's measured
+        // against its own recent past rather than itself.
+        let baseline = idx > 0 ? Array(days[0..<idx].suffix(30)) : []
 
         let rhrBase = baseline.compactMap { $0.restingHr }.map(Double.init)
         let hrvBase = baseline.compactMap { $0.avgHrv }
