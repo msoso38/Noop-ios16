@@ -3,6 +3,12 @@ package com.noop.ui
 import androidx.annotation.StringRes
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
@@ -273,27 +279,45 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
     val updateStore = remember { UpdateStore.from(context) }
     var showUpdatesInbox by remember { mutableStateOf(false) }
 
+    // #86 (prototype): Instagram-style scroll-reactive bottom bar. It recedes (subtle shrink + fade +
+    // slide) when you scroll DOWN into content and returns when you scroll UP — driven by a single
+    // NestedScrollConnection on the NavHost, so every screen gets it with no per-screen wiring. Reduce
+    // Motion keeps the bar fully shown (no animation). The bar keeps its reserved layout space (Scaffold
+    // measured it full-size), so only a cheap graphicsLayer transform changes per frame — no relayout.
+    val reduceMotion = rememberReduceMotion()
+    var barCollapsed by remember { mutableStateOf(false) }
+    val barNestedScroll = remember(reduceMotion) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (!reduceMotion) {
+                    // available.y < 0 = content moving up (finger swipes up, reading down) → collapse.
+                    if (available.y < -3f) barCollapsed = true
+                    else if (available.y > 3f) barCollapsed = false
+                }
+                return Offset.Zero
+            }
+        }
+    }
+    val barCollapse by animateFloatAsState(
+        targetValue = if (barCollapsed && !reduceMotion) 1f else 0f,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "barCollapse",
+    )
+
     run {
         Scaffold(
             containerColor = Palette.surfaceBase,
-            bottomBar = {
-                // One unified "glass" bar: four evenly-spaced tabs — Today · Trends · Sleep · More
-                // (matches the iOS FloatingTabBar). The quick-action "+" lives in the Today header's
-                // top-right (balancing the avatar), so the bar is clean tabs only. "More" navigates to
-                // its own page (mirroring the iOS More tab) that reaches every grouped destination, so no
-                // destination is lost without the drawer.
-                GlassBottomBar(
-                    current = current,
-                    onTabSelected = { dest ->
-                        if (dest.route != currentRoute) nav.navigateTopLevel(dest.route)
-                    },
-                )
-            },
+            // #86: the tab bar is NO LONGER a reserved bottomBar slot (that reserved region, filled with the
+            // flat app background, was the "bar" band behind the pill). It's overlaid in the Box below so the
+            // content's background fills continuously behind the floating pill.
         ) { inner ->
+            Box(modifier = Modifier.padding(inner).fillMaxSize()) {
             NavHost(
                 navController = nav,
                 startDestination = Destination.Today.route,
-                modifier = Modifier.padding(inner),
+                // #86: full-bleed so content (and its background) fills behind the floating bar. The scroll
+                // direction is observed here (one place → every screen) to drive the bar recede.
+                modifier = Modifier.fillMaxSize().nestedScroll(barNestedScroll),
                 // README motion: top-level destinations crossfade (~240ms) on the calm,
                 // decelerating global easing — nothing slides or bounces between tabs. The
                 // same fade is used for back (pop) so the bar never feels jerky. Drill-ins
@@ -434,6 +458,17 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                 composable(Destination.More.route) {
                     MoreScreen(onNavigate = { nav.navigateTopLevel(it) })
                 }
+            }
+            // #86: the floating tab bar, overlaid on the content (not a reserved slot) and aligned to the
+            // bottom — so the content's background fills continuously behind the transparent pill.
+            GlassBottomBar(
+                current = current,
+                collapse = barCollapse,   // #86: scroll-reactive recede
+                onTabSelected = { dest ->
+                    if (dest.route != currentRoute) nav.navigateTopLevel(dest.route)
+                },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
             }
         }
 
@@ -695,11 +730,29 @@ private val barTrailingTabs = listOf(
 private fun GlassBottomBar(
     current: Destination,
     onTabSelected: (Destination) -> Unit,
+    // #86 (prototype): 0 = fully shown, 1 = collapsed (scrolled into content). A cheap GPU transform —
+    // subtle shrink + fade + slide toward the bottom edge — kept partial so the tabs stay reachable.
+    collapse: Float = 0f,
+    // #86: the bar now FLOATS over the content (overlaid, not a reserved Scaffold slot), so the content's
+    // background fills continuously behind it — no reserved "bar" band. The caller aligns it bottom-centre.
+    modifier: Modifier = Modifier,
 ) {
     val barShape = RoundedCornerShape(50)
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            // #86: recede on scroll. graphicsLayer only (no relayout). It fades toward TRANSPARENT and
+            // shrinks slightly IN PLACE rather than sliding off the bottom — a big translate looked like the
+            // bar was falling off / going under the gesture nav. Gentle shrink (0.92), fades to ~0.35 (clearly
+            // see-through), and only a hair of downward drift (6dp). Bottom-centre pivot.
+            .graphicsLayer {
+                val s = 1f - collapse * 0.08f
+                scaleX = s
+                scaleY = s
+                alpha = 1f - collapse * 0.65f
+                translationY = collapse * 6.dp.toPx()
+                transformOrigin = TransformOrigin(0.5f, 1f)
+            }
             // Clear the gesture-nav bar (home indicator) first, then add breathing room so the capsule
             // floats free of the bottom edge rather than jamming against it — iOS clears the home-indicator
             // safe area + 4pt; here navigationBarsPadding + 12dp gives the same lift.
@@ -710,12 +763,12 @@ private fun GlassBottomBar(
     ) {
         Surface(
             shape = barShape,
-            // "Glass": a translucent raised surface — a frosted island, not a hard slab. Compose has no
-            // cheap blur, so translucency (≈0.80) + a hairline rim is the Liquid-Glass stand-in. A soft,
-            // low drop shadow reads as floating without a glow.
-            color = Palette.surfaceRaised.copy(alpha = 0.80f),
-            tonalElevation = 2.dp,
-            shadowElevation = 4.dp,
+            // #86: NO fill. The dark translucent fill read as a solid "bar" behind the tabs; the content
+            // should show straight through. Keep the pill SHAPE via the hairline outline only (a floating
+            // capsule of tabs over the content), no fill and no drop shadow (which also read as a slab).
+            color = Color.Transparent,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
             modifier = Modifier
                 .fillMaxWidth()
                 // Cap the width so the pill stays a centred floating island on tablets, not a full-bleed bar.
