@@ -238,13 +238,14 @@ private object ComparePrefs {
         NoopPrefs.of(context).edit().putString(KEY_RANGE, range.name).apply()
     }
 
-    fun readSelection(context: Context, maxSelection: Int): List<CompareMetric> {
+    fun readSelection(context: Context, minSelection: Int, maxSelection: Int): List<CompareMetric> {
         val raw = NoopPrefs.of(context).getString(KEY_SELECTED, null)
         if (raw != null) {
-            return raw.split(",")
+            val parsed = raw.split(",")
                 .mapNotNull { CompareCatalog.byId(it.trim()) }
                 .distinctBy { it.id }
                 .take(maxSelection)
+            if (parsed.size >= minSelection) return parsed
         }
 
         val picks = defaultCompareMetricKeys.mapNotNull { CompareCatalog.byKey(it) }
@@ -376,7 +377,7 @@ fun CompareScreen(vm: AppViewModel) {
     // Ordered selection (max 4). Drives both the legend order and color mapping.
     val selected = remember {
         mutableStateListOf<CompareMetric>().apply {
-            addAll(ComparePrefs.readSelection(context, maxSelection))
+            addAll(ComparePrefs.readSelection(context, minSelection, maxSelection))
         }
     }
     // Full-history series per selected metric id (ascending by day).
