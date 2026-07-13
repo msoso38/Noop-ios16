@@ -418,8 +418,11 @@ bits 14–15 : qual_b
   **VALIDATED against NOOP captures 2026-07-12**: the `600/10` sample on the 7/11→12 night decodes
   to 23:30→09:20, matching the reconstructed 1196-code hypnogram (23:32→09:30 write-anchored) and
   the reported sleep (23:35–09:00). Earlier samples fit the same shape (688/101, 584/108, 716/164).
-  Note the window END trails the SleepNet WRITE by `end_offset` minutes — a future refinement can
-  anchor the hypnogram burst end at `event − end_offset` instead of the write moment.
+  Note the window END trails the SleepNet WRITE by `end_offset` minutes (10–43 min observed).
+  **NOOP anchors the hypnogram burst end at `event − end_offset`** when a same-finalization 0x49
+  (envelope ring-time within 10 min of the burst's) is present — the write-moment envelope shifted a
+  whole reconstructed night +43 min on 2026-07-13 before this refinement; the 0x49 window matched the
+  wearer's report within minutes (23:32→08:08 vs 23:34→08:03).
 - **`0x76` `bedtime_period`**: start/end as uint32 LE ringTimestamps → map to UTC (§5.5). [ringverse]
 - Tags `0x48,0x4A–0x4D,0x4F,0x57,0x58` are additional sleep summary/feature variants in the dictionary; layouts **(UNVERIFIED)** - decode only after fixtures. [ringverse]
 

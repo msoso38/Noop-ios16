@@ -182,6 +182,15 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private var greenIbiAmpLengths: Set<Int> = []
     private static let greenIbiAmpLogCap = 50
 
+    /// The latest 0x49 sleep_summary_1 window (ringverse: start/end offsets in MINUTES BEFORE the event
+    /// time), stashed so the hypnogram burst it belongs to can anchor its END at the TRUE sleep end
+    /// (`event − end_offset`) instead of the SleepNet WRITE moment. Validated 2026-07-13: the write
+    /// trailed the real sleep end by 43 min, shifting the whole reconstructed night +43 min; the 0x49
+    /// window matched the wearer's report within minutes (23:32→08:08 vs 23:34→08:03). The 0x49 arrives
+    /// in the same finalization burst right BEFORE the phase records, so stash-then-match by ring-time
+    /// proximity pairs them. Reset per session.
+    private var lastSleepWindow049: (ringTimestamp: UInt32, startOffMin: Int, endOffMin: Int)?
+
     // MARK: - Activity (0x50 MET) estimate accumulation — INVESTIGATION ONLY
     // Aggregate the decoded 0x50 MET stream into an honest, clearly-labeled per-day estimate
     // (OuraActivityEstimator) logged at drain-end, for eyeballing against WHOOP active minutes / Apple
@@ -482,10 +491,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     }
 
     /// Persist a closed hypnogram burst with its RECONSTRUCTED time axis: codes laid backward at the
-    /// 30 s SleepNet epoch from the anchored burst end (the last record's envelope time = the analysis
-    /// write moment ≈ minutes after wake). Falls back to wall-clock as the burst end when no anchor
-    /// exists (rare since the SyncTime send; the sequence and spacing stay honest, only the end drifts
-    /// by the connect delay). Logs the reconstructed window + stage minutes so a capture is self-evident.
+    /// 30 s SleepNet epoch from the anchored burst END. The end is the matching 0x49 window's TRUE
+    /// sleep end (`event − end_offset` min, ringverse-validated within minutes of the wearer's report)
+    /// when one arrived in the same finalization burst; otherwise the last record's envelope time (the
+    /// analysis WRITE moment — observed trailing the real sleep end by 10–43 min, so 0x49 wins when
+    /// available). Logs the reconstructed window + stage minutes so a capture is self-evident.
     private func persistHypnogramBurst(_ burst: OuraHypnogramBurst) {
         guard let driver, burst.totalCodes > 0 else { return }
         // HOLD-UNTIL-ANCHOR (same discipline as pendingAnchorEvents): the burst end IS the night's whole
@@ -493,10 +503,29 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         // An unanchored burst is parked and re-tried when the 0x42 anchor lands; if the session ends
         // without one it is DROPPED honestly — safe, because the resume cursor only advances on an
         // anchored persist, so the ring re-serves the same records next drain.
-        guard let end = driver.unixSeconds(forRingTimestamp: burst.lastRingTimestamp) else {
+        guard let writeEnd = driver.unixSeconds(forRingTimestamp: burst.lastRingTimestamp) else {
             pendingUnanchoredBursts.append(burst)
             log("Oura: hypnogram burst (\(burst.totalCodes) codes) held - no anchor yet; reconstructs when the 0x42 lands")
             return
+        }
+        var end = writeEnd
+        if let w = lastSleepWindow049 {
+            // Same-finalization match: the 0x49 and the phase records carry near-identical envelope
+            // ring-times (observed seconds apart). 6000 ticks = 10 min is generous while still never
+            // pairing a different night's summary.
+            let gap = w.ringTimestamp >= burst.lastRingTimestamp
+                ? w.ringTimestamp - burst.lastRingTimestamp
+                : burst.lastRingTimestamp - w.ringTimestamp
+            if gap <= 6_000,
+               let eventUtc = driver.unixSeconds(forRingTimestamp: w.ringTimestamp) {
+                let sleepEnd = eventUtc - w.endOffMin * 60
+                // Sanity: the true end precedes the write and by a plausible margin (< 6 h).
+                if sleepEnd <= writeEnd, writeEnd - sleepEnd < 6 * 3600 {
+                    end = sleepEnd
+                    let fmt = Self.cursorDateFormatter
+                    log("Oura: hypnogram burst end refined by 0x49 - SleepNet write \(fmt.string(from: Date(timeIntervalSince1970: TimeInterval(writeEnd)))) → true sleep end \(fmt.string(from: Date(timeIntervalSince1970: TimeInterval(sleepEnd)))) (event-\(w.endOffMin) min)")
+                }
+            }
         }
         if burst.hasNonMonotonicRingTimes {
             // The layout trusts arrival order as the code sequence; a backwards envelope ring-time inside
@@ -726,6 +755,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         loggedTierBKinds.removeAll()
         greenIbiAmpCount = 0
         greenIbiAmpLengths.removeAll()
+        lastSleepWindow049 = nil
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
@@ -1104,6 +1134,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 if summary.tag == 0x49, summary.rawPayload.count >= 4 {
                     let startOff = Int(summary.rawPayload[0]) | (Int(summary.rawPayload[1]) << 8)
                     let endOff = Int(summary.rawPayload[2]) | (Int(summary.rawPayload[3]) << 8)
+                    // Stash for the hypnogram burst of the SAME finalization (it follows right after):
+                    // its end anchors at the TRUE sleep end (event − end_offset), not the write moment.
+                    lastSleepWindow049 = (summary.ringTimestamp, startOff, endOff)
                     if let utc = driver.unixSeconds(forRingTimestamp: summary.ringTimestamp) {
                         let startStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(utc - startOff * 60)))
                         let endStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(utc - endOff * 60)))
@@ -1306,6 +1339,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedTierBKinds.removeAll()
         greenIbiAmpCount = 0
         greenIbiAmpLengths.removeAll()
+        lastSleepWindow049 = nil
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
         hypnogramAssembler.reset()        // ditto for a half-accumulated burst from a dead session
         pendingUnanchoredBursts.removeAll()
@@ -1385,6 +1419,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedTierBKinds.removeAll()
         greenIbiAmpCount = 0
         greenIbiAmpLengths.removeAll()
+        lastSleepWindow049 = nil
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
