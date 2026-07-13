@@ -1501,6 +1501,15 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
                 handleHistorySummary(summary)
             }
         }
+        // The `0x13` SyncTime response is ALSO an outer frame (ringverse BLE.md), peeked the same
+        // non-destructive way: it carries the ring's CURRENT clock counter, which paired with the host
+        // wall-clock right now is a DETERMINISTIC anchor — the 0x42 record is only logged when the ring
+        // actually adjusts its clock, so an already-synced ring can serve a whole drain with no anchor
+        // (observed 2026-07-13: a full night parked unanchored, cursor unable to advance).
+        if let syncFrame = frames.first(where: { $0.op == OuraFraming.syncTimeResponseOp }),
+           let resp = OuraFraming.parseSyncTimeResponse(syncFrame.body) {
+            handleSyncTimeResponse(resp)
+        }
         // The `0x0D` GetBattery response is ALSO an outer frame (never a TLV record, s6.10), detected the
         // same non-destructive way as the 0x11 summary: its op is below the event-tag range (>= 0x41), so
         // it round-trips safely through the TLV decoder as an "unknown tag" no-op if left unfiltered. Routed
@@ -1525,6 +1534,31 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
         }
         // No secure frame in this notification: treat the whole value as TLV record bytes.
         ingestHistory(driver.ingest(notification: bytes, reassembler: reassembler))
+    }
+
+    /// Anchor from the 0x13 SyncTime response (ringverse BLE.md `13 05 <device_ts:4LE> <status:1>`):
+    /// the ring's clock counter at the moment it processed our SyncTime, paired with the host wall-clock
+    /// at receipt. The tick unit is disambiguated against the persisted resume cursor
+    /// (OuraDriver.syncTimeAnchorCandidate — raw ticks vs seconds×10, exactly one must be plausible);
+    /// no unambiguous reading → log the raw value for investigation and adopt NOTHING (an honest missing
+    /// anchor beats a guessed one). On success everything parked while unanchored resolves immediately.
+    private func handleSyncTimeResponse(_ resp: (deviceTimestamp: UInt32, status: UInt8)) {
+        guard let driver else { return }
+        let now = Int64(Date().timeIntervalSince1970)
+        let raw = String(format: "0x%08x", resp.deviceTimestamp)
+        if let rt = OuraDriver.syncTimeAnchorCandidate(responseValue: resp.deviceTimestamp,
+                                                       historyCursor: historyCursor),
+           driver.adoptSyncTimeAnchor(ringTimestamp: rt, unixSeconds: now) {
+            let unit = rt == resp.deviceTimestamp ? "ticks" : "seconds x10"
+            if !loggedAnchor {
+                loggedAnchor = true
+                log("Oura: UTC anchor from SyncTime response (0x13) - device rt \(rt) [\(unit), raw \(raw), status \(resp.status)] = now; no 0x42 needed this session")
+            }
+            drainPendingAnchorEvents()
+            drainPendingHypnogramBursts()
+        } else {
+            log("Oura: SyncTime response (0x13) raw \(raw) status \(resp.status) - no unambiguous tick reading vs cursor \(historyCursor); anchor NOT adopted (investigation)")
+        }
     }
 
     /// Act on what the driver resolved a 0x2F secure sub-frame to.

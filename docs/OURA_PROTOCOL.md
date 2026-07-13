@@ -265,12 +265,30 @@ as five identical ~955 KB re-serves of one window while the tail (`bytes_left` 4
 reached. open_oura has no ack-fetch; every request is the same `(cursor, max=255, flags=-1)` shape
 with the cursor advanced per batch.
 
-### 5.4 SyncTime (`0x12`)
+### 5.4 SyncTime (`0x12`) and its response (`0x13`)
 ```
-12 09 <token:1> <counter:3 LE> 00 00 00 00 f6
+12 09 <unix_seconds:8 LE> <tz:1>
 ```
-where `counter = floor(unix_seconds / 256)`, trailer `0xf6` fixed. [open_ring]
-Response: `13 05 <ack> <counter_echo:3 LE> 00`. [open_ring]
+`unix_seconds` = host UTC as uint64 seconds; `tz` = signed offset in HALF-HOURS from UTC.
+[ringverse BLE.md][open_oura `req_sync_time`] — validated on-device 2026-07-12 (this layout made the
+ring emit its first 0x42 and anchored history).
+
+Response:
+```
+13 05 <current_device_timestamp:4 LE> <status:1>
+```
+`current_device_timestamp` is the ring's OWN clock counter when it processed the SyncTime. [ringverse]
+**NOOP anchor use (2026-07-13):** paired with the host wall-clock at receipt this is a DETERMINISTIC
+ring-time→UTC anchor available at every connect. Needed because the `0x42` time_sync_ind record is
+only logged when the ring actually ADJUSTS its clock — an already-synced ring can serve an entire
+drain with no 0x42 (observed: a whole night parked unanchored). ringverse labels the field "seconds"
+while the record clock runs in 100 ms ticks; NOOP disambiguates raw-ticks vs seconds×10 against the
+persisted resume cursor (exactly one reading must land within cursor…cursor+7 days) and adopts
+nothing when ambiguous.
+
+**SUPERSEDED (open_ring):** `12 09 <token:1> <counter:3 LE> 00 00 00 00 f6` with
+`counter = floor(unix_seconds/256)` and response `13 05 <ack> <counter_echo:3 LE> 00` — that request
+layout never anchored on real hardware.
 
 ### 5.5 Ring-time → UTC anchoring
 - The ring clock is in **ticks**: default **100 ms/tick** (10 Hz); burst mode **1 ms/tick** (`factor_flag=1`). [open_ring]
