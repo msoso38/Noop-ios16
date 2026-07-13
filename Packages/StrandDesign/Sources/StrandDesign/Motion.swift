@@ -63,6 +63,54 @@ public enum StrandMotion {
 
     /// Standard fade.
     public static let fade = Animation.easeInOut(duration: durationStandard)
+
+    // MARK: Shell transitions (iOS split tab bar + quick-launch panel)
+
+    /// The design-system "calm" easing — the global tab crossfade / panel curve.
+    /// cubic-bezier(0.22, 1, 0.36, 1) at the standard tab-swap duration.
+    public static let calm = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)
+
+    /// `calm`, suppressed under Reduce Motion (returns `nil` so the change applies instantly).
+    public static func calm(reduced: Bool) -> Animation? { reduced ? nil : calm }
+
+    /// Calm easing at the fast duration — chrome/label swaps that shouldn't linger.
+    public static let calmQuick = Animation.timingCurve(0.22, 1, 0.36, 1, duration: durationFast)
+
+    /// `calmQuick`, suppressed under Reduce Motion.
+    public static func calmQuick(reduced: Bool) -> Animation? { reduced ? nil : calmQuick }
+
+    /// Quick-launch panel open/close — also the interactive pull-down finish, so opening,
+    /// button-dismiss, and pull-to-dismiss all share one spring character.
+    public static let panel = Animation.spring(response: 0.32, dampingFraction: 0.86)
+
+    /// `panel`, suppressed under Reduce Motion.
+    public static func panel(reduced: Bool) -> Animation? { reduced ? nil : panel }
+
+    /// Brief tap/selection fade (grid-tile launch, drop-target highlight).
+    public static let tap = Animation.easeInOut(duration: 0.15)
+
+    /// `tap`, suppressed under Reduce Motion.
+    public static func tap(reduced: Bool) -> Animation? { reduced ? nil : tap }
+
+    /// Quick chrome fade-out (edit-mode exit, remove-badge appearance).
+    public static let quick = Animation.easeOut(duration: durationFast)
+
+    /// `quick`, suppressed under Reduce Motion.
+    public static func quick(reduced: Bool) -> Animation? { reduced ? nil : quick }
+
+    /// Lifting a dragged tile off the grid — snappier than `interactive`.
+    public static let lift = Animation.interactiveSpring(response: 0.18, dampingFraction: 0.78)
+
+    /// `lift`, suppressed under Reduce Motion.
+    public static func lift(reduced: Bool) -> Animation? { reduced ? nil : lift }
+
+    /// One half-cycle of the home-screen-style edit jiggle. The per-item duration and delay remain
+    /// inputs so neighbouring tiles drift naturally, while the animation construction stays canonical.
+    public static func jiggle(halfCycle: Double, delay: Double) -> Animation {
+        .easeInOut(duration: halfCycle)
+            .repeatForever(autoreverses: true)
+            .delay(delay)
+    }
 }
 
 #if DEBUG

@@ -1172,7 +1172,7 @@ struct TodayView: View {
     }
 
     /// Settings presented as a sheet from the top-bar profile button (sheets inherit the app
-    /// environment on iOS, so SettingsView gets the same objects it has under the More tab).
+    /// environment on iOS, so SettingsView gets the same objects it has from quick launch).
     private var settingsSheet: some View {
         NavigationStack {
             SettingsView()
