@@ -718,19 +718,23 @@ struct StressModel {
     /// Build from oldest→newest daily metrics plus any stored "stress" series.
     /// Returns nil only when there is no usable signal at all.
     init?(days: [DailyMetric], stored: [(day: String, value: Double)]) {
-        // Carry (#543): today's own row is often vitals-less until the overnight is analyzed —
-        // especially right after an app update relaunches and re-runs the pass — so score the NEWEST
-        // day that actually has RHR or HRV (the same last-night carry every other Today vital uses)
-        // instead of calibrating. Falls back to the last row when no day has vitals (cold start).
-        guard let idx = days.lastIndex(where: { $0.restingHr != nil || $0.avgHrv != nil }) ?? days.indices.last
-        else { return nil }   // no days at all
-        let today = days[idx]
-
         // Stored values keyed by day, clamped to 0–3.
         let storedByDay: [String: Double] = Dictionary(
             stored.map { ($0.day, min(max($0.value, 0), 3)) },
             uniquingKeysWith: { _, b in b }
         )
+
+        // Carry (#543): today's own row is often vitals-less until the overnight is analyzed —
+        // especially right after an app update relaunches and re-runs the pass — so score the NEWEST
+        // day that actually carries usable signal (RHR/HRV, or a stored/imported stress value) instead of
+        // calibrating, the same last-night carry every other Today vital uses. The predicate mirrors the
+        // storedToday||derived gate below, so an imported stress-only latest day is still honored (not
+        // skipped). Falls back to the last row when no day has any signal (cold start).
+        guard let idx = days.lastIndex(where: {
+            $0.restingHr != nil || $0.avgHrv != nil || storedByDay[$0.day] != nil
+        }) ?? days.indices.last
+        else { return nil }   // no days at all
+        let today = days[idx]
 
         // Baseline window: up to 30 days ending the day BEFORE the scored day, so it's measured
         // against its own recent past rather than itself.

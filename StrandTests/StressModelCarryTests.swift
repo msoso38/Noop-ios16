@@ -34,4 +34,15 @@ final class StressModelCarryTests: XCTestCase {
         let days = (1...5).map { day("2026-07-0\($0)", rhr: nil, hrv: nil) }
         XCTAssertNil(StressModel(days: days, stored: []))
     }
+
+    func testStoredStressOnLatestVitalsLessDayIsUsedNotSkipped() {
+        // An imported latest day carries a STORED stress value but no RHR/HRV (e.g. a Xiaomi / Garmin /
+        // WHOOP export). The original gate honoured it; the carry must NOT skip it back to an older vitals
+        // day. The stored 2.5 must win over any derived carry.
+        let days = baseline + [day("2026-07-02", rhr: nil, hrv: nil)]
+        let model = StressModel(days: days, stored: [(day: "2026-07-02", value: 2.5)])
+        XCTAssertNotNil(model)
+        XCTAssertEqual(model?.score ?? -1, 2.5, accuracy: 0.001,
+                       "the latest day's stored stress must win over a carry")
+    }
 }

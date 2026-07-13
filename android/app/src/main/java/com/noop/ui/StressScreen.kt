@@ -1199,10 +1199,13 @@ internal class StressModel private constructor(
         fun build(days: List<DailyMetric>, stored: Map<String, Double>): StressModel? {
             // Carry (#543): today's own row is often vitals-less until the overnight is analyzed —
             // especially right after an app update relaunches and re-runs the pass — so score the NEWEST
-            // day that actually has RHR or HRV (the same last-night carry every other Today vital uses)
-            // instead of calibrating. Falls back to the last row when no day has vitals (cold start).
-            val idx = days.indexOfLast { it.restingHr != null || it.avgHrv != null }
-                .let { if (it >= 0) it else days.size - 1 }
+            // day that actually carries usable signal (RHR/HRV, or a stored/imported stress value) instead
+            // of calibrating, the same last-night carry every other Today vital uses. The predicate mirrors
+            // the storedToday||derived gate below, so an imported stress-only latest day is still honored
+            // (not skipped). Falls back to the last row when no day has any signal (cold start).
+            val idx = days.indexOfLast {
+                it.restingHr != null || it.avgHrv != null || stored.containsKey(it.day)
+            }.let { if (it >= 0) it else days.size - 1 }
             if (idx < 0) return null   // no days at all
             val today = days[idx]
 

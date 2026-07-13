@@ -1,6 +1,7 @@
 package com.noop.ui
 
 import com.noop.data.DailyMetric
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -38,5 +39,16 @@ class StressModelTest {
         // Genuine cold start: no day has RHR/HRV and nothing stored -> honestly calibrating (null).
         val days = (1..5).map { day("2026-07-0$it", rhr = null, hrv = null) }
         assertNull(StressModel.build(days, emptyMap()))
+    }
+
+    @Test
+    fun storedStressOnLatestVitalsLessDayIsUsedNotSkipped() {
+        // An imported latest day carries a STORED stress value but no RHR/HRV (e.g. a Xiaomi / Garmin /
+        // WHOOP export). The original gate honoured it; the carry must NOT skip it back to an older vitals
+        // day. The stored 2.5 must win over any derived carry.
+        val days = baseline + day("2026-07-02", rhr = null, hrv = null)
+        val model = StressModel.build(days, mapOf("2026-07-02" to 2.5))
+        assertNotNull(model)
+        assertEquals("the latest day's stored stress must win over a carry", 2.5, model!!.score, 0.001)
     }
 }
