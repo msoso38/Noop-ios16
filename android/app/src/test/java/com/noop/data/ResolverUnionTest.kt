@@ -138,4 +138,83 @@ class ResolverUnionTest {
         )
         assertEquals(2, deduped.size)
     }
+
+    // --- mergeComputedSeriesUnion: the computed metricSeries day-union (#349) ---
+
+    private fun row(source: String, day: String, value: Double) =
+        MetricSeriesRow(deviceId = source, day = day, key = "fitness_age", value = value)
+
+    /** #349: the weekly computed scores (fitness_age / vitality / …) live under "<activeStrapId>-noop",
+     *  so a live-BLE strap banks them under "whoop-<mac>-noop". The union read must surface them (the
+     *  reported bug: a hardcoded "my-whoop-noop" read missed them → Fitness Age stuck "not ready"). The
+     *  active strap wins per shared day; the canonical import fills days it doesn't cover; day-sorted.
+     *  [perSource] is active-strap-first, exactly as computedSourceIds orders it. */
+    @Test
+    fun computedUnionActiveWinsPerDayAndCanonicalFillsGaps() {
+        val merged = WhoopRepository.mergeComputedSeriesUnion(
+            listOf(
+                listOf(row("$reAdded-noop", "2026-07-11", 20.0), row("$reAdded-noop", "2026-07-04", 21.0)),
+                listOf(row("my-whoop-noop", "2026-07-11", 40.0), row("my-whoop-noop", "2026-06-27", 42.0)),
+            ),
+        )
+        assertEquals(listOf("2026-06-27", "2026-07-04", "2026-07-11"), merged.map { it.day })
+        // The shared day: the ACTIVE strap's value + id win over the canonical import's.
+        val shared = merged.first { it.day == "2026-07-11" }
+        assertEquals(20.0, shared.value, 0.0)
+        assertEquals("$reAdded-noop", shared.deviceId)
+        // A canonical-only day still fills the gap.
+        assertEquals(42.0, merged.first { it.day == "2026-06-27" }.value, 0.0)
+    }
+
+    /** A single-WHOOP install passes its one source list through (the instance method short-circuits to a
+     *  single read); the merge just day-sorts it, byte-identical to the pre-fix single-source read. */
+    @Test
+    fun computedUnionSingleSourcePassesThroughSorted() {
+        val merged = WhoopRepository.mergeComputedSeriesUnion(
+            listOf(listOf(row("my-whoop-noop", "2026-07-04", 21.0), row("my-whoop-noop", "2026-07-11", 20.0))),
+        )
+        assertEquals(listOf(21.0, 20.0), merged.map { it.value })
+    }
+
+    // --- latestFromPerSourceLatest: the LIMIT-1 twin of the union's .lastOrNull() (perf) ---
+
+    /** The latest-value pick must be BYTE-IDENTICAL to mergeComputedSeriesUnion(...).lastOrNull():
+     *  strictly newest day wins across sources; a shared newest day keeps the ACTIVE strap's row
+     *  (first in list order). Uses the same fixtures as the merge test so the equivalence is literal. */
+    @Test
+    fun latestPickMatchesFullMergeLastOrNull() {
+        val perSourceFull = listOf(
+            listOf(row("$reAdded-noop", "2026-07-11", 20.0), row("$reAdded-noop", "2026-07-04", 21.0)),
+            listOf(row("my-whoop-noop", "2026-07-11", 40.0), row("my-whoop-noop", "2026-06-27", 42.0)),
+        )
+        val viaMerge = WhoopRepository.mergeComputedSeriesUnion(perSourceFull).lastOrNull()
+        // Per-source LATEST rows, as the LIMIT-1 DAO read returns them (max day per source).
+        val viaLatest = WhoopRepository.latestFromPerSourceLatest(
+            listOf(row("$reAdded-noop", "2026-07-11", 20.0), row("my-whoop-noop", "2026-07-11", 40.0)),
+        )
+        assertEquals(viaMerge, viaLatest)
+        assertEquals("$reAdded-noop", viaLatest?.deviceId)   // shared newest day → active wins
+    }
+
+    /** The canonical import's row wins when it is STRICTLY newer than the active strap's. */
+    @Test
+    fun latestPickNewerCanonicalBeatsOlderActive() {
+        val picked = WhoopRepository.latestFromPerSourceLatest(
+            listOf(row("$reAdded-noop", "2026-07-04", 21.0), row("my-whoop-noop", "2026-07-11", 40.0)),
+        )
+        assertEquals("my-whoop-noop", picked?.deviceId)
+        assertEquals(40.0, picked!!.value, 0.0)
+    }
+
+    /** Null sources (no rows banked for that id) are skipped; all-null → null (no fabricated value). */
+    @Test
+    fun latestPickSkipsNullsAndReturnsNullWhenEmpty() {
+        assertEquals(
+            "$reAdded-noop",
+            WhoopRepository.latestFromPerSourceLatest(
+                listOf(null, row("$reAdded-noop", "2026-07-04", 21.0)),
+            )?.deviceId,
+        )
+        assertNull(WhoopRepository.latestFromPerSourceLatest(listOf(null, null)))
+    }
 }

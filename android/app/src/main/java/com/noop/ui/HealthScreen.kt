@@ -578,10 +578,6 @@ private fun ContributorBar(
 // "Unlocks your VO₂max", never as if they sharpen the age. When no value exists yet we show the
 // readiness checklist instead, so the user knows exactly what's still needed.
 
-/** The computed ("-noop") source the IntelligenceEngine persists fitness_age + vo2max_est under, the
- *  same convention every screen uses for on-device-computed series (imported is plain "my-whoop"). */
-private const val COMPUTED_SOURCE = "my-whoop-noop"
-
 /** Fitness Age readiness from what a screen can see: RHR coverage over the last 7 merged daily rows
  *  (drives the "N more nights" countdown), a scored-strain day as the activity signal, and the profile
  *  basics. Shared by the Health hub's [FitnessAgeSection] and the Today card's [VitalDetailScreen]
@@ -616,12 +612,13 @@ private fun FitnessAgeSection(vm: AppViewModel, days: List<DailyMetric>, profile
     var refreshTick by remember { mutableStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(days, refreshTick) {
+        // Latest-value reads (LIMIT-1 per source) — the full-series `.lastOrNull()` scan is gone (perf).
         val fa = runCatching {
-            vm.repo.metricSeries(COMPUTED_SOURCE, "fitness_age", "0000-01-01", "9999-12-31")
-        }.getOrDefault(emptyList()).lastOrNull()?.value
+            vm.repo.latestMetricComputedUnion(vm.activeStrapId, "fitness_age")?.value
+        }.getOrNull()
         val vo2 = runCatching {
-            vm.repo.metricSeries(COMPUTED_SOURCE, "vo2max_est", "0000-01-01", "9999-12-31")
-        }.getOrDefault(emptyList()).lastOrNull()?.value
+            vm.repo.latestMetricComputedUnion(vm.activeStrapId, "vo2max_est")?.value
+        }.getOrNull()
         fitnessAge = fa
         vo2max = vo2
     }
@@ -683,12 +680,13 @@ private fun VitalitySection(vm: AppViewModel, days: List<DailyMetric>, profile: 
     var vitality by remember { mutableStateOf<Double?>(null) }
     var bodyAge by remember { mutableStateOf<Double?>(null) }
     LaunchedEffect(days) {
+        // Latest-value reads (LIMIT-1 per source) — the full-series `.lastOrNull()` scan is gone (perf).
         vitality = runCatching {
-            vm.repo.metricSeries(COMPUTED_SOURCE, "vitality", "0000-01-01", "9999-12-31")
-        }.getOrDefault(emptyList()).lastOrNull()?.value
+            vm.repo.latestMetricComputedUnion(vm.activeStrapId, "vitality")?.value
+        }.getOrNull()
         bodyAge = runCatching {
-            vm.repo.metricSeries(COMPUTED_SOURCE, "body_age", "0000-01-01", "9999-12-31")
-        }.getOrDefault(emptyList()).lastOrNull()?.value
+            vm.repo.latestMetricComputedUnion(vm.activeStrapId, "body_age")?.value
+        }.getOrNull()
     }
     val contributions = remember(days, profile.age) {
         val last7 = days.takeLast(7)
@@ -2484,7 +2482,7 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
         title = "Fitness Age",
         unit = "yrs",
         color = Palette.chargeColor,
-        readings = vm.repo.metricSeries(COMPUTED_SOURCE, "fitness_age", "0000-01-01", "9999-12-31")
+        readings = vm.repo.metricSeriesComputedUnion(vm.activeStrapId, "fitness_age", "0000-01-01", "9999-12-31")
             .map { VitalReading(it.day, it.value, it.deviceId) },
         format = { it.roundToInt().toString() },
     )
@@ -2493,7 +2491,7 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
         title = "Vitality",
         unit = "",
         color = Palette.metricPurple,
-        readings = vm.repo.metricSeries(COMPUTED_SOURCE, "vitality", "0000-01-01", "9999-12-31")
+        readings = vm.repo.metricSeriesComputedUnion(vm.activeStrapId, "vitality", "0000-01-01", "9999-12-31")
             .map { VitalReading(it.day, it.value, it.deviceId) },
         format = { it.roundToInt().toString() },
     )

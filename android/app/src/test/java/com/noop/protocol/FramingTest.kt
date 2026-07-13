@@ -504,5 +504,77 @@ class FramingTest {
         assertEquals("CONSOLE_LOGS", parsed.typeName)
         assertEquals(true, parsed.crcOk)
         assertEquals("Historical Data\n 55, 2581959: BLE: hist transfer s", parsed.parsed["console"])
+        // Record header (Swift parity: decodeWhoop5ConsoleLogs): per-chunk counter + batch time.
+        assertEquals(671, parsed.parsed["record_index"])
+        assertEquals(1773607251, parsed.parsed["unix"])
+        assertEquals(16041, parsed.parsed["subsec"])
+    }
+
+    @Test
+    fun whoop5_consoleLogs_consecutiveChunksCarryContiguousIndices() {
+        // Two consecutive real chunks of one console stream — a single log line split mid-word
+        // ("…response a" | "ck, start burst") across frames. record_index is the reassembly key.
+        val a = Framing.parseFrame(
+            fromHex(
+                "aa014400010030b132ad020052b4526a337334000131392c203134363535323131393a20424c453a2068" +
+                    "697374207472616e7366657220737461727420726573706f6e7365206100324a7906",
+            ),
+            DeviceFamily.WHOOP5,
+        )
+        val b = Framing.parseFrame(
+            fromHex(
+                "aa014400010030b132ae020052b4526a3373340001636b2c2073746172742062757273740a2031392c20" +
+                    "3134363535343633303a20424c453a20486973746f727920627572737400e67d611f",
+            ),
+            DeviceFamily.WHOOP5,
+        )
+        assertEquals(true, a.crcOk)
+        assertEquals(true, b.crcOk)
+        assertEquals(685, a.parsed["record_index"])
+        assertEquals(686, b.parsed["record_index"])
+        assertEquals("19, 146552119: BLE: hist transfer start response a", a.parsed["console"])
+        assertEquals("ck, start burst\n 19, 146554630: BLE: History burst", b.parsed["console"])
+    }
+
+    // MARK: - CONSOLE_LOGS text-region hardening edges (synthetic frames, Swift parity)
+
+    /** A synthetic CONSOLE_LOGS frame carrying [text] at @21. The CRC32 trailer is left zero: field
+     *  decode is CRC-independent (the flag is only reported, never gated on), so these pin the trim/cap
+     *  edges without a real capture. Twin of the Swift `consoleFrame` helper. */
+    private fun consoleFrame(text: ByteArray): ByteArray {
+        val f = ByteArray(21 + text.size + 4)          // envelope + record header + text + CRC32
+        f[0] = 0xAA.toByte()
+        f[1] = 0x01.toByte()
+        f[8] = 0x32.toByte()                            // CONSOLE_LOGS (type 50)
+        text.copyInto(f, 21)
+        val declaredLength = f.size - 8                 // payload + 4-byte CRC32 (u16 LE @2)
+        f[2] = (declaredLength and 0xFF).toByte()
+        f[3] = ((declaredLength shr 8) and 0xFF).toByte()
+        return f
+    }
+
+    /** The 2 KB cap (a garbled/malicious peer must not pin arbitrary bytes as a String). A real chunk
+     *  is ~51 bytes and can never reach this from the strap, so it needs a synthetic oversize frame. */
+    @Test
+    fun whoop5_consoleLogs_oversizedTextCappedAt2048() {
+        val f = consoleFrame(ByteArray(2100) { 'A'.code.toByte() })
+        val p = Framing.parseFrame(f, DeviceFamily.WHOOP5)
+        assertEquals(2048, (p.parsed["console"] as String).length)
+    }
+
+    /** An all-NUL (padding-only) text region trims to empty -> no `console` key, not an empty string. */
+    @Test
+    fun whoop5_consoleLogs_allNulRegionYieldsNoConsole() {
+        val f = consoleFrame(ByteArray(6))
+        val p = Framing.parseFrame(f, DeviceFamily.WHOOP5)
+        assertNull(p.parsed["console"])
+    }
+
+    /** Only TRAILING NULs are trimmed; the text before them is kept verbatim. */
+    @Test
+    fun whoop5_consoleLogs_trailingNulsTrimmed() {
+        val f = consoleFrame("AB".toByteArray() + byteArrayOf(0, 0, 0))
+        val p = Framing.parseFrame(f, DeviceFamily.WHOOP5)
+        assertEquals("AB", p.parsed["console"])
     }
 }
