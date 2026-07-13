@@ -71,6 +71,15 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(KEY_PPG_HR_SUBLAG_INTERP, false)
         set(v) = prefs.edit().putBoolean(KEY_PPG_HR_SUBLAG_INTERP, v).apply()
 
+    /** True if the user opted in to the experimental "HRV readiness (Plews/Altini)" tier readout (default
+     *  false): a read-only Test Centre readout of the SWC log-HRV tier ([com.noop.analytics.HRVReadiness]).
+     *  It changes NOTHING downstream — the Charge ring stays byte-identical whether on or off; it only
+     *  surfaces the tier + baseline band in the Experimental algorithms card. Rough / early (n=1, not yet
+     *  validated against varying real data). Mirrors the macOS `PuffinExperiment.hrvReadinessKey`. */
+    var hrvReadiness: Boolean
+        get() = prefs.getBoolean(KEY_HRV_READINESS, false)
+        set(v) = prefs.edit().putBoolean(KEY_HRV_READINESS, v).apply()
+
     companion object {
         /** Persisted preferences file. */
         private const val PREFS = "noop_experiments"
@@ -92,6 +101,9 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
 
         /** "HR-from-PPG sub-lag interpolation" opt-in (mirrors macOS `PuffinExperiment.ppgHrSubLagInterpKey`). */
         const val KEY_PPG_HR_SUBLAG_INTERP = "noopPpgHrSubLagInterp"
+
+        /** "HRV readiness (Plews/Altini)" readout opt-in (mirrors macOS `PuffinExperiment.hrvReadinessKey`). */
+        const val KEY_HRV_READINESS = "noopHrvReadiness"
 
         fun from(context: Context): PuffinExperiment =
             PuffinExperiment(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE))

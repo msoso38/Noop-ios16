@@ -79,6 +79,13 @@ enum PuffinExperiment {
 
     static var ppgHrSubLagInterpEnabled: Bool { UserDefaults.standard.bool(forKey: ppgHrSubLagInterpKey) }
 
+    /// Opt-in experimental "HRV readiness (Plews/Altini)" tier readout (default off): a read-only Test Centre
+    /// readout of the SWC log-HRV tier (`HRVReadiness`). It changes NOTHING downstream — the Charge ring stays
+    /// byte-identical whether on or off; it only surfaces the tier + baseline band in the Experimental
+    /// algorithms card. Rough / early (n=1, not yet validated against varying real data). Read directly by the
+    /// Test Centre view via @AppStorage on this key. Mirrors the Android `PuffinExperiment.KEY_HRV_READINESS`.
+    static let hrvReadinessKey = "noopHrvReadiness"
+
     /// Opt-in "Auto-detect workouts": after a sync / on Today appear, scan the last day or two of HR for a
     /// SUSTAINED-ELEVATED window (resting HR + 30 bpm held ≥ 12 min) that doesn't overlap a saved workout,
     /// and surface ONE dismissible Today card offering to save it as a manual-style workout. Pure read +
