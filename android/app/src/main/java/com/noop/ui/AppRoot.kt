@@ -118,6 +118,37 @@ enum class BottomBarBehavior(val storageValue: String, val label: String) {
     }
 }
 
+/**
+ * Whether the bar should be treated as collapsed for the given behavior + live reactive-scroll flag.
+ * COMPACT is always collapsed; EXPANDED never; REACTIVE follows the scroll flag. Pure so the
+ * bottom-bar state machine (#86) is testable without Compose — see [BottomBarBehaviorTest].
+ */
+internal fun isBarEffectivelyCollapsed(behavior: BottomBarBehavior, reactiveCollapsed: Boolean): Boolean =
+    behavior == BottomBarBehavior.COMPACT ||
+        (behavior == BottomBarBehavior.REACTIVE && reactiveCollapsed)
+
+/**
+ * Resolve the 0..1 bar-collapse fraction from behavior, accessibility state and the two animation
+ * inputs. `settled` is the already-eased target (the `animateFloatAsState` output); `precompression`
+ * is the scroll-linked pre-settle drift. Reduce Motion snaps to 0/1; a non-reactive mode rides the
+ * settle only; REACTIVE-while-collapsed takes `max(precompression, settled)` so the scroll-linked
+ * drift never regresses below the eased settle, and REACTIVE-while-expanding follows precompression
+ * until it drops to 0. Pure — mirrors the inline composition in [AppRoot]; see [BottomBarBehaviorTest].
+ */
+internal fun resolveBarCollapse(
+    behavior: BottomBarBehavior,
+    reduceMotion: Boolean,
+    reactiveCollapsed: Boolean,
+    precompression: Float,
+    settled: Float,
+): Float = when {
+    reduceMotion -> if (isBarEffectivelyCollapsed(behavior, reactiveCollapsed)) 1f else 0f
+    behavior != BottomBarBehavior.REACTIVE -> settled
+    reactiveCollapsed -> maxOf(precompression, settled)
+    precompression > 0f -> precompression
+    else -> settled
+}
+
 /** Persisted bottom-navigation behavior, mirrored in snapshot state so Settings updates the shell live. */
 object BottomBarPrefs {
     const val KEY = "noop.bottomBarBehavior"
@@ -356,8 +387,7 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
         barPrecompression = 0f
         barCollapsed = false
     }
-    val effectiveBarCollapsed = bottomBarBehavior == BottomBarBehavior.COMPACT ||
-        (bottomBarBehavior == BottomBarBehavior.REACTIVE && barCollapsed)
+    val effectiveBarCollapsed = isBarEffectivelyCollapsed(bottomBarBehavior, barCollapsed)
     val barSettledCollapse by animateFloatAsState(
         targetValue = if (effectiveBarCollapsed) 1f else 0f,
         animationSpec = if (reduceMotion) {
@@ -369,17 +399,13 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
         },
         label = "barSettledCollapse",
     )
-    val barCollapse = if (reduceMotion) {
-        if (effectiveBarCollapsed) 1f else 0f
-    } else if (bottomBarBehavior != BottomBarBehavior.REACTIVE) {
-        barSettledCollapse
-    } else if (barCollapsed) {
-        maxOf(barPrecompression, barSettledCollapse)
-    } else if (barPrecompression > 0f) {
-        barPrecompression
-    } else {
-        barSettledCollapse
-    }
+    val barCollapse = resolveBarCollapse(
+        behavior = bottomBarBehavior,
+        reduceMotion = reduceMotion,
+        reactiveCollapsed = barCollapsed,
+        precompression = barPrecompression,
+        settled = barSettledCollapse,
+    )
 
     run {
         Scaffold(
