@@ -225,6 +225,24 @@ private enum class CompareRange(val label: String, val days: Int?, val phrase: S
 
 private val defaultCompareMetricKeys = listOf("recovery", "sleep_performance", "weight")
 
+internal fun parseCompareSelection(raw: String?, minSelection: Int, maxSelection: Int): List<CompareMetric>? {
+    if (raw == null) return null
+
+    val tokens = raw.split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+    val parsed = tokens
+        .mapNotNull { CompareCatalog.byId(it) }
+        .distinctBy { it.id }
+        .take(maxSelection)
+
+    return if (parsed.size == tokens.distinct().size || parsed.size >= minSelection) {
+        parsed
+    } else {
+        null
+    }
+}
+
 private object ComparePrefs {
     private const val KEY_RANGE = "compare.range"
     private const val KEY_SELECTED = "compare.selectedMetrics"
@@ -240,13 +258,7 @@ private object ComparePrefs {
 
     fun readSelection(context: Context, minSelection: Int, maxSelection: Int): List<CompareMetric> {
         val raw = NoopPrefs.of(context).getString(KEY_SELECTED, null)
-        if (raw != null) {
-            val parsed = raw.split(",")
-                .mapNotNull { CompareCatalog.byId(it.trim()) }
-                .distinctBy { it.id }
-                .take(maxSelection)
-            if (parsed.size >= minSelection) return parsed
-        }
+        parseCompareSelection(raw, minSelection, maxSelection)?.let { return it }
 
         val picks = defaultCompareMetricKeys.mapNotNull { CompareCatalog.byKey(it) }
         return (if (picks.isEmpty()) CompareCatalog.all.take(2) else picks).take(maxSelection)
