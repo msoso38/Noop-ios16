@@ -347,7 +347,12 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
             }
         }
     }
-    LaunchedEffect(currentRoute, bottomBarBehavior) {
+    // Route changes reset scroll tracking but preserve the bar's collapsed/expanded state.
+    // Behavior setting changes force an expand so the new mode starts from a known position.
+    LaunchedEffect(currentRoute) {
+        barPrecompression = 0f
+    }
+    LaunchedEffect(bottomBarBehavior) {
         barPrecompression = 0f
         barCollapsed = false
     }

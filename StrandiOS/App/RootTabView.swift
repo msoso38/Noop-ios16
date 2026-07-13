@@ -177,7 +177,11 @@ struct RootTabView: View {
             }
         }
         .onChange(of: selectedTab) { _, _ in
-            resetTabBarScroll(expand: true)
+            // Keep the bar's current collapsed/expanded state — only reset scroll tracking so
+            // the new tab's offset doesn't inherit the previous tab's position.
+            lastTabBarScrollOffset = nil
+            tabBarDownwardScroll = 0
+            tabBarScrollIsDragging = false
         }
         .onChange(of: bottomBarBehaviorRaw) { _, _ in
             resetTabBarScroll(expand: true)
