@@ -712,7 +712,8 @@ fun DataSourcesScreen(vm: AppViewModel) {
             subtitle = "Re-share your live strap heart rate over Bluetooth as a standard heart-rate " +
                 "sensor, so a gym treadmill, bike, Zwift, Peloton or any fitness app nearby can read " +
                 "it. Works on any WHOOP (4.0 or 5.0/MG) because your phone does the broadcasting. " +
-                "Local Bluetooth only. Nothing leaves your phone. Off by default.",
+                "If your strap or watch already broadcasts HR directly to another device, leave this " +
+                "off. Local Bluetooth only. Nothing leaves your phone. Off by default.",
         ) {
             if (hrBroadcast) {
                 val (label, tone) =
@@ -745,7 +746,7 @@ fun DataSourcesScreen(vm: AppViewModel) {
                     Text("Broadcast HR from this phone", style = NoopType.subhead, color = Palette.textPrimary)
                     Text(
                         "Acts as a standard Bluetooth heart-rate strap. Pair NOOP from your treadmill, " +
-                            "bike or app to see your strap's heart rate there.",
+                            "bike or app only when you need the phone to rebroadcast your strap's heart rate.",
                         style = NoopType.footnote,
                         color = Palette.textTertiary,
                     )
@@ -787,9 +788,9 @@ fun DataSourcesScreen(vm: AppViewModel) {
                         modifier = Modifier.size(16.dp),
                     )
                     Text(
-                        "Broadcast HR is ON. Your strap is advertising its heart rate continuously, " +
-                            "which keeps its radio hot and drains the battery faster. Turn it off when " +
-                            "you're not using it with another device.",
+                        "Broadcast HR is ON. This phone is advertising heart rate continuously, which " +
+                            "keeps its Bluetooth radio active and drains the battery faster. Turn it off " +
+                            "when you're not using it with another device.",
                         style = NoopType.caption,
                         color = Palette.statusWarning,
                     )
