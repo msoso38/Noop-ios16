@@ -91,6 +91,7 @@ class MainActivity : ComponentActivity() {
         // and chart ramps are correct from the very first frame (no flash).
         AppearancePrefs.load(this)
         ChartStylePrefs.load(this)
+        BottomBarPrefs.load(this)
         // Decode the optional on-device profile photo (if set) before first composition so the Today
         // header + Settings avatars show it from the first frame. No-op when no photo is set.
         ProfileAvatarStore.load(this)

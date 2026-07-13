@@ -30,6 +30,9 @@ public enum StrandMotion {
     /// Slow / draw-in (ring arc, waveform ignite).
     public static let durationSlow: Double = 0.9
 
+    /// Deliberately slower restoration for scroll-reactive navigation — the bar returns calmly rather than popping in.
+    public static let durationNavigationExpand: Double = 0.42
+
     /// One breath cycle for ambient pulsing (bloom, listening flatline).
     public static let breathPeriod: Double = 3.2
 
@@ -63,6 +66,12 @@ public enum StrandMotion {
 
     /// Standard fade.
     public static let fade = Animation.easeInOut(duration: durationStandard)
+
+    /// Smooth, non-bouncy contraction after scroll-reactive navigation crosses its compact threshold.
+    public static let navigationBarCollapse = Animation.easeInOut(duration: durationStandard)
+
+    /// A deliberately slower restoration so the full bar returns calmly instead of appearing to pop in.
+    public static let navigationBarExpand = Animation.easeInOut(duration: durationNavigationExpand)
 }
 
 #if DEBUG

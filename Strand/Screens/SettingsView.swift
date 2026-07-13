@@ -72,6 +72,10 @@ struct SettingsView: View {
     @AppStorage("appIcon.alt") private var useNavyIcon = false
     // Light/Dark/System theme. Read by both app roots' .preferredColorScheme; default follows the OS.
     @AppStorage(AppearanceMode.storageKey) private var appearanceRaw = AppearanceMode.system.rawValue
+    #if os(iOS)
+    // iPhone floating navigation: react to scroll by default, or pin either resting state.
+    @AppStorage(BottomBarBehavior.storageKey) private var bottomBarBehaviorRaw = BottomBarBehavior.reactive.rawValue
+    #endif
     // Chart colour style: Titanium (brand) or Classic (throwback red→green). Re-colours gauges + charts.
     @AppStorage(ChartStyle.storageKey) private var chartStyleRaw = ChartStyle.titanium.rawValue
     // Day-cycle scene backdrop behind Today (#698). Default ON. Off swaps the scene for a plain dark
@@ -670,6 +674,23 @@ struct SettingsView: View {
                     .accessibilityLabel("Chart colours")
                 }
                 #if os(iOS)
+                FormRow(label: "Bottom bar") {
+                    Picker("Bottom bar", selection: $bottomBarBehaviorRaw) {
+                        ForEach(BottomBarBehavior.allCases) { behavior in
+                            Text(behavior.label).tag(behavior.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                    .accessibilityLabel("Bottom bar")
+                }
+                Text("Reactive subtly compacts while scrolling. Expanded and Compact keep the chosen size at all times.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 FormRow(label: "App icon") {
                     Picker("App icon", selection: $useNavyIcon) {
                         Text("Default").tag(false)

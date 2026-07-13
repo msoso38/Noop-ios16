@@ -1,6 +1,59 @@
 import SwiftUI
 import StrandDesign
 
+#if os(iOS)
+enum BottomBarBehavior: String, CaseIterable, Identifiable {
+    static let storageKey = "noop.bottomBarBehavior"
+
+    case reactive
+    case expanded
+    case compact
+
+    var id: String { rawValue }
+    var label: LocalizedStringKey {
+        switch self {
+        case .reactive: "Reactive"
+        case .expanded: "Expanded"
+        case .compact: "Compact"
+        }
+    }
+}
+
+private struct TabBarScrollTagKey: EnvironmentKey {
+    static let defaultValue: Int? = nil
+}
+
+private struct TabBarScrollInteractionChangedKey: EnvironmentKey {
+    static let defaultValue: (Bool) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var tabBarScrollTag: Int? {
+        get { self[TabBarScrollTagKey.self] }
+        set { self[TabBarScrollTagKey.self] = newValue }
+    }
+
+    var tabBarScrollInteractionChanged: (Bool) -> Void {
+        get { self[TabBarScrollInteractionChangedKey.self] }
+        set { self[TabBarScrollInteractionChangedKey.self] = newValue }
+    }
+}
+
+/// Scrollable tab roots publish their content offset to the iPhone shell, which owns the floating bar.
+/// Values stay keyed by tab because `TabView` retains its off-screen roots; reducing them to one scalar lets
+/// a hidden tab's zero overwrite the visible tab's moving offset.
+struct TabBarScrollOffsetKey: PreferenceKey {
+    static var defaultValue: [Int: CGFloat] = [:]
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private enum TabBarScrollSpace {
+    static let name = "noop.tabBarScroll"
+}
+#endif
+
 /// Standard scrollable screen container: title + dark surface + content column.
 struct ScreenScaffold<Content: View, Trailing: View>: View {
     /// Optional — when nil (and no subtitle) the header is omitted entirely, so a screen can supply its
@@ -31,6 +84,8 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     // by `#if os(iOS)` — a runtime size-class check alone would also narrow the Mac detail pane.
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSizeClass
+    @Environment(\.tabBarScrollTag) private var tabBarScrollTag
+    @Environment(\.tabBarScrollInteractionChanged) private var tabBarScrollInteractionChanged
     #endif
 
     var body: some View {
@@ -49,6 +104,18 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
             .frame(maxWidth: hSizeClass == .regular ? 700 : .infinity,
                    alignment: hSizeClass == .regular ? .center : .leading)
             .frame(maxWidth: .infinity, alignment: .center)
+            // Read the content's real position in its scroll viewport. The root shell accumulates these
+            // offsets before changing state, so bounce and one-pixel settling never flicker the tab bar.
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: TabBarScrollOffsetKey.self,
+                        value: tabBarScrollTag.map {
+                            [$0: geometry.frame(in: .named(TabBarScrollSpace.name)).minY]
+                        } ?? [:]
+                    )
+                }
+            }
             #else
             .padding(28)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -59,6 +126,12 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
         // permits horizontal bounce when content genuinely overflows the width (it does not here, the column
         // is width-capped), so the spurious horizontal rubber-band that caused the sideways drift is gone.
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .coordinateSpace(name: TabBarScrollSpace.name)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in tabBarScrollInteractionChanged(true) }
+                .onEnded { _ in tabBarScrollInteractionChanged(false) }
+        )
         #endif
         // The flat canvas, plus an optional full-bleed TOP backdrop (Today's day-cycle scene) drawn behind
         // the scroll content — edge-to-edge under the status bar. The scene is CONFINED to the header+hero

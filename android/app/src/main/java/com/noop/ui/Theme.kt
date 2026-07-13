@@ -355,6 +355,7 @@ object StrandAlpha {
     const val unselectedBar = 0.88f
     const val warningFill = 0.12f
     const val warningBorder = 0.40f
+    const val navigationGlass = 0.42f
 }
 
 // MARK: - Metrics (ported from StrandDesign/Components.swift NoopMetrics)
@@ -386,6 +387,8 @@ object Metrics {
     val screenPadding = 24.dp
     val tileHeight = 108.dp   // every metric tile is this tall
     val chartHeight = 220.dp
+    // Extra scroll room so the final card clears the floating bottom navigation capsule.
+    val tabBarClearance = 76.dp
     val divider = 1.dp
     val compactChartHeight = chartHeight - 90.dp
     val selectorTopUp = sectionGap - screenRowSpacing

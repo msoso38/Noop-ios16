@@ -462,6 +462,8 @@ fun SettingsScreen(
 
     // Theme (System / Light / Dark) — drives NoopTheme; AppearancePrefs mirrors it in snapshot state.
     var themeMode by remember { mutableStateOf(AppearancePrefs.mode) }
+    // Floating bottom navigation: scroll-reactive by default, or pinned expanded/compact.
+    var bottomBarBehavior by remember { mutableStateOf(BottomBarPrefs.behavior) }
     // Chart colours (Titanium / Classic) — re-colours gauges + charts; ChartStylePrefs mirrors it live.
     var chartStyle by remember { mutableStateOf(ChartStylePrefs.style) }
     // Day-cycle background (#698) — the time-of-day scene behind Today. Default ON. SharedPreferences
@@ -922,6 +924,22 @@ fun SettingsScreen(
                     },
                 )
             }
+            FormRow(label = "Bottom bar") {
+                SegmentedPillControl(
+                    items = BottomBarBehavior.entries,
+                    selection = bottomBarBehavior,
+                    label = { it.label },
+                    onSelect = { behavior ->
+                        bottomBarBehavior = behavior
+                        BottomBarPrefs.set(context, behavior)
+                    },
+                )
+            }
+            Text(
+                "Reactive subtly compacts while scrolling. Expanded and Compact keep the chosen size at all times.",
+                style = NoopType.footnote,
+                color = Palette.textTertiary,
+            )
 
             // Day-cycle background (#698): the time-of-day scene behind Today. On by default. Off swaps it
             // for a plain dark canvas for people who find the moving scene distracting. Takes effect next

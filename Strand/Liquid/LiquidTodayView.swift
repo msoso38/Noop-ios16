@@ -21,6 +21,10 @@ struct LiquidTodayView: View {
     @EnvironmentObject var router: NavRouter
     @EnvironmentObject var profile: ProfileStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if os(iOS)
+    @Environment(\.tabBarScrollTag) private var tabBarScrollTag
+    @Environment(\.tabBarScrollInteractionChanged) private var tabBarScrollInteractionChanged
+    #endif
 
     /// Shared with the real Today's card-customise editor so the two stay in sync.
     @AppStorage(DashboardCardPrefs.selectionKey) private var dashboardCardsRaw = ""
@@ -191,8 +195,16 @@ struct LiquidTodayView: View {
                 // Scroll-offset probe at the very top (before padding), so its minY in the scroll's
                 // coordinate space reads the top OVERSCROLL: ~0 at rest, positive as you pull down.
                 GeometryReader { g in
+                    let offset = g.frame(in: .named(Self.pullSpace)).minY
+                    #if os(iOS)
+                    Color.clear
+                        .preference(key: PullOffsetKey.self, value: offset)
+                        .preference(key: TabBarScrollOffsetKey.self,
+                                    value: tabBarScrollTag.map { [$0: offset] } ?? [:])
+                    #else
                     Color.clear.preference(key: PullOffsetKey.self,
-                                           value: g.frame(in: .named(Self.pullSpace)).minY)
+                                           value: offset)
+                    #endif
                 }
                 .frame(height: 0)
 
@@ -220,7 +232,16 @@ struct LiquidTodayView: View {
             #endif
         }
         .coordinateSpace(name: Self.pullSpace)
-        .onPreferenceChange(PullOffsetKey.self) { handlePull($0) }
+        #if os(iOS)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in tabBarScrollInteractionChanged(true) }
+                .onEnded { _ in tabBarScrollInteractionChanged(false) }
+        )
+        #endif
+        .onPreferenceChange(PullOffsetKey.self) { offset in
+            handlePull(offset)
+        }
         // The sky is a FIXED full-bleed backdrop drawn behind the scroll content, edge-to-edge under the
         // status bar. A ScrollView background does not scroll with the content, so pulling down never
         // moves the sky (the exact behaviour the scaffold uses on the classic Today).

@@ -3,7 +3,7 @@ package com.noop.ui
 import androidx.annotation.StringRes
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.snap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -106,6 +106,36 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+
+enum class BottomBarBehavior(val storageValue: String, val label: String) {
+    REACTIVE("reactive", "Reactive"),
+    EXPANDED("expanded", "Expanded"),
+    COMPACT("compact", "Compact");
+
+    companion object {
+        fun fromStorage(raw: String?): BottomBarBehavior =
+            entries.firstOrNull { it.storageValue == raw } ?: REACTIVE
+    }
+}
+
+/** Persisted bottom-navigation behavior, mirrored in snapshot state so Settings updates the shell live. */
+object BottomBarPrefs {
+    const val KEY = "noop.bottomBarBehavior"
+
+    var behavior by mutableStateOf(BottomBarBehavior.REACTIVE)
+        private set
+
+    fun load(context: android.content.Context) {
+        behavior = BottomBarBehavior.fromStorage(
+            NoopPrefs.of(context).getString(KEY, BottomBarBehavior.REACTIVE.storageValue),
+        )
+    }
+
+    fun set(context: android.content.Context, value: BottomBarBehavior) {
+        behavior = value
+        NoopPrefs.of(context).edit().putString(KEY, value.storageValue).apply()
+    }
+}
 
 // MARK: - Navigation model
 //
@@ -279,30 +309,72 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
     val updateStore = remember { UpdateStore.from(context) }
     var showUpdatesInbox by remember { mutableStateOf(false) }
 
-    // #86 (prototype): Instagram-style scroll-reactive bottom bar. It recedes (subtle shrink + fade +
-    // slide) when you scroll DOWN into content and returns when you scroll UP — driven by a single
-    // NestedScrollConnection on the NavHost, so every screen gets it with no per-screen wiring. Reduce
-    // Motion keeps the bar fully shown (no animation). The bar keeps its reserved layout space (Scaffold
-    // measured it full-size), so only a cheap graphicsLayer transform changes per frame — no relayout.
+    // #86: Instagram-style hybrid: slight scroll-linked pre-compression, then a fast eased settle after a
+    // threshold. The first upward scroll expands it. Reduce Motion preserves state but snaps rendering.
     val reduceMotion = rememberReduceMotion()
+    val bottomBarBehavior = BottomBarPrefs.behavior
+    var barPrecompression by remember { mutableStateOf(0f) }
     var barCollapsed by remember { mutableStateOf(false) }
-    val barNestedScroll = remember(reduceMotion) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val barScrollNoisePx = with(density) { Metrics.space4.toPx() / 8f }
+    val barCollapseThresholdPx = with(density) { Metrics.space24.toPx() }
+    val barNestedScroll = remember(
+        currentRoute,
+        bottomBarBehavior,
+        barScrollNoisePx,
+        barCollapseThresholdPx,
+    ) {
         object : NestedScrollConnection {
+            private var downwardScroll = 0f
+
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (!reduceMotion) {
-                    // available.y < 0 = content moving up (finger swipes up, reading down) → collapse.
-                    if (available.y < -3f) barCollapsed = true
-                    else if (available.y > 3f) barCollapsed = false
+                if (bottomBarBehavior != BottomBarBehavior.REACTIVE) return Offset.Zero
+                val delta = available.y
+                if (kotlin.math.abs(delta) >= barScrollNoisePx) {
+                    // Ignore positive rebound/settling deltas: only an active user gesture restores the bar.
+                    if (delta > 0f && source == NestedScrollSource.UserInput) {
+                        downwardScroll = 0f
+                        barPrecompression = 0f
+                        barCollapsed = false
+                    } else if (!barCollapsed) {
+                        downwardScroll += -delta
+                        barPrecompression =
+                            (0.16f * downwardScroll / barCollapseThresholdPx).coerceIn(0f, 0.16f)
+                        if (downwardScroll >= barCollapseThresholdPx) barCollapsed = true
+                    }
                 }
                 return Offset.Zero
             }
         }
     }
-    val barCollapse by animateFloatAsState(
-        targetValue = if (barCollapsed && !reduceMotion) 1f else 0f,
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-        label = "barCollapse",
+    LaunchedEffect(currentRoute, bottomBarBehavior) {
+        barPrecompression = 0f
+        barCollapsed = false
+    }
+    val effectiveBarCollapsed = bottomBarBehavior == BottomBarBehavior.COMPACT ||
+        (bottomBarBehavior == BottomBarBehavior.REACTIVE && barCollapsed)
+    val barSettledCollapse by animateFloatAsState(
+        targetValue = if (effectiveBarCollapsed) 1f else 0f,
+        animationSpec = if (reduceMotion) {
+            snap()
+        } else if (effectiveBarCollapsed) {
+            barCollapseSpec
+        } else {
+            barExpandSpec
+        },
+        label = "barSettledCollapse",
     )
+    val barCollapse = if (reduceMotion) {
+        if (effectiveBarCollapsed) 1f else 0f
+    } else if (bottomBarBehavior != BottomBarBehavior.REACTIVE) {
+        barSettledCollapse
+    } else if (barCollapsed) {
+        maxOf(barPrecompression, barSettledCollapse)
+    } else if (barPrecompression > 0f) {
+        barPrecompression
+    } else {
+        barSettledCollapse
+    }
 
     run {
         Scaffold(
@@ -730,8 +802,7 @@ private val barTrailingTabs = listOf(
 private fun GlassBottomBar(
     current: Destination,
     onTabSelected: (Destination) -> Unit,
-    // #86 (prototype): 0 = fully shown, 1 = collapsed (scrolled into content). A cheap GPU transform —
-    // subtle shrink + fade + slide toward the bottom edge — kept partial so the tabs stay reachable.
+    // #86: 0 = fully shown, 1 = compact (scrolled into content).
     collapse: Float = 0f,
     // #86: the bar now FLOATS over the content (overlaid, not a reserved Scaffold slot), so the content's
     // background fills continuously behind it — no reserved "bar" band. The caller aligns it bottom-centre.
@@ -741,16 +812,12 @@ private fun GlassBottomBar(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            // #86: recede on scroll. graphicsLayer only (no relayout). It fades toward TRANSPARENT and
-            // shrinks slightly IN PLACE rather than sliding off the bottom — a big translate looked like the
-            // bar was falling off / going under the gesture nav. Gentle shrink (0.92), fades to ~0.35 (clearly
-            // see-through), and only a hair of downward drift (6dp). Bottom-centre pivot.
+            // Contract from the left, top and right while the bottom edge stays planted above gesture nav.
+            // The transform is GPU-only; the Scaffold never reflows the scrolling content.
             .graphicsLayer {
                 val s = 1f - collapse * 0.08f
                 scaleX = s
                 scaleY = s
-                alpha = 1f - collapse * 0.65f
-                translationY = collapse * 6.dp.toPx()
                 transformOrigin = TransformOrigin(0.5f, 1f)
             }
             // Clear the gesture-nav bar (home indicator) first, then add breathing room so the capsule
@@ -763,10 +830,9 @@ private fun GlassBottomBar(
     ) {
         Surface(
             shape = barShape,
-            // #86: NO fill. The dark translucent fill read as a solid "bar" behind the tabs; the content
-            // should show straight through. Keep the pill SHAPE via the hairline outline only (a floating
-            // capsule of tabs over the content), no fill and no drop shadow (which also read as a slab).
-            color = Color.Transparent,
+            // A light translucent scrim preserves icon contrast over charts and bright cards while still
+            // letting the full-bleed content read through the floating capsule.
+            color = Palette.surfaceRaised.copy(alpha = StrandAlpha.navigationGlass),
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
             modifier = Modifier
@@ -787,6 +853,7 @@ private fun GlassBottomBar(
                         icon = tab.icon,
                         label = stringResource(tab.labelRes),
                         active = current == tab.dest,
+                        collapse = collapse,
                         modifier = Modifier.weight(1f),
                         onClick = { onTabSelected(tab.dest) },
                     )
@@ -796,6 +863,7 @@ private fun GlassBottomBar(
                         icon = tab.icon,
                         label = stringResource(tab.labelRes),
                         active = current == tab.dest,
+                        collapse = collapse,
                         modifier = Modifier.weight(1f),
                         onClick = { onTabSelected(tab.dest) },
                     )
@@ -808,6 +876,7 @@ private fun GlassBottomBar(
                     // into any grouped destination still reads as "you're in More", never "nowhere".
                     active = current != Destination.Today && current != Destination.Trends &&
                         current != Destination.Sleep,
+                    collapse = collapse,
                     modifier = Modifier.weight(1f),
                     onClick = { onTabSelected(Destination.More) },
                 )
@@ -823,6 +892,7 @@ private fun BarSlot(
     icon: ImageVector,
     label: String,
     active: Boolean,
+    collapse: Float = 0f,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -848,6 +918,7 @@ private fun BarSlot(
                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
             ),
             color = tint,
+            modifier = Modifier.graphicsLayer { alpha = 1f - collapse },
         )
     }
 }
@@ -872,6 +943,11 @@ private val quickActions: List<QuickAction> = listOf(
 
 /** The calm global easing curve from the handoff (cubic-bezier 0.22, 1, 0.36, 1). */
 private val NavEasing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
+
+/** Symmetric, non-bouncy navigation transitions; restoration is deliberately slower than contraction. */
+private val BarSettleEasing = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
+private val barCollapseSpec = tween<Float>(durationMillis = 300, easing = BarSettleEasing)
+private val barExpandSpec = tween<Float>(durationMillis = 420, easing = BarSettleEasing)
 
 /** ~240ms crossfade on the calm easing — the README "Tab crossfade" between roots. */
 private val navFadeSpec = tween<Float>(durationMillis = 240, easing = NavEasing)

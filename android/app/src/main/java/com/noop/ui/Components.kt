@@ -1155,7 +1155,9 @@ fun ScreenScaffold(
         Column(
             modifier = columnModifier
                 .verticalScroll(rememberScrollState())
-                .padding(start = 28.dp, end = 28.dp, top = topPadding, bottom = 28.dp),
+                // The app bar floats over content, so the final row needs enough scroll room to clear it.
+                .padding(start = 28.dp, end = 28.dp, top = topPadding,
+                    bottom = Metrics.tabBarClearance),
             // #765: one shared inter-card spacing token (was a bare `20.dp`), so the eager + lazy scaffolds
             // and every screen through them keep the SAME uniform gap between top-level cards.
             verticalArrangement = Arrangement.spacedBy(Metrics.screenRowSpacing),
@@ -1303,7 +1305,12 @@ fun LazyScreenScaffold(
     val list: @Composable () -> Unit = {
         LazyColumn(
             modifier = listModifier,
-            contentPadding = PaddingValues(start = 28.dp, top = topPadding, end = 28.dp, bottom = 28.dp),
+            contentPadding = PaddingValues(
+                start = 28.dp,
+                top = topPadding,
+                end = 28.dp,
+                bottom = Metrics.tabBarClearance,
+            ),
             // #765: the shared inter-card spacing token by default (Today/Explore + the eager screens share
             // one uniform card rhythm); a caller may pass a tighter [rowSpacing] (the liquid Today does, for
             // the iOS-compact section rhythm).

@@ -10,6 +10,7 @@ struct RootTabView: View {
     /// Cross-screen navigation requests (e.g. Live → "Manage devices"). Devices isn't a tab — it lives
     /// behind the More list — so a request presents it as a sheet, matching the quick-action screens.
     @EnvironmentObject private var router: NavRouter
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Which quick-action screen the centre FAB is presenting (nil = sheet closed).
     @State private var quickAction: QuickAction?
@@ -21,6 +22,12 @@ struct RootTabView: View {
     /// Selected tab — bound so tab switches can crossfade (README §Motion: ~240ms opacity swap
     /// between tab roots, calm easing). Defaults to Today.
     @State private var selectedTab: Int = 0
+    /// A small scroll-linked pre-compression, followed by a fast eased settle once the threshold is crossed.
+    @State private var tabBarCollapseProgress: CGFloat = 0
+    @State private var tabBarDownwardScroll: CGFloat = 0
+    @State private var tabBarIsCollapsed = false
+    @State private var tabBarScrollIsDragging = false
+    @State private var lastTabBarScrollOffset: CGFloat?
     /// Which More-tab groups are expanded (S2). Insights + Body stay open at rest; Data + App collapse to
     /// just their header until tapped. Persisted (#860 item 2): the user's open/closed choice must SURVIVE
     /// leaving and re-entering the More tab (and relaunch), not reset to the seed every visit. Backed by an
@@ -32,6 +39,11 @@ struct RootTabView: View {
     /// V8 liquid redesign is the default Today; the Settings toggle lets a user fall back to the classic
     /// Today if they prefer it (keyed identically to the SettingsView toggle). Default ON.
     @AppStorage("noop.liquidTodayEnabled") private var liquidTodayEnabled = true
+    @AppStorage(BottomBarBehavior.storageKey) private var bottomBarBehaviorRaw = BottomBarBehavior.reactive.rawValue
+
+    private var bottomBarBehavior: BottomBarBehavior {
+        BottomBarBehavior(rawValue: bottomBarBehaviorRaw) ?? .reactive
+    }
 
     /// The Today tab root, honouring the liquid/classic preference.
     @ViewBuilder private var todayTabRoot: some View {
@@ -61,10 +73,18 @@ struct RootTabView: View {
             // cleanly in the gap between them — replaces the native tab bar: no overlap, no glow. The
             // native TabView still drives content + per-tab nav state; only its bar is hidden.
             TabView(selection: $selectedTab) {
-                tab(todayTabRoot, "Today", "square.grid.2x2").tag(0)
-                tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis").tag(1)
-                tab(SleepView(), "Sleep", "bed.double").tag(2)
-                moreTab.tag(3)
+                tab(todayTabRoot, "Today", "square.grid.2x2", tag: 0).tag(0)
+                tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis", tag: 1).tag(1)
+                tab(SleepView(), "Sleep", "bed.double", tag: 2).tag(2)
+                moreTab
+                    .environment(\.tabBarScrollTag, 3)
+                    .environment(\.tabBarScrollInteractionChanged) { isDragging in
+                        if selectedTab == 3 { tabBarScrollIsDragging = isDragging }
+                    }
+                    .onPreferenceChange(TabBarScrollOffsetKey.self) { offsets in
+                        if selectedTab == 3, let offset = offsets[3] { handleTabBarScroll(offset) }
+                    }
+                    .tag(3)
             }
             .tint(StrandPalette.accent)
             .toolbar(.hidden, for: .tabBar)
@@ -87,7 +107,10 @@ struct RootTabView: View {
                     }
             )
 
-            FloatingTabBar(selection: $selectedTab, onReselect: { _ in
+            FloatingTabBar(selection: $selectedTab,
+                           collapseProgress: bottomBarBehavior == .compact ? 1 :
+                               (bottomBarBehavior == .expanded ? 0 : tabBarCollapseProgress),
+                           onReselect: { _ in
                 // Re-tapping the active tab refreshes that page's data (2026-07-02).
                 Task { await repo.refresh() }
             })
@@ -153,6 +176,63 @@ struct RootTabView: View {
                 router.quickActionsRequested = false
             }
         }
+        .onChange(of: selectedTab) { _, _ in
+            resetTabBarScroll(expand: true)
+        }
+        .onChange(of: bottomBarBehaviorRaw) { _, _ in
+            resetTabBarScroll(expand: true)
+        }
+    }
+
+    /// Instagram-style hybrid: the first downward travel subtly pre-compresses with the finger; crossing
+    /// the threshold eases the rest of the way to compact. The first upward sample expands immediately.
+    private func handleTabBarScroll(_ offset: CGFloat) {
+        guard bottomBarBehavior == .reactive else { return }
+        guard let previous = lastTabBarScrollOffset else {
+            lastTabBarScrollOffset = offset
+            return
+        }
+
+        let delta = offset - previous
+        lastTabBarScrollOffset = offset
+        guard abs(delta) >= NoopMetrics.space1 / 8 else { return }
+
+        if delta > 0 {
+            // Elastic bounce, refresh completion and content relayout can all move the offset downward.
+            // Only a finger-driven upward scroll is allowed to restore the expanded navigation bar.
+            guard tabBarScrollIsDragging else { return }
+            tabBarDownwardScroll = 0
+            guard tabBarCollapseProgress > 0 else { return }
+            tabBarIsCollapsed = false
+            withAnimation(NoopMotion.gated(StrandMotion.navigationBarExpand, reduced: reduceMotion)) {
+                tabBarCollapseProgress = 0
+            }
+            return
+        }
+
+        guard !tabBarIsCollapsed else { return }
+        tabBarDownwardScroll += -delta
+        let threshold = NoopMetrics.space6
+        let precompression: CGFloat = 0.16
+        tabBarCollapseProgress = min(
+            precompression,
+            precompression * tabBarDownwardScroll / threshold
+        )
+
+        if tabBarDownwardScroll >= threshold {
+            tabBarIsCollapsed = true
+            withAnimation(NoopMotion.gated(StrandMotion.navigationBarCollapse, reduced: reduceMotion)) {
+                tabBarCollapseProgress = 1
+            }
+        }
+    }
+
+    private func resetTabBarScroll(expand: Bool) {
+        lastTabBarScrollOffset = nil
+        tabBarDownwardScroll = 0
+        tabBarIsCollapsed = false
+        tabBarScrollIsDragging = false
+        if expand { tabBarCollapseProgress = 0 }
     }
 
     /// A routed v5 pillar screen wrapped in its own nav stack + Done button (mirrors `quickScreen`).
@@ -264,7 +344,8 @@ struct RootTabView: View {
         }
     }
 
-    private func tab<V: View>(_ view: V, _ title: LocalizedStringKey, _ icon: String) -> some View {
+    private func tab<V: View>(_ view: V, _ title: LocalizedStringKey, _ icon: String,
+                              tag: Int) -> some View {
         // Each primary tab gets its OWN NavigationStack so the in-content NavigationLinks (e.g. the Today
         // dashboard card rows) both navigate AND render opaque. An ORPHANED NavigationLink (no
         // NavigationStack ancestor) renders its whole label in a disabled/translucent state — that was
@@ -275,6 +356,15 @@ struct RootTabView: View {
             view
                 .background(StrandPalette.surfaceBase.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
+        }
+        .environment(\.tabBarScrollTag, tag)
+        .environment(\.tabBarScrollInteractionChanged) { isDragging in
+            if selectedTab == tag { tabBarScrollIsDragging = isDragging }
+        }
+        // TabView retains off-screen roots. Filter their geometry updates here so a hidden tab's layout
+        // cannot be mistaken for a scroll on the visible tab.
+        .onPreferenceChange(TabBarScrollOffsetKey.self) { offsets in
+            if selectedTab == tag, let offset = offsets[tag] { handleTabBarScroll(offset) }
         }
         .toolbar(.hidden, for: .tabBar)   // we draw our own FloatingTabBar
         .tabItem { Label(title, systemImage: icon) }
@@ -547,8 +637,11 @@ private struct QuickActionSheet: View {
 /// Glass where available, a `.ultraThinMaterial` fallback below. Replaces the hidden native tab bar.
 private struct FloatingTabBar: View {
     @Binding var selection: Int
+    /// 0 is expanded and 1 is compact. Intermediate values remain visible while the scroll is in between.
+    var collapseProgress: CGFloat = 0
     /// Fires when the user taps the ALREADY-active tab (2026-07-02: re-tap should refresh).
     var onReselect: (Int) -> Void = { _ in }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct Item: Identifiable { let title: LocalizedStringKey; let icon: String; let tag: Int; var id: Int { tag } }
     private let nav = [Item(title: "Today", icon: "square.grid.2x2", tag: 0),
@@ -557,16 +650,19 @@ private struct FloatingTabBar: View {
                        Item(title: "More", icon: "ellipsis", tag: 3)]
 
     var body: some View {
+        let progress = min(1, max(0, collapseProgress))
+        // Reduce Motion retains the useful compact state but removes continuous interpolation.
+        let collapse = reduceMotion ? (progress >= 0.5 ? 1.0 : 0.0) : progress
         // One frosted glass bar, four evenly-spaced tabs. The quick-action "+" now lives in the
         // top-right of each screen's header (balancing the profile avatar on the left).
-        HStack(spacing: 2) {
-            tabButton(nav[0])
-            tabButton(nav[1])
-            tabButton(nav[2])
-            tabButton(nav[3])
+        HStack(spacing: NoopMetrics.space1 / 2) {
+            tabButton(nav[0], collapse: collapse)
+            tabButton(nav[1], collapse: collapse)
+            tabButton(nav[2], collapse: collapse)
+            tabButton(nav[3], collapse: collapse)
         }
-        .padding(.vertical, 7)
-        .padding(.horizontal, 8)
+        .padding(.vertical, NoopMetrics.space2 - collapse * NoopMetrics.space1)
+        .padding(.horizontal, NoopMetrics.space2)
         .liquidGlass(in: Capsule())
         // Over the liquid Today the sky ends at ~340pt, so the bar floats on flat opaque surfaceBase —
         // a blur material has nothing to dissolve and hardens into a solid lozenge (2026-07-02:
@@ -582,11 +678,11 @@ private struct FloatingTabBar: View {
         )
         // Lighter, wider shadow: real elevation without stamping a dark halo on the flat canvas.
         .shadow(color: .black.opacity(0.22), radius: 18, x: 0, y: 8)
-        .padding(.horizontal, 22)
-        .padding(.bottom, 4)
+        .padding(.horizontal, NoopMetrics.space6 + collapse * NoopMetrics.space5)
+        .padding(.bottom, NoopMetrics.space1)
     }
 
-    private func tabButton(_ item: Item) -> some View {
+    private func tabButton(_ item: Item, collapse: CGFloat) -> some View {
         let active = selection == item.tag
         return Button {
             if active {
@@ -595,15 +691,18 @@ private struct FloatingTabBar: View {
                 withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selection = item.tag }
             }
         } label: {
-            VStack(spacing: 3) {
+            VStack(spacing: NoopMetrics.space1 * (1 - collapse)) {
                 Image(systemName: item.icon)
                     .font(.system(size: 18, weight: active ? .semibold : .regular))
                 Text(item.title)
                     .font(.system(size: 10, weight: active ? .semibold : .medium))
+                    .frame(height: NoopMetrics.space3 * (1 - collapse))
+                    .opacity(1 - collapse)
+                    .clipped()
             }
             .foregroundStyle(active ? StrandPalette.accent : StrandPalette.textSecondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, minHeight: NoopMetrics.controlHeight)
+            .padding(.vertical, NoopMetrics.space1 * (1 - collapse))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
