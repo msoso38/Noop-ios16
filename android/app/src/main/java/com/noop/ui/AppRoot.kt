@@ -332,7 +332,7 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                 val delta = available.y
                 if (kotlin.math.abs(delta) >= barScrollNoisePx) {
                     // Ignore positive rebound/settling deltas: only an active user gesture restores the bar.
-                    if (delta > 0f && source == NestedScrollSource.UserInput) {
+                    if (delta > 0f && source == NestedScrollSource.Drag) {
                         downwardScroll = 0f
                         barPrecompression = 0f
                         barCollapsed = false
