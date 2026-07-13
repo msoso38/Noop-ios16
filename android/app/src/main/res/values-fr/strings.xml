@@ -1687,4 +1687,12 @@
     <string name="l10n_data_sources_screen_last_shared_6bf8389c">"Dernier partage "</string>
     <string name="l10n_data_sources_screen_sharing_paused_health_connect_permission_was_e8950315">Partage en pause — l’autorisation Health Connect a été révoquée. Touchez pour l’accorder à nouveau.</string>
     <string name="l10n_data_sources_screen_last_share_didn_t_finish_noop_0d6c27f0">Le dernier partage n’a pas abouti — NOOP réessaiera automatiquement.</string>
+    <!-- Optional profile name used to personalize the Today greeting. -->
+    <string name="profile_preferred_name">Nom</string>
+    <string name="profile_name_placeholder">Facultatif</string>
+    <string name="profile_name_accessibility">Nom, facultatif</string>
+    <string name="today_greeting_morning">Bonjour</string>
+    <string name="today_greeting_afternoon">Bon après-midi</string>
+    <string name="today_greeting_evening">Bonsoir</string>
+    <string name="today_greeting_with_name">%1$s, %2$s</string>
 </resources>

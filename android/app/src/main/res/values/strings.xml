@@ -1711,4 +1711,12 @@
     <string name="l10n_data_sources_screen_last_shared_6bf8389c">"Last shared "</string>
     <string name="l10n_data_sources_screen_sharing_paused_health_connect_permission_was_e8950315">Sharing paused — Health Connect permission was revoked. Tap to re-grant.</string>
     <string name="l10n_data_sources_screen_last_share_didn_t_finish_noop_0d6c27f0">Last share didn’t finish — NOOP will retry automatically.</string>
+    <!-- Optional profile name used to personalize the Today greeting. -->
+    <string name="profile_preferred_name">Name</string>
+    <string name="profile_name_placeholder">Optional</string>
+    <string name="profile_name_accessibility">Name, optional</string>
+    <string name="today_greeting_morning">Good morning</string>
+    <string name="today_greeting_afternoon">Good afternoon</string>
+    <string name="today_greeting_evening">Good evening</string>
+    <string name="today_greeting_with_name">%1$s, %2$s</string>
 </resources>
