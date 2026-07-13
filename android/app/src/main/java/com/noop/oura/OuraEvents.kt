@@ -170,4 +170,28 @@ sealed class OuraEvent {
 
     /** True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink. */
     val isTierB: Boolean get() = this is TierB || this is ActivityInfo
+
+    /**
+     * The record's envelope ring-time, when it carries one (battery is a plain response, not a log
+     * record). Feeds the history drain's in-session continuation cursor: open_oura's `drain_events`
+     * advances `start` past the max timestamp of EVERY event in a batch, whatever its tag.
+     * Byte-identical twin of Swift's envelopeRingTimestamp.
+     */
+    val envelopeRingTimestamp: Long?
+        get() = when (this) {
+            is Hr -> value.ringTimestamp
+            is Ibi -> value.ringTimestamp
+            is Hrv -> value.ringTimestamp
+            is Spo2 -> value.ringTimestamp
+            is Temp -> value.ringTimestamp
+            is Battery -> null
+            is SleepPhaseEvent -> value.ringTimestamp
+            is MotionEvent -> value.ringTimestamp
+            is StateEvent -> value.ringTimestamp
+            is TimeSyncEvent -> value.ringTimestamp
+            is RtcBeaconEvent -> value.ringTimestamp
+            is DebugTextEvent -> ringTimestamp
+            is TierB -> value.ringTimestamp
+            is ActivityInfo -> value.ringTimestamp
+        }
 }
