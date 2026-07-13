@@ -34,6 +34,10 @@ struct TestCentreView: View {
     /// The strap model the user last picked, the same key SettingsView's showFiveMGControls gate reads.
     @AppStorage("selectedWhoopModel") private var selectedWhoopModelRaw = WhoopModel.whoop4.rawValue
 
+    // Section 4: Experimental algorithms. Bound to the SAME PuffinExperiment key the Android card writes, so
+    // the platforms stay in lockstep. The PPG-HR sub-lag interpolation variant, default OFF.
+    @AppStorage(PuffinExperiment.ppgHrSubLagInterpKey) private var ppgHrSubLagInterpEnabled = false
+
     /// True when the connected strap is a 5/MG, so the 5/MG experimental block shows. Mirrors the
     /// SettingsView gate (#22): a confident 4.0 owner never sees controls that cannot touch their strap.
     private var is5MG: Bool { selectedWhoopModelRaw == WhoopModel.whoop5mg.rawValue }
@@ -52,6 +56,7 @@ struct TestCentreView: View {
                 domainModesCard.staggeredAppear(index: 0)
                 diagnosticToolsCard.staggeredAppear(index: 1)
                 exportCard.staggeredAppear(index: 2)
+                experimentalAlgorithmsCard.staggeredAppear(index: 3)
             }
         }
         .id(refreshToken)
@@ -212,6 +217,34 @@ struct TestCentreView: View {
                         .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+        }
+    }
+
+    // MARK: - Section 4: Experimental algorithms (opt-in, off-by-default research variants)
+
+    /// The single home for OPT-IN, non-clinical research variants that swap which model computes a metric
+    /// (never detection, never a stored WHOOP value). Each toggle writes the SAME PuffinExperiment key its
+    /// Android twin reads. Hosts the HR-from-PPG sub-lag interpolation variant. Twin of the Android
+    /// ExperimentalAlgorithmsCard.
+    @ViewBuilder private var experimentalAlgorithmsCard: some View {
+        NoopCard {
+            VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                Text("EXPERIMENTAL ALGORITHMS")
+                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                Text("Research-grade alternatives / precision tweaks. Opt-in, off by default, non-clinical.")
+                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle(isOn: $ppgHrSubLagInterpEnabled) {
+                    Text("HR-from-PPG sub-lag interpolation (v26 gap-fill)")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch).tint(StrandPalette.accent)
+                Text("When NOOP reconstructs heart rate from the WHOOP 5/MG v26 optical waveform (the seconds the strap stored no HR), refine the autocorrelation peak with a parabolic sub-lag fit so the estimate is not quantized to roughly 16 bpm steps near a high HR. It only fills seconds the strap never reported; it never overrides a stored HR. 5/MG only, off by default.")
+                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

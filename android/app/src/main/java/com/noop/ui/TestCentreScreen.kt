@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Switch
@@ -162,6 +163,9 @@ fun TestCentreScreen(vm: AppViewModel) {
                 scope.launch { pendingReport = buildPending(context, MASTER_REPORT_MODE, vm.ble.exportLogText(), vm) }
             },
         )
+
+        // --- Section 4: Experimental algorithms ---
+        ExperimentalAlgorithmsCard()
     }
 
     pendingReport?.let { p ->
@@ -445,6 +449,62 @@ private fun ExportCard(vm: AppViewModel, onReport: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/**
+ * Test Centre → Experimental algorithms. The single home for OPT-IN, off-by-default, non-clinical research
+ * variants that swap which model computes a metric (never detection, never a stored WHOOP value). Each toggle
+ * writes the SAME [PuffinExperiment] key its Swift twin reads, so the platforms stay in lockstep. Hosts the
+ * HR-from-PPG sub-lag interpolation variant. Twin of the Swift TestCentreView experimentalAlgorithmsCard.
+ */
+@Composable
+private fun ExperimentalAlgorithmsCard() {
+    val context = LocalContext.current
+    val puffin = remember { PuffinExperiment.from(context) }
+    var ppgHrSubLag by remember { mutableStateOf(puffin.ppgHrSubLagInterp) }
+    SettingsSectionTC(
+        icon = Icons.Filled.Science,
+        title = "Experimental algorithms",
+        blurb = "Research-grade alternatives / precision tweaks. Opt-in, off by default, non-clinical.",
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            ToggleRowTC(
+                title = "HR-from-PPG sub-lag interpolation (v26 gap-fill)",
+                description = "When NOOP reconstructs heart rate from the WHOOP 5/MG v26 optical waveform (the " +
+                    "seconds the strap stored no HR), refine the autocorrelation peak with a parabolic sub-lag " +
+                    "fit so the estimate is not quantized to roughly 16 bpm steps near a high HR. It only fills " +
+                    "seconds the strap never reported; it never overrides a stored HR. 5/MG only, off by default.",
+                checked = ppgHrSubLag,
+                onCheckedChange = { ppgHrSubLag = it; puffin.ppgHrSubLagInterp = it },
+            )
+        }
+    }
+}
+
+/** A titled toggle + caption row for the Experimental algorithms card (same NoopType/Palette tokens + switch
+ *  colours as the other Test Centre rows). Local to Test Centre so it never reaches into SettingsScreen. */
+@Composable
+private fun ToggleRowTC(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(title, style = NoopType.subhead, color = Palette.textPrimary, modifier = Modifier.weight(1f))
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                colors = settingsSwitchColors(),
+            )
+        }
+        Text(description, style = NoopType.footnote, color = Palette.textTertiary)
     }
 }
 

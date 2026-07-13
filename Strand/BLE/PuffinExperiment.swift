@@ -68,6 +68,17 @@ enum PuffinExperiment {
             : UserDefaults.standard.bool(forKey: experimentalSleepV2Key)
     }
 
+    /// Opt-in "HR-from-PPG sub-lag interpolation" (default off): the v26 optical-PPG gap-fill HR estimator
+    /// (`PpgHr`) refines its integer autocorrelation lag with a parabolic (Variant A) interpolation of the
+    /// ACF peak, removing the ~±8 bpm lag-quantization near a high HR. Pure opt-in research variant: default
+    /// OFF is byte-identical to the integer-lag estimate, and it only ever fills seconds the strap never
+    /// reported an HR for (it NEVER overrides a WHOOP-stored HR). The pure `PpgHr` package cannot read prefs,
+    /// so the app-layer call site (the Backfiller / archive replay) reads this flag and threads it into the
+    /// estimator. Mirrors the Android `PuffinExperiment.KEY_PPG_HR_SUBLAG_INTERP`.
+    static let ppgHrSubLagInterpKey = "noopPpgHrSubLagInterp"
+
+    static var ppgHrSubLagInterpEnabled: Bool { UserDefaults.standard.bool(forKey: ppgHrSubLagInterpKey) }
+
     /// Opt-in "Auto-detect workouts": after a sync / on Today appear, scan the last day or two of HR for a
     /// SUSTAINED-ELEVATED window (resting HR + 30 bpm held ≥ 12 min) that doesn't overlap a saved workout,
     /// and surface ONE dismissible Today card offering to save it as a manual-style workout. Pure read +
