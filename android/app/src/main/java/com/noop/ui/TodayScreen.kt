@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.TrackChanges
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
@@ -86,6 +87,10 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.zIndex
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
@@ -96,6 +101,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
@@ -3360,9 +3366,10 @@ private data class EditableDashboardCard(val card: DashboardCard, val enabled: B
 
 /**
  * #today-layout: reorder the below-hero Today sections (Synthesis / Key Metrics / Workouts / Heart Rate /
- * Recovery Vitals / Your Cards) with up/down arrows — a Today-local dialog, no new nav destination. Every
- * section always shows (this reorders, never hides), so there are no toggles, only order. Mirrors the
- * Key-Metrics / Your-Cards editors (arrow buttons, no reorder lib) and the macOS TodayLayoutEditor.
+ * Recovery Vitals / Your Cards) by LONG-PRESSING a row and dragging it — a Today-local dialog, no new nav
+ * destination. Every section always shows (this reorders, never hides), so there are no toggles, only order.
+ * Hand-rolled fixed-height drag (no reorder lib, matching the project's "no reorder lib" stance). Twin of
+ * the macOS TodayLayoutEditor.
  */
 @Composable
 private fun TodayLayoutEditorDialog(
@@ -3371,13 +3378,15 @@ private fun TodayLayoutEditorDialog(
     onSave: (List<TodaySection>) -> Unit,
 ) {
     val items = remember { mutableStateListOf<TodaySection>().apply { addAll(initial) } }
-
-    fun move(from: Int, to: Int) {
-        if (from in items.indices && to in items.indices) {
-            val item = items.removeAt(from)
-            items.add(to, item)
-        }
-    }
+    val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    // Fixed row height makes the long-press drag deterministic: the dragged row swaps with its neighbour
+    // once its accumulated offset crosses HALF a row, then the offset resets by one row so it keeps
+    // tracking the finger. `draggingIndex` is the dragged section's CURRENT index (updated on each swap).
+    val rowHeight = 52.dp
+    val rowHeightPx = with(density) { rowHeight.toPx() }
+    var draggingIndex by remember { mutableStateOf<Int?>(null) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(color = Palette.surfaceOverlay, shape = RoundedCornerShape(16.dp)) {
@@ -3388,56 +3397,78 @@ private fun TodayLayoutEditorDialog(
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Arrange Today", style = NoopType.title2, color = Palette.textPrimary)
                     Text(
-                        "Reorder the sections below your Charge / Effort / Rest scores with the arrows. " +
-                            "The scores stay pinned at the top.",
+                        "Hold a section and drag it to reorder. Your Charge / Effort / Rest scores stay " +
+                            "pinned at the top.",
                         style = NoopType.subhead,
                         color = Palette.textSecondary,
                     )
                 }
 
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState()),
-                ) {
+                // 6 fixed-height rows fit without scrolling (drag + inner scroll would fight); each row is
+                // picked up on long-press and follows the finger, swapping neighbours as it crosses them.
+                Column {
                     items.forEachIndexed { index, section ->
+                        val isDragging = draggingIndex == index
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(rowHeight)
+                                .zIndex(if (isDragging) 1f else 0f)
+                                .graphicsLayer {
+                                    if (isDragging) {
+                                        translationY = dragOffsetY
+                                        shadowElevation = 8f
+                                        scaleX = 1.02f
+                                        scaleY = 1.02f
+                                    }
+                                }
+                                .background(
+                                    if (isDragging) Palette.surfaceRaised else Color.Transparent,
+                                    RoundedCornerShape(10.dp),
+                                )
+                                .pointerInput(section) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            draggingIndex = index
+                                            dragOffsetY = 0f
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        },
+                                        onDragEnd = { draggingIndex = null; dragOffsetY = 0f },
+                                        onDragCancel = { draggingIndex = null; dragOffsetY = 0f },
+                                        onDrag = { change, amount ->
+                                            change.consume()
+                                            dragOffsetY += amount.y
+                                            val cur = draggingIndex
+                                            if (cur != null) {
+                                                if (dragOffsetY > rowHeightPx / 2f && cur < items.lastIndex) {
+                                                    items.add(cur + 1, items.removeAt(cur))
+                                                    draggingIndex = cur + 1
+                                                    dragOffsetY -= rowHeightPx
+                                                } else if (dragOffsetY < -rowHeightPx / 2f && cur > 0) {
+                                                    items.add(cur - 1, items.removeAt(cur))
+                                                    draggingIndex = cur - 1
+                                                    dragOffsetY += rowHeightPx
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                                .padding(horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            Icon(
+                                Icons.Filled.DragHandle,
+                                contentDescription = null,
+                                tint = Palette.textTertiary,
+                                modifier = Modifier.size(Metrics.iconSmall),
+                            )
+                            Spacer(Modifier.width(12.dp))
                             Text(
                                 section.title,
                                 style = NoopType.body,
                                 color = Palette.textPrimary,
                                 modifier = Modifier.weight(1f),
                             )
-                            IconButton(
-                                onClick = { move(index, index - 1) },
-                                enabled = index > 0,
-                                modifier = Modifier.size(Metrics.iconButton),
-                            ) {
-                                Icon(
-                                    Icons.Filled.KeyboardArrowUp,
-                                    contentDescription = "Move ${section.title} up",
-                                    tint = if (index > 0) Palette.textSecondary else Palette.textTertiary,
-                                    modifier = Modifier.size(Metrics.iconSmall),
-                                )
-                            }
-                            IconButton(
-                                onClick = { move(index, index + 1) },
-                                enabled = index < items.lastIndex,
-                                modifier = Modifier.size(Metrics.iconButton),
-                            ) {
-                                Icon(
-                                    Icons.Filled.KeyboardArrowDown,
-                                    contentDescription = "Move ${section.title} down",
-                                    tint = if (index < items.lastIndex) Palette.textSecondary else Palette.textTertiary,
-                                    modifier = Modifier.size(Metrics.iconSmall),
-                                )
-                            }
-                        }
-                        if (index < items.lastIndex) {
-                            HorizontalDivider(color = Palette.hairline, thickness = 1.dp)
                         }
                     }
                 }
