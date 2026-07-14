@@ -224,9 +224,6 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                 composable(Destination.Today.route) {
                     TodayScreen(
                         viewModel = viewModel,
-                        // The quick-action "+" lives in the Today header's top-right now (off the
-                        // bottom bar) — it opens the same quick-action sheet the bar used to.
-                        onQuickActions = { showQuickActions = true },
                         updateStore = updateStore,
                         // The opt-in Hydration card (only shown when Hydration tracking is on) pushes its
                         // detail. A normal push so the back-stack returns to Today.

@@ -442,7 +442,9 @@ struct LiquidTodayView: View {
                     .buttonStyle(LiquidPressStyle())
                     .accessibilityLabel("Profile and settings")
                     #endif
+                    #if os(macOS)
                     LiquidAddButton()
+                    #endif
                     LiquidBatteryButton()
                     // #today-layout: opens the Arrange sheet (drag rows to reorder the Today sections).
                     Button { showArrangeSheet = true } label: {
