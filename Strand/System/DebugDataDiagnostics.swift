@@ -125,9 +125,11 @@ enum DebugDataDiagnostics {
         let det = SleepSession(start: cs.startTs, end: cs.endTs, efficiency: cs.efficiency ?? 0,
                                stages: [], restingHR: cs.restingHr, avgHRV: cs.avgHrv)
         let family: DeviceFamily = (UserDefaults.standard.string(forKey: "selectedWhoopModel") == "whoop5") ? .whoop5 : .whoop4
-        // Mirror the real per-device anchor (#404): learn it from this night's raws so the funnel's mean +
-        // mapping match what analyzeDay banks (nil → the global 826 fallback, exactly like the engine).
-        let devAnchor = family == .whoop4 ? Whoop4SkinTemp.deviceAnchorRaw(skin.map { $0.raw }) : nil
+        // Mirror the real per-device anchor (#404): learn it from the WHOLE recent window's raws — not just
+        // this night — so a single sparse night (<100 in-band) can't misreport under the global fallback when
+        // the window as a whole has enough in-band samples for analyzeDay to learn a device anchor.
+        let windowSkin = (try? await store.skinTempSamples(deviceId: did, from: nowSec - 14 * 86400, to: nowSec, limit: 200_000)) ?? []
+        let devAnchor = family == .whoop4 ? Whoop4SkinTemp.deviceAnchorRaw(windowSkin.map { $0.raw }) : nil
         lines.append(AnalyticsEngine.skinTempFunnel([det], hr: hr, skinTemp: skin,
                                                     family: family, anchorRaw: devAnchor).summary)
         return lines

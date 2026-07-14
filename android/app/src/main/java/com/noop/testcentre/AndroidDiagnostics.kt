@@ -112,10 +112,12 @@ object AndroidDiagnostics {
             )
             val family = if (com.noop.ui.NoopPrefs.lastDevice(context)?.second == com.noop.ble.WhoopModel.WHOOP5_MG)
                 com.noop.protocol.DeviceFamily.WHOOP5 else com.noop.protocol.DeviceFamily.WHOOP4
-            // Mirror the real per-device anchor (#404): learn it from this night's raws so the funnel's mean +
-            // mapping match what analyzeDay banks (null → the global 826 fallback, exactly like the engine).
+            // Mirror the real per-device anchor (#404): learn it from the WHOLE recent window's raws — not
+            // just this night — so a single sparse night (<100 in-band) can't misreport under the global
+            // fallback when the window as a whole has enough in-band samples for analyzeDay to learn one.
+            val windowSkin = repo.skinTempSamples(id, nowSec - 14L * 86400L, nowSec, Int.MAX_VALUE)
             val devAnchor = if (family == com.noop.protocol.DeviceFamily.WHOOP4)
-                com.noop.protocol.Whoop4SkinTemp.deviceAnchorRaw(skin.map { it.raw }) else null
+                com.noop.protocol.Whoop4SkinTemp.deviceAnchorRaw(windowSkin.map { it.raw }) else null
             add(com.noop.analytics.AnalyticsEngine.skinTempFunnel(listOf(det), hr, skin, family, devAnchor).summary)
         }.onFailure { add("(funnels unavailable: ${it.message})") }
     }
