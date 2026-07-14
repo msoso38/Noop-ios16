@@ -500,6 +500,12 @@ final class IntelligenceEngine: ObservableObject {
         let stepsTraceActive = TestCentre.active(.steps)
         let scanned: [DayScan] = await Task.detached(priority: .utility) {
             var out: [DayScan] = []
+            // #938: the WHOOP 4.0 ADC offset is per-device, not per-night. Learn one anchor per owner
+            // from the whole scan window and reuse it for every night so cross-night deviations survive.
+            let skinAnchorScanFrom = nowLocalMidnight - (maxDays - 1) * 86_400 - 30 * 3_600
+            let skinAnchorScanTo = nowLocalMidnight + 18 * 3_600
+            var skinAnchorByOwner: [String: Double] = [:]
+            var skinAnchorResolvedOwners = Set<String>()
             for offset in 0..<maxDays {
                 let dayStart = nowLocalMidnight - offset * 86_400
                 let day = AnalyticsEngine.dayString(dayStart, offsetSec: tzOffset)
@@ -548,7 +554,22 @@ final class IntelligenceEngine: ObservableObject {
                 // nightly means every run, so this constant offset cancels in the deviation. nil for a non-4.0
                 // owner (`.whoop5` ignores the anchor) or when <100 in-band samples exist → the conversion
                 // falls back to the global anchor (byte-identical to today).
-                let skinAnchorRaw = skinFamily == .whoop4 ? Whoop4SkinTemp.deviceAnchorRaw(skin.map { $0.raw }) : nil
+                let skinAnchorRaw: Double?
+                if skinFamily == .whoop4 {
+                    if !skinAnchorResolvedOwners.contains(owner) {
+                        let windowSkin = (try? await store.skinTempSamples(deviceId: owner,
+                                                                           from: skinAnchorScanFrom,
+                                                                           to: skinAnchorScanTo,
+                                                                           limit: 200_000)) ?? []
+                        if let anchor = Whoop4SkinTemp.deviceAnchorRaw(windowSkin.map { $0.raw }) {
+                            skinAnchorByOwner[owner] = anchor
+                        }
+                        skinAnchorResolvedOwners.insert(owner)
+                    }
+                    skinAnchorRaw = skinAnchorByOwner[owner]
+                } else {
+                    skinAnchorRaw = nil
+                }
                 // Wrist-wear events in the night window, paired into off-wrist [start, end) intervals for the
                 // off-wrist sleep backstop (#500). The HR-gap proxy in the stager is the always-on guard;
                 // these explicit intervals sharpen it under the FRACTIONAL rule (#504) , a session is dropped
@@ -631,6 +652,11 @@ final class IntelligenceEngine: ObservableObject {
                 // toggle is the honest escape until real 4.0 ground truth settles it (#271/#319). Matches the
                 // self-heal restage below, which reads the same toggle.
                 let useSleepStagerV2 = PuffinExperiment.experimentalSleepV2Enabled
+                // #364 follow-up: read the motion-aware wake refinement toggle the same way (once, off the
+                // detached executor). Default OFF — see `PuffinExperiment.motionAwareWakeEnabled`. It only
+                // ever runs AFTER whichever stager above just ran, and self-gates on the night's observed
+                // gravity + step density, so flipping it on is a no-op for any night too sparse to trust.
+                let useMotionAwareWake = PuffinExperiment.motionAwareWakeEnabled
 
                 // Already OFF the main actor , score directly (the prior nested `Task.detached` here only
                 // existed to hop off the main actor; the whole loop now runs off it, so the score is computed
@@ -656,6 +682,9 @@ final class IntelligenceEngine: ObservableObject {
                                                      // #690: thread the V2 toggle into the NORMAL staging path so
                                                      // it affects detected nights, not just the self-heal restage.
                                                      useSleepStagerV2: useSleepStagerV2,
+                                                     // #364 follow-up: same threading for the motion-aware wake
+                                                     // refinement post-pass.
+                                                     useMotionAwareWake: useMotionAwareWake,
                                                      traceSink: traceSink,
                                                      hrvTraceSink: hrvTraceSink,
                                                      // Per-window HRV detail ONLY for the most-recent night
@@ -781,9 +810,9 @@ final class IntelligenceEngine: ObservableObject {
             histRhrByDay[d.day] = d.restingHr.map(Double.init)
             histRespByDay[d.day] = d.respRateBpm
         }
-        for (day, v) in nightlyHrvByDay where histHrvByDay[day] == nil { histHrvByDay[day] = v }
-        for (day, v) in nightlyRhrByDay where histRhrByDay[day] == nil { histRhrByDay[day] = v }
-        for (day, v) in nightlyRespByDay where histRespByDay[day] == nil { histRespByDay[day] = v }
+        Self.mergeNightlyIntoHistory(&histHrvByDay, nightlyHrvByDay)
+        Self.mergeNightlyIntoHistory(&histRhrByDay, nightlyRhrByDay)
+        Self.mergeNightlyIntoHistory(&histRespByDay, nightlyRespByDay)
         // rhr/resp/skin honour the Charge-wide recalibration epoch (noop.recoveryBaselineEpoch); 0 = no-op,
         // so this is byte-identical to the plain fold until the user taps Recalibrate, at which point the
         // whole Charge build-up (HRV + resting HR + resp + skin) re-anchors together.
@@ -1774,5 +1803,24 @@ private extension DailyMetric {
                     strain: strain, exerciseCount: exerciseCount, spo2Pct: spo2Pct,
                     skinTempDevC: skinTempDevC, respRateBpm: respRateBpm, steps: steps,
                     activeKcalEst: activeKcalEst, spo2Red: spo2Red, spo2Ir: spo2Ir)
+    }
+}
+
+extension IntelligenceEngine {
+    /// Merge one metric's on-device pass-1 nightly values into the imported-history map.
+    /// Imported (cloud) values WIN per day; the computed estimate only fills days the import
+    /// does not cover at all (key absent). Twin of the Kotlin `mergeNightlyIntoHistory`.
+    nonisolated static func mergeNightlyIntoHistory(
+        _ hist: inout [String: Double?], _ nightly: [String: Double?]
+    ) {
+        // `hist` values are themselves Optional, so `hist[day] == nil` is only
+        // true when the KEY is absent — an imported row with a nil value is
+        // `.some(.none)` and would shadow the real computed night forever,
+        // starving the baseline (the "Needs the strap" bug). Imported non-nil
+        // wins; a nil (or absent) slot is backfilled by the computed value.
+        for (day, v) in nightly {
+            if let existing = hist[day], existing != nil { continue }  // imported non-nil wins
+            hist[day] = v
+        }
     }
 }

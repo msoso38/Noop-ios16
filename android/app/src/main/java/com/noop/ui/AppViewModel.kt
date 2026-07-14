@@ -774,6 +774,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         // Opt-in experimental sleep staging (V2) — read off SharedPreferences here (the
                         // analytics layer is Context-free) and thread it into the sleep self-heal. (V7 3b)
                         useExperimentalSleepV2 = PuffinExperiment.from(appContext).experimentalSleepV2,
+                        // Opt-in motion-aware wake refinement (#364 follow-up) — same Context-free threading.
+                        useMotionAwareWake = PuffinExperiment.from(appContext).motionAwareWake,
                         // Sleep & Rest test mode (Test Centre E5): when the SLEEP domain is on, route the
                         // per-day sleep gate trace into the SAME shareable strap log, tagged .sleep so it
                         // lands under the profile in the export. Zero-cost when off: the gate is one
@@ -1288,6 +1290,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // Opt-in experimental sleep staging (V2) — same flag the 15-min loop reads, so a manual
                 // re-score after an edit stages with the same engine the user chose. (V7 Pillar 3b)
                 useExperimentalSleepV2 = PuffinExperiment.from(appContext).experimentalSleepV2,
+                // Opt-in motion-aware wake refinement (#364 follow-up) — same flag the 15-min loop reads.
+                useMotionAwareWake = PuffinExperiment.from(appContext).motionAwareWake,
             )
         }.onFailure { if (it is kotlin.coroutines.cancellation.CancellationException) throw it }
     }
@@ -1411,6 +1415,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val tiz = com.noop.analytics.HrZones.timeInZone(samples, zoneSet)
         val minutes = tiz.seconds.map { it / 60.0 }
         return if (minutes.any { it > 0.0 }) minutes else null
+    }
+
+    /** Steps over a manual-workout window `[from, to]` from the strap's own `step_motion_counter@57`
+     *  (#398): the shared wrap-aware `StepsCounter` delta-sum, then the per-user `stepTicksPerStep`
+     *  calibration the daily total applies (#139, floor 0.5). null when no strap counter covers the window
+     *  — a WHOOP 4.0 (no @57 counter) or an MG/5.0 that hasn't offloaded the window yet. Mirrors Swift
+     *  `Repository.strapStepTicks` + the WorkoutDetailView scaling; the phone-pedometer fallback iOS adds is
+     *  not available on Android (no cheap windowed step source), so a 4.0 window simply shows no steps. */
+    suspend fun workoutSteps(from: Long, to: Long): Int? {
+        if (to <= from) return null
+        val samples = runCatching { repository.stepSamples(deviceId, from, to) }.getOrDefault(emptyList())
+        val ticks = com.noop.analytics.StepsCounter.stepsInWindow(samples) ?: return null
+        val scaled = (ticks.toDouble() / maxOf(profileStore.stepTicksPerStep, 0.5)).roundToInt()
+        return if (scaled > 0) scaled else null
     }
 
     /** Save a retroactive / edited manual workout, then reload. [replacing] is the original on edit. */

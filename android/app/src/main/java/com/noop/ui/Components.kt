@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -31,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
@@ -399,10 +402,13 @@ fun SourceBadge(text: String, tint: Color = Palette.accent, modifier: Modifier =
         maxLines = 1,                          // #74: e.g. "ON-DEVICE" stays on one line, never wraps the hero
         overflow = TextOverflow.Ellipsis,
         modifier = modifier
+            // Preserve the canonical compact height at the default font scale, but grow instead of clipping
+            // when Android's font scaling makes the single-line label taller.
+            .heightIn(min = Metrics.sourceBadgeHeight)
             .clip(shape)
             .background(tint.copy(alpha = 0.14f))
             .border(1.dp, tint.copy(alpha = 0.30f), shape)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .padding(horizontal = Metrics.space8),
     )
 }
 
@@ -1261,6 +1267,10 @@ fun LazyScreenScaffold(
     // When true, the [topBackground] fills the WHOLE scaffold (viewport) instead of the top band — the
     // "sky behind cards" mode, so a full-height backdrop shows behind every scrolling row.
     fullBleedBackground: Boolean = false,
+    // #today-layout: the list state, hoisted so a caller can read item positions / scroll programmatically
+    // (Today's hold-to-drag section reorder needs layoutInfo + scrollBy). Defaulted, so every existing
+    // caller is byte-for-byte untouched.
+    listState: LazyListState = rememberLazyListState(),
     content: LazyListScope.() -> Unit,
 ) {
     // The header row: optional leading action, the title/subtitle, optional trailing action. Omitted
@@ -1305,6 +1315,7 @@ fun LazyScreenScaffold(
     val list: @Composable () -> Unit = {
         LazyColumn(
             modifier = listModifier,
+            state = listState,
             contentPadding = PaddingValues(start = 28.dp, top = topPadding, end = 28.dp, bottom = 28.dp),
             // #765: the shared inter-card spacing token by default (Today/Explore + the eager screens share
             // one uniform card rhythm); a caller may pass a tighter [rowSpacing] (the liquid Today does, for
