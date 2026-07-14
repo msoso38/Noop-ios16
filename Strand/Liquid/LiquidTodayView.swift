@@ -53,6 +53,14 @@ struct LiquidTodayView: View {
     @AppStorage(TodayLayoutPrefs.orderKey) private var sectionOrderRaw = ""
     @State private var showArrangeSheet = false
     private var sectionOrder: [TodaySection] { TodayLayoutPrefs.decodeOrder(sectionOrderRaw) }
+    // #430 parity: the Key-Metrics grid honours the SAME editor selection/order + Detailed-tiles switch as
+    // Android (byte-identical @AppStorage keys). `kSparks` holds the trailing-14-day series the detailed
+    // tiles graph (keyed by metric-catalog key), filled by the loader alongside everything else.
+    @AppStorage(KeyMetricPrefs.layoutKey) private var keyMetricsRaw = ""
+    @AppStorage("today.keyMetricsDetailed") private var keyMetricsDetailed = false
+    @State private var showKeyMetricsEditor = false
+    @State private var kSparks: [String: [Double]] = [:]
+    private var enabledKeyMetrics: [KeyMetric] { KeyMetricPrefs.decodeEnabled(keyMetricsRaw) }
 
     // day navigation (0 = today, 1 = yesterday, …)
     @State private var selectedDayOffset = 0
@@ -307,6 +315,11 @@ struct LiquidTodayView: View {
         // #today-layout: the Arrange sheet — native drag-to-reorder rows over the same persisted order.
         .sheet(isPresented: $showArrangeSheet) {
             TodayArrangeSheet(orderRaw: $sectionOrderRaw)
+        }
+        // #430 parity: the Key-Metrics editor (selection + order + the Detailed-tiles switch), the same
+        // sheet the classic macOS grid uses, bound to the same persisted layout string.
+        .sheet(isPresented: $showKeyMetricsEditor) {
+            KeyMetricsEditorSheet(layoutRaw: $keyMetricsRaw)
         }
         #if os(macOS)
         // Hide the mac window toolbar's vibrant material so the full-bleed day-of-sky reads dark + edge-to-edge
@@ -746,19 +759,30 @@ struct LiquidTodayView: View {
     // MARK: - Key metrics grid
 
     private var keyMetricsSection: some View {
-        // HRV / Rest HR tiles share the recovery vitals' per-field today-first carry so they don't blank at
-        // the rollover while Recovery/Strain/Sleep stay strictly today's own (they are scored surfaces).
+        // HRV / Rest HR (+ Blood Oxygen / Respiratory) tiles share the recovery vitals' per-field
+        // today-first carry so they don't blank at the rollover while Recovery/Strain/Rest stay strictly
+        // today's own (they are scored surfaces).
         let hrv = displayDay?.avgHrv ?? vitalsDay?.avgHrv
         let rhr = (displayDay?.restingHr ?? vitalsDay?.restingHr).map(Double.init)
         return VStack(spacing: 8) {
-            sectionHead("KEY METRICS", trailing: "14-day trend")
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                sectionHead("KEY METRICS", trailing: "14-day trend")
+                // #430 parity: the SAME editor the classic grid uses — selection + order + Detailed tiles.
+                Button { showKeyMetricsEditor = true } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(StrandPalette.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit Key Metrics")
+            }
+            // #430 parity: the grid honours the Key-Metrics editor (selection + order, all ten metrics)
+            // instead of a hard-coded six — the bespoke Sleep-hours ktile gives way to the shared REST
+            // score tile, aligning the liquid grid with the classic macOS grid and Android.
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                ktile(String(localized: "Recovery"), intText(displayDay?.recovery), "%", StrandPalette.chargeColor, frac(displayDay?.recovery))
-                ktile(String(localized: "Strain"), intText(displayDay?.strain), "%", StrandPalette.effortColor, frac(displayDay?.strain))
-                ktile(String(localized: "Sleep"), sleepText, "", StrandPalette.restColor, fracOver(displayDay?.totalSleepMin, 480))
-                ktile(String(localized: "HRV"), intText(hrv), "ms", StrandPalette.metricCyan, fracOver(hrv, 120))
-                ktile(String(localized: "Rest HR"), intText(rhr), "bpm", StrandPalette.metricRose, fracOver(rhr, 100))
-                ktile(String(localized: "Steps"), stepsText, "", StrandPalette.chargeColor, fracOver(stepCount, 10000))
+                ForEach(enabledKeyMetrics) { metric in
+                    ktileFor(metric, hrv: hrv, rhr: rhr)
+                }
             }
             NavigationLink(value: TabRoute.metricExplorer) {
                 Text("Show all metrics").font(StrandFont.subhead).foregroundStyle(StrandPalette.accent)
@@ -768,8 +792,41 @@ struct LiquidTodayView: View {
         }
     }
 
-    private func ktile(_ label: String, _ value: String, _ unit: String, _ tint: Color, _ frac: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    /// One editor-selected Key-Metric tile: the metric's value/tint/fill exactly as the old hard-coded
+    /// tiles read them (Android's descriptor map is the twin), plus the metric-catalog `key` that names
+    /// both its 14-day spark series and its tap-through detail. Weight has no liquid value source yet —
+    /// its tile reads "—" but still taps through to the weight trend detail (which has its own series).
+    @ViewBuilder
+    private func ktileFor(_ metric: KeyMetric, hrv: Double?, rhr: Double?) -> some View {
+        switch metric {
+        case .charge:
+            ktile(String(localized: "Recovery"), intText(displayDay?.recovery), "%", StrandPalette.chargeColor, frac(displayDay?.recovery), key: "recovery")
+        case .effort:
+            ktile(String(localized: "Strain"), intText(displayDay?.strain), "%", StrandPalette.effortColor, frac(displayDay?.strain), key: "strain")
+        case .rest:
+            ktile(String(localized: "Rest"), intText(restScore), "%", StrandPalette.restColor, frac(restScore), key: "sleep_performance")
+        case .hrv:
+            ktile("HRV", intText(hrv), "ms", StrandPalette.metricCyan, fracOver(hrv, 120), key: "hrv")
+        case .restingHr:
+            ktile(String(localized: "Rest HR"), intText(rhr), "bpm", StrandPalette.metricRose, fracOver(rhr, 100), key: "rhr")
+        case .bloodOxygen:
+            let spo2 = displayDay?.spo2Pct ?? vitalsDay?.spo2Pct
+            ktile(String(localized: "Blood Oxygen"), intText(spo2), "%", StrandPalette.metricCyan, fracOver(spo2, 100), key: "spo2")
+        case .respiratory:
+            let resp = displayDay?.respRateBpm ?? vitalsDay?.respRateBpm
+            ktile(String(localized: "Respiratory"), resp.map { String(format: "%.1f", $0) } ?? "—", "rpm", StrandPalette.accent, fracOver(resp, 24), key: "resp_rate")
+        case .steps:
+            ktile(String(localized: "Steps"), stepsText, "", StrandPalette.chargeColor, fracOver(stepCount, 10000), key: "steps")
+        case .weight:
+            ktile(String(localized: "Weight"), "—", "", StrandPalette.metricAmber, nil, key: "weight")
+        case .calories:
+            ktile(String(localized: "Calories"), intText(displayDay?.activeKcalEst), "kcal", StrandPalette.metricAmber, fracOver(displayDay?.activeKcalEst, 800), key: "energy_kcal")
+        }
+    }
+
+    private func ktile(_ label: String, _ value: String, _ unit: String, _ tint: Color, _ frac: Double?,
+                       key: String? = nil) -> some View {
+        let tile = VStack(alignment: .leading, spacing: 6) {
             Text(label.uppercased()).font(StrandFont.overlineScaled(9)).tracking(1.2)
                 .foregroundStyle(StrandPalette.textTertiary)
             (Text(value).font(StrandFont.number(17))
@@ -778,6 +835,20 @@ struct LiquidTodayView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             LiquidTube(frac: frac ?? 0, tint: tint, height: 8, animated: false)
+            // #430 parity: DETAILED tiles grow the 14-day trend graph under the bar, tinted to the metric
+            // (the Android twin). A metric with no windowed series keeps a clear placeholder of the same
+            // height so every tile in a detailed row stays equal-height with its bars aligned.
+            if keyMetricsDetailed {
+                if let key, let spark = kSparks[key], spark.count >= 2 {
+                    Sparkline(values: Array(spark.suffix(14)),
+                              gradient: Gradient(colors: [tint.opacity(0.5), tint]))
+                        .frame(height: 22)
+                        .padding(.top, 6)
+                        .accessibilityHidden(true)
+                } else {
+                    Color.clear.frame(height: 22).padding(.top, 6)
+                }
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 11)
@@ -789,6 +860,16 @@ struct LiquidTodayView: View {
                     .strokeBorder(StrandPalette.hairline, lineWidth: 1))
                 .opacity(cardOpacity)
         )
+        // #430 parity: tap -> the metric's trend detail (the same Explore dossier its MetricRow pushes,
+        // closure-based NavigationLink per #38). A metric with no catalog entry stays inert.
+        return Group {
+            if let key, let metric = MetricCatalog.all.first(where: { $0.key == key }) {
+                NavigationLink { MetricDetailView(metric: metric) } label: { tile }
+                    .buttonStyle(.plain)
+            } else {
+                tile
+            }
+        }
     }
 
     // MARK: - Last workouts
@@ -933,6 +1014,27 @@ struct LiquidTodayView: View {
         // history doesn't stutter the UI. Snapshot the inputs (value types) into the detached task.
         let storedStress = await stressA
         let daysSnapshot = repo.days
+
+        // #430 parity: the trailing-14-day series the DETAILED Key-Metrics tiles graph — a trailing
+        // CALENDAR window ending on the selected day (not the last-N stored rows, which on an old import
+        // showed months-old data as a "14-day trend", issue #23). Keys mirror the metric catalog so a
+        // tile's graph, its tap-through detail and Android's Window all read the same signal. Rest reuses
+        // the already-loaded sleep_performance series (the same one the Rest score reads).
+        let sparkDF = DateFormatter()
+        sparkDF.locale = Locale(identifier: "en_US_POSIX")
+        sparkDF.dateFormat = "yyyy-MM-dd"
+        let sparkCutoff = sparkDF.string(from: cal.date(byAdding: .day, value: -13, to: dayStart) ?? dayStart)
+        let sparkRows = daysSnapshot.filter { $0.day >= sparkCutoff && $0.day <= selectedDayKey }
+        kSparks = [
+            "recovery": sparkRows.compactMap { $0.recovery },
+            "strain": sparkRows.compactMap { $0.strain },
+            "hrv": sparkRows.compactMap { $0.avgHrv },
+            "rhr": sparkRows.compactMap { $0.restingHr.map(Double.init) },
+            "spo2": sparkRows.compactMap { $0.spo2Pct },
+            "resp_rate": sparkRows.compactMap { $0.respRateBpm },
+            "sleep_performance": restSeries.filter { $0.day >= sparkCutoff && $0.day <= selectedDayKey }
+                .map { $0.value },
+        ]
         stress = await Task.detached(priority: .utility) {
             StressModel(days: daysSnapshot, stored: storedStress)?.score
         }.value
