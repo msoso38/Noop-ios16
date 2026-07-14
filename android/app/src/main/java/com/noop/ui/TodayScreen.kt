@@ -1400,6 +1400,8 @@ fun TodayScreen(
                                     metricsExpanded = metricsExpanded,
                                     onToggleMetrics = { metricsExpanded = !metricsExpanded },
                                     detailed = keyMetricsDetailed,
+                                    onOpenMetric = onOpenMetric,
+                                    onChargeTap = { showChargeBreakdown = true },
                                 )
                             }
                         }
@@ -4588,6 +4590,10 @@ private fun MetricGrid(
     onToggleMetrics: () -> Unit = {},
     // Detailed tiles (the #251 editor's switch): squarer tiles with a 14-day trend graph under the bar.
     detailed: Boolean = false,
+    // Tile drill-ins: every tile opens its focused trend (vital_detail/<key>, the Sleep night-detail
+    // pattern) via [onOpenMetric]; the Charge tile opens the SAME breakdown sheet the hero ring does.
+    onOpenMetric: (String) -> Unit = {},
+    onChargeTap: () -> Unit = {},
 ) {
     // FIX 3 (iOS `keyMetricsSection` parity): a 3-COLUMN grid of COMPACT liquid tiles, each an iOS `ktile`
     // — a 9sp/+1.2 overline label, a value + small unit, and a thin 8dp LiquidTube fill bar — REPLACING the
@@ -4699,8 +4705,24 @@ private fun MetricGrid(
         ),
     )
 
-    // Resolve the enabled tiles to their descriptors, dropping any unknown key defensively.
-    val allTiles = enabledMetrics.mapNotNull { descriptors[it] }
+    // Resolve the enabled tiles to their descriptors (keeping the metric for the tap mapping), dropping
+    // any unknown key defensively.
+    val allTiles = enabledMetrics.mapNotNull { m -> descriptors[m]?.let { m to it } }
+    // Tile tap -> its focused detail: Charge opens the hero's breakdown sheet; Effort/Rest open their new
+    // trend details; the vitals + Steps/Calories open the same vital_detail trends the Health cards use.
+    // Weight has no windowed detail yet -> not tappable (null keeps the tile inert rather than lying).
+    fun tapFor(metric: KeyMetric): (() -> Unit)? = when (metric) {
+        KeyMetric.CHARGE -> onChargeTap
+        KeyMetric.EFFORT -> ({ onOpenMetric("strain") })
+        KeyMetric.REST -> ({ onOpenMetric("rest") })
+        KeyMetric.HRV -> ({ onOpenMetric("hrv") })
+        KeyMetric.RESTING_HR -> ({ onOpenMetric("rhr") })
+        KeyMetric.BLOOD_OXYGEN -> ({ onOpenMetric("spo2") })
+        KeyMetric.RESPIRATORY -> ({ onOpenMetric("resp") })
+        KeyMetric.STEPS -> ({ onOpenMetric("steps_est") })
+        KeyMetric.CALORIES -> ({ onOpenMetric("active_kcal") })
+        KeyMetric.WEIGHT -> null
+    }
     // S5: slice from the FRONT of the saved order so a pinned/selected tile is never dropped or reordered
     // (#251); only the tail folds behind the expander. Mirrors the iOS visibleKeyMetrics prefix(cap).
     val hasOverflow = allTiles.size > METRICS_COLLAPSED_CAP
@@ -4717,10 +4739,11 @@ private fun MetricGrid(
                 modifier = if (detailed) Modifier.height(IntrinsicSize.Max) else Modifier,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                rowTiles.forEach { tile ->
+                rowTiles.forEach { (metric, tile) ->
                     LiquidKeyTile(
                         tile,
                         detailed = detailed,
+                        onClick = tapFor(metric),
                         modifier = Modifier.weight(1f).then(if (detailed) Modifier.fillMaxHeight() else Modifier),
                     )
                 }
@@ -4774,10 +4797,26 @@ private data class KeyTileData(
  * (Steps/Weight/Calories) or fewer than two points stays tube-only, so no tile ever draws a fake flat line.
  */
 @Composable
-private fun LiquidKeyTile(data: KeyTileData, detailed: Boolean = false, modifier: Modifier = Modifier) {
+private fun LiquidKeyTile(
+    data: KeyTileData,
+    detailed: Boolean = false,
+    onClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
     val hasValue = data.value != NO_DATA
+    // Tap -> the tile's focused trend detail (the Sleep night-detail tile idiom): liquidPress on the
+    // tappable tile, indication = null so only the liquid settle shows. A null onClick keeps the tile
+    // inert with zero modifier overhead (byte-identical to before).
+    val interaction = remember { MutableInteractionSource() }
+    val base = if (onClick != null) {
+        modifier
+            .liquidPress(interaction)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+    } else {
+        modifier
+    }
     Column(
-        modifier = modifier
+        modifier = base
             .clip(RoundedCornerShape(16.dp))
             .frostedCardSurface(cornerRadius = 16.dp)
             .padding(horizontal = 12.dp, vertical = 11.dp)
