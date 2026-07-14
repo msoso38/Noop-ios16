@@ -92,15 +92,15 @@ extension AnalyticsEngine.Rest {
         func r2(_ x: Double) -> Double { (x * 100.0).rounded() / 100.0 }
 
         let needSeconds = max(needHours, 0.1) * 3600.0
-        let durationScore = clamp01(tstSeconds / needSeconds)
+        let restorativeShare = tstSeconds > 0 ? restorativeSeconds / tstSeconds : 0.0
+        let durationScore = clamp01(tstSeconds / needSeconds) * durationQualityFactor(restorativeShare: restorativeShare)
         let efficiencyScore = clamp01(efficiency)
         let deepFactor: Double = {
-            guard let deep = deepSeconds, tstSeconds > 0, deepShareTarget > 0 else { return 1.0 }
-            let adequacy = clamp01((deep / tstSeconds) / deepShareTarget)
-            return deepFloorFactor + (1.0 - deepFloorFactor) * adequacy
+            guard let deep = deepSeconds, tstSeconds > 0 else { return 1.0 }
+            return deepAdequacyFactor(deepSeconds: deep, asleepSeconds: tstSeconds)
         }()
         let restorativeScore = tstSeconds > 0
-            ? clamp01((restorativeSeconds / tstSeconds) / restorativeTarget) * deepFactor
+            ? clamp01(restorativeShare / restorativeTarget) * deepFactor
             : 0.0
         let consistencyScore = clamp01(consistency ?? neutralConsistency)
         let composite = AnalyticsEngine.Rest.composite(

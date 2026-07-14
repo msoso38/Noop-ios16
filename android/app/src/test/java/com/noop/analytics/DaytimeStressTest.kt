@@ -57,4 +57,28 @@ class DaytimeStressTest {
             withSleep.sustainedHigh,
         )
     }
+
+    @Test
+    fun lateSleepWindow_excludesMorningFromWakingReference() {
+        // 13 Jul shape: sleep through ~13:00. Without sleepWindows, hours 6–12 (low HR) pollute
+        // the waking calm reference. With a sleep window covering those hours, afternoon tip
+        // should not be inflated relative to a day that never included them in the reference.
+        val morningSleep = (6..12).flatMap { h -> hourHr(h, 52) }
+        val afternoon = listOf(14, 15, 16, 17, 18, 19).flatMap { h -> hourHr(h, 72) }
+        val noRr = emptyList<RrInterval>()
+        // Sleep window 06:00–13:00 wall clock (tz 0).
+        val window = listOf(6L * 3600L to 13L * 3600L)
+        val withWindow = DaytimeStress.analyze(morningSleep + afternoon, noRr, sleepWindows = window)
+        val afternoonOnly = DaytimeStress.analyze(afternoon, noRr)
+
+        val tipWith = withWindow.scored.lastOrNull { it.hour == 19 }?.level
+        val tipOnly = afternoonOnly.scored.lastOrNull { it.hour == 19 }?.level
+        assertNotNull(tipWith)
+        assertNotNull(tipOnly)
+        // Sleep-window shaping should keep the afternoon tip close to the afternoon-only day
+        // (not dragged high by treating morning sleep as waking calm).
+        assertEquals(tipOnly!!, tipWith!!, 0.35)
+        // Morning sleep hours may appear but must not drive sustained-high.
+        assertFalse(withWindow.sustainedHigh)
+    }
 }

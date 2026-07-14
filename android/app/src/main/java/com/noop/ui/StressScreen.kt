@@ -177,7 +177,13 @@ private suspend fun loadDaytimeStress(vm: AppViewModel): DaytimeReadout {
         return DaytimeReadout(DaytimeStress.Result.EMPTY, null, null)
     }
     val rr = vm.repo.rrIntervals("my-whoop", from, nowSeconds, limit = 200_000)
-    val daytime = DaytimeStress.analyze(hr, rr, tzOffsetSeconds)
+    // Main-night sleep window(s) for night-floor shaping — late sleep past 06:00 must not
+    // pollute the waking calm reference (WHOOP Stress Monitor moon band through ~1pm).
+    val sleepWindows = runCatching {
+        vm.repo.sleepSessions("my-whoop", from, nowSeconds, limit = 64)
+            .map { it.effectiveStartTs to it.endTs }
+    }.getOrDefault(emptyList())
+    val daytime = DaytimeStress.analyze(hr, rr, tzOffsetSeconds, sleepWindows = sleepWindows)
     // ADDITIVE advanced readouts from the SAME `rr`. Each engine self-gates and returns null when
     // its requirement is not met, in which case its row is simply hidden in the UI.
     val si = StressIndex.components(rr)

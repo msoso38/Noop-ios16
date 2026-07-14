@@ -169,8 +169,11 @@ object SleepStager {
     /** Skip HR refinement (trust gravity) when fewer than this many HR samples. */
     const val hrRefineMinSamples: Int = 30
 
-    /** Consecutive sleep epochs required to declare onset. */
-    const val onsetPersistEpochs: Int = 3
+    /** Consecutive sleep epochs required to declare onset.
+     *  Was 3 (≈90s on the 30s grid). Screenshot nights opened ~77 min early vs WHOOP when a brief
+     *  pre-sleep HR dip satisfied the short persist bar; 4 epochs (≈2 min) still opens on a real
+     *  descent without inventing stages. */
+    const val onsetPersistEpochs: Int = 4
 
     // ── Off-wrist backstop (#500) ─────────────────────────────────────────────
     //
@@ -1782,11 +1785,19 @@ object SleepStager {
         // over-promotes still sleep to wake. (#705)
         if (moving && (cardiacActivatedForWake || !hasHR)) return "wake"
         // DEEP: still + low HR + regular respiration, with high parasympathetic tone when measurable.
+        // On cardiac-sparse nights (missing RMSSD / RRV common on BLE-offload / "no movement detail"),
+        // also accept still + low HR alone — the screenshot collapse to 2% deep was mostly light because
+        // the full deep gate rarely cleared without motion+resp channels. Never invents deep from HC.
         if (still && parasympOK && hrLow && rrvRegular) return "deep"
+        if (cardiacSparse && still && hrLow && !f.rrv.isFinite()) return "deep"
         // REM: still body + activated cardiac + irregular respiration.
         if (still && cardiacActivated && rrvIrregular) return "rem"
         // REM fallback when respiration unavailable: require BOTH cardiac signals.
         if (still && hrHigh && hrvarHigh && !f.rrv.isFinite()) return "rem"
+        // Sparse / no-resp late-night REM: still + elevated HR alone after the first third of the night
+        // (clock > deepFirstFraction). WHOOP showed ~16% REM on the same night NOOP staged 0% REM when
+        // hrVar was noisy/missing; this is a directed reopen of the funnel, not invented minutes.
+        if (cardiacSparse && still && hrHigh && !f.rrv.isFinite() && f.clock > deepFirstFraction) return "rem"
         return "light"
     }
 
@@ -1925,9 +1936,13 @@ object SleepStager {
         // An epoch that wins WAKE or DEEP was never a REM candidate.
         if (moving && (cardiacActivatedForWake || !hasHR)) return REMRejectReason.WON_OTHER_STAGE  // → wake
         if (still && parasympOK && hrLow && rrvRegular) return REMRejectReason.WON_OTHER_STAGE // → deep
+        if (cardiacSparse && still && hrLow && !f.rrv.isFinite()) return REMRejectReason.WON_OTHER_STAGE // → sparse deep
         // From here the epoch did NOT win wake/deep; it is either REM or falls through to LIGHT.
         if (still && cardiacActivated && rrvIrregular) return REMRejectReason.REM_ELIGIBLE
         if (still && hrHigh && hrvarHigh && !f.rrv.isFinite()) return REMRejectReason.REM_ELIGIBLE
+        if (cardiacSparse && still && hrHigh && !f.rrv.isFinite() && f.clock > deepFirstFraction) {
+            return REMRejectReason.REM_ELIGIBLE
+        }
         // Not REM → attribute to the FIRST unmet REM precondition (in REM-rule order).
         if (!still) return REMRejectReason.NOT_STILL
         if (!cardiacActivated) return REMRejectReason.NO_CARDIAC_ACTIVATION

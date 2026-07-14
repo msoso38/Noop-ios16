@@ -81,6 +81,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.analytics.AnalyticsEngine
+import com.noop.analytics.RestScorer
 import com.noop.analytics.SleepDebt
 import com.noop.analytics.SleepDebtLedger
 import com.noop.analytics.SleepEditGuard
@@ -2452,7 +2453,16 @@ private fun DurationTrend(m: SleepModel) {
         ChartCard(
             title = "Sleep Debt",
             subtitle = "Hours of sleep debt per day",
-            trailing = m.trendDebtHours.lastOrNull()?.let { String.format(Locale.US, "%.1f h", it) },
+            // Trailing = rolling ledger balance (same source as Sleep Debt ledger card), not the
+            // latest night's one-sided deficit — avoids "0.0 h" vs "≈7h 31m" on the same window.
+            trailing = run {
+                val balH = m.sleepDebtLedger.balanceMin / 60.0
+                when {
+                    m.sleepDebtLedger.magnitudeMin < SleepDebt.ON_TARGET_BAND_MIN -> "0.0 h"
+                    m.sleepDebtLedger.isDebt -> String.format(Locale.US, "%.1f h", -balH)
+                    else -> String.format(Locale.US, "+%.1f h", balH)
+                }
+            },
             tint = Palette.restColor,
             footer = {
                 ChartFooter(
@@ -3107,18 +3117,23 @@ internal fun buildSleepModel(
     val rem = heroStages?.rem ?: sessionStageMins?.rem ?: latest.remMin ?: 0.0
     val light = heroStages?.light ?: sessionStageMins?.light ?: latest.lightMin ?: 0.0
 
-    // Hero awake estimate works off ASLEEP minutes (totalSleepMin), never the in-bed window. The
-    // old code substituted the edited session's (wake − onset) duration — TIME IN BED — for the
-    // asleep figure here and across every per-tile pass, which inflated awake / hours-vs-needed /
-    // debt vs the actual sleep. iOS never did this (it derives awake straight from the decoded
-    // stage segments). Dropped for parity (#1/#7); a sleep edit now reaches the tiles via the
-    // re-score path, not a display-time in-bed swap.
-    val asleep = latest.totalSleepMin ?: (deep + rem + light)
-    // Awake estimate: prefer (time-in-bed − asleep) implied by efficiency; else from
-    // disturbances; matches the macOS "awake minutes" carried in the stagesJSON.
+    // Hero asleep: prefer light+deep+REM (what the stage cards show) over totalSleepMin so the
+    // hero cannot disagree with the hypnogram on the same night (13 Jul: 8h37m banked vs 7h19m
+    // stages). totalSleepMin is the fallback when stages are missing. Never invents stages.
+    val stageAsleep = deep + rem + light
+    val asleep = when {
+        heroStages != null -> heroStages.light + heroStages.deep + heroStages.rem
+        stageAsleep > 0.0 -> stageAsleep
+        else -> latest.totalSleepMin ?: 0.0
+    }
+    // Awake: prefer explicit session awake when present; else efficiency back-calc against the
+    // SAME asleep figure (never against a stale totalSleepMin that disagrees with stages).
     val effFrac = latest.efficiency?.let { if (it > 1.0) it / 100.0 else it }
     val awake = when {
-        effFrac != null && effFrac in 0.01..0.999 -> max(0.0, asleep / effFrac - asleep)
+        heroStages != null -> heroStages.awake
+        sessionStageMins != null && sessionStageMins.awake > 0.0 -> sessionStageMins.awake
+        effFrac != null && effFrac in 0.01..0.999 && asleep > 0.0 ->
+            max(0.0, asleep / effFrac - asleep)
         latest.disturbances != null -> latest.disturbances * 6.0
         else -> 0.0
     }
@@ -3163,29 +3178,33 @@ internal fun buildSleepModel(
     }
     val hoursVsNeeded = metric(days) { d ->
         val need = imported.needMin[d.day] ?: needMin   // imported need wins per day
-        d.totalSleepMin?.takeIf { it > 0.0 && need > 0.0 }?.let { it / need * 100.0 }
+        RestScorer.canonicalAsleepMin(d)?.takeIf { it > 0.0 && need > 0.0 }?.let { it / need * 100.0 }
     }
     val restorative = metric(days) { d ->
-        val dp = d.deepMin; val rm = d.remMin; val sl = d.totalSleepMin
+        val dp = d.deepMin; val rm = d.remMin
+        val sl = RestScorer.canonicalAsleepMin(d)
         if (dp != null && rm != null && sl != null && sl > 0.0) (dp + rm) / sl * 100.0 else null
     }
     val respiratory = metric(days) { it.respRateBpm }
     val sleepDebt = run {
         val series = days.mapNotNull { d ->
             imported.debtMin[d.day]   // minutes, export-verbatim
-                ?: d.totalSleepMin?.takeIf { it > 0.0 && needMin > 0.0 }
+                ?: RestScorer.canonicalAsleepMin(d)?.takeIf { it > 0.0 && needMin > 0.0 }
                     ?.let { max(0.0, needMin - it) }   // APPROXIMATE fallback
         }
         Metric(series.lastOrNull(), mean(series), series)
     }
 
-    // Trend set = the most-recent nights with data (asleep totals, full history — latest-anchored,
-    // not the browsed night). Mirrors iOS's trailing trend over repo.days.
-    val trendRows = days.filter { (it.totalSleepMin ?: 0.0) > 0.0 }.takeLast(14)
-    val trendHours = trendRows.mapNotNull { it.totalSleepMin?.let { minutes -> minutes / 60.0 } }
+    // Trend set = the most-recent nights with canonical asleep (stage sum preferred), full history —
+    // latest-anchored, not the browsed night. Mirrors iOS's trailing trend over repo.days.
+    val trendRows = days.filter { (RestScorer.canonicalAsleepMin(it) ?: 0.0) > 0.0 }.takeLast(14)
+    val trendHours = trendRows.mapNotNull { RestScorer.canonicalAsleepMin(it)?.let { minutes -> minutes / 60.0 } }
     val trendNeedHours = trendRows.map { row -> ((imported.needMin[row.day] ?: needMin) / 60.0) }
+    // Per-night POSITIVE debt hours for the bar chart (same shape as before). Trailing headline
+    // below uses the ledger balance so Trends cannot show "0.0 h" while Sleep Debt ledger shows
+    // "≈7h 31m" for the same window (13 Jul screenshot SELF-CONSISTENCY).
     val trendDebtHours = trendRows.map { row ->
-        val sleptMin = row.totalSleepMin ?: 0.0
+        val sleptMin = RestScorer.canonicalAsleepMin(row) ?: 0.0
         val neededMin = imported.needMin[row.day] ?: needMin
         ((imported.debtMin[row.day] ?: max(0.0, neededMin - sleptMin)) / 60.0)
     }
@@ -3211,7 +3230,7 @@ internal fun buildSleepModel(
     // matches the debt TILE (both now read asleep totals over `days`), and mirrors iOS's
     // debtLedger over repo.days. (#242, #5)
     val sleepDebtLedger = SleepDebt.ledger(
-        series = days.map { it.day to it.totalSleepMin },
+        series = days.map { it.day to RestScorer.canonicalAsleepMin(it) },
         needHours = needMin / 60.0,
     )
 

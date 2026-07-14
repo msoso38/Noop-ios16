@@ -889,10 +889,17 @@ object AnalyticsEngine {
  */
 object RestScorer {
 
-    /** Component weights (sum 1.0 when all present). Byte-identical to Swift. */
-    const val wDuration: Double = 0.50
+    /**
+     * Component weights (sum 1.0 when all present). Byte-identical to Swift.
+     *
+     * 2026-07-14 screenshot pass (WHOOP Sleep 64% vs NOOP Rest 73 "Strong" on a 2% deep / 0% REM
+     * night): duration was carrying half the composite while restorative could not fall far enough,
+     * so a mediocre staged night still read Strong. Shift weight toward restorative and lower the
+     * deep floor; duration still matters most, but no longer alone.
+     */
+    const val wDuration: Double = 0.45
     const val wEfficiency: Double = 0.20
-    const val wRestorative: Double = 0.20
+    const val wRestorative: Double = 0.25
     const val wConsistency: Double = 0.10
 
     /** Default personal sleep need (hours) before any recent-average refinement. */
@@ -913,12 +920,61 @@ object RestScorer {
      */
     const val deepShareTarget: Double = 0.13
 
-    /** Most the restorative term is scaled down when deep is ~absent — half, never zeroed, so a
-     *  low-deep night reads honestly without the whole night tanking. Swift parity. */
-    const val deepFloorFactor: Double = 0.5
+    /**
+     * Floor on the restorative deep-adequacy multiplier when deep → 0. Was 0.5 (half credit even with
+     * almost no deep); screenshot nights with ~2% deep still scored Rest "Strong". 0.25 keeps a
+     * non-zero floor (honest, not tanking) while letting near-zero deep pull Rest down. Swift parity.
+     */
+    const val deepFloorFactor: Double = 0.25
+
+    /**
+     * Below this restorative (deep+REM) share of asleep time, duration credit is discounted so raw
+     * hours alone cannot carry Rest into "Strong" when staging found almost no restorative sleep.
+     * At/above the gate, duration is unscathed. Grounded in the 13 Jul night (≈2% restorative).
+     */
+    const val durationQualityShareGate: Double = 0.12
+
+    /** Minimum duration multiplier at zero restorative share (never zero — duration still counts). */
+    const val durationQualityFloor: Double = 0.70
 
     /** Neutral consistency (fraction) used when the caller supplies no regularity signal. Swift parity. */
     const val NEUTRAL_CONSISTENCY: Double = 0.5
+
+    /**
+     * Single asleep-minutes source of truth for Rest / debt / trends.
+     *
+     * Prefer light+deep+REM when any stage minutes exist — those are what the hypnogram and stage
+     * cards show. [DailyMetric.totalSleepMin] can diverge (HC blend, stale bank, pre-heal) and was
+     * the root of Sleep hero "8h 37m" vs stages "7h 19m" on the same night. Never invents stages.
+     */
+    fun canonicalAsleepMin(daily: DailyMetric): Double? {
+        val stageSum = (daily.deepMin ?: 0.0) + (daily.remMin ?: 0.0) + (daily.lightMin ?: 0.0)
+        if (stageSum > 0.0) return stageSum
+        return daily.totalSleepMin?.takeIf { it > 0.0 }
+    }
+
+    /**
+     * Deep-adequacy multiplier in [[deepFloorFactor], 1]. Below half of [deepShareTarget] the ramp
+     * is steeper (near-zero deep is not "a little short"), still never zeroed.
+     */
+    fun deepAdequacyFactor(deepSeconds: Double, asleepSeconds: Double): Double {
+        if (asleepSeconds <= 0.0 || deepShareTarget <= 0.0) return 1.0
+        val adequacy = ((deepSeconds / asleepSeconds) / deepShareTarget).coerceIn(0.0, 1.0)
+        return if (adequacy >= 0.5) {
+            deepFloorFactor + (1.0 - deepFloorFactor) * adequacy
+        } else {
+            // Steep limb: 0 → deepFloorFactor*0.4, half-target → deepFloorFactor mid-ramp start.
+            val steepFloor = deepFloorFactor * 0.4
+            steepFloor + (deepFloorFactor - steepFloor) * (adequacy / 0.5)
+        }
+    }
+
+    /** Duration multiplier when restorative share is thin — see [durationQualityShareGate]. */
+    fun durationQualityFactor(restorativeShare: Double): Double {
+        if (restorativeShare >= durationQualityShareGate) return 1.0
+        val t = (restorativeShare / durationQualityShareGate).coerceIn(0.0, 1.0)
+        return durationQualityFloor + (1.0 - durationQualityFloor) * t
+    }
 
     /**
      * Rest composite [0,100], or null when there is no asleep time.
@@ -943,17 +999,13 @@ object RestScorer {
         val asleepHours = asleepSeconds / 3600.0
         val needHours = (sleepNeedHours ?: defaultSleepNeedHours).coerceAtLeast(1e-9)
 
-        // Duration vs personal need (clamped at 100 — sleeping past need does not over-credit).
-        val durationScore = min(100.0, asleepHours / needHours * 100.0)
+        val restorativeShare = (deepSeconds + remSeconds) / asleepSeconds
+        // Duration vs personal need (clamped at 100), then quality-gated when restorative is thin.
+        val durationScore = min(100.0, asleepHours / needHours * 100.0) *
+            durationQualityFactor(restorativeShare)
         // Efficiency (0..1 → 0..100), clamped.
         val efficiencyScore = (efficiency * 100.0).coerceIn(0.0, 100.0)
-        // Restorative share vs healthy target (clamped at 100), then scaled by a gentle deep-adequacy
-        // factor in [deepFloorFactor, 1]: full once deep ≥ target share, ramping to the floor as
-        // deep → 0, so a near-zero-deep night loses up to half this term (~10 pts) — honest, not
-        // tanking, no fabricated stages. Mirrors Swift Rest.composite EXACTLY.
-        val restorativeShare = (deepSeconds + remSeconds) / asleepSeconds
-        val deepAdequacy = ((deepSeconds / asleepSeconds) / deepShareTarget).coerceIn(0.0, 1.0)
-        val deepFactor = deepFloorFactor + (1.0 - deepFloorFactor) * deepAdequacy
+        val deepFactor = deepAdequacyFactor(deepSeconds, asleepSeconds)
         val restorativeScore = min(100.0, restorativeShare / restorativeTargetShare * 100.0) * deepFactor
 
         // Consistency uses a NEUTRAL 0.5 (→50) when the caller supplies none — matching the Swift
@@ -1026,14 +1078,14 @@ object RestScorer {
         fun clamp01(x: Double) = maxOf(0.0, minOf(1.0, x))
         fun r2(x: Double) = Math.round(x * 100.0) / 100.0
         val needSeconds = maxOf(needHours, 0.1) * 3600.0
-        val durationScore = clamp01(tstSeconds / needSeconds)
+        val restorativeShare = if (tstSeconds > 0) restorativeSeconds / tstSeconds else 0.0
+        val durationScore = clamp01(tstSeconds / needSeconds) * durationQualityFactor(restorativeShare)
         val efficiencyScore = clamp01(efficiency)
-        val deepFactor = if (deepSeconds != null && tstSeconds > 0 && deepShareTarget > 0) {
-            val adequacy = clamp01((deepSeconds / tstSeconds) / deepShareTarget)
-            deepFloorFactor + (1.0 - deepFloorFactor) * adequacy
+        val deepFactor = if (deepSeconds != null && tstSeconds > 0) {
+            deepAdequacyFactor(deepSeconds, tstSeconds)
         } else 1.0
         val restorativeScore = if (tstSeconds > 0)
-            clamp01((restorativeSeconds / tstSeconds) / restorativeTargetShare) * deepFactor else 0.0
+            clamp01(restorativeShare / restorativeTargetShare) * deepFactor else 0.0
         val consistencyScore = clamp01(consistency ?: NEUTRAL_CONSISTENCY)
         // Reuse the real scorer for the composite (cannot diverge). `rest()` takes deep + REM separately;
         // restorative = deep + REM, so REM = restorative - deep. null deep -> 0 deep (no-adequacy path).
@@ -1056,9 +1108,12 @@ object RestScorer {
      * streams are gone but the night's totals remain). null when there's no sleep. Single source of
      * truth so the persisted sleep_performance series and the Charge "Rest quality" term agree. Mirrors
      * Swift `AnalyticsEngine.Rest.composite(daily:)`.
+     *
+     * Asleep minutes come from [canonicalAsleepMin] (stage sum preferred) so Rest cannot disagree with
+     * the hypnogram cards on the same night.
      */
     fun restFromDaily(daily: DailyMetric, consistency: Double? = null): Double? {
-        val tstMin = daily.totalSleepMin ?: return null
+        val tstMin = canonicalAsleepMin(daily) ?: return null
         val eff = daily.efficiency ?: return null
         if (tstMin <= 0.0) return null
         return rest(
