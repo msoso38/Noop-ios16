@@ -320,11 +320,19 @@ object Baselines {
      * vs WHOOP ~72–112 ms with no overlap nights, so a straddling 30-night window reads the first
      * WHOOP nights as "suppressed" against an Oura-inflated mean — a device artifact, not physiology).
      *
-     * [sourceDays] is `(dayKey "yyyy-MM-dd", sourceId)` for every night with a value, ANY order (it is
-     * sorted here). The epoch is the start of the first day of the LATEST contiguous single-brand era:
-     * walk newest→oldest while the brand matches the newest night's brand, and return that run's first
-     * day's start. Returns 0.0 (no recalibration → [foldHistory] is byte-identical) when the whole
-     * history is ONE brand — so a single-device user, and a WHOOP user whose imported + computed +
+     * CONTRACT: [sourceDays] is exactly ONE `(dayKey "yyyy-MM-dd", sourceId)` per night — the day's
+     * WINNING source (the same per-day merge winner whose value the fold uses), NOT one row per source.
+     * The "current era" is read off the NEWEST day's brand, so an overlap day carrying two brands would,
+     * under the deterministic (day, sourceId) sort, let the lexically-later source (e.g. "oura-import" >
+     * "my-whoop") masquerade as the current brand. Passing one-per-day-winner makes that impossible; the
+     * same-day-tie handling below is only a determinism backstop, not a licence to pass raw multi-source
+     * rows. Any order is fine (it is sorted here).
+     *
+     * The epoch is the start of the first day of the LATEST contiguous single-brand era: walk
+     * newest→oldest while the brand matches the newest night's brand, and return that run's first day's
+     * start (a lone off-brand day inside the current era truncates it — fail-safe: it drops MORE history,
+     * never mixes scales). Returns 0.0 (no recalibration → [foldHistory] is byte-identical) when the
+     * whole history is ONE brand — so a single-device user, and a WHOOP user whose imported + computed +
      * strap ids all bucket to "whoop", is completely unaffected.
      *
      * The brand bucket is intentionally coarse and NOT [DeviceFamily] (that only splits WHOOP 4 vs 5,
