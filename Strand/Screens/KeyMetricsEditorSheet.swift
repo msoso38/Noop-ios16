@@ -44,6 +44,23 @@ struct KeyMetricsEditorSheet: View {
     }
 
     var body: some View {
+        // #430 parity: the sheet is now ALSO presented from the liquid Today on iPhone — the macOS-shaped
+        // fixed 420pt width would overflow a 390pt phone, and ten rows + the toggle outgrow a sheet's
+        // height, so the phone presentation scrolls and sizes to the screen instead.
+        #if os(macOS)
+        editorContent
+            .padding(24)
+            .frame(width: 420)
+            .background(StrandPalette.surfaceOverlay)
+        #else
+        ScrollView {
+            editorContent.padding(20)
+        }
+        .background(StrandPalette.surfaceOverlay)
+        #endif
+    }
+
+    private var editorContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
             // Detailed tiles: the tile-style option (compact ktile vs squarer tile + 14-day graph). Twin
@@ -70,9 +87,6 @@ struct KeyMetricsEditorSheet: View {
             }
             footer
         }
-        .padding(24)
-        .frame(width: 420)
-        .background(StrandPalette.surfaceOverlay)
     }
 
     // MARK: Rows
