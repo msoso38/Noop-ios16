@@ -600,7 +600,7 @@ enum AppChangelog {
             date: "June 2026",
             items: [
                 "**More realistic daily calories.** The all-day energy estimate was running high - it credited ordinary daytime heart rate at exercise intensity. Now only genuine exertion counts at the higher rate, so your daily burn reads closer to reality. (Thanks to everyone on the subreddit who flagged it.)",
-                "**Honest Smart-alarm wording.** The Smart-alarm card now says up front that a strap-driven wake is experimental and hasn't been verified to fire on WHOOP 4.0 or 5/MG - so keep a backup alarm. (No behaviour change; we just stopped over-promising.)",
+                "**Honest Smart-alarm wording.** The Smart-alarm card now says up front that a strap-driven wake is a firmware alarm on the strap itself, and that WHOOP 5/MG arming needs Experimental protocol probes on. Keep a backup alarm for anything you truly can't miss. (No behaviour change; we just stopped over-promising.)",
                 "**Smoother iPhone sideloading.** Fixed the AltStore/SideStore source so adding it no longer fails with \"given data not valid JSON\" (the old link pointed at a host that's gone).",
             ]),
         Release(
@@ -875,7 +875,7 @@ enum AppChangelog {
                 "**Today's Effort now updates live through the day.** The Effort ring recomputes over today's heart rate as it happens (midnight → now), instead of showing yesterday's completed-day value - or a stale 0.0 early in the morning - until the next full re-score. Thanks @rad182 (#402).",
                 "**Editing a sleep time can't scramble the night any more.** The wake picker now keeps the night on its own day, so correcting a bed/wake time re-derives that night's stages cleanly instead of splitting the corrected block and its totals across two days. Resting-HR + HRV day-bucketing was also aligned across Mac, iPhone and Android. Thanks @ujix (#406).",
                 "**Late nights and long lie-ins are captured** - the sleep-detection window was widened so a wake after noon isn't cut short. Thanks @ujix (#425).",
-                "**Smart alarm is now honestly flagged experimental.** The strap acknowledges the alarm, but a strap-driven wake hasn't been verified firing yet - on WHOOP 4.0 *or* 5/MG - so the app now asks you to keep a backup alarm while we confirm the exact firmware buzz pattern. Thanks Kaliarti (#428).",
+                "**Smart alarm wording is clearer.** The strap acknowledges the alarm, the app makes the strap-based wake path explicit, and WHOOP 5/MG arming still requires Experimental protocol probes. Keep a backup alarm for anything you truly can't miss. Thanks Kaliarti (#428).",
                 "**Android: rename your WHOOP's Bluetooth name** - brings Android up to the iPhone/Mac feature. Thanks @cbarrado (#422).",
                 "**Polish from a full code review:** your Vitality breakdown now reconciles exactly with the Body Age number it explains; the new Age cards always compute on Android (the age control is bounded like iPhone/Mac); renaming no longer spins forever if your strap doesn't answer; and live workout detection now covers the whole calendar day. Thanks @rad182, @cbarrado, @j0b-dev.",
             ]),
@@ -989,7 +989,7 @@ enum AppChangelog {
             title: "Accuracy, reliability & accessibility - a big community-fixes wave",
             date: "June 2026",
             items: [
-                "Smart alarm: it now re-arms every day, so a strap that stays connected keeps waking you past the first morning (iPhone, Mac and Android). On WHOOP 5/MG the strap's firmware alarm correctly stays behind the Experimental toggle until it's confirmed. Thanks @vulnix0x4 (#376, #379).",
+                "Smart alarm: it now re-arms every day, so a strap that stays connected keeps waking you past the first morning (iPhone, Mac and Android). On WHOOP 5/MG the strap's firmware alarm uses the Experimental-gated rev4 command. Thanks @vulnix0x4 (#376, #379).",
                 "More honest numbers: workout calories now count sparse heart-rate streams properly without ever over-counting your whole day; heart-rate zones are no longer inflated by a gap when the strap is off your wrist; daytime stress no longer false-alarms from your overnight sleep; and the recovery baseline reads your imported data cleanly. Thanks @vulnix0x4 (#360, #366, #357, #387).",
                 "Bluetooth & live HR: WHOOP 5/MG keeps decoding correctly after iOS relaunches NOOP in the background, and the Lock-Screen / Dynamic-Island live heart rate now ends when the strap disconnects instead of freezing on a stale number. Thanks @vulnix0x4 (#378, #386).",
                 "Your data is safer: a failed import now keeps your existing data instead of risking an empty database, and the AI Coach never sends an API key you saved for one provider to a different one. Thanks @vulnix0x4 (#383, #385).",
@@ -1638,7 +1638,7 @@ enum AppChangelog {
             date: "June 2026",
             items: [
                 "New (Android): start a workout straight from the Workouts screen, not only from Live - the same sport picker and GPS toggle, with a compact running banner and an End button while one's in progress.",
-                "Changed (Android): the Smart alarm now says plainly that it's experimental and that a WHOOP 5/MG only arms it when Experimental mode is on - so the wake time isn't silently saved against a strap that was never armed. Keep a backup alarm.",
+                "Changed (Android): the Smart alarm now says plainly when the wake time is armed on the strap itself, including the Experimental-gated WHOOP 5/MG firmware alarm path. Keep a backup alarm for anything you truly can't miss.",
             ]),
         Release(
             version: "1.80",
@@ -1746,7 +1746,7 @@ enum AppChangelog {
                 "New (Mac): recovery shows \"Calibrating - N of 4 nights\" while it learns your baseline, instead of a misleading empty ring.",
                 "New (Mac): \"History synced N ago\" in Today and the menu bar, so you can see at a glance when your strap last offloaded.",
                 "New (Mac): the illness early-warning can post a system notification when it first flags a day (opt-in, off by default, once per day); Android already did this.",
-                "New (Mac): a firmware wake-up alarm for WHOOP 5/MG - experimental: arming is confirmed, but a strap-driven wake hasn't been verified yet, so don't rely on it as your only alarm there. WHOOP 4 is the proven path.",
+                "New (Mac): a firmware wake-up alarm for WHOOP 5/MG using the Experimental-gated rev4 strap alarm command, alongside the WHOOP 4.0 alarm path. Keep a backup alarm for anything you truly can't miss.",
                 "Most of this release came from a generous community contribution - thank you.",
             ]),
         Release(
@@ -1775,7 +1775,7 @@ enum AppChangelog {
             title: "Android: faster sync, skin temp, sync status, alarm groundwork",
             date: "June 2026",
             items: [
-                "New (Android): a batch of WHOOP 5/MG improvements, with thanks to a community contributor. Sync is faster and more reliable - NOOP now negotiates a larger Bluetooth packet size on connect, so a full history record rides one packet instead of being chopped into fragments. The Live screen now tells you the honest truth about syncing: \"History synced N ago,\" or a clear note if a sync stalled - no more silent guessing for a cloud-free app. Skin-temperature deviation now builds offline from the strap's own nights (wear-gated, in-bed only, baseline-seeded like recovery - APPROXIMATE), which also re-arms the illness early-warning signal. And the recovery ring now shows \"Calibrating - N of 4 nights\" while it learns your baseline, instead of a blank \"No Data.\" Also groundwork for a 5/MG firmware wake alarm - it's behind the Experimental toggle and UNCONFIRMED (help us verify it actually wakes you before relying on it). Mac: version bump only.",
+                "New (Android): a batch of WHOOP 5/MG improvements, with thanks to a community contributor. Sync is faster and more reliable - NOOP now negotiates a larger Bluetooth packet size on connect, so a full history record rides one packet instead of being chopped into fragments. The Live screen now tells you the honest truth about syncing: \"History synced N ago,\" or a clear note if a sync stalled - no more silent guessing for a cloud-free app. Skin-temperature deviation now builds offline from the strap's own nights (wear-gated, in-bed only, baseline-seeded like recovery - APPROXIMATE), which also re-arms the illness early-warning signal. And the recovery ring now shows \"Calibrating - N of 4 nights\" while it learns your baseline, instead of a blank \"No Data.\" Also groundwork for a 5/MG firmware wake alarm using the Experimental-gated rev4 strap alarm command. Mac: version bump only.",
             ]),
         Release(
             version: "1.63",
@@ -1988,10 +1988,10 @@ enum AppChangelog {
             ]),
         Release(
             version: "1.34",
-            title: "WHOOP 5.0/MG buzz - trying the right command (experimental)",
+            title: "WHOOP 5.0/MG buzz - using the right command",
             date: "June 2026",
             items: [
-                "Experimental (WHOOP 5.0/MG only): the buzz now uses the 5/MG-specific haptics command (opcode 0x13) instead of the WHOOP 4.0 one - a capture from a real MG showed the strap rejecting the old command, and a working third-party app uses 0x13. The exact vibration pattern is still being finalised, so if your 5/MG doesn't buzz yet, that's expected - please share a strap log on issue #48 so we can confirm the strap now accepts the command. WHOOP 4.0 buzz is completely unchanged.",
+                "WHOOP 5.0/MG only: the buzz now uses the 5/MG-specific haptics command (opcode 0x13) instead of the WHOOP 4.0 one - a capture from a real MG showed the strap rejecting the old command, and a working third-party app uses 0x13. WHOOP 4.0 buzz is completely unchanged.",
             ]),
         Release(
             version: "1.33",
@@ -2128,7 +2128,7 @@ enum AppChangelog {
             title: "WHOOP 5/MG: the buzz works",
             date: "June 2026",
             items: [
-                "The wrist buzz now works on WHOOP 5.0/MG (experimental). Now that live heart rate confirmed a 5/MG strap acts on NOOP's commands, the haptic buzz - Test buzz, the smart alarm - is wired through the same path. Try Test buzz in Notifications; if it doesn't fire on your 5/MG strap, let us know. (Battery already worked on 5/MG via the standard profile.) WHOOP 4.0 is unchanged.",
+                "The wrist buzz now works on WHOOP 5.0/MG. Now that live heart rate confirmed a 5/MG strap acts on NOOP's commands, the haptic buzz and Test buzz use the 5/MG command path. (Battery already worked on 5/MG via the standard profile.) WHOOP 4.0 is unchanged.",
             ]),
         Release(
             version: "1.14",

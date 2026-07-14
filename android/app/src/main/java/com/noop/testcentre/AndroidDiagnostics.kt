@@ -189,10 +189,9 @@ object AndroidDiagnostics {
             val on = com.noop.ui.NoopPrefs.smartAlarmEnabled(context)
             val mins = com.noop.ui.NoopPrefs.smartAlarmMinutes(context)
             add("Enabled: ${if (on) "yes" else "no"} · set ${"%02d:%02d".format(mins / 60, mins % 60)}")
-            // #3: model + the 5/MG experimental gate (a 5/MG firmware alarm is NOT armed unless it's on).
             if (com.noop.ui.NoopPrefs.lastDevice(context)?.second == com.noop.ble.WhoopModel.WHOOP5_MG) {
                 val exp = com.noop.ble.PuffinExperiment.from(context).isEnabled
-                add("Model: WHOOP 5.0/MG · experimental: ${if (exp) "on" else "off → firmware alarm NOT armed"}")
+                add("Model: WHOOP 5.0/MG · experimental: ${if (exp) "on" else "off - firmware alarm NOT armed"}")
             } else {
                 add("Model: WHOOP 4.0")
             }

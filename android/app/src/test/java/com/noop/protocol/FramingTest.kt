@@ -43,8 +43,8 @@ class FramingTest {
         // 0, 0, 0] immediately followed by RUN_ALARM(68) [0x01], on consecutive seq bytes. Golden
         // hexes generated independently (Python: zlib CRC-32, table CRC-8) so a drift in either
         // frame, payload, or command number fails here. On a 5/MG the pattern write is remapped to
-        // the maverick 0x13 frame pinned in puffinCommandFrame_hapticsMatchesMaverickGolden, and
-        // RUN_ALARM is deliberately NOT sent (the Android 5/MG allow-list excludes it).
+        // the maverick 0x13 frame pinned in puffinCommandFrame_hapticsMatchesMaverickGolden; smart
+        // wake uses RUN_ALARM through the dedicated firmware-alarm path.
         val haptics = Framing.buildCommand(
             CommandNumber.RUN_HAPTICS_PATTERN, byteArrayOf(2, 3, 0, 0, 0), seq = 1,
         )
@@ -157,14 +157,13 @@ class FramingTest {
         // Cross-platform parity pins: the macOS port (DeviceFamilyFramingTests) asserts these SAME
         // three full-frame hexes, so both platforms are locked to identical alarm bytes. The
         // SET_ALARM_TIME inner is 23 bytes → pad4 → 24 (declLen 28); the rev-2 bodies pad 5 → 8.
-        // (RUN_ALARM rev2 [0x02, alarmId] is built inline — the Kotlin client no longer ships a
-        // helper for it, but the Mac test-buzz path still sends it, so the bytes stay pinned here.)
+        // RUN_ALARM rev2 [0x02, alarmId] is the 5/MG firmware-alarm run-now body.
         val alarm = Framing.puffinCommandFrame(cmd = 66, seq = 1, payload = AlarmPayload.build(1_700_000_000_123L))
         assertEquals("aa011c000001e381230142040100f15365be0f2f980000000000000000071e00392f2ac9", hex(alarm))
         assertEquals("aa010c000001e74123014502ff000000267ffc4f",
             hex(Framing.puffinCommandFrame(cmd = 69, seq = 1, payload = AlarmPayload.disableRev2())))
         assertEquals("aa010c000001e741230144020100000017cd19e2",
-            hex(Framing.puffinCommandFrame(cmd = 68, seq = 1, payload = byteArrayOf(0x02, 0x01))))
+            hex(Framing.puffinCommandFrame(cmd = 68, seq = 1, payload = AlarmPayload.runAlarmRev2())))
     }
 
     // MARK: - parseFrame decode vectors
@@ -388,6 +387,8 @@ class FramingTest {
     fun enums_fromRawRoundTrip() {
         assertEquals(PacketType.REALTIME_DATA, PacketType.fromRaw(40))
         assertEquals(EventNumber.BATTERY_LEVEL, EventNumber.fromRaw(3))
+        assertEquals(EventNumber.STRAP_DRIVEN_ALARM_DISABLED, EventNumber.fromRaw(59))
+        assertEquals(EventNumber.HAPTICS_TERMINATED, EventNumber.fromRaw(100))
         assertEquals(MetadataType.HISTORY_END, MetadataType.fromRaw(2))
         assertEquals(CommandNumber.RUN_HAPTICS_PATTERN, CommandNumber.fromRaw(79))
         // #769: STOP_HAPTICS is cmd 122, the documented WHOOP 4.0 clear the Breathe teardown fires.

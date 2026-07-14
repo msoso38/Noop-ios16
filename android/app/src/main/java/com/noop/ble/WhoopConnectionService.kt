@@ -18,6 +18,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.noop.NoopApplication
 import com.noop.R
+import com.noop.alarm.AlarmSource
 import com.noop.alarm.SleepWindowWatcher
 import com.noop.alarm.SmartAlarmScheduler
 import com.noop.alarm.SmartAlarmStore
@@ -119,6 +120,21 @@ class WhoopConnectionService : Service() {
 
     /** The smart-alarm HR collector, alive for the life of the service. */
     private var alarmJob: Job? = null
+
+    /**
+     * Reactive mirror of UnifiedAlarmStore.smartWakeOn. Updated by a parallel collector on
+     * unifiedAlarmStore.alarms so a user toggling smart-wake while the FGS is running takes
+     * effect on the NEXT HR tick rather than only on the next restart. The HR collector reads
+     * this field directly so it sees the latest value without re-subscribing.
+     */
+    @Volatile private var smartWakeOnCache: Boolean = false
+
+    /** Parallel collector that keeps [smartWakeOnCache] in sync with the alarm list. */
+    private var smartWakeSyncJob: Job? = null
+
+    /** Collector that mirrors BLE connect/disconnect into the coordinator's strapConnected flag.
+     *  Re-launched on every onStartCommand alongside the other collectors. */
+    private var strapConnectJob: Job? = null
 
     private val ble get() = (application as NoopApplication).ble
     private val repo get() = (application as NoopApplication).repository
@@ -335,21 +351,33 @@ class WhoopConnectionService : Service() {
                 }
         }
 
-        // Smart alarm light-sleep watcher (#207). While the alarm is enabled and we're inside the wake
-        // window, feed each live HR reading to the pure detector; on a lighter-phase reading, advance
-        // the GUARANTEED alarm earlier (the scheduler clamps to the window and can never move it later
-        // or cancel it — the hard deadline set via AlarmManager is independent of this collector). The
-        // FGS is the only long-lived BLE collector, so this is what lets the smart move happen with the
-        // app closed. If the service isn't running (user opted out of background) the hard deadline
-        // still fires — that's the point of the fallback.
+        // Keep smartWakeOnCache reactive: re-derive from the alarm list on every change so the HR
+        // gate below sees the current value without polling. distinctUntilChanged avoids spurious
+        // writes when the list mutates in a way that doesn't change the smartWakeOn result.
+        smartWakeSyncJob?.cancel()
+        smartWakeSyncJob = scope.launch {
+            val unified = (application as NoopApplication).unifiedAlarmStore
+            unified.alarms
+                .map { list -> list.any { it.enabled && it.smartWake } }
+                .distinctUntilChanged()
+                .collect { smartWakeOnCache = it }
+        }
+
+        // Smart alarm light-sleep watcher (#207). Inside the window, feed HR to the detector; on a
+        // light-phase reading, advance the guaranteed alarm earlier (the scheduler clamps to the
+        // window and can never cancel the hard deadline). The smartWakeOn gate (#207 v2) keeps
+        // phone-backup-only users out of the per-beat HR scan.
         alarmJob?.cancel()
         alarmJob = scope.launch {
             val store = SmartAlarmStore.from(this@WhoopConnectionService)
+            val app = application as NoopApplication
+            val unified = app.unifiedAlarmStore
             ble.state
                 .map { it.heartRate ?: 0 }
                 .conflate()
                 .collect { hr ->
-                    if (!store.enabled || store.scheduledDeadlineMs <= 0L) {
+                    // smartWakeOnCache is updated reactively by smartWakeSyncJob above.
+                    if (!store.enabled || !smartWakeOnCache || store.scheduledDeadlineMs <= 0L) {
                         inAlarmWindow = false
                         return@collect
                     }
@@ -359,8 +387,43 @@ class WhoopConnectionService : Service() {
                     inAlarmWindow = inWindow
                     if (!inWindow) return@collect
                     if (sleepWatcher.shouldWake(hr)) {
-                        SmartAlarmScheduler.advanceTo(this@WhoopConnectionService, store, now)
+                        val alarmId = store.scheduledAlarmId
+                        val alarm = unified.alarms.value.firstOrNull { it.id == alarmId }
+                        if (alarm?.source == AlarmSource.STRAP || alarm?.source == AlarmSource.STRAP_AND_PHONE) {
+                            app.smartAlarmCoordinator.onSmartWakeFire()
+                        } else if (!alarmId.isNullOrBlank()) {
+                            SmartAlarmScheduler.advanceOneShotTo(
+                                this@WhoopConnectionService,
+                                alarmId = alarmId,
+                                fireAtMs = now,
+                                windowStartMs = store.scheduledWindowStartMs,
+                                deadlineMs = store.scheduledDeadlineMs,
+                            )
+                        } else {
+                            SmartAlarmScheduler.advanceTo(this@WhoopConnectionService, store, now)
+                        }
                     }
+                }
+        }
+
+        // Trigger 2 of the coordinator spec: BLE connect -> strapConnected = true + recompute.
+        // Disconnect -> strapConnected = false (no recompute - we only act on connect events).
+        // distinctUntilChanged() ensures we only react to real transitions, not every HR tick.
+        strapConnectJob?.cancel()
+        strapConnectJob = scope.launch {
+            ble.state
+                .map { it.connected }
+                .distinctUntilChanged()
+                .collect { connected ->
+                    val app = application as NoopApplication
+                    val activeWhoop = runCatching {
+                        val activeId = app.deviceRegistry.activeDeviceId() ?: WhoopBleClient.DEFAULT_DEVICE_ID
+                        SourceCoordinator.isWhoop(activeId, app.deviceRegistry.all())
+                    }.getOrDefault(true)
+                    val firmwareConnected = connected && activeWhoop
+                    val coordinator = app.smartAlarmCoordinator
+                    coordinator.strapConnected = firmwareConnected
+                    if (firmwareConnected) coordinator.recompute()
                 }
         }
 

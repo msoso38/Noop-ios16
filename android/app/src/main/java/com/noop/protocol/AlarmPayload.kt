@@ -11,11 +11,8 @@ import java.time.ZoneId
  * as factual wire-format observations for interoperability; no proprietary code is reproduced.
  * (Adopted from PR #85, iHateSubscriptions.)
  *
- * EXPERIMENTAL / UNCONFIRMED: unlike the maverick buzz (hardware-confirmed on a real MG), the rev4
- * alarm layout below is self-consistent and modelled on the official app but has NOT been confirmed
- * to actually wake a strap on our side (no captured STRAP_DRIVEN_ALARM_EXECUTED event). The caller
- * therefore gates it behind the Experimental opt-in so a normal user can't rely on an alarm that
- * might silently not fire. All multi-byte fields are little-endian.
+ * The rev4 alarm layout below is the 5/MG firmware-alarm payload used by the app and follows the
+ * same contract as WHOOP 4: the strap owns the wake once armed. All multi-byte fields are little-endian.
  */
 object AlarmPayload {
     private const val OVERALL_LOOP: Byte = 7        // overallWaveformLoopControl (alarm pattern)
@@ -68,4 +65,7 @@ object AlarmPayload {
 
     /** DISABLE_ALARM (cmd 69) REVISION_2 body `[0x02, 0xFF]` (the 5/MG form). */
     fun disableRev2(): ByteArray = byteArrayOf(0x02, 0xFF.toByte())
+
+    /** RUN_ALARM (cmd 68) REVISION_2 body `[0x02, alarmId]` - fire the stored alarm now. */
+    fun runAlarmRev2(alarmId: Int = 1): ByteArray = byteArrayOf(0x02, alarmId.toByte())
 }

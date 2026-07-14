@@ -53,6 +53,10 @@
     <!-- Today screen: workouts feed header. Matches the iOS German entry for "Latest Workouts". -->
     <string name="today_latest_workouts">Neueste Workouts</string>
 
+    <!-- Smart alarm strap firmware status pills. -->
+    <string name="alarm_strap_status_armed">Aktiv</string>
+    <string name="alarm_strap_status_pending">Ausstehend</string>
+
     <!-- First-run Terms gate (clickwrap). Wording kept identical to the iOS German entries in
          Localizable.xcstrings (PR #984) so both platforms present the same text. The German gate is
          a courtesy translation; the binding text stays the English TERMS.md. -->

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.BatteryStd
 import androidx.compose.material.icons.filled.Bedtime
@@ -60,7 +61,7 @@ import kotlin.math.roundToInt
  * and the illness watch are real + persisted (ViewModel-backed).
  */
 @Composable
-fun AutomationsScreen(viewModel: AppViewModel) {
+fun AutomationsScreen(viewModel: AppViewModel, onOpenSmartAlarm: () -> Unit) {
     val live by viewModel.live.collectAsStateWithLifecycle()
 
     // Double-tap action (parity since 4.2.8) — real + persisted via the ViewModel (NoopPrefs). The
@@ -69,6 +70,7 @@ fun AutomationsScreen(viewModel: AppViewModel) {
 
     // (#766) The strap firmware wake-alarm state used to be read here; it moved to SmartAlarmScreen with
     // the rest of the alarm UI.
+    val unifiedAlarms by viewModel.unifiedAlarms.collectAsStateWithLifecycle()
     // Illness watch is real + persisted (opt-OUT — the watch has always run on Android).
     val illnessWatch by viewModel.illnessWatchEnabled.collectAsStateWithLifecycle()
     // Battery alerts are real + persisted (opt-OUT, default ON; #368, thanks @ujix).
@@ -176,6 +178,36 @@ fun AutomationsScreen(viewModel: AppViewModel) {
         // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with the
         // Wake Window + Wind-Down reminder over on the Alarms screen. It's moved to SmartAlarmScreen so
         // every wake/alarm control lives in one place. Automations is just inputs-to-actions now.
+
+        // Smart alarm: keep the Automations entry point while the unified Smart Alarm screen owns edits.
+        item {
+        SettingsSection(
+            icon = Icons.Filled.Alarm,
+            title = "Smart alarm",
+            blurb = "Wake actions now live in the Smart Alarm screen, where strap buzzes, phone backups, weekdays and smart-wake windows are edited together.",
+            active = unifiedAlarms.any { it.enabled },
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Configure wake alarms", style = NoopType.body, color = Palette.textPrimary)
+                    Text(
+                        "Opens the unified alarm editor without removing this Automations entry point.",
+                        style = NoopType.footnote,
+                        color = Palette.textTertiary,
+                    )
+                }
+                Spacer(Modifier.width(16.dp))
+                OutlinedButton(
+                    onClick = onOpenSmartAlarm,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Palette.accent),
+                ) {
+                    Icon(Icons.Filled.Alarm, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Open", style = NoopType.body)
+                }
+            }
+        }
+        }
 
         // Inactivity reminder (#419) — real + persisted via InactivityPrefs; opt-in, default OFF.
         item {
@@ -418,58 +450,6 @@ private fun napWindowLabel(nap: NapCandidate, ctx: android.content.Context): Str
 private fun napDetailLabel(nap: NapCandidate): String =
     if (nap.meanHr != null) "Quiet and settled, mean HR ~${nap.meanHr} bpm." else "Quiet and settled."
 
-// MARK: - Per-weekday wake-time overrides (PR #554 reimpl under NoopApp)
-
-/**
- * Per-weekday wake-time OVERRIDES for the smart alarm (#554). For each day the alarm fires on, shows the
- * effective wake time (the day's override, else the default) as a [TimeChip]; picking a time sets that
- * day's override, and a "Reset" affordance clears it back to the default. Days the alarm doesn't fire on
- * aren't shown (no point overriding a day it won't ring). Empty enabledDays = every day, so all seven show.
- */
-// internal (not private) so the consolidated Alarms screen (SmartAlarmScreen, #766) can reuse the
-// exact same picker. The strap wake-alarm card moved there but its weekday/override UI is unchanged.
-@Composable
-internal fun AlarmDayOverridePicker(
-    defaultMinutes: Int,
-    enabledDays: Set<Int>,
-    overrides: Map<Int, Int>,
-    onSetOverride: (Int, Int?) -> Unit,
-) {
-    val fireDays = SMART_ALARM_WEEKDAY_ORDER.filter { smartAlarmWeekdayIsSelected(it, enabledDays) }
-    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Per-day wake time", style = NoopType.caption, color = Palette.textTertiary)
-        fireDays.forEach { dow ->
-            val effective = overrides[dow] ?: defaultMinutes
-            val hasOverride = overrides.containsKey(dow)
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(smartAlarmWeekdayName(dow), style = NoopType.body, color = Palette.textPrimary)
-                Spacer(Modifier.weight(1f))
-                if (hasOverride) {
-                    Text(
-                        "Reset",
-                        style = NoopType.caption,
-                        color = Palette.accent,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable { onSetOverride(dow, null) }
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
-                TimeChip(
-                    minutes = effective,
-                    accessibilityLabel = "${smartAlarmWeekdayName(dow)} wake time",
-                    onPicked = { onSetOverride(dow, it) },
-                )
-            }
-        }
-        Text(
-            "Each day uses the time above unless you set a different one here.",
-            style = NoopType.footnote, color = Palette.textTertiary,
-        )
-    }
-}
-
 // MARK: - Section + rows (mirror the settings idiom from AutomationsView.swift)
 
 @Composable
@@ -582,80 +562,6 @@ private fun RowDivider() {
             .padding(vertical = 4.dp)
             .background(Palette.hairline),
     )
-}
-
-/**
- * Weekday selector for the smart alarm (#539). One tappable circle per weekday, Monday-first. An empty
- * [selected] set means "every day" (all circles read as on). Mirrors the macOS AutomationsView picker.
- */
-// internal (not private) so SmartAlarmScreen (the consolidated Alarms surface, #766) can reuse it.
-@Composable
-internal fun AlarmWeekdayPicker(selected: Set<Int>, onToggle: (Int) -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            for (dow in SMART_ALARM_WEEKDAY_ORDER) {
-                val on = smartAlarmWeekdayIsSelected(dow, selected)
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(CircleShape)
-                        .background(if (on) Palette.accent else Palette.surfaceInset)
-                        .clickable { onToggle(dow) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        smartAlarmWeekdayInitial(dow),
-                        style = NoopType.caption,
-                        color = if (on) Palette.surfaceBase else Palette.textSecondary,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-            }
-        }
-        Text(smartAlarmWeekdaySummary(selected), style = NoopType.caption, color = Palette.textTertiary)
-    }
-}
-
-/** Calendar.DAY_OF_WEEK numbers laid out Monday-first (Mon…Sun → 2,3,4,5,6,7,1). */
-private val SMART_ALARM_WEEKDAY_ORDER = intArrayOf(2, 3, 4, 5, 6, 7, 1)
-
-/** A day reads as "on" when the set is empty (= every day) or explicitly contains it. Pure for tests. */
-internal fun smartAlarmWeekdayIsSelected(dow: Int, days: Set<Int>): Boolean =
-    days.isEmpty() || days.contains(dow)
-
-/**
- * Toggle one weekday, normalising "every day" at both ends so the empty set always means every day.
- * Pure + side-effect-free for unit tests. Pulling a day out of the implicit "every day" expands to the
- * explicit other six; selecting the seventh collapses back to the empty "every day" set. Mirrors macOS
- * `AutomationsView.toggledWeekday`.
- */
-internal fun toggledSmartAlarmWeekday(dow: Int, days: Set<Int>): Set<Int> {
-    val next: MutableSet<Int> = when {
-        days.isEmpty() -> (1..7).toMutableSet().also { it.remove(dow) }
-        days.contains(dow) -> days.toMutableSet().also { it.remove(dow) }
-        else -> days.toMutableSet().also { it.add(dow) }
-    }
-    return if (next.size == 7) emptySet() else next
-}
-
-/** Human-readable summary of the selection. Pure for tests. Mirrors macOS `weekdaySummary`. */
-internal fun smartAlarmWeekdaySummary(days: Set<Int>): String = when {
-    days.isEmpty() || days.size == 7 -> "Every day"
-    days == setOf(2, 3, 4, 5, 6) -> "Weekdays"
-    days == setOf(1, 7) -> "Weekends"
-    else -> SMART_ALARM_WEEKDAY_ORDER.filter { days.contains(it) }
-        .joinToString(", ") { smartAlarmWeekdayName(it) }
-}
-
-private fun smartAlarmWeekdayInitial(dow: Int): String = when (dow) {
-    1 -> "S"; 2 -> "M"; 3 -> "T"; 4 -> "W"; 5 -> "T"; 6 -> "F"; 7 -> "S"; else -> "?"
-}
-
-private fun smartAlarmWeekdayName(dow: Int): String = when (dow) {
-    1 -> "Sun"; 2 -> "Mon"; 3 -> "Tue"; 4 -> "Wed"; 5 -> "Thu"; 6 -> "Fri"; 7 -> "Sat"; else -> "?"
 }
 
 /** A label/help row with a −[value]+ stepper, clamped to [range] and moved by [step]. */

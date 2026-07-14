@@ -8,9 +8,8 @@ import android.content.Intent
  * Re-arms the guaranteed wake alarm after a device reboot (#207).
  *
  * AlarmManager schedules are cleared by a restart, so without this a phone that reboots overnight
- * would silently drop the alarm — exactly the failure the safety guarantee exists to prevent. On
- * BOOT_COMPLETED (and the OEM "quick boot" variant) we re-schedule the SAME persisted hard deadline
- * via [SmartAlarmScheduler.rearmPersisted], which no-ops if the alarm is disabled or already past.
+ * would silently drop the alarm. On BOOT_COMPLETED (and the OEM "quick boot" variant) we rebuild the
+ * unified phone schedule from persisted alarm rows.
  */
 class SmartAlarmBootReceiver : BroadcastReceiver() {
 
@@ -20,14 +19,18 @@ class SmartAlarmBootReceiver : BroadcastReceiver() {
             "android.intent.action.QUICKBOOT_POWERON",
             "com.htc.intent.action.QUICKBOOT_POWERON" -> {
                 runCatching {
-                    SmartAlarmScheduler.rearmPersisted(context, SmartAlarmStore.from(context))
+                    UnifiedAlarmMigration.migrateIfNeeded(context)
+                    SmartAlarmScheduler.cancel(context, SmartAlarmStore.from(context))
+                    UnifiedPhoneScheduler.recompute(context, UnifiedAlarmStore.from(context))
                 }
                 // Re-schedule the (non-critical) wind-down nudge too — inexact repeating alarms are
                 // cleared by a reboot on many OEMs, so re-arm from the user's earliest wake time.
                 runCatching {
                     val wind = WindDownStore.from(context)
                     if (wind.enabled) {
-                        val wake = SmartAlarmStore.from(context).targetMinutes
+                        val wake = UnifiedAlarmStore.from(context).alarms.value
+                            .filter { it.enabled }
+                            .minOfOrNull { it.wakeMinutes } ?: SmartAlarmStore.from(context).wakeMinutes
                         WindDownScheduler.schedule(context, wind, wake)
                     }
                 }

@@ -787,6 +787,14 @@ class WhoopBleClient(
             event.startsWith("STRAP_DRIVEN_ALARM_EXECUTED") && !replayedOffload
 
         /**
+         * True for the alarm-specific firmware disabled event after a live strap alarm. HAPTICS_TERMINATED
+         * is deliberately not treated as dismissal: it is a generic haptic motor lifecycle event and can
+         * also follow notifications, test buzzes, or any other haptic pattern.
+         */
+        fun smartAlarmDismissedForEvent(event: String, replayedOffload: Boolean): Boolean =
+            event.startsWith("STRAP_DRIVEN_ALARM_DISABLED") && !replayedOffload
+
+        /**
          * H3 (#520): the LiveState the device-remove RELEASE publishes — the link fully dropped + every
          * stale live readout cleared, so a removed strap can't keep showing live HR / a bond / a charging
          * pill. Pure model of what [releaseStrap] applies, so a test can assert the released state without a
@@ -1181,6 +1189,9 @@ class WhoopBleClient(
      *  Fired from the NON-gesture EVENT branch: event 57 is NOT a gesture, so routing it through the
      *  gesture path (freshness-gated, gesture `when`) would swallow it entirely. */
     var onSmartAlarmFired: (() -> Unit)? = null
+
+    /** Invoked (live only) when the strap reports its firmware alarm was disabled/dismissed. */
+    var onSmartAlarmDismissed: (() -> Unit)? = null
 
     /** In-memory ring buffer of the strap log so it can be exported from the UI for bug reports.
      *  `log()` always writes here (under [logBuffer]'s monitor); logcat mirroring is opt-in via
@@ -2069,7 +2080,8 @@ class WhoopBleClient(
                 cmd != CommandNumber.SEND_HISTORICAL_DATA && cmd != CommandNumber.HISTORICAL_DATA_RESULT &&
                 cmd != CommandNumber.SET_CLOCK && cmd != CommandNumber.GET_CLOCK &&
                 cmd != CommandNumber.GET_DATA_RANGE &&
-                cmd != CommandNumber.SET_ALARM_TIME && cmd != CommandNumber.DISABLE_ALARM &&
+                cmd != CommandNumber.SET_ALARM_TIME && cmd != CommandNumber.RUN_ALARM &&
+                cmd != CommandNumber.DISABLE_ALARM &&
                 // REBOOT_STRAP (29) over puffin: opcode shared with 4.0, framing is the puffin form built
                 // below. NOT hardware-confirmed on 5/MG — rebootStrap() logs the COMMAND_RESPONSE so a strap
                 // log confirms whether the frame is accepted. User-initiated + confirmation-gated only.
@@ -2131,9 +2143,8 @@ class WhoopBleClient(
      * Both writes are ACKNOWLEDGED (withResponse = true): a busy link can silently drop a
      * without-response write, which logs the command with no vibration.
      *
-     * 5/MG: [send] remaps cmd 79 to the maverick 0x13 notify buzz (hardware-confirmed), but the
-     * Android 5/MG allow-list does NOT include RUN_ALARM, so the follow-up is WHOOP 4.0 only here.
-     * That gate is intentional and unchanged; the maverick buzz alone is the confirmed 5/MG one-shot.
+     * 5/MG: [send] remaps cmd 79 to the maverick 0x13 notify buzz (hardware-confirmed). Smart wake
+     * uses [runFirmwareAlarmNow] instead so it drives the dismissible firmware alarm path.
      */
     fun buzzStrapOnce() {
         send(CommandNumber.RUN_HAPTICS_PATTERN, byteArrayOf(2, 3, 0, 0, 0), withResponse = true)
@@ -2143,6 +2154,24 @@ class WhoopBleClient(
         }
         send(CommandNumber.RUN_ALARM, byteArrayOf(0x01), withResponse = true)
         log("Buzz: one-shot fired (patternId=2 loops=3 + RUN_ALARM, acked)")
+    }
+
+    /**
+     * Fire the currently armed firmware alarm immediately. This is for smart-wake advancement:
+     * it should show the strap's dismissible alarm UX, not the generic Live-screen buzz pattern.
+     */
+    fun runFirmwareAlarmNow() {
+        if (connectedFamily == DeviceFamily.WHOOP5) {
+            if (!PuffinExperiment.from(context).isEnabled) {
+                log("Alarm: run now needs Experimental protocol probes on 5/MG - not fired")
+                return
+            }
+            send(CommandNumber.RUN_ALARM, AlarmPayload.runAlarmRev2(), withResponse = true)
+            log("Alarm: run now (5/MG rev2 EXPERIMENTAL, acked)")
+            return
+        }
+        send(CommandNumber.RUN_ALARM, byteArrayOf(0x01), withResponse = true)
+        log("Alarm: run now (rev1, acked)")
     }
 
     /**
@@ -2547,24 +2576,25 @@ class WhoopBleClient(
      * payload is `[0x01] + u32 LE epoch + [0x00, 0x00] + [0x00, 0x00]` (9 bytes — see
      * [whoop4AlarmPayload]; the trailing two bytes are the haptic-mode field the official app sends,
      * added per @ujix's wire capture #535). Port of macOS `BLEManager.armStrapAlarm`. WHOOP 4.0; on
-     * 5/MG `send()` uses the separate REVISION_4 path.
+     * 5/MG `send()` uses the separate REVISION_4 path. Returns false when a guarded firmware path
+     * refuses to send, so the coordinator can keep the UI in Pending instead of claiming Armed.
      */
-    fun armStrapAlarm(epochSec: Long) {
+    fun armStrapAlarm(epochSec: Long): Boolean {
         if (connectedFamily == DeviceFamily.WHOOP5) {
             // 5/MG SET_ALARM_TIME is REVISION_4 (the strap arms its own RTC alarm + fires the wake
-            // haptic itself). EXPERIMENTAL/UNCONFIRMED on our side — gated behind the Experimental
-            // probes opt-in so a normal user can't rely on an alarm that might silently not fire.
-            // The strap maintains its RTC from the connect handshake / history sync, so no SET_CLOCK
-            // here. (PR #85, AlarmPayload)
+            // haptic itself). It is still behind the Experimental protocol-probes opt-in; without that
+            // setting the app must not mark the strap alarm as armed.
             if (!PuffinExperiment.from(context).isEnabled) {
-                log("Alarm: 5/MG firmware alarm needs the Experimental toggle (unconfirmed) — not armed")
-                return
+                log("Alarm: 5/MG firmware alarm needs Experimental protocol probes - not armed")
+                return false
             }
+            // The strap maintains its RTC from the connect handshake / history sync, so no SET_CLOCK here.
+            // (PR #85, AlarmPayload)
             send(CommandNumber.SET_ALARM_TIME, AlarmPayload.build(epochSec * 1000L))
             recordAlarmArm(epochSec)
             log(if (_state.value.connected) "Alarm: armed 5/MG rev4 EXPERIMENTAL (epoch $epochSec)"
-                else "Alarm: queued 5/MG rev4 EXPERIMENTAL (epoch $epochSec) — strap not connected")
-            return
+                else "Alarm: queued 5/MG rev4 EXPERIMENTAL (epoch $epochSec) - strap not connected")
+            return true
         }
         sendSetClockBothForms()
         send(CommandNumber.SET_ALARM_TIME, whoop4AlarmPayload(epochSec))
@@ -2572,7 +2602,7 @@ class WhoopBleClient(
         // #34: only claim "armed" when the strap is connected (the send actually went out); otherwise it's
         // queued and re-sent on the next connect.
         if (_state.value.connected) log("Alarm: armed (epoch $epochSec)")
-        else log("Alarm: queued (epoch $epochSec) — strap not connected; will send on next connect")
+        else log("Alarm: queued (epoch $epochSec) - strap not connected; will send on next connect")
         // Arm READBACK (#401 close-out): ask the strap what it now has armed (GET_ALARM_TIME, cmd 67) so
         // the strap log carries armed + strap-reports + fired as one decidable sequence in any future
         // "didn't buzz" report. WHOOP 4.0 ONLY (this branch): the 5/MG puffin readback semantics are
@@ -2580,6 +2610,7 @@ class WhoopBleClient(
         // ([whoop4ArmedAlarmEpoch]) and NEVER gates behaviour on it (the 4.0 response layout is
         // undocumented; unparseable replies log raw hex). Twin of macOS armStrapAlarm.
         send(CommandNumber.GET_ALARM_TIME, byteArrayOf(0x01))
+        return true
     }
 
     /** #34: persist the last alarm arm for the debug export's Alarm block (sent epoch + when + whether the
@@ -3851,6 +3882,10 @@ class WhoopBleClient(
                             // #34: persist the fire so the debug export's Alarm block shows "last fired".
                             runCatching { NoopPrefs.of(context).edit().putLong("alarm.lastFiredAt", System.currentTimeMillis()).apply() }
                             onSmartAlarmFired?.invoke()
+                        }
+                        if (smartAlarmDismissedForEvent(ev, replayedOffload)) {
+                            log("Strap disabled/dismissed its smart alarm (event 59) - cancelling phone backup")
+                            onSmartAlarmDismissed?.invoke()
                         }
                     } else {
                         // Physical inputs — LIVE ONLY. handleFrame runs for EVERY frame (live AND during a
