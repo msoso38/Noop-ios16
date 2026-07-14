@@ -78,6 +78,24 @@ final class DeviceEraEpochTests: XCTestCase {
         XCTAssertEqual(Baselines.deviceEraEpoch(days), epochOfDayUTC("2026-04-06"), accuracy: 0.0)
     }
 
+    func testSameDayMixedBrandTieBreaksDeterministically() {
+        // An overlap night carrying BOTH an Oura and a WHOOP row on the same day: the (day, sourceId)
+        // total order must resolve the tie identically to the Kotlin twin, so the epoch never diverges by
+        // platform. "my-whoop" < "oura-import" lexically, so on the last day the WHOOP row sorts last and
+        // defines the current brand; the boundary lands where the last pure-Oura day gives way.
+        let days: [(day: String, sourceId: String)] = [
+            (day: "2026-06-01", sourceId: "oura-import"),
+            (day: "2026-06-02", sourceId: "oura-import"),
+            (day: "2026-06-03", sourceId: "my-whoop"),   // overlap day: both brands present
+            (day: "2026-06-03", sourceId: "oura-import"),
+            (day: "2026-06-04", sourceId: "my-whoop"),
+        ]
+        // After the (day, sourceId) total sort the overlap day orders my-whoop < oura-import, so the LAST
+        // row on 2026-06-03 is oura-import; the current-brand (whoop) suffix walk breaks there and the era
+        // opens at 2026-06-04 — the same result the Kotlin twin computes.
+        XCTAssertEqual(Baselines.deviceEraEpoch(days), epochOfDayUTC("2026-06-04"), accuracy: 0.0)
+    }
+
     // MARK: brand bucketing
 
     func testBrandBucketCollapsesWhoopIdsAndSeparatesWearables() {

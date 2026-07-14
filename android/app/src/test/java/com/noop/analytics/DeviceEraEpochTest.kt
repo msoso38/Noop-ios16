@@ -89,6 +89,24 @@ class DeviceEraEpochTest {
         assertEquals(epochOfDayUTC("2026-04-06"), Baselines.deviceEraEpoch(days), 0.0)
     }
 
+    @Test fun sameDayMixedBrandTieBreaksDeterministically() {
+        // An overlap night carrying BOTH an Oura and a WHOOP row on the same day: the (day, sourceId)
+        // total order must resolve the tie identically to the Swift twin, so the epoch never diverges by
+        // platform. "my-whoop" < "oura-import" lexically, so on the last day the WHOOP row sorts last and
+        // defines the current brand; the boundary lands where the last pure-Oura day gives way.
+        val days = listOf(
+            "2026-06-01" to "oura-import",
+            "2026-06-02" to "oura-import",
+            "2026-06-03" to "my-whoop",   // overlap day: both brands present
+            "2026-06-03" to "oura-import",
+            "2026-06-04" to "my-whoop",
+        )
+        // After the (day, sourceId) total sort the overlap day orders my-whoop < oura-import, so the LAST
+        // row on 2026-06-03 is oura-import. The current-brand (whoop) suffix walk therefore breaks at that
+        // 06-03 oura row, and the era opens at 2026-06-04 — the same result the Swift twin computes.
+        assertEquals(epochOfDayUTC("2026-06-04"), Baselines.deviceEraEpoch(days), 0.0)
+    }
+
     // ── brand bucketing ────────────────────────────────────────────────────────────────────────
 
     @Test fun brandBucketCollapsesWhoopIdsAndSeparatesWearables() {

@@ -336,7 +336,10 @@ object Baselines {
      */
     fun deviceEraEpoch(sourceDays: List<Pair<String, String>>): Double {
         if (sourceDays.isEmpty()) return 0.0
-        val sorted = sourceDays.sortedBy { it.first }
+        // Total order by (day, sourceId) — a same-day mixed-brand row (an overlap night) must break the
+        // tie IDENTICALLY to the Swift twin, so a plain by-day sort (stable in Kotlin, unstable in Swift)
+        // can't diverge the computed epoch across platforms.
+        val sorted = sourceDays.sortedWith(compareBy({ it.first }, { it.second }))
         val currentBrand = brandBucket(sorted.last().second)
         // No brand change anywhere → no epoch (byte-identical fold for every single-brand user).
         if (sorted.none { brandBucket(it.second) != currentBrand }) return 0.0
@@ -359,9 +362,14 @@ object Baselines {
      * the Swift twin.
      */
     internal fun brandBucket(sourceId: String): String = when {
+        // `startsWith` deliberately catches BOTH the export id ("oura-import") and the cloud id
+        // ("oura-api"), so an Oura-cloud era and an Oura-export era read as the same brand.
         sourceId.startsWith("oura") -> "oura"
         sourceId.startsWith("fitbit") -> "fitbit"
         sourceId.startsWith("garmin") -> "garmin"
+        // "apple-health" / "health-connect" fall through to "whoop" ON PURPOSE: NOOP's Apple/HC daily
+        // rows ride the strap source's scale, and HC is a pass-through whose true origin is unknowable,
+        // so they must NOT open a false era boundary against WHOOP nights.
         else -> "whoop"
     }
 
