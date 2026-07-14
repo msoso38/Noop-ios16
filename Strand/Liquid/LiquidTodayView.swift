@@ -58,8 +58,11 @@ struct LiquidTodayView: View {
     // tiles graph (keyed by metric-catalog key), filled by the loader alongside everything else.
     @AppStorage(KeyMetricPrefs.layoutKey) private var keyMetricsRaw = ""
     @AppStorage("today.keyMetricsDetailed") private var keyMetricsDetailed = false
+    /// The detailed graphs' trailing window — 2 days / 1 week / 2 weeks (shared key with Android). The
+    /// loader banks a day-keyed 14-day superset; render filters down, so a window change applies instantly.
+    @AppStorage("today.keyMetricsWindowDays") private var keyMetricsWindowDays = 14
     @State private var showKeyMetricsEditor = false
-    @State private var kSparks: [String: [Double]] = [:]
+    @State private var kSparks: [String: [(String, Double)]] = [:]
     private var enabledKeyMetrics: [KeyMetric] { KeyMetricPrefs.decodeEnabled(keyMetricsRaw) }
 
     // day navigation (0 = today, 1 = yesterday, …)
@@ -758,6 +761,31 @@ struct LiquidTodayView: View {
 
     // MARK: - Key metrics grid
 
+    /// The chosen detailed-graph window's oldest day key (2 days / 1 week / 2 weeks ending on the
+    /// selected day). The loader banks a 14-day superset; render filters down so a window change in the
+    /// editor applies instantly, no reload.
+    private var sparkWindowCutoffKey: String {
+        let days = (keyMetricsWindowDays == 2 || keyMetricsWindowDays == 7) ? keyMetricsWindowDays : 14
+        let cal = Calendar.current
+        let anchor = cal.startOfDay(for: selectedLogicalDay)
+        return Repository.localDayKey(cal.date(byAdding: .day, value: -(days - 1), to: anchor) ?? anchor)
+    }
+
+    /// A metric's spark values inside the chosen window, oldest → newest.
+    private func windowedSpark(_ key: String) -> [Double] {
+        let cutoff = sparkWindowCutoffKey
+        return (kSparks[key] ?? []).filter { $0.0 >= cutoff }.map { $0.1 }
+    }
+
+    /// The Key-Metrics header's trailing label for the chosen detailed-graph window (Android twin).
+    private var trendWindowLabel: String {
+        switch keyMetricsWindowDays {
+        case 2: return String(localized: "2-day trend")
+        case 7: return String(localized: "7-day trend")
+        default: return String(localized: "14-day trend")
+        }
+    }
+
     private var keyMetricsSection: some View {
         // HRV / Rest HR (+ Blood Oxygen / Respiratory) tiles share the recovery vitals' per-field
         // today-first carry so they don't blank at the rollover while Recovery/Strain/Rest stay strictly
@@ -766,7 +794,7 @@ struct LiquidTodayView: View {
         let rhr = (displayDay?.restingHr ?? vitalsDay?.restingHr).map(Double.init)
         return VStack(spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                sectionHead("KEY METRICS", trailing: "14-day trend")
+                sectionHead("KEY METRICS", trailing: trendWindowLabel)
                 // #430 parity: the SAME editor the classic grid uses — selection + order + Detailed tiles.
                 Button { showKeyMetricsEditor = true } label: {
                     Image(systemName: "slider.horizontal.3")
@@ -835,12 +863,14 @@ struct LiquidTodayView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             LiquidTube(frac: frac ?? 0, tint: tint, height: 8, animated: false)
-            // #430 parity: DETAILED tiles grow the 14-day trend graph under the bar, tinted to the metric
-            // (the Android twin). A metric with no windowed series keeps a clear placeholder of the same
-            // height so every tile in a detailed row stays equal-height with its bars aligned.
+            // #430 parity: DETAILED tiles grow the trend graph under the bar, tinted to the metric and
+            // windowed to the editor's 2-day / 1-week / 2-week choice (the Android twin). A metric with no
+            // windowed series keeps a clear placeholder of the same height so every tile in a detailed row
+            // stays equal-height with its bars aligned.
             if keyMetricsDetailed {
-                if let key, let spark = kSparks[key], spark.count >= 2 {
-                    Sparkline(values: Array(spark.suffix(14)),
+                let spark = key.map { windowedSpark($0) } ?? []
+                if spark.count >= 2 {
+                    Sparkline(values: spark,
                               gradient: Gradient(colors: [tint.opacity(0.5), tint]))
                         .frame(height: 22)
                         .padding(.top, 6)
@@ -1015,25 +1045,23 @@ struct LiquidTodayView: View {
         let storedStress = await stressA
         let daysSnapshot = repo.days
 
-        // #430 parity: the trailing-14-day series the DETAILED Key-Metrics tiles graph — a trailing
-        // CALENDAR window ending on the selected day (not the last-N stored rows, which on an old import
-        // showed months-old data as a "14-day trend", issue #23). Keys mirror the metric catalog so a
-        // tile's graph, its tap-through detail and Android's Window all read the same signal. Rest reuses
-        // the already-loaded sleep_performance series (the same one the Rest score reads).
-        let sparkDF = DateFormatter()
-        sparkDF.locale = Locale(identifier: "en_US_POSIX")
-        sparkDF.dateFormat = "yyyy-MM-dd"
-        let sparkCutoff = sparkDF.string(from: cal.date(byAdding: .day, value: -13, to: dayStart) ?? dayStart)
+        // #430 parity: the day-keyed series the DETAILED Key-Metrics tiles graph — a trailing CALENDAR
+        // window ending on the selected day (not the last-N stored rows, which on an old import showed
+        // months-old data as a fresh trend, issue #23). The loader banks the 14-day SUPERSET; the chosen
+        // 2-day/1-week/2-week window filters at render (windowedSpark), so a picker change applies without
+        // a reload. Keys mirror the metric catalog so a tile's graph, its tap-through detail and Android's
+        // Window all read the same signal. Rest reuses the already-loaded sleep_performance series.
+        let sparkCutoff = Repository.localDayKey(cal.date(byAdding: .day, value: -13, to: dayStart) ?? dayStart)
         let sparkRows = daysSnapshot.filter { $0.day >= sparkCutoff && $0.day <= selectedDayKey }
         kSparks = [
-            "recovery": sparkRows.compactMap { $0.recovery },
-            "strain": sparkRows.compactMap { $0.strain },
-            "hrv": sparkRows.compactMap { $0.avgHrv },
-            "rhr": sparkRows.compactMap { $0.restingHr.map(Double.init) },
-            "spo2": sparkRows.compactMap { $0.spo2Pct },
-            "resp_rate": sparkRows.compactMap { $0.respRateBpm },
+            "recovery": sparkRows.compactMap { r in r.recovery.map { (r.day, $0) } },
+            "strain": sparkRows.compactMap { r in r.strain.map { (r.day, $0) } },
+            "hrv": sparkRows.compactMap { r in r.avgHrv.map { (r.day, $0) } },
+            "rhr": sparkRows.compactMap { r in r.restingHr.map { (r.day, Double($0)) } },
+            "spo2": sparkRows.compactMap { r in r.spo2Pct.map { (r.day, $0) } },
+            "resp_rate": sparkRows.compactMap { r in r.respRateBpm.map { (r.day, $0) } },
             "sleep_performance": restSeries.filter { $0.day >= sparkCutoff && $0.day <= selectedDayKey }
-                .map { $0.value },
+                .map { ($0.day, $0.value) },
         ]
         stress = await Task.detached(priority: .utility) {
             StressModel(days: daysSnapshot, stored: storedStress)?.score

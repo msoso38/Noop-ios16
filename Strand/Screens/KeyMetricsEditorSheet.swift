@@ -14,9 +14,12 @@ struct KeyMetricsEditorSheet: View {
     /// to the Today screen's @AppStorage so an edit takes effect live and survives relaunch.
     @Binding var layoutRaw: String
 
-    /// Detailed tiles (#430 parity with Android): squarer Key-Metric tiles with a 14-day trend graph under
-    /// the fill bar. Same persisted key as Android's editor switch ("today.keyMetricsDetailed"), applied live.
+    /// Detailed tiles (#430 parity with Android): squarer Key-Metric tiles with a trend graph under the
+    /// fill bar. Same persisted key as Android's editor switch ("today.keyMetricsDetailed"), applied live.
     @AppStorage("today.keyMetricsDetailed") private var detailed = false
+
+    /// The detailed graphs' trailing window — 2 days / 1 week / 2 weeks (shared key with Android).
+    @AppStorage("today.keyMetricsWindowDays") private var windowDays = 14
 
     @Environment(\.dismiss) private var dismiss
 
@@ -63,14 +66,14 @@ struct KeyMetricsEditorSheet: View {
     private var editorContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
-            // Detailed tiles: the tile-style option (compact ktile vs squarer tile + 14-day graph). Twin
+            // Detailed tiles: the tile-style option (compact ktile vs squarer tile + trend graph). Twin
             // of the Android editor's switch; applies live via the shared @AppStorage key.
             Toggle(isOn: $detailed) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Detailed tiles")
                         .font(StrandFont.body)
                         .foregroundStyle(StrandPalette.textPrimary)
-                    Text("Squarer tiles with a 14-day trend graph under the bar.")
+                    Text("Squarer tiles with a trend graph under the bar.")
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textSecondary)
                 }
@@ -78,6 +81,17 @@ struct KeyMetricsEditorSheet: View {
             .toggleStyle(.switch)
             .tint(StrandPalette.accent)
             .accessibilityLabel("Detailed tiles")
+            // The detailed graphs' trailing window, only shown while Detailed is on (Android twin).
+            if detailed {
+                Picker("Trend window", selection: $windowDays) {
+                    Text("2 days").tag(2)
+                    Text("1 week").tag(7)
+                    Text("2 weeks").tag(14)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Trend window")
+            }
             // Each tile is its own frosted row, tinted by that metric's own accent, so the editor
             // reads like a stack of the cards it controls rather than a flat settings list.
             VStack(spacing: 8) {
