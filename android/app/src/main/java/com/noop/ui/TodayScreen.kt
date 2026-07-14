@@ -4866,7 +4866,9 @@ private fun LiquidKeyTile(
                     color = data.tint,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 2.dp)
+                        // A touch more air between the fill bar and the graph (tester feedback: the two
+                        // read as one element when they nearly touch).
+                        .padding(top = 6.dp)
                         .height(Metrics.sparkHeight),
                 )
             }
