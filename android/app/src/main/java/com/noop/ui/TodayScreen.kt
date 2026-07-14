@@ -1214,6 +1214,22 @@ fun TodayScreen(
         // index follows the section's live position.
         sectionOrder.forEachIndexed { pos, section ->
             val stagger = pos + 1
+            // A gated-off section (Start session outside today / beta-off; Your Cards outside today or
+            // empty) emits NO item at all: an always-present zero-height item would double the 12dp row
+            // gap around its slot — visible on the DEFAULT layout, where Start session sits right under
+            // the hero and the beta flag is off for most users. The section keeps its place in the saved
+            // order; its item simply reappears when eligible.
+            val visibleDashboardCards = enabledDashboardCards.filter {
+                it != DashboardCard.HYDRATION || hydrationEnabled
+            }
+            val sectionVisible = when (section) {
+                TodaySection.LIVE_SESSION ->
+                    selectedDayOffset == 0 && (liveSessionsEnabled || activeLiveSession != null)
+                TodaySection.YOUR_CARDS ->
+                    selectedDayOffset == 0 && visibleDashboardCards.isNotEmpty()
+                else -> true
+            }
+            if (!sectionVisible) return@forEachIndexed
             item(key = TODAY_SECTION_KEY_PREFIX + section.raw) {
                 TodayReorderableSection(
                     section = section,
@@ -1290,24 +1306,20 @@ fun TodayScreen(
                         // LIVE SESSIONS (beta): the compact "Start session · BETA" entry. Today only
                         // (offset 0 — a session is a now-thing), gated on the Settings beta flag; a RUNNING
                         // session keeps the card visible regardless (it is the designed way back into the
-                        // dismissed session dialog, see LiveSessionRunner's lifetime note). Renders nothing
-                        // when gated off — the section keeps its slot in the saved order.
-                        TodaySection.LIVE_SESSION -> {
-                            if (selectedDayOffset == 0 && (liveSessionsEnabled || activeLiveSession != null)) {
-                                LiveSessionEntryCard(
-                                    onOpen = {
-                                        // Only BEGIN when nothing is in flight: an active runner (running, or
-                                        // ended and holding its unseen summary) is simply re-presented, never
-                                        // displaced — so a tap can't silently discard a running session or a
-                                        // summary awaiting its "Done".
-                                        if (LiveSessionRunner.active.value == null) {
-                                            startOrResumeLiveSession(viewModel, context)
-                                        }
-                                        showLiveSession = true
-                                    },
-                                )
-                            }
-                        }
+                        // dismissed session dialog, see LiveSessionRunner's lifetime note). The gate lives
+                        // at the loop level (sectionVisible) so a gated-off section emits no item.
+                        TodaySection.LIVE_SESSION -> LiveSessionEntryCard(
+                            onOpen = {
+                                // Only BEGIN when nothing is in flight: an active runner (running, or ended
+                                // and holding its unseen summary) is simply re-presented, never displaced —
+                                // so a tap can't silently discard a running session or a summary awaiting
+                                // its "Done".
+                                if (LiveSessionRunner.active.value == null) {
+                                    startOrResumeLiveSession(viewModel, context)
+                                }
+                                showLiveSession = true
+                            },
+                        )
                         // The plain-English read-out, the Charge-tinted Synthesis card. Mirrors the iOS
                         // Synthesis InsightCard; carries the last scored day's read at the rollover (#543).
                         TodaySection.SYNTHESIS -> Box(modifier = Modifier.fillMaxWidth().staggeredAppear(stagger)) {
@@ -1392,35 +1404,30 @@ fun TodayScreen(
                         // YOUR CARDS, the user-customisable dashboard (WHOOP "My Dashboard"). Hydration is
                         // hidden when its tracking is OFF (the editor still offers it, so the choice
                         // persists). Per-field carried-day fallbacks (#543) stop rollover "No Data" blanks.
-                        TodaySection.YOUR_CARDS -> {
-                            val visibleDashboardCards = enabledDashboardCards.filter {
-                                it != DashboardCard.HYDRATION || hydrationEnabled
-                            }
-                            if (selectedDayOffset == 0 && visibleDashboardCards.isNotEmpty()) {
-                                YourCardsSection(
-                                    cards = visibleDashboardCards,
-                                    day = displayMetric,
-                                    carriedDay = lastScoredRecoveryDay,
-                                    vitalsDay = lastVitalsDay,
-                                    spo2Day = lastSpo2Day,
-                                    skinTempDay = lastSkinTempDay,
-                                    stress = stressToday,
-                                    fitnessAge = fitnessAgeToday,
-                                    vitality = vitalityToday,
-                                    importedStepsForDay = importedStepsForDay,
-                                    estimatedStepsForDay = stepsEstForDay,
-                                    latestActiveKcal = latestActiveKcal,
-                                    hydrationTotalMl = hydrationTotalMl,
-                                    hydrationGoalMl = hydrationGoalMl,
-                                    onOpenHydration = onOpenHydration,
-                                    onOpenStress = onOpenStress,
-                                    onOpenMetric = onOpenMetric,
-                                    onOpenSleep = onOpenSleep,
-                                    onOpenCoupled = onOpenCoupled,
-                                    onCustomise = { showDashboardEditor = true },
-                                )
-                            }
-                        }
+                        // The today/non-empty gate lives at the loop level (sectionVisible) so a gated-off
+                        // section emits no item; visibleDashboardCards is the loop-level filtered list.
+                        TodaySection.YOUR_CARDS -> YourCardsSection(
+                            cards = visibleDashboardCards,
+                            day = displayMetric,
+                            carriedDay = lastScoredRecoveryDay,
+                            vitalsDay = lastVitalsDay,
+                            spo2Day = lastSpo2Day,
+                            skinTempDay = lastSkinTempDay,
+                            stress = stressToday,
+                            fitnessAge = fitnessAgeToday,
+                            vitality = vitalityToday,
+                            importedStepsForDay = importedStepsForDay,
+                            estimatedStepsForDay = stepsEstForDay,
+                            latestActiveKcal = latestActiveKcal,
+                            hydrationTotalMl = hydrationTotalMl,
+                            hydrationGoalMl = hydrationGoalMl,
+                            onOpenHydration = onOpenHydration,
+                            onOpenStress = onOpenStress,
+                            onOpenMetric = onOpenMetric,
+                            onOpenSleep = onOpenSleep,
+                            onOpenCoupled = onOpenCoupled,
+                            onCustomise = { showDashboardEditor = true },
+                        )
                     }
                 }
             }
