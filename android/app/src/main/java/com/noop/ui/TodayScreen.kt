@@ -392,7 +392,7 @@ fun TodayScreen(
     LaunchedEffect(sectionDragActive) {
         while (sectionDrag.key != null) {
             withFrameNanos { }
-            swapTargetForDraggedSection(todayListState, sectionDrag)?.let { (dragged, target) ->
+            swapTargetForDraggedSection(todayListState, sectionDrag, sectionOrder)?.let { (dragged, target) ->
                 sectionOrder = sectionOrder.movedTodaySection(dragged, target)
             }
             if (sectionDrag.autoScrollPxPerFrame != 0f) {
@@ -3430,12 +3430,19 @@ private fun List<TodaySection>.movedTodaySection(section: TodaySection, target: 
  * The (dragged, target) pair to swap right now, or null. The lifted card's finger-anchored middle
  * (`pickedUpAt + distance + size/2`, viewport space) must sit over another section item AND have crossed
  * that item's CENTRE in the direction of travel — the centre gate stops a tall card over a short one from
- * ping-ponging (an immediate swap-back would require crossing back over the centre). Pure read of
- * [LazyListState.layoutInfo]; the caller applies the move.
+ * ping-ponging (an immediate swap-back would require crossing back over the centre).
+ *
+ * The direction is derived from [order] (the section list, the source of truth), NOT from layout offsets:
+ * after a swap the state updates immediately but layoutInfo lags one frame, and an offset-derived direction
+ * on that stale frame re-derives the SAME swap and undoes it (a visible oscillation). Order-derived
+ * direction flips with the swap, so the stale re-check fails the centre gate and the move sticks; a
+ * genuine user reversal still passes once the finger crosses back over the centre. Pure read; the caller
+ * applies the move.
  */
 private fun swapTargetForDraggedSection(
     listState: LazyListState,
     drag: TodaySectionDragState,
+    order: List<TodaySection>,
 ): Pair<TodaySection, TodaySection>? {
     val key = drag.key ?: return null
     val info = listState.layoutInfo
@@ -3445,12 +3452,12 @@ private fun swapTargetForDraggedSection(
         item.key != key && (item.key as? String)?.startsWith(TODAY_SECTION_KEY_PREFIX) == true &&
             middle >= item.offset && middle <= item.offset + item.size
     } ?: return null
+    val dragged = TodaySection.fromRaw(key.removePrefix(TODAY_SECTION_KEY_PREFIX)) ?: return null
+    val tgt = TodaySection.fromRaw((target.key as String).removePrefix(TODAY_SECTION_KEY_PREFIX)) ?: return null
     val targetCentre = target.offset + target.size / 2f
-    val movingDown = target.offset > current.offset
+    val movingDown = order.indexOf(tgt) > order.indexOf(dragged)
     if (movingDown && middle < targetCentre) return null
     if (!movingDown && middle > targetCentre) return null
-    val dragged = TodaySection.fromRaw((key).removePrefix(TODAY_SECTION_KEY_PREFIX)) ?: return null
-    val tgt = TodaySection.fromRaw((target.key as String).removePrefix(TODAY_SECTION_KEY_PREFIX)) ?: return null
     return dragged to tgt
 }
 
