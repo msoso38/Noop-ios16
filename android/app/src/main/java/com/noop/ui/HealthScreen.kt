@@ -2426,6 +2426,16 @@ private fun buildVitalDetail(
     effortScale: EffortScale = EffortScale.HUNDRED,
 ): VitalDetailModel? {
     return when (key) {
+    // The Today Key-Metrics Recovery tile's drill-in: the Recovery (Charge) trend timeline, matching the
+    // Sleep night-detail pattern. Today's DRIVERS stay on the hero ring's breakdown sheet; this is history.
+    "recovery" -> VitalDetailModel(
+        key = key,
+        title = "Recovery",
+        unit = "%",
+        color = Palette.chargeColor,
+        readings = days.mapNotNull { row -> row.recovery?.let { VitalReading(row.day, it, row.deviceId) } },
+        format = { it.roundToInt().toString() },
+    )
     // The Today Key-Metrics Effort tile's drill-in: the day-strain trend, rendered per the user's Effort
     // display scale like the tile itself. Readings store the RAW 0-100 composite; only format() scales.
     "strain" -> VitalDetailModel(

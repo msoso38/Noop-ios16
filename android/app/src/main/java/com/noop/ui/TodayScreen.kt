@@ -1401,7 +1401,6 @@ fun TodayScreen(
                                     onToggleMetrics = { metricsExpanded = !metricsExpanded },
                                     detailed = keyMetricsDetailed,
                                     onOpenMetric = onOpenMetric,
-                                    onChargeTap = { showChargeBreakdown = true },
                                 )
                             }
                         }
@@ -4590,10 +4589,9 @@ private fun MetricGrid(
     onToggleMetrics: () -> Unit = {},
     // Detailed tiles (the #251 editor's switch): squarer tiles with a 14-day trend graph under the bar.
     detailed: Boolean = false,
-    // Tile drill-ins: every tile opens its focused trend (vital_detail/<key>, the Sleep night-detail
-    // pattern) via [onOpenMetric]; the Charge tile opens the SAME breakdown sheet the hero ring does.
+    // Tile drill-ins: every tile opens its focused trend timeline (vital_detail/<key>, the Sleep
+    // night-detail pattern) via [onOpenMetric].
     onOpenMetric: (String) -> Unit = {},
-    onChargeTap: () -> Unit = {},
 ) {
     // FIX 3 (iOS `keyMetricsSection` parity): a 3-COLUMN grid of COMPACT liquid tiles, each an iOS `ktile`
     // — a 9sp/+1.2 overline label, a value + small unit, and a thin 8dp LiquidTube fill bar — REPLACING the
@@ -4708,11 +4706,13 @@ private fun MetricGrid(
     // Resolve the enabled tiles to their descriptors (keeping the metric for the tap mapping), dropping
     // any unknown key defensively.
     val allTiles = enabledMetrics.mapNotNull { m -> descriptors[m]?.let { m to it } }
-    // Tile tap -> its focused detail: Charge opens the hero's breakdown sheet; Effort/Rest open their new
-    // trend details; the vitals + Steps/Calories open the same vital_detail trends the Health cards use.
+    // Tile tap -> its focused trend TIMELINE (the Sleep night-detail pattern), uniformly for every tile
+    // with a windowed series: Recovery/Effort/Rest open their new trend details; the vitals +
+    // Steps/Calories open the same vital_detail trends the Health cards use. Today's Charge DRIVERS stay
+    // on the hero ring's breakdown sheet (its existing home) — the tile is the history view.
     // Weight has no windowed detail yet -> not tappable (null keeps the tile inert rather than lying).
     fun tapFor(metric: KeyMetric): (() -> Unit)? = when (metric) {
-        KeyMetric.CHARGE -> onChargeTap
+        KeyMetric.CHARGE -> ({ onOpenMetric("recovery") })
         KeyMetric.EFFORT -> ({ onOpenMetric("strain") })
         KeyMetric.REST -> ({ onOpenMetric("rest") })
         KeyMetric.HRV -> ({ onOpenMetric("hrv") })
