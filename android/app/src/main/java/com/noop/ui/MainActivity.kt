@@ -50,6 +50,8 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         // Load the saved "Card transparency" so every frosted card renders at the chosen opacity from launch.
         CardAppearance.init(this)
+        // PROTOTYPE (#weather): load the saved weather mood so the day-cycle sky shows it from launch.
+        LiquidWeatherState.init(this)
 
         // Demo build only: preload a full synthetic dataset so every screen is populated
         // out of the box (no strap, no import). No-op once seeded; never runs on the full app.
@@ -475,6 +477,15 @@ object NoopPrefs {
 
     fun setShowDayCycleBackground(context: Context, enabled: Boolean) {
         of(context).edit().putBoolean(KEY_SHOW_DAY_CYCLE_BACKGROUND, enabled).apply()
+    }
+
+    /** PROTOTYPE (#weather): the day-cycle sky's weather mood (default clear). Stored as the shared raw
+     *  string so it matches the iOS value. */
+    fun weather(context: Context): LiquidWeather =
+        LiquidWeather.fromRaw(of(context).getString(LiquidWeather.STORAGE_KEY, null))
+
+    fun setWeather(context: Context, mode: LiquidWeather) {
+        of(context).edit().putString(LiquidWeather.STORAGE_KEY, mode.raw).apply()
     }
 
     /** Card-surface opacity as a PERCENT (0 = fully see-through, 100 = solid; default 100). Drives the

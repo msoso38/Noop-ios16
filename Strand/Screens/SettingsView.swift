@@ -92,6 +92,8 @@ struct SettingsView: View {
     @AppStorage(SkyBehindCardsPrefs.enabledKey) private var skyBehindCards = false
     // Card-surface opacity percent (100 = solid). Reactive — moving the slider live-updates every card.
     @AppStorage(CardAppearancePrefs.opacityKey) private var cardOpacityPercent = CardAppearancePrefs.defaultPercent
+    // PROTOTYPE (#weather): optional weather mood over the day-cycle sky. Default clear = unchanged look.
+    @AppStorage(LiquidWeather.storageKey) private var weatherRaw = LiquidWeather.clear.rawValue
     // Hydration tracker (opt-in, MVP). Default OFF — when off the hydration dashboard card + detail are
     // hidden. Mirrors the Android pref so the toggle reads the same on both platforms.
     @AppStorage(HydrationStore.enabledKey) private var hydrationEnabled = false
@@ -735,6 +737,23 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                // PROTOTYPE (#weather): an optional weather MOOD over the day-cycle sky — aesthetic only
+                // (no real conditions/location/network), tinted to the time of day. Menu style so long
+                // labels never overflow (#43). Needs the day-cycle background on.
+                rowDivider
+                FormRow(label: "Weather (experimental)") {
+                    Picker("Weather", selection: $weatherRaw) {
+                        ForEach(LiquidWeather.allCases) { w in
+                            Text(w.label).tag(w.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .tint(StrandPalette.accent)
+                    .accessibilityLabel("Weather")
+                }
+                .disabled(!showDayCycleBackground)
 
                 // MARK: Sky behind cards — extend the day-cycle sky behind the WHOLE Today scroll so the
                 // Card-transparency slider reveals it under every card (not just the hero). Opt-in, off by

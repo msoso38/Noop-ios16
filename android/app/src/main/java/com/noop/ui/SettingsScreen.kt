@@ -1032,6 +1032,27 @@ fun SettingsScreen(
                 )
             }
 
+            // PROTOTYPE (#weather): an optional weather MOOD over the day-cycle sky — aesthetic only (no
+            // real conditions/location/network), tinted to the time of day. Own row (label above, pills
+            // below full-width) so the six options don't crowd a side-by-side label. Needs day-cycle on.
+            Column(verticalArrangement = Arrangement.spacedBy(Metrics.space8)) {
+                Text(
+                    "Weather (experimental)",
+                    style = NoopType.subhead,
+                    color = if (showDayCycleBackground) Palette.textPrimary else Palette.textTertiary,
+                )
+                SegmentedPillControl(
+                    items = LiquidWeather.entries.toList(),
+                    selection = LiquidWeatherState.mode,
+                    label = { it.label },
+                    enabled = { showDayCycleBackground },
+                    onSelect = { mode ->
+                        LiquidWeatherState.mode = mode          // live-updates the sky app-wide
+                        NoopPrefs.setWeather(context, mode)
+                    },
+                )
+            }
+
             // Sky behind cards (opt-in): extend the day-cycle sky behind the WHOLE Today scroll so the Card
             // transparency slider reveals it under every card, not just the hero. Off = the sky stays a top
             // band and lower cards fade toward the flat canvas. Needs the day-cycle background to be on.

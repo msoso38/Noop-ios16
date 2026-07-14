@@ -4,9 +4,13 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import android.content.Context
+import android.graphics.BitmapFactory
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -15,6 +19,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -60,6 +71,49 @@ private fun hx(hex: Long): Color = Color(
 
 /** The ten keyframes mirror the real app's day-cycle scenes (SceneHeroBackground), as pure
  *  gradients rather than painted art. Hex values are byte-identical to the iOS source. */
+// MARK: - PROTOTYPE weather (#weather) — mirrors the iOS LiquidWeather
+//
+// An optional weather MOOD layered over the time-of-day gradient. Aesthetic only — no real conditions,
+// location or network (NOOP stays offline). Procedural + tinted by the CURRENT sky, so a cloud at dusk
+// reads mauve and at noon white. CLEAR (default) = the unchanged look. `raw` matches the iOS rawValues
+// (clear/hazy/overcast/rain/fog/snow) so the persisted value is identical across platforms.
+
+enum class LiquidWeather(val label: String) {
+    CLEAR("Clear"), HAZY("Hazy"), OVERCAST("Cloud"), RAIN("Rain"), FOG("Fog"), SNOW("Snow");
+
+    val raw: String get() = name.lowercase()
+
+    companion object {
+        const val STORAGE_KEY = "liquid.weather"
+        fun fromRaw(s: String?): LiquidWeather = entries.firstOrNull { it.raw == s } ?: CLEAR
+    }
+}
+
+/** Reactive holder so the Settings picker live-updates the sky (mirrors [CardAppearance]). Initialised
+ *  from NoopPrefs at app start via [init]; the Settings picker writes both this and the pref. */
+object LiquidWeatherState {
+    var mode by mutableStateOf(LiquidWeather.CLEAR)
+    fun init(context: Context) { mode = NoopPrefs.weather(context) }
+}
+
+/** PROTOTYPE (#weather): resolve the optional `weather_<mood>` drawable to an [ImageBitmap], or null when
+ *  the asset isn't in res/drawable (→ procedural fallback). getIdentifier returns 0 for a missing name, so
+ *  dropping the art in later upgrades the look with no code change. Decoded once per mood via remember. */
+@Composable
+private fun rememberWeatherImage(weather: LiquidWeather): ImageBitmap? {
+    if (weather == LiquidWeather.CLEAR) return null
+    val context = LocalContext.current
+    return remember(weather) {
+        @Suppress("DiscouragedApi")
+        val resId = context.resources.getIdentifier("weather_${weather.raw}", "drawable", context.packageName)
+        if (resId == 0) return@remember null
+        // #weather PERF: decode at half res (inSampleSize=2, ~750px). The sky is a soft, stretched wash, so
+        // full res buys nothing visible but quadruples the texture memory the scrolling cards composite over.
+        val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
+        BitmapFactory.decodeResource(context.resources, resId, opts)?.asImageBitmap()
+    }
+}
+
 val liquidSkyKeys: List<LiquidSkyStop> = listOf(
     LiquidSkyStop(h = 0.0, top = hx(0x05060f), mid = hx(0x0b0e22), hor = hx(0x1a1440), stars = 1.0, warm = 0.0),
     LiquidSkyStop(h = 5.0, top = hx(0x0a0d24), mid = hx(0x1c1a4a), hor = hx(0x4a2a6a), stars = 0.6, warm = 0.0),
@@ -148,6 +202,11 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.renderLiquidSky(
     // How fully the sky dissolves into the canvas at the bottom (1 = the default seamless fade to the flat
     // page; <1 holds the atmosphere so the sky still reads under a full-height "sky behind cards" backdrop).
     settleStrength: Float = 1f,
+    // PROTOTYPE (#weather): the weather mood layered over the gradient. CLEAR = no-op.
+    weather: LiquidWeather = LiquidWeather.CLEAR,
+    // PROTOTYPE (#weather): optional `weather_<mood>` art. When present it's drawn (blended) instead of the
+    // procedural draw; null → procedural fallback. Resolved at the composable level (rememberWeatherImage).
+    weatherImage: ImageBitmap? = null,
 ) {
     val s = liquidSkyAt(hour)
     val w = size.width
@@ -203,6 +262,28 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.renderLiquidSky(
         )
     }
 
+    // PROTOTYPE (#weather): weather sits between the warm wash and the stars. Image ART when present
+    // (aspect-filled to width, top-aligned, blended so the sky reads through), else the procedural draw.
+    // `now` is 0 on the static sky, so procedural rain/snow are frozen there but still visible.
+    if (weather != LiquidWeather.CLEAR && weatherImage != null) {
+        // Fill the WHOLE sky canvas (stretch), matching the iOS draw — an aspect-fit-to-width draw left a
+        // short 3:2 image with a hard bottom edge partway down the tall sky band, which read as "not
+        // stretched" and (split by a floating card) as "doubled". The settle fade below dissolves the lower
+        // part into the page. Normal (SrcOver): an OPAQUE scene covers the gradient; a TRANSPARENT overlay
+        // shows the gradient through its alpha. (#weather)
+        drawImage(
+            image = weatherImage,
+            srcOffset = IntOffset.Zero,
+            srcSize = IntSize(weatherImage.width, weatherImage.height),
+            dstOffset = IntOffset.Zero,
+            dstSize = IntSize(w.toInt().coerceAtLeast(1), h.toInt().coerceAtLeast(1)),
+            alpha = 0.9f,                  // TUNE per the art
+            blendMode = BlendMode.SrcOver,
+        )
+    } else {
+        drawLiquidWeather(weather = weather, s = s, now = now)
+    }
+
     // Stars. Animated sky twinkles (phase-driven pow(sin,6) flare); static sky draws the base alpha only.
     if (s.stars > 0.01) {
         for (star in liquidStars) {
@@ -240,6 +321,101 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.renderLiquidSky(
     )
 }
 
+// MARK: - PROTOTYPE weather layers (#weather) — mirrors the iOS drawLiquidWeather
+//
+// Procedural weather over the gradient, tinted by the current sky [s] so it reads at any hour. Cheap
+// DrawScope fills only. Values are a FIRST PASS to tune on-device. No-op when CLEAR.
+
+private fun DrawScope.drawLiquidWeather(weather: LiquidWeather, s: LiquidSkyResolved, now: Double) {
+    if (weather == LiquidWeather.CLEAR) return
+    val w = size.width
+    val h = size.height
+    when (weather) {
+        LiquidWeather.CLEAR -> Unit
+        LiquidWeather.HAZY -> {
+            // A soft band of horizon-tinted haze low in the sky.
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(s.hor.copy(alpha = 0f), s.hor.copy(alpha = 0.16f), s.hor.copy(alpha = 0.04f)),
+                    startY = h * 0.5f, endY = h,
+                ),
+                topLeft = Offset(0f, h * 0.5f), size = Size(w, h * 0.5f),
+            )
+        }
+        LiquidWeather.OVERCAST -> drawLiquidClouds(tint = s.mid, now = now, coverage = 0.7f)
+        LiquidWeather.RAIN -> {
+            drawLiquidClouds(tint = s.mid, now = now, coverage = 0.85f)
+            drawLiquidRain(now = now)
+        }
+        LiquidWeather.FOG -> {
+            val fog = lerp(s.mid, Color.White, 0.45f)
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(fog.copy(alpha = 0f), fog.copy(alpha = 0.34f)),
+                    startY = h * 0.35f, endY = h,
+                ),
+                topLeft = Offset(0f, h * 0.35f), size = Size(w, h * 0.65f),
+            )
+        }
+        LiquidWeather.SNOW -> drawLiquidSnow(now = now)
+    }
+}
+
+/** A few soft radial "clouds" drifting slowly across, tinted toward the mid-sky so they read at any hour. */
+private fun DrawScope.drawLiquidClouds(tint: Color, now: Double, coverage: Float) {
+    val cloud = lerp(tint, Color.White, 0.5f)
+    val w = size.width
+    val h = size.height
+    // (x0, y, radiusFrac, driftSpeed) — x0/y in [0,1]; drifts right and wraps.
+    val blobs = listOf(
+        doubleArrayOf(0.15, 0.24, 0.30, 0.006), doubleArrayOf(0.55, 0.18, 0.36, 0.004),
+        doubleArrayOf(0.85, 0.30, 0.26, 0.008), doubleArrayOf(0.38, 0.36, 0.32, 0.005),
+    )
+    for (b in blobs) {
+        val x = (((b[0] + now * b[3]) % 1.25) - 0.1).toFloat() * w
+        val y = b[1].toFloat() * h
+        val rx = b[2].toFloat() * w
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(cloud.copy(alpha = coverage * 0.5f), cloud.copy(alpha = 0f)),
+                center = Offset(x, y), radius = rx,
+            ),
+            radius = rx, center = Offset(x, y),
+        )
+    }
+}
+
+/** Short diagonal streaks falling on a loop. */
+private fun DrawScope.drawLiquidRain(now: Double) {
+    val w = size.width
+    val h = size.height
+    for (i in 0 until 70) {
+        val sx = (i * 0.61803) % 1.0
+        val x = sx.toFloat() * w
+        val phase = (now * 1.1 + i * 0.137) % 1.0
+        val y = phase.toFloat() * h
+        drawLine(
+            color = Color.White.copy(alpha = 0.10f),
+            start = Offset(x, y), end = Offset(x - 4f, y + 15f), strokeWidth = 1f,
+        )
+    }
+}
+
+/** Drifting specks that sway as they fall — the starfield feel, brighter and moving. */
+private fun DrawScope.drawLiquidSnow(now: Double) {
+    val w = size.width
+    val h = size.height
+    for (i in 0 until 70) {
+        val sx = (i * 0.61803) % 1.0
+        val sway = (sin(now * 0.5 + i) * 8).toFloat()
+        val phase = (now * 0.05 + i * 0.11) % 1.0
+        val x = sx.toFloat() * w + sway
+        val y = phase.toFloat() * h
+        val sz = (1.4 + sx * 1.6).toFloat()
+        drawCircle(color = Color.White.copy(alpha = 0.55f), radius = sz, center = Offset(x, y))
+    }
+}
+
 /** The canvas colour the sky dissolves into — the active theme's surfaceBase (dark #121518 / light
  *  #EAE3D4), read live so a theme flip re-resolves it. Replaces the iOS hard-coded settle literals. */
 private val liquidSettleColor: Color
@@ -260,10 +436,15 @@ fun LiquidSky(hour: Double? = null, modifier: Modifier = Modifier) {
     val reduced = rememberReduceMotion()
     val settle = liquidSettleColor
     val h = hour ?: liquidLiveHour()
+    val weather = LiquidWeatherState.mode   // #weather: reactive so the picker live-updates
+    val weatherImage = rememberWeatherImage(weather)
 
-    if (reduced) {
-        // No frame loop under Reduce Motion — pose the static picture once.
-        Canvas(modifier = modifier) { renderLiquidSky(hour = h, now = 0.0, settle = settle, animate = false) }
+    // #weather PERF: pose the sky ONCE (no per-frame loop) under Reduce Motion OR when a weather IMAGE is
+    // shown — re-blitting a full-screen bitmap every frame behind a scrolling list stutters, and the image
+    // is static (it hides the animated breath/stars underneath anyway). Cached in the scaffold's
+    // graphicsLayer, so scroll composites a texture, not a redraw.
+    if (reduced || weatherImage != null) {
+        Canvas(modifier = modifier) { renderLiquidSky(hour = h, now = 0.0, settle = settle, animate = false, weather = weather, weatherImage = weatherImage) }
         return
     }
 
@@ -281,7 +462,7 @@ fun LiquidSky(hour: Double? = null, modifier: Modifier = Modifier) {
     }
 
     Canvas(modifier = modifier) {
-        renderLiquidSky(hour = h, now = seconds, settle = settle, animate = true)
+        renderLiquidSky(hour = h, now = seconds, settle = settle, animate = true, weather = weather, weatherImage = weatherImage)
     }
 }
 
@@ -299,8 +480,10 @@ fun LiquidSky(hour: Double? = null, modifier: Modifier = Modifier) {
 fun LiquidSkyStatic(hour: Double? = null, modifier: Modifier = Modifier, settleStrength: Float = 1f) {
     val settle = liquidSettleColor
     val h = hour ?: liquidLiveHour()
+    val weather = LiquidWeatherState.mode   // #weather
+    val weatherImage = rememberWeatherImage(weather)
     Canvas(modifier = modifier) {
-        renderLiquidSky(hour = h, now = 0.0, settle = settle, animate = false, settleStrength = settleStrength)
+        renderLiquidSky(hour = h, now = 0.0, settle = settle, animate = false, settleStrength = settleStrength, weather = weather, weatherImage = weatherImage)
     }
 }
 
