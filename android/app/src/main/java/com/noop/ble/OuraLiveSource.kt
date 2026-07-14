@@ -38,6 +38,8 @@ import com.noop.oura.OuraHypnogramBurst
 import com.noop.oura.OuraOuterFrame
 import com.noop.oura.OuraReassembler
 import com.noop.oura.OuraRingGen
+import com.noop.oura.OuraSleepSession
+import com.noop.oura.OuraSleepSessionMapping
 import com.noop.oura.OuraTransition
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -95,6 +97,11 @@ class OuraLiveSource(
     private val authKey: () -> IntArray?,
     /** Persist a batch under [deviceId] - wired to `repository.insert`. Mirrors the other sources. */
     private val persist: (StreamBatch, String) -> Unit = { _, _ -> },
+    /** Upsert the ring-PROVIDED reconstructed hypnogram as a night under [deviceId] (the imported/measured
+     *  side, NOT the "-noop" computed sibling) so `mergeSleepRichness`'s imported-over-computed rule makes
+     *  Oura's SleepNet staging win over NOOP's sparse-motion computed night. Wired to
+     *  `repository.upsertSleepSessions`; default no-op so the discovery-only scanner + tests stay inert. */
+    private val persistSleepSession: (OuraSleepSession, String) -> Unit = { _, _ -> },
     /** Diagnostic sink for the connect/auth/stream lifecycle - the SAME exportable strap log (#421).
      *  Every line is prefixed "Oura: ". Statuses / UUIDs / counts only, NEVER a device address. Default
      *  no-op keeps existing call sites compiling and tests silent. */
@@ -638,6 +645,15 @@ class OuraLiveSource(
         for (code in laid) mins[code.phase.stage.raw] += 0.5   // 30 s/code = 0.5 min
         log("Oura: hypnogram reconstructed [${laid.first().ts} -> $end, anchored] codes=${burst.totalCodes}" +
             " deep/light/rem/awake=${mins[0].toInt()}/${mins[1].toInt()}/${mins[2].toInt()}/${mins[3].toInt()} min")
+        // Bank the SAME anchored codes as a ring-PROVIDED night (a SleepSession with the [{start,end,stage}]
+        // breakdown) under the ring's own deviceId, so mergeSleepRichness surfaces Oura's SleepNet staging
+        // over NOOP's computed night (#325 persist). Uses the anchored+0x49-refined `end` via `laid`. The
+        // confirmation line makes the persist self-evident in the strap log for on-device validation.
+        OuraSleepSessionMapping.session(laid.map { it.ts to it.phase.stage })?.let {
+            persistSleepSession(it, deviceId)
+            val effStr = it.efficiency?.let { e -> "${(e * 100).toInt()}%" } ?: "n/a"
+            log("Oura: sleep session persisted [${laid.first().ts} -> $end] eff=$effStr -> $deviceId (ring-provided night; wins merge over computed)")
+        }
     }
 
     /** Re-try bursts parked while unanchored (called right after an anchor lands). */

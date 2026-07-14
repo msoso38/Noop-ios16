@@ -117,6 +117,12 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private let live: LiveState
     private let deviceId: String
     private let persist: (Streams) -> Void
+    /// Upsert the ring-PROVIDED reconstructed hypnogram as a `CachedSleepSession` (banked under the ring's
+    /// own `deviceId`, the imported/measured side, so `SleepMerge`'s imported-over-computed rule makes
+    /// Oura's own SleepNet staging win over NOOP's sparse-motion computed night — "richer record wins").
+    /// Wired at the composition root to `store.upsertSleepSessions([_], deviceId:)`; default no-op so the
+    /// discovery-only scanner and tests take the byte-identical inert path.
+    private let persistSleepSession: (CachedSleepSession) -> Void
     private let log: (String) -> Void
     private let onBattery: (Int) -> Void
     /// The ring generation (carried on `PairedDevice.model`, recovered via `OuraRingGen.from(model:)`).
@@ -544,6 +550,16 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         let endStr = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(end)))
         log(String(format: "Oura: hypnogram reconstructed [%@ → %@, anchored] codes=%d deep/light/rem/awake=%.0f/%.0f/%.0f/%.0f min",
                    startStr, endStr, burst.totalCodes, mins[0], mins[1], mins[2], mins[3]))
+        // Bank the SAME anchored codes as a ring-PROVIDED night: a CachedSleepSession with the
+        // `[{start,end,stage}]` stage breakdown, upserted under the ring's own deviceId so SleepMerge's
+        // imported-over-computed rule surfaces Oura's SleepNet staging as the night's stages (#325 persist).
+        // Reuses the anchored+0x49-refined `end` via `laid`, so the session end IS the true sleep end. The
+        // confirmation line makes the persist self-evident in the strap log for on-device validation.
+        if let session = OuraSleepSessionMapping.session(fromCodes: laid.map { (ts: $0.ts, stage: $0.phase.stage) }) {
+            persistSleepSession(session)
+            let effStr = session.efficiency.map { String(format: "%.0f%%", $0 * 100) } ?? "n/a"
+            log("Oura: sleep session persisted [\(startStr) → \(endStr)] eff=\(effStr) → \(deviceId) (ring-provided night; wins merge over computed)")
+        }
     }
 
     /// Re-try bursts parked while unanchored (called right after the 0x42 anchor lands, alongside
@@ -650,6 +666,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 ringGen: OuraRingGen,
                 authKey: @escaping () -> Data?,
                 persist: @escaping (Streams) -> Void = { _ in },
+                persistSleepSession: @escaping (CachedSleepSession) -> Void = { _ in },
                 log: @escaping (String) -> Void = { _ in },
                 onBattery: @escaping (Int) -> Void = { _ in },
                 feedsLive: Bool = true,
@@ -659,6 +676,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         self.ringGen = ringGen
         self.authKey = authKey
         self.persist = persist
+        self.persistSleepSession = persistSleepSession
         self.log = log
         self.onBattery = onBattery
         self.feedsLive = feedsLive
