@@ -1,0 +1,115 @@
+{
+  "generated_at": "2026-07-14T03:55:23Z",
+  "host_hint": "Prefer Tailscale SSH Host desk (CPU affine; AMD GPU idle is fine)",
+  "pairing": "pairing-logs",
+  "n_label_rows": 3,
+  "stress_tip": {
+    "n": 1,
+    "mae_before": 0.40000000000000013,
+    "mae_after_affine": 0.40000000000000013,
+    "affine_a": 1.0,
+    "affine_b": 0.0,
+    "fitted": false,
+    "accuracy_valid": false,
+    "same_band_frac": 1.0,
+    "scale": "WHOOP/NOOP stress tip 0-3",
+    "pairs": [
+      {
+        "day": "2026-07-13",
+        "clock": "22:14",
+        "whoop_tip": 1.4,
+        "noop_tip": 1.8,
+        "delta": 0.4,
+        "whoop_band": "MEDIUM",
+        "noop_band": "MEDIUM",
+        "source": "screenshot",
+        "serial": "export:20260713-Noop_mg",
+        "whoop_file": "Screenshot_20260713_221457_WHOOP.jpg",
+        "noop_file": "Screenshot_20260713_221604_NOOP.jpg"
+      }
+    ],
+    "honest_rule": "accuracy_valid only with \u22654 tip@clock pairs and \u226575% same band. Do not retune DaytimeStress constants from a single \u03b4."
+  },
+  "sleep_rest": {
+    "n": 1,
+    "mae_before": 9.0,
+    "pairs": [
+      {
+        "day": "2026-07-13",
+        "whoop_sleep_pct": 64.0,
+        "noop_rest": 73.0,
+        "delta": 9.0,
+        "whoop_sws_pct": 33,
+        "whoop_rem_pct": 16,
+        "noop_deep_pct": 2,
+        "noop_rem_pct": 0,
+        "source": "screenshot",
+        "serial": "export:20260713-Noop_mg"
+      }
+    ],
+    "note": "Rest (NOOP) vs Sleep% (WHOOP) are related but not identical scales. Use for trend checks; RestScorer tickets live in SLEEP_FACTORS / Fable backlog.",
+    "accuracy_valid": false,
+    "fitted": false
+  },
+  "weights_file": "pairing-logs/ml-stress-tip-weights.json",
+  "subprocess": {
+    "sleep_stage_eval": {
+      "ok": true,
+      "returncode": 0,
+      "cmd": [
+        "C:\\Python314\\python.exe",
+        "Tools\\sleep_stage_eval.py",
+        "--synthetic"
+      ],
+      "stdout_tail": "{\n  \"mode\": \"synthetic\",\n  \"accuracy_valid\": false,\n  \"goal_G4\": \"NOT_DONE\",\n  \"note\": \"No public dataset on disk \\u2014 metrics plumbing only. Do NOT cite these \\u03ba/acc as product accuracy. Download PhysioNet sleep-accel \\u2192 re-run for real LOSO \\u03ba (G4).\",\n  \"results\": [\n    {\n      \"name\": \"heuristic_hr_motion\",\n      \"n_epochs\": 300,\n      \"accuracy\": 1.0,\n      \"cohen_kappa\": 1.0,\n      \"f1\": {\n        \"wake\": 1.0,\n        \"light\": 1.0,\n        \"deep\": 1.0,\n        \"rem\": 1.0\n      },\n      \"label_hist\": {\n        \"wake\": 30,\n        \"light\": 180,\n        \"deep\": 40,\n        \"rem\": 50\n      },\n      \"pred_hist\": {\n        \"wake\": 30,\n        \"light\": 180,\n        \"deep\": 40,\n        \"rem\": 50\n      }\n    },\n    {\n      \"name\": \"mini_ml_lane_synthetic\",\n      \"n_epochs\": 300,\n      \"accuracy\": 0.4,\n      \"cohen_kappa\": 0.3059,\n      \"f1\": {\n        \"wake\": 1.0,\n        \"light\": 0.0,\n        \"deep\": 0.3077,\n        \"rem\": 1.0\n      },\n      \"label_hist\": {\n        \"wake\": 30,\n        \"light\": 180,\n        \"deep\": 40,\n        \"rem\": 50\n      },\n      \"pred_hist\": {\n        \"wake\": 30,\n        \"deep\": 220,\n        \"rem\": 50\n      }\n    },\n    {\n      \"name\": \"majority_baseline\",\n      \"n_epochs\": 300,\n      \"accuracy\": 0.6,\n      \"cohen_kappa\": 0.0,\n      \"f1\": {\n        \"wake\": 0.0,\n        \"light\": 0.75,\n        \"deep\": 0.0,\n        \"rem\": 0.0\n      },\n      \"label_hist\": {\n        \"wake\": 30,\n        \"light\": 180,\n        \"deep\": 40,\n        \"rem\": 50\n      },\n      \"pred_hist\": {\n        \"light\": 300\n      }\n    }\n  ]\n}\n\nWrote pairing-logs\\sleep-stage-eval.json\n",
+      "stderr_tail": ""
+    },
+    "ml_engine_train": {
+      "ok": true,
+      "returncode": 0,
+      "cmd": [
+        "C:\\Python314\\python.exe",
+        "Tools\\ml_engine_train.py",
+        "--labels",
+        "pairing-logs\\whoop-app-labels.jsonl",
+        "--as-of",
+        "2026-07-14"
+      ],
+      "stdout_tail": "ture dates are excluded until their day has completed.\",\n  \"feature_store\": \"C:\\\\Users\\\\Gilbert\\\\Documents\\\\Ai app store\\\\_wt_ml_repro\\\\pairing-logs\\\\ml-daily-features.json\",\n  \"sport_session_feature_store\": \"C:\\\\Users\\\\Gilbert\\\\Documents\\\\Ai app store\\\\_wt_ml_repro\\\\pairing-logs\\\\ml-sport-session-features.json\",\n  \"n_sport_labels\": 0,\n  \"n_sport_sessions_eligible\": 0,\n  \"goals\": {\n    \"G1_auto_labels\": \"PARTIAL\",\n    \"G2_compare_app\": \"PARTIAL\",\n    \"G4_sleep_kappa\": \"NOT_DONE\",\n    \"G5_ml_train\": \"NOT_DONE\",\n    \"feature_days_ready\": 0,\n    \"label_rows\": 2,\n    \"paired_days\": 1,\n    \"accuracy_valid\": false,\n    \"message\": \"Underfit \\u2014 need more distinct labeled days.\"\n  },\n  \"next_actions\": [\n    \"Enable Accessibility NOOP WHOOP app capture; open WHOOP daily\",\n    \"Or run Tools/whoop_app_adb_capture.ps1 with wireless adb\",\n    \"Append JSONL {day, strain_021, recovery_pct, noop_effort?} to pairing-logs/whoop-app-labels.jsonl\",\n    \"Re-run this script after \\u22653 distinct labeled days for accuracy_valid\",\n    \"For sleep \\u03ba: download sleep-accel \\u2192 Tools/sleep_stage_eval.py (G4)\",\n    \"Save and correct real workouts in NOOP debug builds to collect user-confirmed sport windows; this pipeline does not classify sports yet.\"\n  ],\n  \"honest_rule\": \"Never treat pipeline HR collect or synthetic eval as model accuracy vs WHOOP app.\",\n  \"status\": \"NOT_READY\",\n  \"message\": \"Built 0 day(s) of features from BLE samples. Need \\u22652 days of WHOOP **app** Strain labels to fit Effort\\u2192Strain. Do NOT treat synthetic/pipeline pass as model accuracy.\"\n}\nWrote pairing-logs\\ml-engine-status.json\nWrote pairing-logs\\ml-daily-features.json (0 days)\nWrote pairing-logs\\ml-sport-session-features.json (0 user-confirmed sessions)\nWrote pairing-logs\\goals-from-ml.json\n",
+      "stderr_tail": ""
+    },
+    "calibrate_whoop_noop": {
+      "ok": true,
+      "returncode": 0,
+      "cmd": [
+        "C:\\Python314\\python.exe",
+        "Tools\\calibrate_whoop_noop.py",
+        "--pairing",
+        "pairing-logs"
+      ],
+      "stdout_tail": "| Head | N | MAE before | MAE after affine | Pearson r | Fitted |\n|------|---|------------|------------------|-----------|--------|\n| charge | 0 | - | - | - | False |\n| effort | 0 | - | - | - | False |\n| sleep | 0 | - | - | - | False |\n| stress | 0 | - | - | - | False |\n\naccuracy_valid=False  deploy_gate=FAIL - need >=3 paired days on Charge, Effort, Sleep\nwrote pairing-logs\\calibration-report.json\n",
+      "stderr_tail": ""
+    }
+  },
+  "fold_status": "Fold plugged-in but powered OFF this session \u2014 no live USB ADB, tip@clock, bank pull, or live-edit. Device verification deferred until phone is on.",
+  "factor_docs": [
+    "docs/STRESS_FACTORS_AND_LITERATURE.md",
+    "docs/SLEEP_FACTORS_AND_LITERATURE.md",
+    "docs/SLEEP_ML_DATASETS.md",
+    "docs/WHOOP_NOOP_SCREENSHOT_COMPARE.md",
+    "docs/FABLE5_300_NOT_INTUITIVE.md"
+  ],
+  "tickets": [
+    "STRESS-TIP",
+    "STRESS-SHAPE",
+    "REST-WEIGHT",
+    "SLEEP-SELF-1",
+    "G4_sleep_kappa"
+  ],
+  "next": [
+    "Decode more tip@clock pairs (\u22654) before touching DaytimeStress constants",
+    "Download PhysioNet sleep-accel \u2192 python Tools/sleep_stage_eval.py --sleep-accel-dir \u2026",
+    "When Fold is on: bank pull + FoldStressReplay with screenshot cutoff"
+  ],
+  "honest_rule": "Never invent SpO2/BP/clinical stages. accuracy_valid stays false until N gates pass."
+}

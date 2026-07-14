@@ -1,0 +1,11 @@
+{
+  "G1_auto_labels": "PARTIAL",
+  "G2_compare_app": "PARTIAL",
+  "G4_sleep_kappa": "NOT_DONE",
+  "G5_ml_train": "NOT_DONE",
+  "feature_days_ready": 0,
+  "label_rows": 2,
+  "paired_days": 1,
+  "accuracy_valid": false,
+  "message": "Underfit \u2014 need more distinct labeled days."
+}

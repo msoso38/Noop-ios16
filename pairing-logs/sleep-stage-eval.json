@@ -1,0 +1,76 @@
+{
+  "mode": "synthetic",
+  "accuracy_valid": false,
+  "goal_G4": "NOT_DONE",
+  "note": "No public dataset on disk \u2014 metrics plumbing only. Do NOT cite these \u03ba/acc as product accuracy. Download PhysioNet sleep-accel \u2192 re-run for real LOSO \u03ba (G4).",
+  "results": [
+    {
+      "name": "heuristic_hr_motion",
+      "n_epochs": 300,
+      "accuracy": 1.0,
+      "cohen_kappa": 1.0,
+      "f1": {
+        "wake": 1.0,
+        "light": 1.0,
+        "deep": 1.0,
+        "rem": 1.0
+      },
+      "label_hist": {
+        "wake": 30,
+        "light": 180,
+        "deep": 40,
+        "rem": 50
+      },
+      "pred_hist": {
+        "wake": 30,
+        "light": 180,
+        "deep": 40,
+        "rem": 50
+      }
+    },
+    {
+      "name": "mini_ml_lane_synthetic",
+      "n_epochs": 300,
+      "accuracy": 0.4,
+      "cohen_kappa": 0.3059,
+      "f1": {
+        "wake": 1.0,
+        "light": 0.0,
+        "deep": 0.3077,
+        "rem": 1.0
+      },
+      "label_hist": {
+        "wake": 30,
+        "light": 180,
+        "deep": 40,
+        "rem": 50
+      },
+      "pred_hist": {
+        "wake": 30,
+        "deep": 220,
+        "rem": 50
+      }
+    },
+    {
+      "name": "majority_baseline",
+      "n_epochs": 300,
+      "accuracy": 0.6,
+      "cohen_kappa": 0.0,
+      "f1": {
+        "wake": 0.0,
+        "light": 0.75,
+        "deep": 0.0,
+        "rem": 0.0
+      },
+      "label_hist": {
+        "wake": 30,
+        "light": 180,
+        "deep": 40,
+        "rem": 50
+      },
+      "pred_hist": {
+        "light": 300
+      }
+    }
+  ]
+}

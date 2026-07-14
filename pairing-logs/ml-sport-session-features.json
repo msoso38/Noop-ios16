@@ -1,0 +1,8 @@
+{
+  "sessions": [],
+  "n_labels": 0,
+  "n_eligible": 0,
+  "completed_before": "2026-07-14",
+  "status": "COLLECTING_ONLY",
+  "note": "User-confirmed sport labels joined to open-BLE samples. No sport classifier or accuracy claim is produced here."
+}

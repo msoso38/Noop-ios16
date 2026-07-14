@@ -1,0 +1,37 @@
+{
+  "accuracy_valid": false,
+  "n_label_rows": 2,
+  "n_completed_label_rows": 2,
+  "n_excluded_current_or_future_labels": 0,
+  "n_pairs": 1,
+  "n_feature_days": 0,
+  "n_ml_samples_ingested": 0,
+  "completed_before": "2026-07-14",
+  "future_day_guard": "Current local day and future dates are excluded until their day has completed.",
+  "feature_store": "pairing-logs\\ml-daily-features.json",
+  "sport_session_feature_store": "pairing-logs\\ml-sport-session-features.json",
+  "n_sport_labels": 0,
+  "n_sport_sessions_eligible": 0,
+  "goals": {
+    "G1_auto_labels": "PARTIAL",
+    "G2_compare_app": "PARTIAL",
+    "G4_sleep_kappa": "NOT_DONE",
+    "G5_ml_train": "NOT_DONE",
+    "feature_days_ready": 0,
+    "label_rows": 2,
+    "paired_days": 1,
+    "accuracy_valid": false,
+    "message": "Underfit \u2014 need more distinct labeled days."
+  },
+  "next_actions": [
+    "Enable Accessibility NOOP WHOOP app capture; open WHOOP daily",
+    "Or run Tools/whoop_app_adb_capture.ps1 with wireless adb",
+    "Append JSONL {day, strain_021, recovery_pct, noop_effort?} to pairing-logs/whoop-app-labels.jsonl",
+    "Re-run this script after \u22653 distinct labeled days for accuracy_valid",
+    "For sleep \u03ba: download sleep-accel \u2192 Tools/sleep_stage_eval.py (G4)",
+    "Save and correct real workouts in NOOP debug builds to collect user-confirmed sport windows; this pipeline does not classify sports yet."
+  ],
+  "honest_rule": "Never treat pipeline HR collect or synthetic eval as model accuracy vs WHOOP app.",
+  "status": "NOT_READY",
+  "message": "Built 0 day(s) of features from BLE samples. Need \u22652 days of WHOOP **app** Strain labels to fit Effort\u2192Strain. Do NOT treat synthetic/pipeline pass as model accuracy."
+}

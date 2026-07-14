@@ -1,0 +1,31 @@
+{
+  "version": "0.2.0-linear+ridge",
+  "linear": {
+    "a": 0.30181086519114697,
+    "b": 39.8189134808853,
+    "formula": "app_strain_pct_hat = a * noop_effort + b"
+  },
+  "ridge": {
+    "feature_names": [
+      "mean_hr/100",
+      "frac_hr_ge_100",
+      "frac_hr_ge_130",
+      "rr_rmssd/100",
+      "effort_proxy/100"
+    ],
+    "weights": [
+      19.785618634132945,
+      4.365983891114025,
+      0.0,
+      9.699799440610724,
+      11.9194900481726
+    ],
+    "bias": 30.04434734192379,
+    "rmse": 0.18331323375347489
+  },
+  "n_pairs": 2,
+  "rmse_linear": 0.0,
+  "mae": 0.0,
+  "pass_score": 100.0,
+  "accuracy_valid": false
+}
