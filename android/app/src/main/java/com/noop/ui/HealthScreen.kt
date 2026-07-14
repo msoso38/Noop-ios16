@@ -1985,6 +1985,10 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
     // view isn't showing: Fitness Age with no reading yet -> what it still needs; ANY metric with a single
     // reading -> that reading (trend to follow); two+ -> the trend. Pre-load falls through to trend.
     val loadedPoints = if (seriesLoaded) (detail?.points?.size ?: 0) else -1
+    // #430 parity: the detail carries the SAME backdrop as the screen that pushed it — the day-cycle sky
+    // when the setting is on, the plain canvas when off — so a Key-Metrics tile tap doesn't jar from the
+    // liquid Today's sky to a flat page. Same gate every other liquid screen uses.
+    val showDayCycleBackground = remember { NoopPrefs.showDayCycleBackground(context) }
     ScreenScaffold(
         title = detail?.title ?: "Vital Signs",
         subtitle = when {
@@ -1992,6 +1996,7 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
             loadedPoints == 1 -> "Your latest reading — trend to follow."
             else -> "Historical trend from cached daily metrics."
         },
+        topBackground = if (showDayCycleBackground) { { LiquidScreenSky() } } else null,
     ) {
         if (isSeriesBacked && !seriesLoaded) {
             DataPendingNote(
