@@ -310,6 +310,62 @@ object Baselines {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Device-era boundary (#459)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * The recalibration epoch (seconds, UTC start-of-day) at the LATEST device-era boundary in a
+     * source-tagged nightly history, for feeding [foldHistory]'s `baselineEpoch` so a baseline can't
+     * mix two brands' incompatible HRV scales (#459: an Oura→WHOOP switch has Oura RMSSD ~120–155 ms
+     * vs WHOOP ~72–112 ms with no overlap nights, so a straddling 30-night window reads the first
+     * WHOOP nights as "suppressed" against an Oura-inflated mean — a device artifact, not physiology).
+     *
+     * [sourceDays] is `(dayKey "yyyy-MM-dd", sourceId)` for every night with a value, ANY order (it is
+     * sorted here). The epoch is the start of the first day of the LATEST contiguous single-brand era:
+     * walk newest→oldest while the brand matches the newest night's brand, and return that run's first
+     * day's start. Returns 0.0 (no recalibration → [foldHistory] is byte-identical) when the whole
+     * history is ONE brand — so a single-device user, and a WHOOP user whose imported + computed +
+     * strap ids all bucket to "whoop", is completely unaffected.
+     *
+     * The brand bucket is intentionally coarse and NOT [DeviceFamily] (that only splits WHOOP 4 vs 5,
+     * both the same HRV scale): every WHOOP-origin id (the canonical import, the active strap, the
+     * "-noop" computed sibling, Health-Connect/Apple rows that ride the strap source) is ONE brand;
+     * each wearable-export brand (oura/fitbit/garmin) is its own. Pure + unit-pinned; the caller
+     * assembles [sourceDays] from the ORIGINAL per-source reads (brand is lost once a wearable day is
+     * re-homed under the computed WHOOP id, so detection must precede the merge). Mirrors the Swift twin.
+     */
+    fun deviceEraEpoch(sourceDays: List<Pair<String, String>>): Double {
+        if (sourceDays.isEmpty()) return 0.0
+        val sorted = sourceDays.sortedBy { it.first }
+        val currentBrand = brandBucket(sorted.last().second)
+        // No brand change anywhere → no epoch (byte-identical fold for every single-brand user).
+        if (sorted.none { brandBucket(it.second) != currentBrand }) return 0.0
+        // Walk back over the contiguous current-brand suffix; its first day opens the current era.
+        var eraStartDay = sorted.last().first
+        for (i in sorted.indices.reversed()) {
+            if (brandBucket(sorted[i].second) != currentBrand) break
+            eraStartDay = sorted[i].first
+        }
+        return runCatching {
+            java.time.LocalDate.parse(eraStartDay)
+                .atStartOfDay(java.time.ZoneOffset.UTC).toEpochSecond().toDouble()
+        }.getOrDefault(0.0)
+    }
+
+    /**
+     * Coarse HRV-scale brand for a source id (#459). Every WHOOP-origin id shares ONE scale; each
+     * wearable-export brand is its own. Unknown ids bucket to "whoop" (the strap source and its Apple/
+     * Health-Connect riders), so only a positively-identified wearable export changes the era. Mirrors
+     * the Swift twin.
+     */
+    internal fun brandBucket(sourceId: String): String = when {
+        sourceId.startsWith("oura") -> "oura"
+        sourceId.startsWith("fitbit") -> "fitbit"
+        sourceId.startsWith("garmin") -> "garmin"
+        else -> "whoop"
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Deviation
     // ─────────────────────────────────────────────────────────────────────────
 
