@@ -51,6 +51,13 @@ final class TodayLayoutPrefsTests: XCTestCase {
         XCTAssertEqual(TodayLayoutPrefs.decodeOrder("nope,,zzz"), TodaySection.defaultOrder)
     }
 
+    /// defaultOrder must cover EVERY case: the never-hide merge iterates it, so a case missing from the
+    /// default order could otherwise be dropped from render (Android) or mis-sorted (iOS).
+    func testDefaultOrderCoversEveryCase() {
+        XCTAssertEqual(Set(TodaySection.defaultOrder), Set(TodaySection.allCases))
+        XCTAssertEqual(TodaySection.defaultOrder.count, TodaySection.allCases.count)
+    }
+
     func testSectionRawKeysAreStableAndUnique() {
         let raws = TodaySection.allCases.map(\.rawValue)
         XCTAssertEqual(raws.count, Set(raws).count, "raw keys must be unique (they're the persisted identity)")

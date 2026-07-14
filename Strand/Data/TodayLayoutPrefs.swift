@@ -78,9 +78,15 @@ enum TodayLayoutPrefs {
             }
         }
         guard !saved.isEmpty else { return TodaySection.defaultOrder }
-        for missing in TodaySection.defaultOrder where !saved.contains(missing) {
-            let defIdx = TodaySection.defaultOrder.firstIndex(of: missing)!
-            let insertAt = saved.firstIndex { TodaySection.defaultOrder.firstIndex(of: $0)! > defIdx }
+        // Iterate allCases (not defaultOrder) so a future case accidentally left out of defaultOrder can
+        // never be silently hidden; a section without a default index sorts after everything (no crash —
+        // the Kotlin twin's indexOf(-1) degrades the same way). defaultOrder covering allCases is pinned
+        // by TodayLayoutPrefsTests on both platforms.
+        func defIdx(_ s: TodaySection) -> Int {
+            TodaySection.defaultOrder.firstIndex(of: s) ?? TodaySection.defaultOrder.count
+        }
+        for missing in TodaySection.allCases where !saved.contains(missing) {
+            let insertAt = saved.firstIndex { defIdx($0) > defIdx(missing) }
             if let insertAt { saved.insert(missing, at: insertAt) } else { saved.append(missing) }
         }
         return saved
