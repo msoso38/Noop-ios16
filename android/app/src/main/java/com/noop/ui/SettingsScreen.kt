@@ -1605,35 +1605,36 @@ fun SettingsScreen(
                         ),
                     )
                 }
-            }
-            RowDivider()
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Pause HRV capture in Battery Saver", style = NoopType.subhead, color = Palette.textPrimary)
-                    Text(
-                        "While Android Battery Saver is on, stop the always-on background HRV stream (the biggest live drain). Opening a Live screen still shows heart rate, and it re-arms automatically when Battery Saver turns off.",
-                        style = NoopType.footnote,
-                        color = Palette.textTertiary,
+                RowDivider()
+                // HRV pause: a sub-option of power saving, ON by default when the master is on.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Pause HRV capture in Battery Saver", style = NoopType.subhead, color = Palette.textPrimary)
+                        Text(
+                            "While Android Battery Saver is on, stop the always-on background HRV stream (the biggest live drain). Opening a Live screen still shows heart rate, and it re-arms automatically when Battery Saver turns off.",
+                            style = NoopType.footnote,
+                            color = Palette.textTertiary,
+                        )
+                    }
+                    Switch(
+                        checked = pauseHrvOnPowerSave,
+                        onCheckedChange = {
+                            pauseHrvOnPowerSave = it
+                            vm.setPauseHrvOnPowerSave(it)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Palette.surfaceBase,
+                            checkedTrackColor = Palette.accent,
+                            uncheckedThumbColor = Palette.textSecondary,
+                            uncheckedTrackColor = Palette.surfaceInset,
+                            uncheckedBorderColor = Palette.hairline,
+                        ),
                     )
                 }
-                Switch(
-                    checked = pauseHrvOnPowerSave,
-                    onCheckedChange = {
-                        pauseHrvOnPowerSave = it
-                        vm.setPauseHrvOnPowerSave(it)
-                    },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Palette.surfaceBase,
-                        checkedTrackColor = Palette.accent,
-                        uncheckedThumbColor = Palette.textSecondary,
-                        uncheckedTrackColor = Palette.surfaceInset,
-                        uncheckedBorderColor = Palette.hairline,
-                    ),
-                )
             }
         }
 

@@ -212,7 +212,9 @@ object NoopPrefs {
     const val KEY_POWER_SAVING_BATTERY_PCT = "noop.powerSavingBatteryPct"
     /** "Pause HRV capture in Battery Saver" (#477): when on, NOOP releases the held-open background
      *  continuous-HRV stream while the OS Battery Saver is on (a Live screen still arms it on demand).
-     *  Default OFF. Drives [com.noop.ble.WhoopBleClient.setPauseCaptureOnPowerSave] via [AppViewModel]. */
+     *  A sub-option of [KEY_POWER_SAVING] — only effective while the master is on. Default ON (so enabling
+     *  Power saving pauses capture by default; the user can turn it off). Drives
+     *  [com.noop.ble.WhoopBleClient.setPauseCaptureOnPowerSave] via [AppViewModel]. */
     const val KEY_PAUSE_HRV_ON_POWER_SAVE = "noop.pauseHrvOnPowerSave"
 
     fun of(context: Context): SharedPreferences =
@@ -234,9 +236,9 @@ object NoopPrefs {
         of(context).edit().putInt(KEY_POWER_SAVING_BATTERY_PCT, pct).apply()
     }
 
-    /** Pause continuous-HRV capture while Battery Saver is on. Default off. */
+    /** Pause continuous-HRV capture while Battery Saver is on (sub-option of Power saving). Default ON. */
     fun pauseHrvOnPowerSave(context: Context): Boolean =
-        of(context).getBoolean(KEY_PAUSE_HRV_ON_POWER_SAVE, false)
+        of(context).getBoolean(KEY_PAUSE_HRV_ON_POWER_SAVE, true)
 
     fun setPauseHrvOnPowerSave(context: Context, enabled: Boolean) {
         of(context).edit().putBoolean(KEY_PAUSE_HRV_ON_POWER_SAVE, enabled).apply()

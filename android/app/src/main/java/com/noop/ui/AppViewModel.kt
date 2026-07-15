@@ -895,9 +895,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  The riskier connection-priority idle throttle is deliberately NOT exposed here — it stays dormant
      *  pending on-strap validation (#478). */
     private fun applyPowerSaving() {
-        val pct = if (NoopPrefs.powerSaving(appContext)) NoopPrefs.powerSavingBatteryPct(appContext) else 0
-        ble.setLowBatteryOffloadThrottle(pct)
-        ble.setPauseCaptureOnPowerSave(NoopPrefs.pauseHrvOnPowerSave(appContext))
+        val on = NoopPrefs.powerSaving(appContext)
+        ble.setLowBatteryOffloadThrottle(if (on) NoopPrefs.powerSavingBatteryPct(appContext) else 0)
+        // HRV pause is a sub-option: only effective while the master is on (defaults on when it is).
+        ble.setPauseCaptureOnPowerSave(on && NoopPrefs.pauseHrvOnPowerSave(appContext))
     }
 
     /** Flip "Power saving" (Settings). Persists + applies immediately. */
