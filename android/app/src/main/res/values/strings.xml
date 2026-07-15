@@ -173,6 +173,4 @@
     <string name="power_saving_pct">%1$d%%</string>
     <string name="power_saving_hrv_pause">Pause HRV capture</string>
     <string name="power_saving_hrv_pause_desc">While your strap\'s battery is low, stop the always-on background HRV stream — the biggest continuous drain on the strap. A Live screen still shows heart rate, and it re-arms automatically once the strap is charged.</string>
-    <string name="power_saving_defer_health">Defer Health Connect writeback</string>
-    <string name="power_saving_defer_health_desc">While saving power, hold off writing scores to Health Connect (they otherwise upsert every 15 minutes). Writeback resumes automatically once you\'re off power saving, and a manual sync always runs it.</string>
 </resources>

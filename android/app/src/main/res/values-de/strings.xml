@@ -155,6 +155,4 @@
     <string name="power_saving_pct">%1$d %%</string>
     <string name="power_saving_hrv_pause">HFV-Erfassung pausieren</string>
     <string name="power_saving_hrv_pause_desc">Wenn der Akku deines Bandes niedrig ist, wird der dauerhafte HFV-Hintergrundstream gestoppt – der größte Dauerverbraucher am Band. Ein Live-Bildschirm zeigt weiterhin die Herzfrequenz an, und er wird automatisch reaktiviert, sobald das Band geladen ist.</string>
-    <string name="power_saving_defer_health">Health-Connect-Rückschreibung aufschieben</string>
-    <string name="power_saving_defer_health_desc">Während des Energiesparens das Zurückschreiben der Werte an Health Connect aussetzen (sonst alle 15 Minuten). Es wird automatisch fortgesetzt, sobald das Energiesparen endet, und eine manuelle Synchronisierung führt es immer aus.</string>
 </resources>
