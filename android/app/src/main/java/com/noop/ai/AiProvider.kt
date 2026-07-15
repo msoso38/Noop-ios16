@@ -56,16 +56,22 @@ enum class AiProvider(
      * `GeminiClient` (`Strand/AI/Providers/Gemini.swift`): `x-goog-api-key` auth, a `system_instruction`
      * + `contents`/`parts` body, and `candidates[].content.parts[].text` replies. [endpoint] is the base
      * models URL; the per-call `/<model>:generateContent` suffix is appended in [AiCoach.callGemini]
-     * (kept literal so the `:` is never percent-encoded). Same curated list + default as the Swift enum.
+     * (kept literal so the `:` is never percent-encoded).
+     *
+     * VERSION-CHURN-FREE (#400): the default + curated list use Google's stable `-latest` ALIASES, which
+     * always resolve to the current stable model in each tier — so Gemini's rapid releases (2.5 → 3.x → …)
+     * never need a code bump here. The dropdown itself is already version-agnostic: [AiCoach.fetchModels]
+     * queries the live `/models` catalogue and [AiCoach.parseGeminiModels] keeps EVERY `gemini*` id, so a
+     * user with a key sees whatever concrete versions Google currently serves and can pin one. Same list +
+     * default as the Swift enum.
      */
     GEMINI(
         displayName = "Google Gemini",
-        defaultModel = "gemini-2.5-flash",
+        defaultModel = "gemini-flash-latest",
         models = listOf(
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash",
+            "gemini-pro-latest",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
         ),
         endpoint = "https://generativelanguage.googleapis.com/v1beta/models",
         modelsEndpoint = "https://generativelanguage.googleapis.com/v1beta/models",
