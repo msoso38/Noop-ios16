@@ -985,7 +985,7 @@ struct SettingsView: View {
                             .font(StrandFont.subhead)
                             .foregroundStyle(StrandPalette.textPrimary)
                         Spacer()
-                        Text("\(powerSavingPct)%")
+                        Text(verbatim: "\(powerSavingPct)%")
                             .font(StrandFont.subhead)
                             .foregroundStyle(StrandPalette.accent)
                     }
