@@ -1200,6 +1200,18 @@ class WhoopBleClient(
         lowBatteryOffloadPct = thresholdPct
     }
 
+    /** #477: pause BACKGROUND continuous-HRV capture while the OS Battery Saver is on (own toggle,
+     *  DEFAULT OFF). A visible Live screen is unaffected — only the held-open background stream is
+     *  released. Gated through [continuousCaptureWantsNow]. */
+    @Volatile private var pauseCaptureOnPowerSave: Boolean = false
+
+    /** Opt into pausing continuous capture under Battery Saver (#477). Reconciles immediately so the
+     *  change takes effect without waiting for the next keep-alive tick. */
+    fun setPauseCaptureOnPowerSave(enabled: Boolean) {
+        pauseCaptureOnPowerSave = enabled
+        handler.post { reconcileRealtime() }
+    }
+
     /** The delay before the next periodic offload — normally [BACKFILL_INTERVAL_MS], stretched when low on
      *  battery (#477). Reads the battery snapshot at re-arm time. */
     private fun nextBackfillDelayMs(): Long {
@@ -4333,6 +4345,12 @@ class WhoopBleClient(
      *  Mirrors the Swift `continuousCaptureWantsNow`. */
     private fun continuousCaptureWantsNow(): Boolean {
         if (!keepStreamForData) return false
+        // #477: optional power-saving pause — while the OS Battery Saver is on, release the held-open
+        // continuous-capture stream (its own toggle, default off). The realtime stream is one of the
+        // larger drains; a Live screen still arms it on demand (screenWantsRealtime is checked separately
+        // in reconcileRealtime), so this only drops the BACKGROUND capture the user opted into. Re-arms
+        // automatically when Battery Saver turns off.
+        if (pauseCaptureOnPowerSave && powerSaveActive()) return false
         val cal = java.util.Calendar.getInstance()
         val minuteOfDay = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
         return continuousHrvStreamWanted(
