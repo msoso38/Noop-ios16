@@ -11,7 +11,7 @@ options:
   developmentLanguage: en
 settings:
   base:
-    MARKETING_VERSION: "9.0.1"
+    MARKETING_VERSION: "9.1.0"
     # iOS build number (CFBundleVersion). GLOBAL so the iOS app AND its widget extension inherit the
     # SAME value — they must match or iOS warns "extension version must match parent app" (#416).
     # macOS sets its own CFBundleVersion on the Strand target and is unaffected by this.
@@ -63,6 +63,10 @@ packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
     exactVersion: 0.9.20
+  # Prebuilt llama.cpp xcframework (Metal) for the on-device Coach. Local package pins the binary
+  # artifact by URL + checksum (see Packages/LlamaCpp/Package.swift). iOS-only.
+  LlamaCpp:
+    path: Packages/LlamaCpp
 targets:
   Strand:
     type: application
@@ -76,6 +80,10 @@ targets:
           # The liquid Today is now cross-platform: its iOS-only chrome (topBarTrailing / navigationBarTitleDisplayMode
           # / presentationCompactAdaptation / two-param onChange / sensoryFeedback) is guarded, so the mac split-view
           # shell hosts LiquidTodayView too. All Liquid/* now compile into the mac target.
+          # iOS-only on-device Coach files (llama.cpp). Excluded so they never compile on macOS
+          # (the LlamaCpp package is iOS-only).
+          - "AI/OnDevice/LlamaEngine.swift"
+          - "AI/OnDevice/OnDeviceClient.swift"
     # Oura BYO-app OAuth credentials. OuraConfig.xcconfig is a tracked wrapper that optionally
     # includes the untracked, gitignored Strand/Oura/OuraSecrets.xcconfig (template at
     # OuraSecrets.example.xcconfig) — absent secrets leave the $(OURA_*) references in the
@@ -285,6 +293,7 @@ targets:
         com.apple.developer.healthkit.access: []
         com.apple.security.application-groups:
           - $(APP_GROUP_ID)
+        com.apple.developer.kernel.increased-memory-limit: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.noop
@@ -304,6 +313,7 @@ targets:
       - package: StrandDesign
       - package: MarkdownUI
       - package: ZIPFoundation
+      - package: LlamaCpp
       - target: NOOPiOSWidgets
       # Embed the watchOS app so the iPhone app carries it (NOOP.app/Watch/NOOPWatch.app). A watch app
       # installs by riding inside its iOS companion; without this it would never reach a paired watch.

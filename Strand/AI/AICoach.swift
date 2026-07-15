@@ -4,6 +4,9 @@ import Security
 import WhoopStore
 import StrandAnalytics
 import StrandImport
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // MARK: - AI Coach (the one networked feature, strictly opt-in, bring-your-own-key)
 //
@@ -27,7 +30,7 @@ struct ChatMessage: Identifiable, Equatable {
     enum Role: String { case user, assistant }
     let id: UUID
     let role: Role
-    let text: String
+    var text: String            // var — streaming mutates this in place
 
     init(id: UUID = UUID(), role: Role, text: String) {
         self.id = id
@@ -117,6 +120,10 @@ enum AICoachError: LocalizedError {
     case decode
     case keySaveFailed
     case badCustomURL(String)
+    case modelNotDownloaded
+    case modelLoadFailed(String)
+    case generationFailed(String)
+    case deviceUnsupported
 
     var errorDescription: String? {
         switch self {
@@ -139,6 +146,16 @@ enum AICoachError: LocalizedError {
             return "Network problem: \(detail). The coach is the only feature that needs the internet."
         case .decode:
             return "Couldn't read the provider's reply. Try again."
+        case .modelNotDownloaded:
+            return "Download the on-device coach model first, then ask again."
+        case .modelLoadFailed(let detail):
+            let extra = detail.isEmpty ? "" : " — \(detail)"
+            return "Couldn't load the on-device model\(extra). Try re-downloading it."
+        case .generationFailed(let detail):
+            let extra = detail.isEmpty ? "" : " — \(detail)"
+            return "The on-device coach stopped unexpectedly\(extra). Try again."
+        case .deviceUnsupported:
+            return "\(Platform.deviceNounPhrase.prefix(1).uppercased() + Platform.deviceNounPhrase.dropFirst()) doesn't have enough memory to run the on-device coach. Use a cloud provider instead."
         }
     }
 }
@@ -195,6 +212,16 @@ final class AICoachEngine: ObservableObject {
     @Published var includeOnDeviceSignals: Bool {
         didSet { UserDefaults.standard.set(includeOnDeviceSignals, forKey: Self.onDeviceSignalsKey) }
     }
+
+    /// Owns the on-device model file lifecycle (download/verify/delete). Drives the on-device setup card
+    /// and gates `isConfigured` for the on-device provider.
+    let modelDownloads = ModelDownloadManager()
+
+    /// Re-publishes the nested `modelDownloads` manager's changes as OUR changes. CoachView observes the
+    /// engine (`@EnvironmentObject`), not `modelDownloads`, and SwiftUI does not propagate a nested
+    /// ObservableObject automatically — so without this forward the download progress / cancel / ready
+    /// transitions wouldn't re-render the setup card until the view was recreated.
+    private var downloadForwarding: AnyCancellable?
 
     private let repo: Repository
     private let session: URLSession
@@ -283,7 +310,7 @@ final class AICoachEngine: ObservableObject {
 
         // Restore persisted provider / model (falling back to sane defaults).
         let storedProvider = UserDefaults.standard.string(forKey: Self.providerKey)
-            .flatMap(AIProvider.init(rawValue:)) ?? .openAI
+            .flatMap(AIProvider.init(rawValue:)) ?? AIProvider.defaultProvider
         self.provider = storedProvider
 
         let storedModel = UserDefaults.standard.string(forKey: Self.modelKey)
@@ -305,7 +332,41 @@ final class AICoachEngine: ObservableObject {
         self.customBaseURL = UserDefaults.standard.string(forKey: AIProvider.customBaseURLKey) ?? ""
         self.customConnected = UserDefaults.standard.bool(forKey: Self.customConnectedKey)
         self.includeOnDeviceSignals = UserDefaults.standard.bool(forKey: Self.onDeviceSignalsKey)
+
+        // Forward the nested download manager's change notifications to this engine's observers, so the
+        // on-device setup card (which binds to the engine) updates live during download / verify / cancel.
+        downloadForwarding = modelDownloads.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        #if os(iOS)
+        installMemoryGuards()
+        #endif
     }
+
+    // MARK: Memory guards (iOS only)
+
+    #if os(iOS)
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+
+    /// Free the model under critical memory pressure (only when idle) and on backgrounding, so the
+    /// coach is never the top jetsam target. Reloads lazily on the next generation. Call once from init.
+    func installMemoryGuards() {
+        let src = DispatchSource.makeMemoryPressureSource(eventMask: .critical, queue: .main)
+        src.setEventHandler { [weak self] in
+            guard let self, !self.sending else { return }
+            Task { await LlamaEngine.shared.unload() }
+        }
+        src.resume()
+        memoryPressureSource = src
+
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, !self.sending else { return }
+            Task { await LlamaEngine.shared.unload() }
+        }
+    }
+    #endif
 
     // MARK: Key management
 
@@ -314,8 +375,15 @@ final class AICoachEngine: ObservableObject {
 
     /// True once the coach can actually send: a stored key for the cloud providers, or, for the
     /// Custom (local) provider, a committed base URL (a key is optional there, as local servers
-    /// usually need none). Gates the setup card vs. the live chat.
-    var isConfigured: Bool { provider == .custom ? customConnected : hasKey }
+    /// usually need none). For the on-device provider, requires the model to be downloaded and ready.
+    /// Gates the setup card vs. the live chat.
+    var isConfigured: Bool {
+        switch provider {
+        case .onDevice: return modelDownloads.state == .ready
+        case .custom:   return customConnected
+        default:        return hasKey
+        }
+    }
 
     /// The key to send with a request: the stored key, or an empty string for the keyless Custom
     /// provider. `nil` means "not configured", the caller surfaces `.noKey`.
@@ -329,7 +397,7 @@ final class AICoachEngine: ObservableObject {
             if owner == provider.rawValue { return k }
             if owner == nil && provider != .custom { return k }
         }
-        return provider == .custom ? "" : nil
+        return (provider == .custom || provider == .onDevice) ? "" : nil
     }
 
     /// Commit the Custom (local) provider once the user has entered a server URL. Optionally stores a
@@ -453,6 +521,98 @@ final class AICoachEngine: ObservableObject {
 
     // MARK: Sending
 
+    private var genTask: Task<Void, Never>?
+
+    #if DEBUG
+    /// Test seam: stand in for the provider's streaming call. Production leaves this nil.
+    var streamOverride: ((_ wire: [(role: ChatMessage.Role, content: String)]) -> AsyncThrowingStream<String, Error>)?
+    #endif
+
+    /// Append an empty assistant bubble and grow it as stream chunks arrive. Optional `header` is
+    /// prepended once the FIRST chunk arrives (so an errored/empty generation leaves no stray bubble).
+    /// Sets `genTask` so `stop()` cancels it. Never throws; failures land in `errorText`.
+    private func runAssistantStream(key: String,
+                                    wire: [(role: ChatMessage.Role, content: String)],
+                                    header: String? = nil) async {
+        let assistantId = UUID()
+        messages.append(ChatMessage(id: assistantId, role: .assistant, text: ""))
+
+        let stream: AsyncThrowingStream<String, Error>
+        #if DEBUG
+        if let streamOverride { stream = streamOverride(wire) }
+        else { stream = provider.client.stream(key: key, model: model, systemPrompt: systemPrompt, messages: wire, session: session) }
+        #else
+        stream = provider.client.stream(key: key, model: model, systemPrompt: systemPrompt, messages: wire, session: session)
+        #endif
+
+        let handle = Task { @MainActor in
+            // Coalesce UI updates: the on-device provider streams token-by-token, and writing each token
+            // straight into the `@Published messages` array re-renders the whole transcript AND re-parses
+            // the growing assistant bubble through MarkdownUI on every token — O(n²) over the reply. Buffer
+            // into `accumulated` and push to the published text at most ~16 Hz, with a final flush at the
+            // end. Cloud providers resolve to one chunk, so they flush once and are unaffected.
+            var accumulated = ""
+            var started = false
+            var lastFlush = Date.distantPast
+            let flushInterval: TimeInterval = 0.06
+            @MainActor func flush() {
+                guard let idx = messages.firstIndex(where: { $0.id == assistantId }) else { return }
+                messages[idx].text = accumulated
+            }
+            do {
+                for try await chunk in stream {
+                    if !started { started = true; accumulated = (header ?? "") + chunk }
+                    else { accumulated += chunk }
+                    let now = Date()
+                    if now.timeIntervalSince(lastFlush) >= flushInterval {
+                        lastFlush = now
+                        flush()
+                    }
+                }
+            } catch let e as AICoachError {
+                errorText = e.errorDescription
+            } catch is CancellationError {
+                // user pressed Stop — keep whatever streamed so far
+            } catch {
+                errorText = AICoachError.network(error.localizedDescription).errorDescription
+            }
+            flush()   // ensure the final (and any sub-interval) content is shown
+            // Drop a bubble that never received content (nothing beyond the header).
+            if let idx = messages.firstIndex(where: { $0.id == assistantId }),
+               messages[idx].text.isEmpty {
+                messages.remove(at: idx)
+            }
+        }
+        genTask = handle
+        await handle.value
+        genTask = nil
+    }
+
+    /// Streaming send: append the user turn, build context, append an empty assistant turn, then grow
+    /// its text as chunks arrive. Uses `stream(...)` for EVERY provider — cloud providers resolve to one
+    /// chunk, the on-device provider streams token-by-token. Never throws; failures land in `errorText`.
+    func sendStreaming(_ userText: String) async {
+        let trimmed = userText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { errorText = AICoachError.emptyQuestion.errorDescription; return }
+        guard let key = resolvedKey else { errorText = AICoachError.noKey.errorDescription; return }
+
+        errorText = nil
+        messages.append(ChatMessage(role: .user, text: trimmed))
+        sending = true
+        defer { sending = false }
+
+        let context = dataConsent ? await buildFullContext() : noConsentNote
+        let wire = wireMessages(context: context)
+
+        await runAssistantStream(key: key, wire: wire)
+    }
+
+    /// Cancel an in-flight streaming generation (Stop button). Safe to call when idle.
+    func stop() {
+        genTask?.cancel()
+        genTask = nil
+    }
+
     /// Send a question: append it, build the metrics context, call the chosen provider with the
     /// system prompt + context + running history, parse the reply, append it. Never throws/crashes;
     /// failures land in `errorText`.
@@ -486,6 +646,7 @@ final class AICoachEngine: ObservableObject {
 
     /// Proactively generate "Today's brief" the first time the Coach opens, readiness + a training
     /// prescription + one recovery tip, without the user typing. Requires a key + data consent.
+    /// Streams token-by-token so on-device generation is incremental, not a frozen spinner.
     func startBriefIfNeeded() async {
         guard isConfigured, dataConsent, messages.isEmpty, !sending else { return }
         guard let key = resolvedKey else { return }
@@ -501,17 +662,7 @@ final class AICoachEngine: ObservableObject {
         (3) one specific thing to improve my charge. Be punchy and motivating.
         """
         let wire: [(role: ChatMessage.Role, content: String)] = [(.user, context + "\n\n---\n\n" + instruction)]
-        do {
-            let reply = try await callProvider(key: key, messages: wire)
-            let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !clean.isEmpty {
-                messages.append(ChatMessage(role: .assistant, text: "Today's brief\n\n" + clean))
-            }
-        } catch let e as AICoachError {
-            errorText = e.errorDescription
-        } catch {
-            errorText = AICoachError.network(error.localizedDescription).errorDescription
-        }
+        await runAssistantStream(key: key, wire: wire, header: "Today's brief\n\n")
     }
 
     /// Full data context = the metrics summary + recent workouts (+ an OPT-IN on-device-signals summary
