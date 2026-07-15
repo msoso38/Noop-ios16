@@ -12,6 +12,7 @@
 - **[open_oura-feat]** - Th0rgal/open_oura `docs/ring-features.md` (feature gating).
 - **[relue]** - relue/oura_ring_reverse `docs/.../heartbeat_replication_guide.md` and `heartbeat_complete_flow.md` (no-license; Ring 3 live-HR).
 - **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (no-license Rust clean-room decoder; facts cited only, no code copied). Its event tags marked `"_status": "unvalidated"` are treated the same as our Tier B - plausible, not ground-truth-confirmed.
+- **[open_oura-act]** - Th0rgal/open_oura `crates/oura-cli/src/activity_model.rs` (no-license; facts cited only). The activity classifier's input assembly reads four SEPARATE event tags — `met`←`0x50`, motion←`0x47`, temp←`0x46`, `hr_bpm`←`0x80` — establishing which tag each signal comes from (notably HR from the `0x80` IBI record, not `0x50`).
 
 > **CONFLICT NOTE (resolution rule):** The relue archive file `event_data_definition.md` describes events as **protobuf varint** records (e.g. `0x55` SLEEP_HR with field tags). This contradicts the **byte-for-byte verified TLV framing** in [open_ring] and [ringverse]. The TLV/bit-packed model from [open_ring]/[ringverse] is authoritative for our decoders; the protobuf description is treated as unverified/likely AI-fabricated and is NOT used. Where a layout is only attested by a single no-license, AI-generated doc, it is marked **(UNVERIFIED)** and our decoder must gate it behind a fixture test before trusting it.
 
@@ -316,6 +317,16 @@ bits 14–15 : qual_b
 **NOOP filter:** accept sample only if `qual_a ≤ 1 && qual_b == 0`. [open_ring]
 (7 samples per 14-byte record.) [open_ring]
 
+**IBI → HR (NOOP research, Tier-B):** each accepted sample is a per-beat interval, so an instantaneous HR
+follows as `60000 / IBI_ms`. open_oura feeds this record's per-minute HR (`hr_bpm`) into its activity
+classifier (`oura-cli/src/activity_model.rs`, alongside `met`←`0x50`, motion←`0x47`, temp←`0x46`) — i.e. HR
+comes from THIS record, not from the `0x50` MET record. NOOP already decodes these IBIs for HRV; a diagnostic
+sidecar (`oura-ibihr-<id>.jsonl`, records tagged by source event `0x80`/`0x60`/`0x6E`/`0x44`) also
+reconstructs an HR history from the banked stream for offline study — NEVER scored. First live Gen 3 sample
+(2026-07-15, daytime wrist-motion) was SPARSE and noisy: ≈7 usable beats/min (~10 % of a real ~65 bpm) and
+~15 % of intervals sub-272 ms (impossible HR, rejected) — consistent with a quality-sampled subset, not a
+full beat record. Overnight density (ring still → cleanest optics) is the open question. [open_oura-act]
+
 ### 6.5 SpO2 per-sample - `0x6F` `spo2_event` (5–18 B, 1 s spacing)
 - Byte 6: bits `[7:4]` = SpO2 base (<<7); bits `[3:0]` = status flag. [ringverse]
 - One `uint8` SpO2 value per second from byte 7 onward; optional `0xFF` terminator. [ringverse]
@@ -361,6 +372,18 @@ bits 14–15 : qual_b
 - **`0x6B` `motion_period`** (19–31 B): 12-bit period `((b6<<8)|(b6>>6)) & 0xFFF`; byte6 bits`[5:4]`=leading-symbol count; then 2-bit codes, 4 per byte (MSB-first). MOTION_STATE enum: `0 NO_MOTION, 1 RESTLESS, 2 TOSSING, 3 ACTIVE`. [ringverse][open_ring]
 - **`0x50` activity_info / `0x51`,`0x52` activity_summary**: activity category + intensity (MET-class). Layout **(UNVERIFIED - partial)**; [ringverse] notes real_steps/activity_info have unresolved constants. Gate on fixtures. [ringverse]
   - **`0x50` decode formula (PR #960 investigation, live Gen 3, 2026-07-02) [oura-rs]:** byte0 = a `state` code (activity-category, meaning unconfirmed); every following byte = one MET sample, `met = byte × 0.1` for `byte < 0x80`, else `met = 12.8 + (byte − 128) × 0.2` (two-slope: 0.1-MET resolution to 12.7, 0.2 steps above). **Plausible against six real Gen 3 captures** across two sessions - a full day from steady resting (0.9–1.1 MET) through a vigorous-activity burst (7.4 MET), everything physiologically sane, nothing negative or absurd - but **NOT ground-truth-validated** against the Oura app's own MET/step numbers. Stays Tier B: NOOP decodes it (`OuraDecoders.decodeActivityInfo` → `OuraEvent.activityInfo`, both platforms) but gates it behind `allowTierB`, logs it for investigation only, and never folds it into `OuraStreamMapping`/scoring - and NEVER derives a step count from it. `0x51`/`0x52` activity_summary stay fully undecoded (raw Tier-B bytes only).
+  - **`0x50` MET cross-device validation (NOOP, 2026-07-15, live Gen 3):** the MET series TRACKS real activity
+    intensity - three separate walks read mean ≈ 3.4–4.1 MET (p50 ≈ 4.4) against a sleep floor of ≈ 0.9 MET,
+    and per-minute MET vs a Suunto `.fit` speed profile correlates **r = 0.89** (one walk, 13 min); the walk's
+    Suunto Energy 196 kJ ≈ 47 kcal matched the recorded workout. It UNDERREADS water (swims read near-rest -
+    optical/motion degraded). The stream is SPARSE with RING-SIDE cadence gaps (~86 % minute coverage on a
+    choppy day; ~6–19 min holes that recur DURING an unbroken drain, so they are the ring's own logging
+    cadence, not a decode drop) - so any daily active-minute total derived from it UNDERCOUNTS. This
+    corroborates the "plausible, tracks activity" read while keeping it Tier B: still not a step count, still
+    not ground-truth-validated against Oura's own numbers, still never scored. NOOP has no MET field in its
+    HR/strain data model, so `0x50` remains a diagnostic JSONL corpus (`oura-activity-<id>.jsonl`); the ring's
+    path into NOOP activity is HR (live push + banked IBI, §6.4), never MET. open_oura consumes this same
+    `0x50` `met` as one input to its activity classifier (`activity_model.rs`). [open_oura-act]
   - **Real Steps (feature `0x0B`) server gating [open_oura-feat]:** real_steps is behind the server flag `activity/real_steps` (default **false**; `FeatureDefinitions.ActivityRealSteps`, Gen 3+), the same server-flag-off pattern as SpO2 (§7.1). This explains `0x7E`/`0x7F` never once appearing across the PR #960 live sessions - the ring isn't sending them, it is not a NOOP decode gap. `0x50` itself is an always-on base stream (not feature-gated), matching it appearing in every session.
 - **`0x7E`/`0x7F` real_steps_features 1/2** (18 B each): bit-packed step features merged across the paired events. **(UNVERIFIED - partial)** [ringverse]
 
