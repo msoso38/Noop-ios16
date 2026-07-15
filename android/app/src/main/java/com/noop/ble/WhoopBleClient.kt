@@ -278,6 +278,9 @@ interface GattOps {
     fun requestMtuCompat(mtu: Int): Boolean
     fun readRemoteRssiCompat(): Boolean
     fun discoverServicesCompat(): Boolean
+    /** Request a GATT connection priority (battery, #477). Mirrors `BluetoothGatt`'s boolean contract;
+     *  the stack no-ops a request equal to the current interval. */
+    fun requestConnectionPriorityCompat(priority: Int): Boolean
 }
 
 /**
@@ -328,6 +331,7 @@ class RealGattOps(private val gatt: BluetoothGatt) : GattOps {
     override fun requestMtuCompat(mtu: Int): Boolean = gatt.requestMtu(mtu)
     override fun readRemoteRssiCompat(): Boolean = gatt.readRemoteRssi()
     override fun discoverServicesCompat(): Boolean = gatt.discoverServices()
+    override fun requestConnectionPriorityCompat(priority: Int): Boolean = gatt.requestConnectionPriority(priority)
 }
 
 class WhoopBleClient(
@@ -445,6 +449,29 @@ class WhoopBleClient(
         fun scanModeForReconnectAttempts(attempts: Int): Int =
             if (attempts >= SCAN_POWER_BACKOFF_THRESHOLD) ScanSettings.SCAN_MODE_BALANCED
             else ScanSettings.SCAN_MODE_LOW_LATENCY
+
+        /** Pure GATT connection-priority decision (battery, #477), unit-testable without a BLE stack
+         *  (the [scanModeForReconnectAttempts] idiom). TWO independent halves, split by risk:
+         *   - SAFE (always, once management is on): escalate to HIGH during an offload burst or a
+         *     live-HR session. HIGH is a SHORTER interval than BALANCED, so it CANNOT cause a
+         *     supervision-timeout drop (it makes the link more robust, not less) and it shortens the
+         *     radio-on window - faster sync, net battery win.
+         *   - RISKY ([idleThrottleEnabled], default OFF): when idle, drop to LOW_POWER (a LONGER
+         *     interval - the real all-day saving, but a too-long interval can drop the link, so it is
+         *     opt-in and must be validated on a real strap, #477). When off, idle stays BALANCED -
+         *     byte-for-byte today's default.
+         *  Android-only by necessity: CoreBluetooth exposes no app-side connection-priority equivalent
+         *  (the peripheral proposes the GAP connection parameters, iOS negotiates), so there is no Swift
+         *  twin — a deliberate platform divergence, not a parity gap (#477). */
+        fun connectionPriorityFor(
+            offloadActive: Boolean,
+            liveHrActive: Boolean,
+            idleThrottleEnabled: Boolean,
+        ): Int = when {
+            offloadActive || liveHrActive -> BluetoothGatt.CONNECTION_PRIORITY_HIGH
+            idleThrottleEnabled -> BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER
+            else -> BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+        }
 
         /** Pure keep/teardown decision for [prepareForPresentScan] (#74), unit-testable without a BLE
          *  stack (the [scanModeForReconnectAttempts] idiom). Keep the live link ONLY when one exists AND
@@ -1107,6 +1134,38 @@ class WhoopBleClient(
     /** Injectable indirection over [gatt]'s raw GATT calls (see [GattOps]). Rebuilt whenever [gatt] is
      *  (re)assigned in [connectToDevice], cleared in the teardown path alongside `gatt = null`. */
     private var gattOps: GattOps? = null
+
+    /** #477 battery: gates GATT connection-priority management. DEFAULT OFF, so this whole feature ships
+     *  DORMANT - [refreshConnectionPriority] early-returns and issues ZERO new BLE ops, leaving the link
+     *  at the stack default (BALANCED) exactly as before. Flip on ONLY after on-strap validation (see
+     *  #477); a follow-up wires it to a persisted Settings toggle. [connectionPriorityEnabled] enables the
+     *  SAFE half (HIGH during offload/live-HR); [idleThrottleEnabled] additionally enables the RISKY half
+     *  (LOW_POWER when idle). Written from the main looper via [setConnectionPriorityManagement]. */
+    @Volatile private var connectionPriorityEnabled: Boolean = false
+    @Volatile private var idleThrottleEnabled: Boolean = false
+
+    /** Opt into connection-priority management (#477). No-op by default; see the fields above. Runs the
+     *  reconcile on the GATT looper so it can't race the connection callbacks. */
+    fun setConnectionPriorityManagement(enabled: Boolean, idleThrottle: Boolean) {
+        connectionPriorityEnabled = enabled
+        idleThrottleEnabled = idleThrottle && enabled
+        handler.post { refreshConnectionPriority() }
+    }
+
+    /** (Re)apply the GATT connection priority for the current link state (#477). Idempotent + cheap: OFF
+     *  or disconnected -> no BLE op. Called on connect-established and whenever offload / live-HR toggles. */
+    private fun refreshConnectionPriority() {
+        if (!connectionPriorityEnabled) return
+        val ops = gattOps ?: return
+        // Read the authoritative INTERNAL flags (both set synchronously on this looper), not the
+        // published LiveState mirror, which `exitBackfilling` may update a beat later.
+        val priority = connectionPriorityFor(
+            offloadActive = backfilling,
+            liveHrActive = realtimeArmed,
+            idleThrottleEnabled = idleThrottleEnabled,
+        )
+        safeGatt("requestConnectionPriority") { ops.requestConnectionPriorityCompat(priority) }
+    }
     /** @Volatile: set on the GATT binder thread at service discovery, but read in send() on the main
      *  thread (user actions) - the barrier makes a main-thread send see the current characteristic. */
     @Volatile private var cmdCharacteristic: BluetoothGattCharacteristic? = null
@@ -4224,6 +4283,7 @@ class WhoopBleClient(
         // Both families arm/disarm via TOGGLE_REALTIME_HR; send() frames it correctly per family (puffin
         // for 5/MG). A screen re-entry blanks its own smoothing window in the view-model, not here.
         send(CommandNumber.TOGGLE_REALTIME_HR, byteArrayOf(if (want) 1.toByte() else 0.toByte()))
+        refreshConnectionPriority()   // #477: live-HR on → HIGH, off → back to idle. No-op unless enabled.
     }
 
     /**
@@ -4706,6 +4766,7 @@ class WhoopBleClient(
         offloadFramesThisSession = 0
         historicalKickSent = false
         _state.update { it.copy(backfilling = true, syncChunksThisSession = 0) }
+        refreshConnectionPriority()   // #477: escalate to HIGH for the offload burst (faster sync). No-op unless enabled.
         // Opt-in raw capture (research aid): pref read fresh per session, like the probes gate.
         if (connectedFamily == DeviceFamily.WHOOP5 && PuffinExperiment.from(context).isCaptureEnabled) {
             startWhoop5BackfillCapture()
@@ -4882,6 +4943,7 @@ class WhoopBleClient(
     private fun exitBackfilling(reason: String) {
         if (!backfilling) return
         backfilling = false
+        refreshConnectionPriority()   // #477: offload done — drop back to idle priority. No-op unless enabled.
         // #174: a backfill just ended. Start (or extend) the deep-packet cooldown from this instant so
         // any type-0x2F records the strap flushes in the seconds after the session aren't miscounted as
         // the live R22 stream — they're the offload's tail.
