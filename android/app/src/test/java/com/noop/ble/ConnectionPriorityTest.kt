@@ -64,4 +64,23 @@ class ConnectionPriorityTest {
         // threshold 0 → disabled (safe half only), even at 1%
         assertFalse(WhoopBleClient.idleThrottleActive(batteryPct = 1, charging = false, thresholdPct = 0))
     }
+
+    // --- battery-adaptive offload cadence (#477) ---
+
+    private val base = 900_000L      // 15 min
+    private val low = 2_700_000L     // 45 min
+
+    @Test fun offloadStretchesOnlyWhenDischargingAtOrBelowThreshold() {
+        // discharging, at/below → stretched
+        assertEquals(low, WhoopBleClient.offloadIntervalMsFor(base, low, batteryPct = 18, charging = false, thresholdPct = 20))
+        // above threshold → normal cadence
+        assertEquals(base, WhoopBleClient.offloadIntervalMsFor(base, low, batteryPct = 40, charging = false, thresholdPct = 20))
+    }
+
+    @Test fun offloadNeverStretchesWhenChargingOrDisabled() {
+        // charging → normal even at low battery
+        assertEquals(base, WhoopBleClient.offloadIntervalMsFor(base, low, batteryPct = 8, charging = true, thresholdPct = 30))
+        // threshold 0 → normal cadence always
+        assertEquals(base, WhoopBleClient.offloadIntervalMsFor(base, low, batteryPct = 3, charging = false, thresholdPct = 0))
+    }
 }

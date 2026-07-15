@@ -484,6 +484,20 @@ class WhoopBleClient(
         fun idleThrottleActive(batteryPct: Int, charging: Boolean, thresholdPct: Int): Boolean =
             thresholdPct > 0 && !charging && batteryPct <= thresholdPct
 
+        /** Stretched periodic-offload interval when the phone is low on battery (#477). The offload tick
+         *  is a PURE sync timer (the live-stream keep-alive is separate), so stretching it can't affect
+         *  link health — worst case is fresher data arriving in slightly larger batches; the strap banks
+         *  everything to flash meanwhile, so no data is lost. Left at [LOW_BATTERY_BACKFILL_INTERVAL_MS]
+         *  while DISCHARGING at/below [thresholdPct], else the normal [baseMs]. [thresholdPct] <= 0 / charging
+         *  never stretches. Pure, unit-testable. */
+        fun offloadIntervalMsFor(
+            baseMs: Long,
+            lowBatteryMs: Long,
+            batteryPct: Int,
+            charging: Boolean,
+            thresholdPct: Int,
+        ): Long = if (idleThrottleActive(batteryPct, charging, thresholdPct)) maxOf(baseMs, lowBatteryMs) else baseMs
+
         /** Pure keep/teardown decision for [prepareForPresentScan] (#74), unit-testable without a BLE
          *  stack (the [scanModeForReconnectAttempts] idiom). Keep the live link ONLY when one exists AND
          *  the wizard is scanning the SAME model; Android [WhoopModel] has exactly two members (one per
@@ -527,6 +541,10 @@ class WhoopBleClient(
         // MARK: Historical-offload timers (ported from BLEManager.swift, same constants).
         /** Periodic re-offload of the type-47 store while connected+bonded. 900s = 15 min (matches WHOOP). */
         private const val BACKFILL_INTERVAL_MS = 900_000L
+        /** #477 battery: stretched offload cadence while low on battery (45 min). The strap banks to flash
+         *  meanwhile, so this only delays sync (larger batches), never loses data. Gated on the discharging
+         *  battery-% threshold; 0 = disabled → always [BACKFILL_INTERVAL_MS]. */
+        private const val LOW_BATTERY_BACKFILL_INTERVAL_MS = 2_700_000L
         /** How far back the inactivity check reads gravity on each offload completion (4 h comfortably
          *  spans the threshold + re-nudge cadence and a separating Active break for bout continuity). */
         private const val INACTIVITY_LOOKBACK_S = 4 * 3600L
@@ -1165,6 +1183,31 @@ class WhoopBleClient(
         connectionPriorityEnabled = enabled
         this.idleThrottleBatteryPct = if (enabled) idleThrottleBatteryPct else 0
         handler.post { refreshConnectionPriority() }
+    }
+
+    /** Battery-% at/below which the periodic offload cadence stretches to
+     *  [LOW_BATTERY_BACKFILL_INTERVAL_MS] while discharging; 0 = never (normal 15-min cadence). DEFAULT
+     *  OFF, so this ships dormant. The Settings picker offers 10/15/20/25/30. */
+    @Volatile private var lowBatteryOffloadPct: Int = 0
+
+    /** Opt into the low-battery offload-cadence stretch (#477). Applies on the NEXT re-arm; a live sync
+     *  in flight is never interrupted. */
+    fun setLowBatteryOffloadThrottle(thresholdPct: Int) {
+        lowBatteryOffloadPct = thresholdPct
+    }
+
+    /** The delay before the next periodic offload — normally [BACKFILL_INTERVAL_MS], stretched when low on
+     *  battery (#477). Reads the battery snapshot at re-arm time. */
+    private fun nextBackfillDelayMs(): Long {
+        if (lowBatteryOffloadPct <= 0) return BACKFILL_INTERVAL_MS   // dormant: no battery read, unchanged cadence
+        val (batteryPct, charging) = batteryPctAndCharging()
+        return offloadIntervalMsFor(
+            baseMs = BACKFILL_INTERVAL_MS,
+            lowBatteryMs = LOW_BATTERY_BACKFILL_INTERVAL_MS,
+            batteryPct = batteryPct,
+            charging = charging,
+            thresholdPct = lowBatteryOffloadPct,
+        )
     }
 
     /** Current (battery-%, isCharging) from the sticky ACTION_BATTERY_CHANGED intent — a cheap synchronous
@@ -4897,13 +4940,14 @@ class WhoopBleClient(
     /** Periodic-timer callback: re-runs the type-47 offload (the primary metric sync). */
     private fun triggerPeriodicBackfill() {
         requestSync(BackfillTrigger.PERIODIC)
-        // Re-arm regardless so the cadence continues for the life of the connection.
-        handler.postDelayed(periodicBackfillRunnable, BACKFILL_INTERVAL_MS)
+        // Re-arm regardless so the cadence continues for the life of the connection. #477: the delay is
+        // battery-adaptive (stretched when low), read fresh at each re-arm.
+        handler.postDelayed(periodicBackfillRunnable, nextBackfillDelayMs())
     }
 
     private fun startBackfillTimer() {
         handler.removeCallbacks(periodicBackfillRunnable)
-        handler.postDelayed(periodicBackfillRunnable, BACKFILL_INTERVAL_MS)
+        handler.postDelayed(periodicBackfillRunnable, nextBackfillDelayMs())
     }
 
     private fun stopBackfillTimer() {
