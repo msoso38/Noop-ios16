@@ -1347,10 +1347,15 @@ fun SettingsScreen(
                             // only ever REQUESTS it, and when already exempt the switch is inert (no re-prompt).
                             onCheckedChange = { wantOn ->
                                 if (wantOn && !batteryExempt) {
+                                    // The whole feature exists for ROMs that strip things — so the fallback
+                                    // is guarded too: if BOTH the exemption dialog and the app-settings page
+                                    // are missing, no-op rather than crash (the OEM link below is another path).
                                     runCatching {
                                         context.startActivity(com.noop.ble.BackgroundHealth.batteryExemptionIntent(context))
                                     }.onFailure {
-                                        context.startActivity(com.noop.ble.BackgroundHealth.appBatterySettingsIntent(context))
+                                        runCatching {
+                                            context.startActivity(com.noop.ble.BackgroundHealth.appBatterySettingsIntent(context))
+                                        }
                                     }
                                 }
                             },
