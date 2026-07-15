@@ -16,7 +16,10 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.BatteryManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import android.os.Handler
@@ -472,6 +475,14 @@ class WhoopBleClient(
             idleThrottleEnabled -> BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER
             else -> BluetoothGatt.CONNECTION_PRIORITY_BALANCED
         }
+
+        /** Pure battery-adaptive gate for the RISKY idle LOW_POWER throttle (#477), unit-testable without
+         *  a BLE stack. Engages ONLY while DISCHARGING and at/below [thresholdPct] (the Settings picker
+         *  offers 10/15/20/25/30). [thresholdPct] <= 0 disables it (safe half only); charging never
+         *  throttles (battery isn't the concern then). The threshold IS its own hysteresis: battery %
+         *  moves slowly (minutes per point), so a boundary crossing flips at most once per point. */
+        fun idleThrottleActive(batteryPct: Int, charging: Boolean, thresholdPct: Int): Boolean =
+            thresholdPct > 0 && !charging && batteryPct <= thresholdPct
 
         /** Pure keep/teardown decision for [prepareForPresentScan] (#74), unit-testable without a BLE
          *  stack (the [scanModeForReconnectAttempts] idiom). Keep the live link ONLY when one exists AND
@@ -1139,17 +1150,33 @@ class WhoopBleClient(
      *  DORMANT - [refreshConnectionPriority] early-returns and issues ZERO new BLE ops, leaving the link
      *  at the stack default (BALANCED) exactly as before. Flip on ONLY after on-strap validation (see
      *  #477); a follow-up wires it to a persisted Settings toggle. [connectionPriorityEnabled] enables the
-     *  SAFE half (HIGH during offload/live-HR); [idleThrottleEnabled] additionally enables the RISKY half
-     *  (LOW_POWER when idle). Written from the main looper via [setConnectionPriorityManagement]. */
+     *  SAFE half (HIGH during offload/live-HR). The RISKY half (LOW_POWER when idle) is BATTERY-ADAPTIVE:
+     *  it engages only when the phone is discharging AND at/below [idleThrottleBatteryPct] (0 = never), so
+     *  the drop-risk is confined to when the user actually wants power saving. Set on the main looper via
+     *  [setConnectionPriorityManagement]. */
     @Volatile private var connectionPriorityEnabled: Boolean = false
-    @Volatile private var idleThrottleEnabled: Boolean = false
+    /** Battery-% at/below which the LOW_POWER idle throttle engages while discharging; 0 = never (safe
+     *  half only). The Settings picker offers 10/15/20/25/30. */
+    @Volatile private var idleThrottleBatteryPct: Int = 0
 
-    /** Opt into connection-priority management (#477). No-op by default; see the fields above. Runs the
-     *  reconcile on the GATT looper so it can't race the connection callbacks. */
-    fun setConnectionPriorityManagement(enabled: Boolean, idleThrottle: Boolean) {
+    /** Opt into connection-priority management (#477). No-op by default; see the fields above.
+     *  [idleThrottleBatteryPct] 0 disables the risky idle throttle (safe half only). */
+    fun setConnectionPriorityManagement(enabled: Boolean, idleThrottleBatteryPct: Int) {
         connectionPriorityEnabled = enabled
-        idleThrottleEnabled = idleThrottle && enabled
+        this.idleThrottleBatteryPct = if (enabled) idleThrottleBatteryPct else 0
         handler.post { refreshConnectionPriority() }
+    }
+
+    /** Current (battery-%, isCharging) from the sticky ACTION_BATTERY_CHANGED intent — a cheap synchronous
+     *  read, no persistent receiver. Unknown → (100, false) so the throttle fails SAFE (never engages). */
+    private fun batteryPctAndCharging(): Pair<Int, Boolean> {
+        val i = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level = i?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = i?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val status = i?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val pct = if (level >= 0 && scale > 0) level * 100 / scale else 100
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+        return pct to charging
     }
 
     /** (Re)apply the GATT connection priority for the current link state (#477). Idempotent + cheap: OFF
@@ -1157,12 +1184,13 @@ class WhoopBleClient(
     private fun refreshConnectionPriority() {
         if (!connectionPriorityEnabled) return
         val ops = gattOps ?: return
+        val (batteryPct, charging) = batteryPctAndCharging()
         // Read the authoritative INTERNAL flags (both set synchronously on this looper), not the
         // published LiveState mirror, which `exitBackfilling` may update a beat later.
         val priority = connectionPriorityFor(
             offloadActive = backfilling,
             liveHrActive = realtimeArmed,
-            idleThrottleEnabled = idleThrottleEnabled,
+            idleThrottleEnabled = idleThrottleActive(batteryPct, charging, idleThrottleBatteryPct),
         )
         // Deliberately NOT via safeGatt: a battery HINT must never tear the link down. safeGatt's policy
         // is "any throw ⇒ teardown", right for load-bearing writes/subscriptions but wrong here — a dead

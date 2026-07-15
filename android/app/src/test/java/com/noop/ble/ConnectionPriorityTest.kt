@@ -2,6 +2,8 @@ package com.noop.ble
 
 import android.bluetooth.BluetoothGatt
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -44,5 +46,22 @@ class ConnectionPriorityTest {
             BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER,
             WhoopBleClient.connectionPriorityFor(offloadActive = false, liveHrActive = false, idleThrottleEnabled = true),
         )
+    }
+
+    // --- battery-adaptive gate for the risky idle throttle (#477) ---
+
+    @Test fun idleThrottleEngagesOnlyWhenDischargingAtOrBelowThreshold() {
+        // at/below threshold, discharging → engage
+        assertTrue(WhoopBleClient.idleThrottleActive(batteryPct = 20, charging = false, thresholdPct = 20))
+        assertTrue(WhoopBleClient.idleThrottleActive(batteryPct = 12, charging = false, thresholdPct = 20))
+        // above threshold → do not engage
+        assertFalse(WhoopBleClient.idleThrottleActive(batteryPct = 21, charging = false, thresholdPct = 20))
+    }
+
+    @Test fun idleThrottleNeverEngagesWhenChargingOrDisabled() {
+        // charging → never (battery isn't the concern)
+        assertFalse(WhoopBleClient.idleThrottleActive(batteryPct = 5, charging = true, thresholdPct = 30))
+        // threshold 0 → disabled (safe half only), even at 1%
+        assertFalse(WhoopBleClient.idleThrottleActive(batteryPct = 1, charging = false, thresholdPct = 0))
     }
 }
