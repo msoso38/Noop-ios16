@@ -1164,7 +1164,14 @@ class WhoopBleClient(
             liveHrActive = realtimeArmed,
             idleThrottleEnabled = idleThrottleEnabled,
         )
-        safeGatt("requestConnectionPriority") { ops.requestConnectionPriorityCompat(priority) }
+        // Deliberately NOT via safeGatt: a battery HINT must never tear the link down. safeGatt's policy
+        // is "any throw ⇒ teardown", right for load-bearing writes/subscriptions but wrong here — a dead
+        // binder is handled by the next real op, and skipping a priority request costs nothing. Swallow.
+        try {
+            ops.requestConnectionPriorityCompat(priority)
+        } catch (t: Throwable) {
+            log("connection-priority request failed (${t.javaClass.simpleName}); skipped")
+        }
     }
     /** @Volatile: set on the GATT binder thread at service discovery, but read in send() on the main
      *  thread (user actions) - the barrier makes a main-thread send see the current characteristic. */
