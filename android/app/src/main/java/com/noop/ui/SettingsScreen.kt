@@ -1582,15 +1582,27 @@ fun SettingsScreen(
             }
             if (powerSaving) {
                 RowDivider()
-                FormRow(label = "Kick in at") {
-                    SegmentedPillControl(
-                        items = listOf(10, 15, 20, 25, 30),
-                        selection = powerSavingBatteryPct,
-                        label = { "$it%" },
-                        onSelect = {
-                            powerSavingBatteryPct = it
-                            vm.setPowerSavingBatteryPct(it)
-                        },
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Kick in at", style = NoopType.subhead, color = Palette.textPrimary)
+                        Text("$powerSavingBatteryPct%", style = NoopType.subhead, color = Palette.accent)
+                    }
+                    Slider(
+                        value = powerSavingBatteryPct.toFloat(),
+                        // 10–30% snapping to 5% steps (10/15/20/25/30). steps = the 3 stops BETWEEN ends.
+                        onValueChange = { powerSavingBatteryPct = it.roundToInt() },
+                        onValueChangeFinished = { vm.setPowerSavingBatteryPct(powerSavingBatteryPct) },
+                        valueRange = 10f..30f,
+                        steps = 3,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Palette.accent,
+                            activeTrackColor = Palette.accent,
+                            inactiveTrackColor = Palette.surfaceInset,
+                        ),
                     )
                 }
             }
