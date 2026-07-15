@@ -425,7 +425,9 @@ final class AppModel: ObservableObject {
     func applyPowerSaving() {
         let on = PuffinExperiment.powerSavingEnabled
         ble.setLowBatteryOffloadThrottle(on ? PuffinExperiment.powerSavingBatteryPct : 0)
-        ble.setPauseCaptureOnPowerSave(on && PuffinExperiment.pauseHrvOnPowerSaveEnabled)
+        // HRV pause is battery-%-aware like the offload lever — pass the same threshold.
+        ble.setPauseCaptureOnPowerSave(on && PuffinExperiment.pauseHrvOnPowerSaveEnabled,
+                                       thresholdPct: PuffinExperiment.powerSavingBatteryPct)
     }
 
     /// Tiny and guarded: with no generic strap paired the active id is "my-whoop", so the coordinator

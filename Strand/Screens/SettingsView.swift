@@ -999,14 +999,14 @@ struct SettingsView: View {
                     Divider().overlay(StrandPalette.hairline)
                     // HRV pause: a sub-option, ON by default when the master is on (stored inverted).
                     Toggle(isOn: Binding(get: { !pauseHrvDisabled }, set: { pauseHrvDisabled = !$0 })) {
-                        Text("Pause HRV capture in Low Power Mode")
+                        Text("Pause HRV capture")
                             .font(StrandFont.subhead)
                             .foregroundStyle(StrandPalette.textPrimary)
                     }
                     .toggleStyle(.switch)
                     .tint(StrandPalette.accent)
                     .onChangeCompat(of: pauseHrvDisabled) { _ in model.applyPowerSaving() }
-                    Text("While Low Power Mode is on, stop the always-on background HRV stream (the biggest live drain). Opening a Live screen still shows heart rate, and it re-arms automatically when Low Power Mode turns off.")
+                    Text("While saving power (battery low or Low Power Mode), stop the always-on background HRV stream — the biggest live drain. A Live screen still shows heart rate, and it re-arms automatically once you're off power saving.")
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)

@@ -558,7 +558,9 @@ public final class BLEManager: NSObject, ObservableObject {
     /// background continuous-HRV stream under Low Power Mode. Both are benign (no link risk). Set from
     /// Settings via `setLowBatteryOffloadThrottle`/`setPauseCaptureOnPowerSave`.
     private var lowBatteryOffloadPct = 0
-    private var pauseCaptureOnPowerSave = false
+    /// Battery-% at/below which the continuous-HRV pause engages while low on power (0 = off) — like the
+    /// offload lever, it also engages under Low Power Mode.
+    private var pauseCaptureBatteryPct = 0
     /// Derived want: the (heavy) realtime stream should be armed while EITHER a screen wants it OR the
     /// continuous-capture preference wants it. Keep-alive re-arms it; the post-bond branch arms it on
     /// connect. Recomputed only inside `reconcileRealtime()`.
@@ -2065,9 +2067,11 @@ public final class BLEManager: NSObject, ObservableObject {
         lowBatteryOffloadPct = thresholdPct
     }
 
-    /// #477 (Settings): pause the background continuous-HRV stream under Low Power Mode. Reconciles now.
-    public func setPauseCaptureOnPowerSave(_ enabled: Bool) {
-        pauseCaptureOnPowerSave = enabled
+    /// #477 (Settings): pause the background continuous-HRV stream while power-saving. Battery-%-aware
+    /// like the offload lever — pass the same threshold; engages at/below it OR under Low Power Mode
+    /// (0 = off). Reconciles now.
+    public func setPauseCaptureOnPowerSave(_ enabled: Bool, thresholdPct: Int) {
+        pauseCaptureBatteryPct = enabled ? thresholdPct : 0
         reconcileRealtime()
     }
 
@@ -2108,10 +2112,18 @@ public final class BLEManager: NSObject, ObservableObject {
     /// Mirrors the Android `continuousCaptureWantsNow`.
     private func continuousCaptureWantsNow(now: Date = Date()) -> Bool {
         guard keepRealtimeForData else { return false }
-        // #477: while Low Power Mode is on, release the held-open background stream (own toggle). A Live
-        // screen still arms it via screenWantsRealtime (checked separately in reconcileRealtime). The
-        // keep-alive re-derives this, so it re-arms automatically when Low Power Mode turns off.
-        if pauseCaptureOnPowerSave && powerSaveActive() { return false }
+        // #477: while power saving is ACTIVE (battery ≤ threshold or Low Power Mode), release the
+        // held-open background stream — battery-%-aware like the offload lever, via the shared
+        // lowPowerThrottleActive gate. A Live screen still arms it via screenWantsRealtime (checked
+        // separately in reconcileRealtime). The keep-alive re-derives this, so it re-arms automatically
+        // once off power save.
+        if pauseCaptureBatteryPct > 0 {
+            let (pct, charging) = batteryPctAndCharging()
+            if BLEManager.lowPowerThrottleActive(batteryPct: pct, charging: charging,
+                                                 thresholdPct: pauseCaptureBatteryPct, powerSave: powerSaveActive()) {
+                return false
+            }
+        }
         let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
         let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
         let d = UserDefaults.standard
