@@ -2,10 +2,6 @@ package com.noop.ui
 
 import android.app.Application
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.BatteryManager
-import android.os.PowerManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.noop.NoopApplication
@@ -916,19 +912,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    /** #477: is power saving CURRENTLY throttling — master on AND (battery ≤ threshold while discharging
-     *  OR Battery Saver)? Reuses the SAME pure gate as the BLE levers so all three agree. Read live per
-     *  analyze cycle; unknown battery fails SAFE (100 %, never throttles). */
+    /** #477: is power saving CURRENTLY throttling — master on AND (STRAP battery ≤ threshold while the
+     *  strap is discharging OR the phone is in Battery Saver)? Reuses the SAME pure gate as the BLE
+     *  levers so all three agree. Read live per analyze cycle; unknown strap battery fails SAFE (100 %). */
     private fun isPowerSavingActiveNow(): Boolean {
         if (!NoopPrefs.powerSaving(appContext)) return false
-        val i = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val level = i?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-        val scale = i?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
-        val status = i?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-        val pct = if (level >= 0 && scale > 0) level * 100 / scale else 100
-        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
-        val powerSave = (appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isPowerSaveMode ?: false
-        return WhoopBleClient.idleThrottleActive(pct, charging, NoopPrefs.powerSavingBatteryPct(appContext), powerSave)
+        // Key off the connected STRAP's battery (WHOOP/Oura/Fitbit), not the phone — see
+        // WhoopBleClient.batteryPctAndCharging. The phone's own Battery Saver deliberately does NOT
+        // trigger it: power saving is about the strap's charge. Unknown strap battery → 100 (fails safe).
+        val s = ble.state.value
+        val pct = s.batteryPct?.toInt() ?: 100
+        val charging = s.charging == true
+        return WhoopBleClient.idleThrottleActive(pct, charging, NoopPrefs.powerSavingBatteryPct(appContext))
     }
 
     /** Flip "Power saving" (Settings). Persists + applies immediately. */
