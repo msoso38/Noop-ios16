@@ -73,6 +73,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,6 +93,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.BuildConfig
 import com.noop.analytics.Baselines
@@ -1277,7 +1281,23 @@ fun SettingsScreen(
                 // adds no battery cost of its own — it stops a premature kill; the real cost is the two
                 // toggles below.
                 if (backgroundConnection) {
-                    val batteryExempt = com.noop.ble.BackgroundHealth.isBatteryExempt(context)
+                    // Re-read the LIVE exempt state on every ON_RESUME so the toggle flips to on the moment
+                    // the user returns from the system whitelist dialog. Reading it plainly in composition
+                    // wouldn't recompose on resume — it'd show a stale "off", look like it failed, and invite
+                    // a SECOND (duplicate) popup, defeating the popup discipline.
+                    val lifecycleOwner = LocalLifecycleOwner.current
+                    var batteryExempt by remember {
+                        mutableStateOf(com.noop.ble.BackgroundHealth.isBatteryExempt(context))
+                    }
+                    DisposableEffect(lifecycleOwner) {
+                        val obs = LifecycleEventObserver { _, event ->
+                            if (event == Lifecycle.Event.ON_RESUME) {
+                                batteryExempt = com.noop.ble.BackgroundHealth.isBatteryExempt(context)
+                            }
+                        }
+                        lifecycleOwner.lifecycle.addObserver(obs)
+                        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+                    }
                     val oemAutostart = remember { com.noop.ble.BackgroundHealth.oemAutostartIntent(context) }
                     // Only NAME the manufacturer as a killer when it actually is one — a Pixel/Samsung
                     // shouldn't read "especially Google". The whitelist still helps everyone (it also
