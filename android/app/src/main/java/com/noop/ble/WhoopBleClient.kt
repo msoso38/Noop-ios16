@@ -21,6 +21,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.BatteryManager
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import android.os.Handler
 import android.os.Looper
@@ -477,12 +478,14 @@ class WhoopBleClient(
         }
 
         /** Pure battery-adaptive gate for the RISKY idle LOW_POWER throttle (#477), unit-testable without
-         *  a BLE stack. Engages ONLY while DISCHARGING and at/below [thresholdPct] (the Settings picker
-         *  offers 10/15/20/25/30). [thresholdPct] <= 0 disables it (safe half only); charging never
-         *  throttles (battery isn't the concern then). The threshold IS its own hysteresis: battery %
-         *  moves slowly (minutes per point), so a boundary crossing flips at most once per point. */
-        fun idleThrottleActive(batteryPct: Int, charging: Boolean, thresholdPct: Int): Boolean =
-            thresholdPct > 0 && !charging && batteryPct <= thresholdPct
+         *  a BLE stack. The lever is ARMED by [thresholdPct] > 0 (the Settings picker offers 10/15/20/25/
+         *  30; 0 disables it — safe half only, and NOT even Battery Saver can force it, respecting the
+         *  drop-risk asymmetry). Once armed and while DISCHARGING it engages at/below [thresholdPct] OR
+         *  when the OS Battery Saver is on ([powerSave]) — whichever comes first. Charging never throttles.
+         *  The threshold IS its own hysteresis: battery % moves slowly, so a boundary crossing flips at
+         *  most once per point; Battery Saver has its own hysteresis. */
+        fun idleThrottleActive(batteryPct: Int, charging: Boolean, thresholdPct: Int, powerSave: Boolean): Boolean =
+            thresholdPct > 0 && !charging && (batteryPct <= thresholdPct || powerSave)
 
         /** Stretched periodic-offload interval when the phone is low on battery (#477). The offload tick
          *  is a PURE sync timer (the live-stream keep-alive is separate), so stretching it can't affect
@@ -496,7 +499,8 @@ class WhoopBleClient(
             batteryPct: Int,
             charging: Boolean,
             thresholdPct: Int,
-        ): Long = if (idleThrottleActive(batteryPct, charging, thresholdPct)) maxOf(baseMs, lowBatteryMs) else baseMs
+            powerSave: Boolean,
+        ): Long = if (idleThrottleActive(batteryPct, charging, thresholdPct, powerSave)) maxOf(baseMs, lowBatteryMs) else baseMs
 
         /** Pure keep/teardown decision for [prepareForPresentScan] (#74), unit-testable without a BLE
          *  stack (the [scanModeForReconnectAttempts] idiom). Keep the live link ONLY when one exists AND
@@ -1207,8 +1211,14 @@ class WhoopBleClient(
             batteryPct = batteryPct,
             charging = charging,
             thresholdPct = lowBatteryOffloadPct,
+            powerSave = powerSaveActive(),
         )
     }
+
+    /** True when the OS Battery Saver is on — the user's explicit "save power" signal (#477). An extra
+     *  trigger for an already-armed lever; has its own hysteresis + charging-awareness. */
+    private fun powerSaveActive(): Boolean =
+        (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isPowerSaveMode == true
 
     /** Current (battery-%, isCharging) from the sticky ACTION_BATTERY_CHANGED intent — a cheap synchronous
      *  read, no persistent receiver. Unknown → (100, false) so the throttle fails SAFE (never engages). */
@@ -1231,7 +1241,7 @@ class WhoopBleClient(
         // HIGH-escalation half doesn't need it, so safe-half-only mode issues no battery read.
         val idleThrottle = idleThrottleBatteryPct > 0 && run {
             val (batteryPct, charging) = batteryPctAndCharging()
-            idleThrottleActive(batteryPct, charging, idleThrottleBatteryPct)
+            idleThrottleActive(batteryPct, charging, idleThrottleBatteryPct, powerSaveActive())
         }
         // Read the authoritative INTERNAL flags (both set synchronously on this looper), not the
         // published LiveState mirror, which `exitBackfilling` may update a beat later.
