@@ -657,6 +657,16 @@ public final class BLEManager: NSObject, ObservableObject {
     /// didUpdateNotificationStateFor re-fire (or any other later call into the check) can't double-bump.
     /// Reset on disconnect.
     private var connectSettledSignaled = false
+    /// When the standard Battery Level (0x2A19) read was last ISSUED this session, for
+    /// `StrapBatteryReadPolicy`'s throttle. The read is now re-issued from `enableLiveNotifications`, which
+    /// re-runs on every `.withResponse` ack during an offload — without this the retry would storm the
+    /// strap. Reset on disconnect so a fresh link always reads immediately.
+    private var lastBatteryReadAt: TimeInterval?
+    /// True once ANY notification has arrived on the CURRENT connection (the `sawData` input to
+    /// `StalledHandshakePolicy`). Distinct from `lastDataAt`, which is seeded to "now" at connect and so
+    /// cannot tell "the strap has spoken" from "the link just came up" — precisely the distinction a
+    /// restored zombie peripheral turns on. Reset on connect/restore and on disconnect.
+    private var sawDataThisConnection = false
     /// Re-entrancy guard for captureRawAccel: true while a bounded on-demand window is running.
     /// A second tap is a no-op until the active capture's asyncAfter block fires and clears this.
     private var rawCaptureInFlight = false
@@ -2451,6 +2461,43 @@ public final class BLEManager: NSObject, ObservableObject {
         clearRebootState()   // clears the "Reconnecting…" pill → back to "Active · Live"
     }
 
+    /// Arm the stalled-handshake watchdog for the connection that just came up.
+    ///
+    /// Called from BOTH paths that can put the app on a live link: `didConnect` and the `willRestoreState`
+    /// branch that adopts an already-`.connected` peripheral. The restore branch is the one that actually
+    /// bit: it never reaches `didWriteValueFor`, which is the only caller of `startKeepAlive()`, so the
+    /// 120 s liveness watchdog that would have bounced the dead link is never armed and the app retries the
+    /// same corpse forever ("Backfill: deferred — connect handshake not done yet", 40+ minutes).
+    ///
+    /// One-shot, generation-guarded (the same `connectGeneration` idiom the #711 reconnect-guide timer uses),
+    /// so a timer left in flight by an earlier connection can never bounce a healthy later one.
+    private func armStalledHandshakeWatchdog() {
+        let gen = connectGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + StalledHandshakePolicy.fuseSeconds) { [weak self] in
+            guard let self, self.connectGeneration == gen else { return }
+            guard StalledHandshakePolicy.shouldRecover(
+                connected: self.state.connected,
+                handshakeDone: self.connectHandshakeDone,
+                sawData: self.sawDataThisConnection,
+                intentionalDisconnect: self.intentionalDisconnect,
+                autoReconnectPaused: self.autoReconnectPausedForBondLoop,
+                bondRefused: self.state.pairingHint != nil) else { return }
+            // Log the recovery (the "log successes" forensics rule): without this line a strap log shows a
+            // reconnect with no cause, which is exactly how the original 40-minute spin stayed invisible.
+            self.log("Handshake stalled: connected for \(Int(StalledHandshakePolicy.fuseSeconds))s with no "
+                     + "handshake and no data — the link is up but dead (a restored peripheral iOS still "
+                     + "believes in). Cancelling it so the rescan can find the strap again.")
+            if TestCentre.active(.connection) {
+                self.state.append(log: "handshakeStalled gen=\(gen) fuse=\(Int(StalledHandshakePolicy.fuseSeconds))s "
+                    + "(cancelling + rescanning)", domain: .connection)
+            }
+            // Recovery = the SAME lever the liveness watchdog pulls: cancel and let didDisconnectPeripheral's
+            // existing 3 s rescan re-find the strap. No new reconnect path, and it still honours the
+            // intentional-disconnect / bond-loop-pause gates that live there.
+            if let p = self.peripheral { self.central.cancelPeripheralConnection(p) }
+        }
+    }
+
     private func startKeepAlive() {
         keepAliveTimer?.cancel()
         let s = BLEManager.keepAliveIntervalSeconds
@@ -2665,6 +2712,30 @@ public final class BLEManager: NSObject, ObservableObject {
         for c in chars where !c.isNotifying {
             requestNotify(c, on: p, reason: reason)
         }
+        retryBatteryReadIfDue(on: p, reason: reason)
+    }
+
+    /// Re-issue the standard Battery Level (0x2A19) READ that a pre-bond link refused.
+    ///
+    /// This is the missing half of `enableLiveNotifications`. That function's own call site claims it
+    /// recovers the "standard HR/battery that failed pre-bond", but it only ever re-ran `setNotifyValue` —
+    /// never `readValue`. So on a WHOOP 5/MG the one-shot read fired at discovery (unencrypted link) was
+    /// rejected, dropped in `didUpdateValueFor`'s error branch, and never retried: HR came back because the
+    /// strap PUSHES it, battery never did. Re-reading here means every moment that already re-subscribes
+    /// notifies — post-bond 5/MG, post-bond 4.0, keep-alive, manual refresh, realtime start — is also a
+    /// moment the battery reading can self-heal. `StrapBatteryReadPolicy` owns the family gate (#77: never
+    /// read a WHOOP 4.0's stub-100 characteristic) and the throttle (this runs on every HISTORY_END ack
+    /// during an offload); both are pinned by tests.
+    private func retryBatteryReadIfDue(on p: CBPeripheral, reason: String) {
+        guard let b = batteryCharacteristic else { return }
+        let now = Date().timeIntervalSince1970
+        guard StrapBatteryReadPolicy.shouldRead(family: selectedModel.deviceFamily,
+                                                canRead: b.properties.contains(.read),
+                                                lastReadAt: lastBatteryReadAt,
+                                                now: now) else { return }
+        lastBatteryReadAt = now
+        p.readValue(for: b)
+        log("Battery Level read re-issued (\(reason))")
     }
 
     private func requestNotify(_ c: CBCharacteristic, on p: CBPeripheral, reason: String) {
@@ -3105,6 +3176,11 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         // only — BLEManager stays decoupled from the store and the connect flow below is unchanged.
         connectedPeripheralUUID = peripheral.identifier.uuidString
         state.connected = true
+        // …but the link has proven NOTHING yet: this fires before discoverPrimaryServices below, so no
+        // characteristic exists and no byte has moved. The Devices pill gates "Active · Live" on this so it
+        // can't claim live data off a raw CBPeripheral handle. Set true by the first notification, or by the
+        // completed connect handshake, whichever lands first.
+        state.linkProven = false
         // A connect succeeded → clear the stale-bond re-pair guide UNLESS we are in a known bond-loop
         // (#617). In that loop the strap "connects" every ~3 s before timing out again, so clearing here
         // wiped the guide on EVERY cycle: it flashed for ~1 s and vanished, so the user could never read it
@@ -3127,6 +3203,9 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
             state.reconnectGuide = nil
         }
         lastDataAt = Date()
+        sawDataThisConnection = false   // this link has not proven itself yet — see armStalledHandshakeWatchdog
+        lastBatteryReadAt = nil         // a fresh link re-reads 0x2A19 immediately (5/MG; #77 spares the 4.0)
+        armStalledHandshakeWatchdog()
         log("Connected — discovering services")
         // Connection test mode: report the connect latency + the uptime-start marker the readout reads.
         // Gated zero-cost: the .connection bool is read before any string is built, so this is a no-op
@@ -3220,6 +3299,12 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         }
         bondedAt = nil   // cleared after the bond-loop detector above read it (#617)
         state.connected = false
+        // Back to the inert default: the flag only ever means something while BLEManager owns a live link,
+        // and a stale `false` left here would make the NEXT source (Oura/Huami/FTMS/standard-HR, none of
+        // which touch it) read as un-live. The next connect/restore clears it again.
+        state.linkProven = true
+        sawDataThisConnection = false
+        lastBatteryReadAt = nil       // the next link re-reads 0x2A19 immediately (5/MG; the 4.0 never reads it)
         state.encryptedBond = false   // cleared with didBond; next session must re-prove the bond (#69)
         state.charging = nil          // a stale charging flag must not outlive the link
         state.strapFirmware = nil     // a stale firmware version must not outlive the link
@@ -3400,11 +3485,27 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         Task { @MainActor in await bootstrapStore() }
         if p.state == .connected {
             state.connected = true
+            // The restored link is UNPROVEN despite the seeded bond flags above: those record that this
+            // strap was bonded in a PREVIOUS process, which says nothing about whether it is alive now. This
+            // is the exact case that made the pill lie — CoreBluetooth says .connected, the bond flags say
+            // bonded, and the strap is dead.
+            state.linkProven = false
+            // A restored peripheral is the ONE path onto a live link that never runs didConnect, so every
+            // per-connection reset and every watchdog here has to be done by hand — that omission is exactly
+            // what let a dead restored handle spin for 40+ minutes. Bump the generation first: this IS a new
+            // connection for the watchdog's staleness guard, and without the bump a restore that follows a
+            // real connect would reuse its generation.
+            connectGeneration &+= 1
+            sawDataThisConnection = false
+            lastBatteryReadAt = nil
+            lastDataAt = Date()   // start the liveness clock at the restore, not at BLEManager init
+            armStalledHandshakeWatchdog()
             log("Restored CONNECTED peripheral \(p.identifier) — re-discovering services")
             discoverPrimaryServices(on: p)
         } else {
             state.connected = false
             log("Restored DISCONNECTED peripheral \(p.identifier) — reconnect on poweredOn")
+            // No watchdog needed here: this branch goes through central.connect → didConnect, which arms it.
             if central.state == .poweredOn { central.connect(p, options: nil) }
         }
     }
@@ -3635,6 +3736,7 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             if !whoop5SessionStarted {
                 whoop5SessionStarted = true
                 connectHandshakeDone = true     // unblocks beginBackfill()'s guard
+                state.linkProven = true         // the strap acked CLIENT_HELLO — this link is genuinely alive
                 log("WHOOP 5/MG: connect handshake done — backfill unblocked")
                 noteRebootReconnectIfNeeded()
                 // Re-apply the Broadcast-HR device-config flag if the user opted in (#181).
@@ -3683,6 +3785,7 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         // type-47 fine because it runs the sequence once on a stable connection; the app stormed it.
         guard !connectHandshakeDone else { return }
         connectHandshakeDone = true
+        state.linkProven = true   // the confirmed-write bond acked — this link is genuinely alive
         noteRebootReconnectIfNeeded()
         backfillStarted = true
 
@@ -3837,6 +3940,13 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         guard let data = characteristic.value else { return }
         let bytes = [UInt8](data)
         lastDataAt = Date()   // feed the liveness watchdog on every notification
+        // The strap has spoken on this link — it is not a zombie, so the stalled-handshake watchdog must
+        // stand down (the 120s liveness fuse owns a link that goes quiet LATER). This covers every source
+        // that lands here: a 5/MG's standard 0x2A37 HR, a WHOOP4 puffin/custom frame, a battery read.
+        if !sawDataThisConnection {
+            sawDataThisConnection = true
+            state.linkProven = true   // …and the Devices pill may honestly say "Live" now (#221 sibling)
+        }
 
         switch characteristic.uuid {
         case BLEManager.heartRateChar:

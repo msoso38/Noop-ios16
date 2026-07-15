@@ -35,6 +35,20 @@ public final class LiveState: ObservableObject {
     /// per-connection guards (`connectHandshakeDone`, the cmd-notify-confirmed flag) reset on disconnect,
     /// so the next connection can bump this again.
     @Published public var connectSettled: Int = 0
+    /// Has the CURRENT link proven itself — i.e. has the strap actually spoken (any notification), or has
+    /// the connect handshake completed? `connected` alone cannot answer that: BLEManager publishes it the
+    /// instant CoreBluetooth's `didConnect` fires, BEFORE service discovery, so it is true while no
+    /// characteristic exists and no byte has moved. Combined with iOS state restoration handing back a
+    /// peripheral that is `.connected` but dead, that made the Devices card advertise "Active · Live" for a
+    /// strap that was a corpse — the user read "Live" all evening on a band that had flat-lined.
+    ///
+    /// DEFAULTS TRUE, and only BLEManager ever clears it. That is deliberate: `connected` is also driven by
+    /// four non-WHOOP sources (Oura, Huami, FTMS, generic standard-HR), and each of those sets it true only
+    /// once it is genuinely subscribed and receiving. They never touch this flag, so they keep their exact
+    /// current behaviour — an inert `true` — instead of being regressed into looking offline. BLEManager
+    /// clears it at connect/restore, sets it on first data or a completed handshake, and restores the inert
+    /// `true` on disconnect so a stale `false` can't outlive the link and poison the next source.
+    @Published public var linkProven: Bool = true
     /// True ONLY when a non-WHOOP live source (currently the Oura ring) is actively streaming live HR.
     /// This is the green "STREAMING" signal for sources that have no WHOOP-style encrypted bond: it is
     /// DELIBERATELY separate from `bonded`, which carries WHOOP encrypted-bond + buzz semantics (it gates
