@@ -365,7 +365,12 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                 composable(Destination.Breathe.route) { BreatheScreen(viewModel) }
                 composable(Destination.Coach.route) { CoachScreen() }
                 composable(Destination.Explore.route) { TrendsExploreScreen(viewModel) }
-                composable(Destination.Automations.route) { AutomationsScreen(viewModel) }
+                composable(Destination.Automations.route) {
+                    AutomationsScreen(
+                        viewModel = viewModel,
+                        onOpenSmartAlarm = { nav.navigateTopLevel(Destination.SmartAlarm.route) },
+                    )
+                }
                 composable(Destination.SmartAlarm.route) { SmartAlarmScreen(viewModel) }
                 composable(Destination.Workouts.route) { WorkoutsScreen(viewModel) }
                 composable(Destination.Intelligence.route) { IntelligenceScreen(viewModel) }

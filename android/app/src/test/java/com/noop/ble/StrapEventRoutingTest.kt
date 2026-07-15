@@ -36,12 +36,35 @@ class StrapEventRoutingTest {
         )
     }
 
+    @Test fun liveEvent59DismissesSmartAlarm() {
+        assertFalse(WhoopBleClient.isGestureEvent("STRAP_DRIVEN_ALARM_DISABLED(59)"))
+        assertTrue(
+            WhoopBleClient.smartAlarmDismissedForEvent("STRAP_DRIVEN_ALARM_DISABLED(59)", replayedOffload = false),
+        )
+    }
+
+    @Test fun replayedEvent59DoesNotDismiss() {
+        assertFalse(
+            WhoopBleClient.smartAlarmDismissedForEvent("STRAP_DRIVEN_ALARM_DISABLED(59)", replayedOffload = true),
+        )
+    }
+
+    @Test fun hapticLifecycleEventsDoNotDismissSmartAlarm() {
+        for (e in listOf("HAPTICS_FIRED(60)", "HAPTICS_TERMINATED(100)")) {
+            assertFalse(WhoopBleClient.isGestureEvent(e))
+            assertFalse(WhoopBleClient.smartAlarmFiredForEvent(e, replayedOffload = false))
+            assertFalse(WhoopBleClient.smartAlarmDismissedForEvent(e, replayedOffload = false))
+        }
+    }
+
     // The genuine gestures stay gestures (freshness-gated path) and never trip the smart-alarm dispatch.
     @Test fun gesturesAreGesturesAndNeverFireSmartAlarm() {
         for (g in listOf("DOUBLE_TAP(14)", "WRIST_ON(9)", "WRIST_OFF(10)")) {
             assertTrue("$g should be a gesture", WhoopBleClient.isGestureEvent(g))
             assertFalse("$g must not fire smart alarm",
                 WhoopBleClient.smartAlarmFiredForEvent(g, replayedOffload = false))
+            assertFalse("$g must not dismiss smart alarm",
+                WhoopBleClient.smartAlarmDismissedForEvent(g, replayedOffload = false))
         }
     }
 
@@ -51,6 +74,7 @@ class StrapEventRoutingTest {
         for (e in listOf("BLE_BONDED(1)", "BATTERY_LEVEL(26)")) {
             assertFalse(WhoopBleClient.isGestureEvent(e))
             assertFalse(WhoopBleClient.smartAlarmFiredForEvent(e, replayedOffload = false))
+            assertFalse(WhoopBleClient.smartAlarmDismissedForEvent(e, replayedOffload = false))
         }
     }
 }

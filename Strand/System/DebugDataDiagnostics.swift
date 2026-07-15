@@ -219,11 +219,10 @@ enum DebugDataDiagnostics {
         let on = d.bool(forKey: "behavior.smartAlarmEnabled")
         let mins = (d.object(forKey: "behavior.smartAlarmMinutes") as? Int) ?? 7 * 60
         lines.append("Enabled: \(on ? "yes" : "no") · set \(String(format: "%02d:%02d", mins / 60, mins % 60))")
-        // #3: model + the 5/MG experimental gate — a 5/MG firmware alarm is NOT armed unless Experimental is on.
-        // (selectedWhoopModel stores the WhoopModel rawValue — "WHOOP 5.0 / MG" / "WHOOP 4.0" — not "whoop5".)
+        // selectedWhoopModel stores the WhoopModel rawValue - "WHOOP 5.0 / MG" / "WHOOP 4.0" - not "whoop5".
         let model = d.string(forKey: "selectedWhoopModel") ?? WhoopModel.whoop4.rawValue
         if model == WhoopModel.whoop5mg.rawValue {
-            lines.append("Model: \(model) · experimental: \(PuffinExperiment.isEnabled ? "on" : "off → firmware alarm NOT armed")")
+            lines.append("Model: \(model) · experimental: \(PuffinExperiment.isEnabled ? "on" : "off - firmware alarm NOT armed")")
         } else {
             lines.append("Model: \(model)")
         }

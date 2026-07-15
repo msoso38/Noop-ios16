@@ -289,6 +289,17 @@
             android:name="com.noop.alarm.SmartAlarmReceiver"
             android:exported="false" />
 
+        <!-- Phone-side snooze and dismiss actions for the smart alarm notification. Responds only to
+             internal intents fired from the notification action buttons. Not exported. -->
+        <receiver
+            android:name=".alarm.SnoozeReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.noop.alarm.action.SNOOZE_SMART_ALARM" />
+                <action android:name="com.noop.alarm.action.DISMISS_SMART_ALARM" />
+            </intent-filter>
+        </receiver>
+
         <!-- Re-arms the persisted hard-deadline alarm after a reboot so an overnight restart can't
              silently drop the user's wake. -->
         <receiver

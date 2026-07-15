@@ -2,6 +2,13 @@ package com.noop
 
 import android.app.Application
 import android.util.Log
+import com.noop.alarm.SmartAlarmCoordinator
+import com.noop.alarm.SmartAlarmScheduler
+import com.noop.alarm.SmartAlarmStore
+import com.noop.alarm.StrapArmer
+import com.noop.alarm.UnifiedAlarmMigration
+import com.noop.alarm.UnifiedAlarmStore
+import com.noop.alarm.UnifiedPhoneScheduler
 import com.noop.ble.SourceCoordinator
 import com.noop.ble.WhoopBleClient
 import com.noop.ble.WhoopModel
@@ -10,6 +17,7 @@ import com.noop.data.WhoopDatabase
 import com.noop.data.WhoopRepository
 import com.noop.ui.NoopPrefs
 import kotlinx.coroutines.runBlocking
+import java.time.ZoneId
 
 /**
  * Application entry point.
@@ -26,11 +34,59 @@ import kotlinx.coroutines.runBlocking
  */
 class NoopApplication : Application() {
 
+    /**
+     * Process-wide unified alarm store. Owned here so the BLE service and the UI share the exact
+     * same instance and the coordinator is the single writer of armed state.
+     */
+    lateinit var unifiedAlarmStore: UnifiedAlarmStore
+        private set
+
+    /**
+     * Process-wide smart alarm coordinator. Sole owner of arm/disable + AlarmManager calls. User
+     * edits, BLE reconnect, boot restore, and alarm fire/dismiss events funnel through it.
+     */
+    lateinit var smartAlarmCoordinator: SmartAlarmCoordinator
+        private set
+
     override fun onCreate() {
         super.onCreate()
         // Record any uncaught crash to a file so it rides along in the shareable strap log — a
         // device-specific crash (e.g. Insights #224/#267) is otherwise lost to an unreachable logcat.
         CrashCapture.install(this)
+
+        // Smart Alarm (#207 v2): one-shot copy of the two legacy alarm stores into
+        // [UnifiedAlarmStore]. Idempotent. All migration code is in one file for future deletion.
+        val migrationChanged = UnifiedAlarmMigration.migrateIfNeeded(applicationContext)
+        if (migrationChanged) {
+            // The legacy single-slot phone alarm is retired once the unified store exists. Cancel its
+            // fixed PendingIntent so migrated users do not get a duplicate wake beside the per-id one-shot.
+            SmartAlarmScheduler.cancel(applicationContext, SmartAlarmStore.from(applicationContext))
+        }
+        val store = UnifiedAlarmStore.from(applicationContext)
+
+        val strapArmer = object : StrapArmer {
+            override fun armAt(epochSec: Long): Boolean = ble.armStrapAlarm(epochSec)
+            override fun fireNow() { ble.runFirmwareAlarmNow() }
+            override fun disable() { ble.disableStrapAlarm() }
+        }
+
+        val phoneScheduler = UnifiedPhoneScheduler(this, store)
+
+        val coordinator = SmartAlarmCoordinator(
+            context = this,
+            store = store,
+            nowEpochMs = { System.currentTimeMillis() },
+            zone = ZoneId.systemDefault(),
+            strapArmer = strapArmer,
+            phoneScheduler = phoneScheduler,
+        )
+
+        unifiedAlarmStore = store
+        smartAlarmCoordinator = coordinator
+
+        // Only a just-written migration needs immediate reconciliation at process start. Existing
+        // schedules are event-driven: user edits, BLE reconnect, boot restore, or alarm fire/dismiss.
+        if (migrationChanged) coordinator.recompute()
     }
 
     /** Process-wide Room-backed store. One instance shared by the UI and the background service. */
@@ -77,7 +133,7 @@ class NoopApplication : Application() {
      * Multi-WHOOP identity adoption: AppViewModel's init collects [WhoopBleClient.connectedPeripheralAddress]
      * (distinctUntilChanged) into [SourceCoordinator.connectedPeripheralChanged] — the Kotlin analogue of
      * macOS wiring `BLEManager.connectedPeripheralUUID` into the coordinator's adoption sink. Kept beside
-     * the other `ble`-flow collectors there (this Application owns no CoroutineScope of its own).
+     * the other `ble`-flow collectors there (see AppViewModel init).
      */
     val sourceCoordinator: SourceCoordinator by lazy {
         SourceCoordinator(

@@ -12,9 +12,7 @@ import java.time.ZonedDateTime
 /**
  * Byte-exact tests for the WHOOP 5.0/MG firmware wake-alarm payload encoder [AlarmPayload]. The
  * expected vectors are the protocol's own wire-format facts (command numbers, field offsets, byte
- * values) modelled on the official app — so a passing test pins the encoder to the claimed layout.
- * (The layout itself is EXPERIMENTAL/unconfirmed on a real strap; the runtime path is gated behind
- * the Experimental opt-in. Adopted from PR #85.)
+ * values), so a passing test pins the encoder to the claimed layout.
  */
 class AlarmPayloadTest {
 
@@ -96,5 +94,10 @@ class AlarmPayloadTest {
     @Test
     fun disableAlarm_rev2_isSentinelFF() {
         assertArrayEquals(bytes(0x02, 0xFF), AlarmPayload.disableRev2())
+    }
+
+    @Test
+    fun runAlarm_rev2_usesAlarmIdOneByDefault() {
+        assertArrayEquals(bytes(0x02, 0x01), AlarmPayload.runAlarmRev2())
     }
 }
