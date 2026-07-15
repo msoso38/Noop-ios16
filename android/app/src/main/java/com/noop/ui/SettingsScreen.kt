@@ -87,6 +87,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -101,6 +102,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.BuildConfig
 import com.noop.analytics.Baselines
 import com.noop.analytics.Zones
+import com.noop.R
 import com.noop.ble.PuffinExperiment
 import com.noop.ble.WhoopModel
 import com.noop.data.DataBackup
@@ -1549,8 +1551,8 @@ fun SettingsScreen(
         // deliberately not surfaced here — it stays dormant pending on-strap validation (#478).
         SettingsSection(
             icon = Icons.Filled.BatteryStd,
-            title = "Power saving",
-            blurb = "Ease battery use when your phone is low or in Battery Saver. The strap keeps banking data on its own, so nothing is lost — NOOP just syncs it less often.",
+            title = stringResource(R.string.power_saving),
+            blurb = stringResource(R.string.power_saving_blurb),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1558,9 +1560,9 @@ fun SettingsScreen(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Power saving mode", style = NoopType.subhead, color = Palette.textPrimary)
+                    Text(stringResource(R.string.power_saving_mode), style = NoopType.subhead, color = Palette.textPrimary)
                     Text(
-                        "Slows background strap-sync (every 45 min instead of 15) while your battery is low or Battery Saver is on. No data loss — sync just batches into larger, less frequent pulls.",
+                        stringResource(R.string.power_saving_mode_desc),
                         style = NoopType.footnote,
                         color = Palette.textTertiary,
                     )
@@ -1588,8 +1590,8 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Kick in at", style = NoopType.subhead, color = Palette.textPrimary)
-                        Text("$powerSavingBatteryPct%", style = NoopType.subhead, color = Palette.accent)
+                        Text(stringResource(R.string.power_saving_kick_in), style = NoopType.subhead, color = Palette.textPrimary)
+                        Text(stringResource(R.string.power_saving_pct, powerSavingBatteryPct), style = NoopType.subhead, color = Palette.accent)
                     }
                     Slider(
                         value = powerSavingBatteryPct.toFloat(),
@@ -1613,9 +1615,9 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Pause HRV capture in Battery Saver", style = NoopType.subhead, color = Palette.textPrimary)
+                        Text(stringResource(R.string.power_saving_hrv_pause), style = NoopType.subhead, color = Palette.textPrimary)
                         Text(
-                            "While Android Battery Saver is on, stop the always-on background HRV stream (the biggest live drain). Opening a Live screen still shows heart rate, and it re-arms automatically when Battery Saver turns off.",
+                            stringResource(R.string.power_saving_hrv_pause_desc),
                             style = NoopType.footnote,
                             color = Palette.textTertiary,
                         )
