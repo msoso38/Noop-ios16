@@ -1227,13 +1227,18 @@ class WhoopBleClient(
     private fun refreshConnectionPriority() {
         if (!connectionPriorityEnabled) return
         val ops = gattOps ?: return
-        val (batteryPct, charging) = batteryPctAndCharging()
+        // Only read the battery when the RISKY idle throttle is actually armed (threshold > 0); the SAFE
+        // HIGH-escalation half doesn't need it, so safe-half-only mode issues no battery read.
+        val idleThrottle = idleThrottleBatteryPct > 0 && run {
+            val (batteryPct, charging) = batteryPctAndCharging()
+            idleThrottleActive(batteryPct, charging, idleThrottleBatteryPct)
+        }
         // Read the authoritative INTERNAL flags (both set synchronously on this looper), not the
         // published LiveState mirror, which `exitBackfilling` may update a beat later.
         val priority = connectionPriorityFor(
             offloadActive = backfilling,
             liveHrActive = realtimeArmed,
-            idleThrottleEnabled = idleThrottleActive(batteryPct, charging, idleThrottleBatteryPct),
+            idleThrottleEnabled = idleThrottle,
         )
         // Deliberately NOT via safeGatt: a battery HINT must never tear the link down. safeGatt's policy
         // is "any throw ⇒ teardown", right for load-bearing writes/subscriptions but wrong here — a dead
