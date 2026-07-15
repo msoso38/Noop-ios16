@@ -52,6 +52,26 @@ enum class AiProvider(
     ),
 
     /**
+     * Google Gemini (BYO key). NATIVE Google format — the byte-for-byte twin of the Swift
+     * `GeminiClient` (`Strand/AI/Providers/Gemini.swift`): `x-goog-api-key` auth, a `system_instruction`
+     * + `contents`/`parts` body, and `candidates[].content.parts[].text` replies. [endpoint] is the base
+     * models URL; the per-call `/<model>:generateContent` suffix is appended in [AiCoach.callGemini]
+     * (kept literal so the `:` is never percent-encoded). Same curated list + default as the Swift enum.
+     */
+    GEMINI(
+        displayName = "Google Gemini",
+        defaultModel = "gemini-2.5-flash",
+        models = listOf(
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash",
+        ),
+        endpoint = "https://generativelanguage.googleapis.com/v1beta/models",
+        modelsEndpoint = "https://generativelanguage.googleapis.com/v1beta/models",
+    ),
+
+    /**
      * A generic OpenAI-compatible server the user points at — typically a LOCAL LLM such as
      * Ollama, LM Studio or llama.cpp (`http://localhost:11434/v1`), or any self-hosted gateway.
      * The endpoints here are placeholders: the real chat/models URLs are built at call time from
