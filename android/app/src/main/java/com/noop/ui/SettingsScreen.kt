@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.BatteryStd
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.Campaign
@@ -475,6 +476,11 @@ fun SettingsScreen(
     // "Overnight only" (#927): arm the continuous stream only inside the nightly quiet-hours window
     // instead of 24/7. Default OFF so existing users keep the always-on behaviour. Local mirror.
     var continuousHrvOvernight by remember { mutableStateOf(NoopPrefs.continuousHrvOvernight(context)) }
+
+    // #477 Power saving: battery-adaptive strap-sync cadence + optional HRV-capture pause. Local mirrors.
+    var powerSaving by remember { mutableStateOf(NoopPrefs.powerSaving(context)) }
+    var powerSavingBatteryPct by remember { mutableStateOf(NoopPrefs.powerSavingBatteryPct(context)) }
+    var pauseHrvOnPowerSave by remember { mutableStateOf(NoopPrefs.pauseHrvOnPowerSave(context)) }
 
     // --- v5 Health & wellness toggle group. All SharedPreferences-backed (not reactive), so each Switch
     // drives a local mirror that writes straight through to the same keys the v5 engine readers use.
@@ -1535,6 +1541,87 @@ fun SettingsScreen(
                         Text("›", style = NoopType.title2, color = Palette.accent)
                     }
                 }
+            }
+        }
+
+        // #477 Power saving. Two BENIGN battery levers only: the offload-cadence stretch (%-gated) and
+        // the HRV-capture pause (Battery-Saver-gated). The riskier connection-priority idle throttle is
+        // deliberately not surfaced here — it stays dormant pending on-strap validation (#478).
+        SettingsSection(
+            icon = Icons.Filled.BatteryStd,
+            title = "Power saving",
+            blurb = "Ease battery use when your phone is low or in Battery Saver. The strap keeps banking data on its own, so nothing is lost — NOOP just syncs it less often.",
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Power saving mode", style = NoopType.subhead, color = Palette.textPrimary)
+                    Text(
+                        "Slows background strap-sync (every 45 min instead of 15) while your battery is low or Battery Saver is on. No data loss — sync just batches into larger, less frequent pulls.",
+                        style = NoopType.footnote,
+                        color = Palette.textTertiary,
+                    )
+                }
+                Switch(
+                    checked = powerSaving,
+                    onCheckedChange = {
+                        powerSaving = it
+                        vm.setPowerSaving(it)
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Palette.surfaceBase,
+                        checkedTrackColor = Palette.accent,
+                        uncheckedThumbColor = Palette.textSecondary,
+                        uncheckedTrackColor = Palette.surfaceInset,
+                        uncheckedBorderColor = Palette.hairline,
+                    ),
+                )
+            }
+            if (powerSaving) {
+                RowDivider()
+                FormRow(label = "Kick in at") {
+                    SegmentedPillControl(
+                        items = listOf(10, 15, 20, 25, 30),
+                        selection = powerSavingBatteryPct,
+                        label = { "$it%" },
+                        onSelect = {
+                            powerSavingBatteryPct = it
+                            vm.setPowerSavingBatteryPct(it)
+                        },
+                    )
+                }
+            }
+            RowDivider()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Pause HRV capture in Battery Saver", style = NoopType.subhead, color = Palette.textPrimary)
+                    Text(
+                        "While Android Battery Saver is on, stop the always-on background HRV stream (the biggest live drain). Opening a Live screen still shows heart rate, and it re-arms automatically when Battery Saver turns off.",
+                        style = NoopType.footnote,
+                        color = Palette.textTertiary,
+                    )
+                }
+                Switch(
+                    checked = pauseHrvOnPowerSave,
+                    onCheckedChange = {
+                        pauseHrvOnPowerSave = it
+                        vm.setPauseHrvOnPowerSave(it)
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Palette.surfaceBase,
+                        checkedTrackColor = Palette.accent,
+                        uncheckedThumbColor = Palette.textSecondary,
+                        uncheckedTrackColor = Palette.surfaceInset,
+                        uncheckedBorderColor = Palette.hairline,
+                    ),
+                )
             }
         }
 
