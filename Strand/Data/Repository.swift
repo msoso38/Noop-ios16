@@ -148,12 +148,12 @@ final class Repository: ObservableObject {
     /// The distinct IMPORTED/MEASURED source ids to union for a dashboard read: the active strap (live raw,
     /// #814) and the canonical imported id. Active strap FIRST so per-day dedup lets the measured/live row
     /// win over the imported one. Deduped, so a single-device install (active id == canonical) reads one id.
-    private var importedReadIds: [String] {
+    var importedReadIds: [String] {
         deviceId == canonicalDeviceId ? [deviceId] : [deviceId, canonicalDeviceId]
     }
     /// The distinct COMPUTED ("-noop") source ids to union: the active strap's computed sibling and the
     /// canonical computed sibling. Same dedup rule as `importedReadIds`.
-    private var computedReadIds: [String] {
+    var computedReadIds: [String] {
         computedDeviceId == canonicalComputedId ? [computedDeviceId] : [computedDeviceId, canonicalComputedId]
     }
     private var store: WhoopStore?
@@ -457,6 +457,7 @@ final class Repository: ObservableObject {
     static let whoopSource = "my-whoop"
     static let appleHealthSource = "apple-health"
     static let healthConnectSource = "health-connect"
+    static let activityFileSource = "activity-file"
 
     /// Imported wearable-export sources whose DAILY aggregates (HRV / resting HR / sleep) can be scored
     /// for a NOOP Charge/Rest on an import-only day, exactly like a live day (#823). These carry no raw HR
@@ -694,6 +695,7 @@ final class Repository: ObservableObject {
         let imported = await unionDailyMetrics(store: store, from: fromDay, to: toDay)
         let computed = await unionComputedDailyMetrics(store: store, from: fromDay, to: toDay)
         let apple = (try? await store.dailyMetrics(deviceId: Self.appleHealthSource, from: fromDay, to: toDay)) ?? []
+        let activityFile = (try? await store.dailyMetrics(deviceId: Self.activityFileSource, from: fromDay, to: toDay)) ?? []
         let impSleep = await unionSleepSessions(store: store, from: lo, to: hi)
         let compSleep = await unionComputedSleepSessions(store: store, from: lo, to: hi)
 
@@ -720,7 +722,10 @@ final class Repository: ObservableObject {
             let editedDays = Self.userEditedDays(compSleep)
             return MergedCaches(
                 importedSleep: fig,
-                days: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
+                days: Self.mergeActivityFileSteps(
+                    into: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
+                    activityFile
+                ),
                 sleeps: Self.mergeSleep(imported: impSleep, computed: compSleep),
                 vitalRows: Self.sourceRows(imported: imported, computed: computed, apple: apple),
                 freshness: Self.computeFreshness(imported: imported, computed: computed, apple: apple,
@@ -792,6 +797,43 @@ final class Repository: ObservableObject {
                     : merged
             } else {
                 byDay[d.day] = d
+            }
+        }
+        return byDay.values.sorted { $0.day < $1.day }
+    }
+
+    nonisolated static func mergeActivityFileSteps(into base: [DailyMetric],
+                                                   _ activityFile: [DailyMetric]) -> [DailyMetric] {
+        guard !activityFile.isEmpty else { return base }
+        var byDay = Dictionary(uniqueKeysWithValues: base.map { ($0.day, $0) })
+        for row in activityFile {
+            guard let steps = row.steps, steps > 0 else { continue }
+            if let existing = byDay[row.day] {
+                if existing.steps == nil {
+                    byDay[row.day] = DailyMetric(
+                        day: existing.day,
+                        totalSleepMin: existing.totalSleepMin,
+                        efficiency: existing.efficiency,
+                        deepMin: existing.deepMin,
+                        remMin: existing.remMin,
+                        lightMin: existing.lightMin,
+                        disturbances: existing.disturbances,
+                        restingHr: existing.restingHr,
+                        avgHrv: existing.avgHrv,
+                        recovery: existing.recovery,
+                        strain: existing.strain,
+                        exerciseCount: existing.exerciseCount,
+                        spo2Pct: existing.spo2Pct,
+                        skinTempDevC: existing.skinTempDevC,
+                        respRateBpm: existing.respRateBpm,
+                        steps: steps,
+                        activeKcalEst: existing.activeKcalEst,
+                        spo2Red: existing.spo2Red,
+                        spo2Ir: existing.spo2Ir
+                    )
+                }
+            } else {
+                byDay[row.day] = row
             }
         }
         return byDay.values.sorted { $0.day < $1.day }
@@ -909,6 +951,21 @@ final class Repository: ObservableObject {
             perId.append((try? await store.stepSamples(deviceId: id, from: from, to: to, limit: 200_000)) ?? [])
         }
         return Self.latestActivityClass(perId)
+    }
+
+    /// Raw strap step TICKS over `[from, to]` for a manual-workout summary (#398): the wrap-aware
+    /// `step_motion_counter@57` delta-sum (shared `StepsCounter` kernel) from the FIRST id that has a
+    /// countable window — the active strap wins, mirroring `stepActivityClassLatest`. Never MERGED across
+    /// ids: two devices' cumulative counters must not be interleaved (that would fabricate huge deltas).
+    /// `nil` when no strap counter covers the window — a WHOOP 4.0 (no @57 counter) or an MG/5.0 that hasn't
+    /// offloaded the window yet. The caller applies `stepTicksPerStep` and reconciles with the phone pedometer.
+    func strapStepTicks(from: Int, to: Int) async -> Int? {
+        guard let store = await ensureStore() else { return nil }
+        for id in importedReadIds {   // active strap FIRST
+            let samples = (try? await store.stepSamples(deviceId: id, from: from, to: to, limit: 200_000)) ?? []
+            if let ticks = StepsCounter.stepsInWindow(samples) { return ticks }
+        }
+        return nil
     }
 
     /// Pure pick of the latest classed activity across the union's per-id step lists: the non-nil
@@ -1246,15 +1303,24 @@ final class Repository: ObservableObject {
         let hr = (try? await store.hrSamples(deviceId: deviceId, from: lo, to: hi, limit: 200_000)) ?? []
         let rr = (try? await store.rrIntervals(deviceId: deviceId, from: lo, to: hi, limit: 200_000)) ?? []
         let resp = (try? await store.respSamples(deviceId: deviceId, from: lo, to: hi, limit: 200_000)) ?? []
+        // Read only when the refinement below might actually use it (see `useMotionAwareWake`) — a plain
+        // read cost, but no point paying it on the (default) off path.
+        let useMotionAwareWake = PuffinExperiment.motionAwareWakeEnabled
+        let steps = useMotionAwareWake
+            ? ((try? await store.stepSamples(deviceId: deviceId, from: lo, to: hi, limit: 200_000)) ?? [])
+            : []
         // Opt-in experimental staging (Settings → Experimental · Sleep staging): when the user has flipped
         // the V2 flag on, re-stage with the cardiorespiratory recipe `SleepStagerV2`; otherwise the default
         // V1 `SleepStager`. Read once here off the actor; the switch is purely which engine runs over the
         // already-detected window , V1 stays the default and is untouched. (V7 Pillar 3b)
         let useV2 = PuffinExperiment.experimentalSleepV2Enabled
         let segs = await Task.detached(priority: .utility) {
-            useV2
+            let staged = useV2
                 ? SleepStagerV2.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr, resp: resp)
                 : SleepStager.stageSession(start: start, end: end, grav: grav, hr: hr, rr: rr, resp: resp)
+            // #364 follow-up: motion-aware wake refinement post-pass, same toggle-shaped no-op when off
+            // as every other Experimental switch here.
+            return WakeMotionRefinement.apply(staged, grav: grav, steps: steps, enabled: useMotionAwareWake)
         }.value
         return AnalyticsEngine.encodeStages(segs)
     }
