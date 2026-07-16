@@ -17,6 +17,54 @@ approximate; downloads are on the [Releases](https://github.com/NoopApp/noop/rel
 
 ---
 
+## 9.0.1: German, French & Spanish, pull-to-sync on Today, and a wave of polish (all platforms)
+
+A polish-and-translation release on top of 9.0.0.
+
+**New**
+
+- **German, French and Spanish, everywhere (#453).** The complete app UI is now translated across iPhone, Mac, Android, the watch app and complications, with a CI gate to keep it from drifting back to English-only.
+- **Pull to sync on Today (#334).** Pull down on Today to request a fresh strap-history offload (iPhone, Mac, Android). It reuses the safe manual-sync path, so it only fires when the strap is connected, bonded and idle.
+- **The day-cycle sky behind your cards is on by default.** Still a Settings toggle; existing choices are kept.
+- **Trend charts show the inspected date on Android (#492),** matching the Apple readout.
+
+**Fixed**
+
+- **macOS could no longer be granted Bluetooth (#429).** The macOS build is now ad-hoc signed, giving it a code identity recent macOS can bind a Bluetooth permission to.
+- **WHOOP 5.0/MG battery % didn't show on iPhone/Mac (#490).** The 0x2A19 read is now retried after bonding and kept current.
+- **Activity-file (FIT) imports now fill in steps for foot sports (#483).**
+- **A batch of Today polish (#486, #492):** the day title no longer clips, Strain drops a stray "%", source badges tuck into their cards, workout Source labels fit, and Compare's "Add metric" no longer wraps one letter per line.
+- **A duplicate resting-stress buzz is gone (#330).**
+- **Android reconnect no longer stalls next to the official WHOOP app (#313).**
+
+---
+
+## 9.0.0: Power saving for your strap, a Gemini coach on Android, and richer metric detail (all platforms)
+
+A major release. Power saving now looks after *your strap's* battery, the AI Coach runs Google Gemini on Android too, metric detail and trend windows expand across the app, sleep and recovery get more accurate, and the WHOOP 5.0/MG motion sensors are decoded for the first time. Everything still runs on your own device, offline, no account.
+
+**New.**
+
+- **Power saving (#477).** A Settings → Power saving section keyed on the connected strap's battery: when your WHOOP is low and discharging, NOOP syncs it less often (every 45 min instead of 15) and can release the always-on background HRV stream, so the band lasts until you can charge it. You pick the strap-battery level (10–30%); off by default, never runs while charging, nothing lost. iPhone, Mac and Android.
+- **Google Gemini in the AI Coach on Android (#400).** Android gains the native Gemini provider iPhone and Mac already had — same coach, same model choice, everywhere. On-device and opt-in.
+- **Richer metric detail (#430, #432, #433, #435).** A Detailed-tiles option for Key Metrics with tap-through detail, plus selectable trend windows (1D / 2D / 2W … 3M / 6M / 1Y / All) on every metric's timeline, matched across platforms.
+- **Arrange your Today screen on iPhone and Mac (#428)**, plus new Recovery Index + Activity Balance Charge drivers (#417) and an opt-in coarse workout-type hint (#414).
+- **Keep NOOP alive overnight, on Android (#386).** An opt-in battery-optimisation exemption so an overnight re-score isn't killed in the background.
+
+**Fixed.**
+
+- **A carried Charge could name the wrong source (#412).** Fixed so a NOOP-computed carried Charge reads "On-device," not "Whoop." Thanks kavemang.
+- **Sleep accuracy.** Elevated HR on a motionless wrist no longer scores as awake (#462); split nights report the whole night's Asleep total and hypnogram (#345); a wake-staging tune that over-called "awake" for healthy sleepers in the field is reverted (#431); and the "Calibrating N of 4" count no longer stalls after a recalibration (#393).
+- **Today catches up a killed overnight re-score on resume (#386)**, live-BLE installs export their real history instead of an empty CSV (#458), and a stuck Bluetooth-permission banner is fixed (#391, #429).
+
+**For WHOOP 5.0 / MG.**
+
+- **6-axis motion decoded, for research (#423).** NOOP decodes the strap's 100 Hz accelerometer + gyroscope offload buffer and extracts activity features, and can passively capture the high-rate sensor buffers when you enable capture — the groundwork for real activity detection. Byte-identical across all platforms. Thanks vishk23 and tanarchytan. The v26 raw PPG waveform is now stored too (#156).
+
+**Localization.**
+
+- A translation safety-net check that catches new untranslated text before release (#452), full German for Trends / Explore / the Deep Timeline (#451), and completed Russian (#457). Thanks digitalerdude.
+
 ## 7.9.0: Coupled view, a rebuilt workout list, and numbers in your journal (all platforms)
 
 Three sizeable new features, the fix wave that was in flight, and a hardening pass a pre-release

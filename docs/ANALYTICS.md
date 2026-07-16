@@ -36,7 +36,7 @@ The package contains more analytics than the app currently surfaces. This sectio
 
 | Engine | File | Status in the app |
 |---|---|---|
-| `HRVAnalyzer` | `HRVAnalyzer.swift` | **Library-only** as a type. The app computes RMSSD inline via `AppModel.rmssd(_:)` (same Task-Force formula) for the live stress nudge. |
+| `HRVAnalyzer` | `HRVAnalyzer.swift` | **Library-only** as a type. Live stress check-ins use the dedicated `StressOnsetDetector`. |
 | `RecoveryScorer` | `RecoveryScorer.swift` | **Live.** Computes the **Charge** score. Runs inside `AnalyticsEngine.analyzeDay` via `Strand/Data/IntelligenceEngine.swift`; computed values are persisted under the `"<deviceId>-noop"` source and merged **under** any imported `recovery_score_pct` (imports always win). APPROXIMATE. |
 | `StrainScorer` | `StrainScorer.swift` | **Live.** Computes the **Effort** score (0–100). Day load is computed on-device for nights the strap offloaded; the imported `day_strain` column still wins for imported days. APPROXIMATE. |
 | `SleepStager` | `SleepStager.swift` | **Live.** Stages each offloaded night inside `analyzeDay`; the per-night stages feed the **Rest** composite. Computed sessions are persisted under the `"-noop"` source, with imported sleeps taking precedence. APPROXIMATE. |
@@ -74,30 +74,7 @@ bpm = vals.isEmpty ? nil : Int(vals[vals.count / 2].rounded())
 
 Median (not mean) is deliberate: it rejects single-beat outliers without lagging the signal.
 
-### 2. RMSSD for the stress nudge (`rmssd` + `evaluateStress`)
-
-The live RMSSD uses the classic Task-Force successive-difference formula over a rolling R-R buffer:
-
-```swift
-static func rmssd(_ rr: [Int]) -> Double {
-    guard rr.count >= 2 else { return 0 }
-    var sum = 0.0, n = 0
-    for i in 1..<rr.count { let d = Double(rr[i] - rr[i - 1]); sum += d * d; n += 1 }
-    return n > 0 ? (sum / Double(n)).squareRoot() : 0
-}
-```
-
-`evaluateStress()` is an **experimental, off-by-default** resting-stress nudge:
-
-- Only runs when `behavior.stressNudge` is on **and** the strap is bonded **and** worn.
-- Filters R-R to plausible beats (`300 < rr < 2000` ms, i.e. 30–200 bpm), keeps the last 60, needs ≥ 20.
-- Tracks a **slow HRV baseline** as an EWMA: `hrvBaseline = hrvBaseline * 0.98 + rmssd * 0.02`.
-- Only fires when HR is in a **resting band** (`55…100` bpm — not a workout) and current RMSSD has dropped **below 60% of baseline**.
-- Rate-limited to **once per 15 minutes** (`> 900` s). On fire it buzzes the strap once and logs "take a paced breath."
-
-It is intentionally conservative so it rarely false-fires.
-
-### 3. HR-zone haptic coaching (`coachZone`)
+### 2. HR-zone haptic coaching (`coachZone`)
 
 Watches the smoothed `bpm`, computes `%HRmax` from `profile.hrMax`, and buckets into 5 zones at `0.6 / 0.7 / 0.8 / 0.9` of max:
 
@@ -308,6 +285,23 @@ Consecutive same-stage epochs are merged into `StageSegment`s tiling `[start, en
 
 - `SleepSession` — `start`, `end`, `efficiency` (AASM `asleep / in-bed`, where `asleep = in-bed − wake`), `stages`, per-session `restingHR` (lowest 5-min rolling-mean HR) and `avgHRV` (mean RMSSD over 5-min tumbling windows).
 - `hypnogramMetrics(_:)` — AASM-style roll-up: TIB / TST / SPT / SOL / REM latency / WASO / efficiency / disturbances, plus deep/REM/light minutes and percentages.
+
+### Motion-corroborated wake — elevated-but-motionless HR is not wake (default ON)
+
+Both stagers (`SleepStager` V1 and the default `SleepStagerV2`) and the HR-led session confirmation (`confirmSleepWithHR`) previously called **wake** primarily off HR / HR-variability with no motion or posture cross-check. On a night whose resting HR is held elevated **without the wearer getting up** — a supplement protocol, a fever, a hot room, alcohol — that logic scored hot-but-motionless sleep as wake, over-calling WASO, mis-placing onset, and tanking efficiency and Rest. Two confirmed nights required manual relabeling (2026-07-13: 194 min WAKE vs ~67; 2026-07-14: onset 1:41 vs ~1:29 plus a 44-min WAKE block).
+
+The rule: **elevated HR alone is insufficient to call wake.** An epoch or run at the night's quiescent **motion** floor with **unchanged posture** cannot be scored WAKE on cardiac evidence alone; corroboration comes from the **gravity posture/jerk** signal both stagers already consume (always present), not step ticks. This acts where the mis-scoring is produced, and is **on by default** — distinct from the prior default-OFF post-pass over an already-staged hypnogram (upstream #402).
+
+- **`SleepStagerV2` (default).** On a motion-quiescent epoch (no observed movement; peak jerk at/below the night-relative wake-gate floor) the AWAKE cardiac term is clamped to **≤ 0** — wake-*suppressing* (low, flat HR) evidence is kept, the wake-*promoting* half is dropped. A still low-HR epoch is byte-identical; genuine motion and the night-relative jerk gate still drive wake.
+- **`confirmSleepWithHR` (V1 detection).** When a run is deeply motion-quiescent (≥ ~90% of its dense-gravity minutes posture-stable), the HR sleep band widens from **×1.05 → ×1.30** so a supplement-elevated but motionless run is not rejected. The band keeps a **floor** (genuine all-night in-bed wakefulness is still dropped); with no gravity evidence the strict ×1.05 band stands.
+- **`adaptiveOvernightHRBaseline`.** A personalised sleep band derived from recent overnight medians (self-calibrating across a supplement/fitness era), with a floor. Threaded through `detectSleep` as an optional argument that defaults to `nil` (byte-identical when unset); live cross-night wiring in `IntelligenceEngine` is a follow-up.
+
+Source: `SleepStager.swift` (`confirmSleepWithHR`, `adaptiveOvernightHRBaseline`) and `SleepStagerV2.swift` (motion-quiescent clamp), both in `Packages/StrandAnalytics`. Filed upstream as [ryanbr/noop#462](https://github.com/ryanbr/noop/issues/462). The Kotlin analytics twin (`com.noop.analytics`) is a deliberate follow-up (Swift-only contributor) — the parity contract requires the two stagers to stay byte-identical once transcribed.
+### Displayed sleep onset — the headline "Asleep at" spans the whole bridged night
+
+The Sleep screen headline ("Asleep at …") reports the onset of the **whole bridged night**, not the main session's start. A night stored as a short first-sleep fragment + a brief walk + the main session bridges into one group when the gap is under `gapBridgeMaxMin` (60 min). The display onset walk (`SleepView.nightOnsetTs` → `isPreOnsetAwakeStub`) previously mis-classified such a fragment as a spurious pre-onset lead through two stacked defects: (1) the #259 relative "minor lead" test compared the fragment's asleep minutes against 15% of the main block, so on a long main sleep a genuine short first sleep was skipped and the headline jumped forward to the main session's start; (2) the stub test read asleep minutes via the dict-only `decodeStages`, which returns nil for the segment-array `stagesJSON` an on-device **computed** night stores — so every fragment counted as 0 asleep minutes and tripped the "essentially sleepless stub" branch, bypassing defect (1)'s floor entirely.
+
+Fix: an **absolute floor** `preOnsetStubMinorAsleepFloorMin = 20` (min) under the #259 relative test — a leading fragment carrying **≥ 20 asleep minutes** is never treated as a spurious lead, whatever the main block's size — plus a format-agnostic `decodedAsleepMinutes` (dict-of-minutes decode with a segment-array fallback) used at both onset call sites, so the floor's input is populated on computed nights too. The relaxation is strict (it can only un-skip a real first sleep, never newly skip one), so the displayed onset now equals the bridged night's first sleep and agrees with the Apple Health write-back span (bridged night groups, #294/#364). The #736 sleepless-stub skip and the #259 tiny-stray-lead (≤ 10 min) behavior are unchanged. The constant and decode seam live in `Strand/Screens/SleepView.swift`, with the byte-identical Kotlin twin (the floor constant, the onset-walk rule, and the both-format decode + onset clamp) in `com.noop.ui.SleepScreen`.
 
 ---
 

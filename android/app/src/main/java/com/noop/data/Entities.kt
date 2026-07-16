@@ -239,8 +239,9 @@ data class DailyMetric(
     val spo2Pct: Double? = null,        // mean SpO2 (%) during sleep
     val skinTempDevC: Double? = null,   // skin-temperature deviation (°C) from baseline
     val respRateBpm: Double? = null,    // mean respiration rate (breaths/min) during sleep
-    // On-device derived daily step total from the WHOOP5 step_motion_counter@57 (sum of positive
-    // consecutive u16-counter deltas over the day). APPROXIMATE, not cloud/clinical parity. (#78)
+    // On-device derived or imported step total. WHOOP5 days use step_motion_counter@57 (sum of
+    // positive u16-counter deltas); activity-file imports can fill missing steps from file summaries.
+    // APPROXIMATE, not cloud/clinical parity. (#78)
     val steps: Int? = null,
     // On-device APPROXIMATE whole-day active+resting energy estimate (kcal), computed from HR alone
     // by AnalyticsEngine (Keytel active + Harris–Benedict BMR). Null when the day has no scored HR
@@ -477,6 +478,42 @@ data class AppleDaily(
     val walkingHr: Int? = null,
     val weightKg: Double? = null,
 )
+
+/**
+ * The RAW WHOOP 5.0 v26 optical PPG waveform, one record per second (v27 / MIGRATION_18_19, issue #156
+ * follow-up). Swift `ppgWaveformSample` (WhoopStore Database.swift `v27-ppg-waveform` migration). The
+ * strap's 24 Hz buffer was fully decoded but only ever used to derive [PpgHrSample]; the samples
+ * themselves were discarded right after. Persisted here so a future re-analysis (a better HR estimator,
+ * HRV-from-PPG, a waveform viewer) can run over the ORIGINAL samples, not just the derived bpm.
+ *
+ * The 24 raw i16 ADC samples are packed into a compact BLOB (2 bytes/sample, little-endian i16, see
+ * [StreamPersistence.packPpgSamples]/[StreamPersistence.unpackPpgSamples]) instead of 24 scalar rows,
+ * keeping a v26-heavy night to roughly the same order of magnitude as ONE extra per-second stream. The
+ * BLOB format is byte-identical to the Swift GRDB `WhoopStore.packPpgSamples` so a `.noopbak` round-trips.
+ * PK (deviceId, ts) mirrors every other per-second stream; a truncated frame can decode fewer than 24
+ * samples. Fields are declared in the SAME order as the GRDB schema (deviceId, ts, samples) so the
+ * migration's CREATE TABLE column order matches Room's generated shape.
+ */
+@Entity(tableName = "ppgWaveformSample", primaryKeys = ["deviceId", "ts"])
+data class PpgWaveformSampleEntity(
+    val deviceId: String,
+    val ts: Long,
+    val samples: ByteArray,
+) {
+    // ByteArray needs structural equals/hashCode (the generated identity ones break round-trip asserts).
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PpgWaveformSampleEntity) return false
+        return deviceId == other.deviceId && ts == other.ts && samples.contentEquals(other.samples)
+    }
+
+    override fun hashCode(): Int {
+        var result = deviceId.hashCode()
+        result = 31 * result + ts.hashCode()
+        result = 31 * result + samples.contentHashCode()
+        return result
+    }
+}
 
 /**
  * One Live Session (silent guardian) record (v22 / MIGRATION_15_16). Natural key (deviceId, startTs).

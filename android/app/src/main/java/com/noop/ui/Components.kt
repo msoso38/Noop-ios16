@@ -1,5 +1,7 @@
 package com.noop.ui
 
+import com.noop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.foundation.Canvas
 import androidx.compose.animation.core.animateFloat
@@ -234,7 +236,7 @@ fun SyncingHistoryNote(chunks: Int, modifier: Modifier = Modifier) {
         StatePill("Syncing strap history…", tone = StrandTone.Accent, pulsing = true)
         if (chunks > 0) {
             Text(
-                "$chunks chunks pulled",
+                uiString(R.string.l10n_components_chunks_chunks_pulled_cec186cf, chunks),
                 style = NoopType.footnote,
                 color = Palette.textSecondary,
             )
@@ -329,7 +331,7 @@ private fun PulsingDotHalo(tone: StrandTone, size: Dp) {
             animation = tween(Motion.breathPeriodMs, easing = Motion.easeInOut),
             repeatMode = RepeatMode.Reverse,
         ),
-        label = "dotScale",
+        label = uiString(R.string.l10n_components_dotscale_5bc02101),
     )
     val haloAlpha by transition.animateFloat(
         initialValue = 0.5f,
@@ -338,7 +340,7 @@ private fun PulsingDotHalo(tone: StrandTone, size: Dp) {
             animation = tween(Motion.breathPeriodMs, easing = Motion.easeInOut),
             repeatMode = RepeatMode.Reverse,
         ),
-        label = "dotHalo",
+        label = uiString(R.string.l10n_components_dothalo_3332546c),
     )
     Box(
         modifier = Modifier
@@ -672,7 +674,7 @@ fun BevelGauge(
     val animatedFraction by animateFloatAsState(
         targetValue = frac,
         animationSpec = tween(Motion.durationSlow, easing = Motion.drawIn),
-        label = "ringFill",
+        label = uiString(R.string.l10n_components_ringfill_59cd4fb9),
     )
     // Outer bloom — a faint, STATIC glow. The breathing pulse is gone (matching iOS): it sits calm so
     // the ring reads flat/Material, not glowing. Strength tracks the iOS bloomOpacity (0.05 + 0.13·frac)
@@ -902,12 +904,12 @@ fun GlowRing(
     val animFraction by animateFloatAsState(
         targetValue = if (started) target else 0f,
         animationSpec = spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow),
-        label = "glowring-fraction",
+        label = uiString(R.string.l10n_components_glowring_fraction_5bcc7cd7),
     )
     val animValue by animateFloatAsState(
         targetValue = if (started) value.toFloat() else 0f,
         animationSpec = tween(durationMillis = 850, easing = FastOutSlowInEasing),
-        label = "glowring-value",
+        label = uiString(R.string.l10n_components_glowring_value_ac0e87de),
     )
     val trackColor = Palette.textPrimary.copy(alpha = 0.10f)
     Box(modifier = modifier.size(diameter), contentAlignment = Alignment.Center) {
@@ -1146,6 +1148,12 @@ fun ScreenScaffold(
     // Mirrors the iOS ScreenScaffold `topBackground` slot — the scene is a SCREEN-level backdrop the
     // cards float OVER, not a card-clipped hero atmosphere.
     topBackground: (@Composable () -> Unit)? = null,
+    // When true, the [topBackground] fills the WHOLE viewport instead of the top band — the
+    // "sky behind cards" mode, identical to [LazyScreenScaffold]'s flag. The band container's
+    // status-bar offset would otherwise shift a full-height backdrop up and leave the bottom of
+    // the screen on plain canvas (the "sky doesn't reach the lower cards" report on the vital
+    // details). Defaulted, so every existing caller is byte-for-byte untouched.
+    fullBleedBackground: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     // The scrolling content column. Its OUTER modifier differs by path: with no topBackground it is the
@@ -1212,10 +1220,19 @@ fun ScreenScaffold(
         val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
         Box(modifier = modifier.fillMaxSize().background(Palette.surfaceBase)) {
             Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .offset(y = -statusBarTop)
+                modifier = (
+                    if (fullBleedBackground) {
+                        // Sky-behind-cards: the backdrop fills the whole viewport (no band offset), so
+                        // the transparent content scrolls OVER a full-height sky. Identical to the lazy
+                        // twin's fullBleedBackground container.
+                        Modifier.fillMaxSize()
+                    } else {
+                        Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter)
+                            .offset(y = -statusBarTop)
+                    }
+                    )
                     // PERF (#scroll-jank): promote the static scene backdrop to its OWN compositing layer so
                     // its gradient + bitmap rasterise ONCE into a render node and are reused as a texture on
                     // every scroll frame, instead of the parent re-issuing the scene's `drawBehind` draw each
@@ -1387,8 +1404,8 @@ fun StepperField(
         if (unit != null) {
             Text(unit, style = NoopType.caption, color = Palette.textTertiary)
         }
-        StepperButton(symbol = "−", onClick = onMinus, label = "Decrease $accessibility")
-        StepperButton(symbol = "+", onClick = onPlus, label = "Increase $accessibility")
+        StepperButton(symbol = "−", onClick = onMinus, label = uiString(R.string.l10n_components_decrease_accessibility_df5f1511, accessibility))
+        StepperButton(symbol = "+", onClick = onPlus, label = uiString(R.string.l10n_components_increase_accessibility_0949c0e9, accessibility))
     }
 }
 
