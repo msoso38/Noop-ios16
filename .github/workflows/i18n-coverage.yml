@@ -1,0 +1,29 @@
+# Catches translation drift BEFORE merge instead of after a user reports it (#326, #342, #448
+# were all the same recurring pattern: new UI text lands without its German translation, or a
+# Kotlin literal never gets wired to stringResource() at all since Compose has no Xcode-style
+# auto-extraction). With the #453 backlog closed, Tools/i18n_audit.py --ci hard-fails on any
+# hardcoded/un-extracted UI literal or any missing German, Spanish, or French translation across
+# Android resources and all four Apple String Catalogs.
+# Pure Python + git, no Xcode/Gradle: runs in seconds on ubuntu-latest, independent of the
+# disabled-by-default app-build.yml / android.yml compile jobs.
+name: i18n Coverage
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: i18n-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: i18n audit (regression gate)
+        run: python3 Tools/i18n_audit.py --ci origin/${{ github.base_ref }}
