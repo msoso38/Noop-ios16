@@ -293,11 +293,17 @@ Daytime-HR auto-reverts after ~20 s; NOOP re-engages every ~15 s while a live se
 All records share the §2.3 TLV header (`type`, `len`, 4-byte `ringTimestamp`). Body offsets below are **relative to the start of the record** (offset 6 = first body byte). All multi-byte values **little-endian** unless stated. [ringverse]
 
 ### 6.1 IBI + amplitude - `0x60` `ibi_and_amplitude_event` (18 B)
-- 6 IBI+amplitude pairs, **bit-packed** across body bytes 6–19. [ringverse]
-- **Shift exponent** = low nibble `[3:0]` of last body byte; if `n=7` then `shift=0`, else `shift=n+1`. [ringverse]
-- Each **IBI** = 11-bit value (1 LSB bit + an 8-bit byte shifted left 3 + a 2-bit high field) → milliseconds. [ringverse]
-- Each **amplitude** = 7-bit mantissa (byte bits `[7:1]`) shifted left by the exponent. [ringverse]
+- Fixed 14-byte body (bytes 6–19) holding 6 IBIs + amplitudes, **byte-scatter packed** — each IBI is
+  gathered from SCATTERED bytes, NOT a linear bitstream. [oura-rs][ringverse]
+- **Shift exponent** = low nibble `[3:0]` of the last body byte (`b[13]`); if `n=7` then `shift=0`, else `shift=n+1`. [oura-rs]
+- Each **IBI** (ms), for `k` in 0…5: `(b[6+k] & 1) | (b[k] << 3) | <2 high bits from the b[12]/b[13] nibbles>`
+  — i.e. 1 LSB from an amplitude byte, 8 mid bits from `b[k]`, 2 high bits from the pack bytes. [oura-rs]
+- Each **amplitude** = `(b[6+k] >> 1) << shift` (7-bit mantissa `[7:1]` shifted by the exponent). [oura-rs]
 - Per-sample timestamp: walk backward from event UTC by each IBI duration. [ringverse]
+- **Validated (decode fix):** the earlier linear-MSB-first bitstream reading recovered only the FIRST IBI and
+  scrambled the rest (a real overnight capture → 82% non-physiological beat-to-beat jumps). The byte-scatter
+  layout above, cross-checked on the same capture, yields a coherent ~60 bpm train (10% jumps) that tracks the
+  night's sleep stages and day/night dip. Matches `open_oura`'s decompiled `parse_api_ibi_and_amplitude_event`.
 
 ### 6.2 Green-LED IBI+amp - `0x71` `green_ibi_and_amp_event` (18 B)
 - 5 IBI deltas + 6 amplitudes; shift from byte19 bits `[2:0]`; same 11-bit IBI / 7-bit amplitude structure. [ringverse]
