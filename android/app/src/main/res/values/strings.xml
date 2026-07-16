@@ -55,6 +55,20 @@
     <string name="action_log_journal">Log journal</string>
     <string name="action_breathe">Breathe</string>
 
+    <!-- Shared workout-start sheet and active-workout banner. Sport names come from the shared
+         WorkoutSport catalog and are tracked separately from this screen's UI chrome. -->
+    <string name="workout_start_title">Start a workout</string>
+    <string name="workout_search_sport">Search sport</string>
+    <string name="workout_recent">Recent</string>
+    <string name="workout_all_activities">All activities</string>
+    <string name="workout_track_gps_route">Track GPS route</string>
+    <string name="workout_start_selected">Start %1$s</string>
+    <string name="workout_gps_badge">· GPS</string>
+    <string name="workout_active_sport">● %1$s</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_open">Open</string>
+    <string name="action_end">End</string>
+
     <!-- Today screen: header of the workouts feed. Renamed from "Last Workouts" ("Last" read as
          "final", #34/#53 follow-up); wording mirrored on iOS in Localizable.xcstrings. -->
     <string name="today_latest_workouts">Latest Workouts</string>

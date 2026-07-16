@@ -50,6 +50,18 @@
     <string name="action_log_journal">Journal notieren</string>
     <string name="action_breathe">Atmen</string>
 
+    <string name="workout_start_title">Workout starten</string>
+    <string name="workout_search_sport">Sportart suchen</string>
+    <string name="workout_recent">Zuletzt</string>
+    <string name="workout_all_activities">Alle Aktivitäten</string>
+    <string name="workout_track_gps_route">GPS-Route aufzeichnen</string>
+    <string name="workout_start_selected">%1$s starten</string>
+    <string name="workout_gps_badge">· GPS</string>
+    <string name="workout_active_sport">● %1$s</string>
+    <string name="action_cancel">Abbrechen</string>
+    <string name="action_open">Öffnen</string>
+    <string name="action_end">Beenden</string>
+
     <!-- Today screen: workouts feed header. Matches the iOS German entry for "Latest Workouts". -->
     <string name="today_latest_workouts">Neueste Workouts</string>
 
