@@ -79,6 +79,13 @@ struct LiquidTodayView: View {
     /// today's row has no vitals yet, so these fall back to the last night that recorded them. Never
     /// resolved in body — body rescans repo.days ~23× per pass, and this cache keeps that read O(1).
     @State private var cachedVitalsDay: DailyMetric?
+    /// PER-FIELD SpO₂ / skin-temp carries — the twins of `cachedVitalsDay` for the two fields its predicate
+    /// does NOT check (it gates on HRV / RHR / respiratory). The engine writes `spo2Pct` / `skinTempDevC =
+    /// nil` on every computed "-noop" row, so the whole-row carry lands on a null value while an older imported
+    /// row holds a real one; these resolve each field from its own freshest strictly-prior row. Resolved ONCE
+    /// in load() (never in body) so the Blood-Oxygen / Skin-Temp tiles read O(1); non-nil only on today.
+    @State private var cachedSpo2Day: DailyMetric?
+    @State private var cachedSkinTempDay: DailyMetric?
     /// The Charge hero's resolved state (#543 carry + the honest label), resolved ONCE in load() alongside
     /// the other caches. It composes `TodayView.lastScoredRecoveryDay`, which is O(days) — exactly the scan
     /// this cache exists to keep out of body. Never resolved in body.
@@ -132,8 +139,24 @@ struct LiquidTodayView: View {
     /// The prior-day vitals carry (see `cachedVitalsDay`), read O(1) from the cache. Non-nil only at
     /// offset 0 (today); a navigated past day carries nothing (its own row is the whole story).
     private var vitalsDay: DailyMetric? { cachedVitalsDay }
+    /// The per-field SpO₂ carry (see `cachedSpo2Day`), read O(1) from the cache.
+    private var spo2Day: DailyMetric? { cachedSpo2Day }
+    /// The per-field skin-temperature carry (see `cachedSkinTempDay`), read O(1) from the cache.
+    private var skinTempDay: DailyMetric? { cachedSkinTempDay }
     /// The Charge hero's resolved state (see `cachedChargeDisplay`), read O(1) from the cache.
     private var chargeDisplay: ChargeDisplay { cachedChargeDisplay }
+
+    /// The value a per-field vitals tile (Blood Oxygen, Skin Temp) draws: today's own reading wins, else the
+    /// whole-row vitals carry's copy of the field, else the PER-FIELD carry — the freshest strictly-prior row
+    /// that actually HAS the field. The whole-row carry (`vitalsDay`) gates on HRV / resting-HR / respiratory,
+    /// so it lands on a computed "-noop" row whose `spo2Pct` / `skinTempDevC` is engine-written nil while an
+    /// older imported row holds a real reading; the per-field carry (`spo2Day` / `skinTempDay`) resolves that.
+    /// Pure so the today-first → whole-row → per-field ordering is pinned without a live view, mirroring
+    /// classic `TodayView.carriedVital`'s fallthrough and the Android per-field read. Named so all three tiles
+    /// (Key-Metrics SpO₂ + the two "Your cards") share one source of truth and can't drift.
+    static func perFieldVital(today: Double?, vitalsCarry: Double?, fieldCarry: Double?) -> Double? {
+        today ?? vitalsCarry ?? fieldCarry
+    }
 
     /// The actual O(days) resolution. Offset 0 prefers live repo.today; past offsets look up. Run ONCE
     /// per data/day change from load(), never from body.
@@ -623,12 +646,18 @@ struct LiquidTodayView: View {
             cardLink(.metric("steps_est"), title: card.title, sub: card.subtitle,
                      value: stepsText, tint: StrandPalette.metricCyan, frac: fracOver(stepCount, 10000))
         case .bloodOxygen:
-            // Not wired to a real read yet — render EMPTY (not half-full) so it doesn't imply a reading.
+            // Per-field carry (today → whole-row vitals carry → the last row that HAS a %), matching the
+            // Key-Metrics tile + classic dashboardCardValue so the surfaces agree instead of a bare "–".
+            let spo2 = Self.perFieldVital(today: displayDay?.spo2Pct, vitalsCarry: vitalsDay?.spo2Pct, fieldCarry: spo2Day?.spo2Pct)
             cardLink(.metric("spo2"), title: card.title, sub: card.subtitle,
-                     value: "–", tint: StrandPalette.metricCyan, frac: nil)
+                     value: spo2.map { String(format: "%.0f%%", $0) } ?? "–", tint: StrandPalette.metricCyan,
+                     frac: fracOver(spo2, 100))
         case .skinTemp:
+            // Per-field carry, matching classic dashboardCardValue. A signed deviation from baseline (°C),
+            // shown signed; a deviation has no natural 0–1 fill, so the vessel stays empty (as classic does).
+            let skin = Self.perFieldVital(today: displayDay?.skinTempDevC, vitalsCarry: vitalsDay?.skinTempDevC, fieldCarry: skinTempDay?.skinTempDevC)
             cardLink(.metric("skin_temp"), title: card.title, sub: card.subtitle,
-                     value: "–", tint: StrandPalette.metricAmber, frac: nil)
+                     value: skin.map { String(format: "%+.1f°", $0) } ?? "–", tint: StrandPalette.metricAmber, frac: nil)
         case .calories:
             cardLink(.metric("active_kcal"), title: card.title, sub: card.subtitle,
                      value: "–", tint: StrandPalette.metricAmber, frac: nil)
@@ -857,7 +886,9 @@ struct LiquidTodayView: View {
         case .restingHr:
             ktile(String(localized: "Rest HR"), intText(rhr), "bpm", StrandPalette.metricRose, fracOver(rhr, 100), key: "rhr")
         case .bloodOxygen:
-            let spo2 = displayDay?.spo2Pct ?? vitalsDay?.spo2Pct
+            // Per-field carry: today → whole-row vitals carry → the last row that actually HAS a % (computed
+            // "-noop" rows write spo2Pct = nil), so the tile doesn't blank at the rollover. Matches classic.
+            let spo2 = Self.perFieldVital(today: displayDay?.spo2Pct, vitalsCarry: vitalsDay?.spo2Pct, fieldCarry: spo2Day?.spo2Pct)
             ktile(String(localized: "Blood Oxygen"), intText(spo2), "%", StrandPalette.metricCyan, fracOver(spo2, 100), key: "spo2")
         case .respiratory:
             let resp = displayDay?.respRateBpm ?? vitalsDay?.respRateBpm
@@ -1022,6 +1053,11 @@ struct LiquidTodayView: View {
         // echo today's still-forming row; only on today (a past day's own row is the whole story).
         let tkey = cachedDisplayDay?.day ?? selectedDayKey
         cachedVitalsDay = (selectedDayOffset == 0) ? Repository.lastVitalsDay(days: repo.days, todayKey: tkey) : nil
+        // PER-FIELD SpO₂ / skin-temp carries — the two fields lastVitalsDay's predicate doesn't check, so the
+        // whole-row carry above can land on a null value while an older imported row holds a real one. Same
+        // today-key bound; only on today. Resolved here (never in body) so the tiles stay O(1).
+        cachedSpo2Day = (selectedDayOffset == 0) ? Repository.lastSpo2Day(days: repo.days, todayKey: tkey) : nil
+        cachedSkinTempDay = (selectedDayOffset == 0) ? Repository.lastSkinTempDay(days: repo.days, todayKey: tkey) : nil
         // Charge carry (#543) + the honest label, resolved here for the same reason as the two above: the
         // selector below scans repo.days. Calibration nights come from the SAME `RecoveryScorer` helper the
         // classic Today reads, so the two screens agree on when a wearer is genuinely mid-calibration
