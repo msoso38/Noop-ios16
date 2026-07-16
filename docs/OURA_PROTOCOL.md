@@ -326,10 +326,12 @@ Daytime-HR auto-reverts after ~20 s; NOOP re-engages every ~15 s while a live se
 All records share the §2.3 TLV header (`type`, `len`, 4-byte `ringTimestamp`). Body offsets below are **relative to the start of the record** (offset 6 = first body byte). All multi-byte values **little-endian** unless stated. [ringverse]
 
 ### 6.1 IBI + amplitude - `0x60` `ibi_and_amplitude_event` (18 B)
-- 6 IBI+amplitude pairs, **bit-packed** across body bytes 6–19. [ringverse]
-- **Shift exponent** = low nibble `[3:0]` of last body byte; if `n=7` then `shift=0`, else `shift=n+1`. [ringverse]
-- Each **IBI** = 11-bit value (1 LSB bit + an 8-bit byte shifted left 3 + a 2-bit high field) → milliseconds. [ringverse]
-- Each **amplitude** = 7-bit mantissa (byte bits `[7:1]`) shifted left by the exponent. [ringverse]
+- Fixed 14-byte body (bytes 6–19) holding 6 IBIs + amplitudes, **byte-scatter packed** — each IBI is
+  gathered from SCATTERED bytes, NOT a linear bitstream. [oura-rs][ringverse]
+- **Shift exponent** = low nibble `[3:0]` of the last body byte (`b[13]`); if `n=7` then `shift=0`, else `shift=n+1`. [oura-rs]
+- Each **IBI** (ms), for `k` in 0…5: `(b[6+k] & 1) | (b[k] << 3) | <2 high bits from the b[12]/b[13] nibbles>`
+  — i.e. 1 LSB from an amplitude byte, 8 mid bits from `b[k]`, 2 high bits from the pack bytes. [oura-rs]
+- Each **amplitude** = `(b[6+k] >> 1) << shift` (7-bit mantissa `[7:1]` shifted by the exponent). [oura-rs]
 - Per-sample timestamp: walk backward from event UTC by each IBI duration. [ringverse]
 - **WARNING (2026-07-12, ringverse ingest):** ringverse's `p_ibi_and_amplitude` shows the byte order
   is **SCRAMBLED** (each 11-bit IBI rebuilt from three non-adjacent pieces, exact indices in
@@ -367,14 +369,18 @@ ibi4 = (p6  & 1) | (p0 << 3) | ((p12 >> 5) & 6)
 - 7 amplitudes: first `byte<<3`, rest `byte<<shift`. [ringverse]
 
 ### 6.4 Green IBI quality - `0x80` `green_ibi_quality_event` (4–18 B, 2 B/sample)
-Per 16-bit LE sample: [open_ring][ringverse]
+Per 2-byte sample, **high byte first** (NOT a little-endian u16): [oura-rs][ringverse]
 ```
-bits 0–10  : value_11bit  → IBI in ms
-bits 11–13 : qual_a
-bits 14–15 : qual_b
+ibi_ms  = (b1 & 0x07) | (b0 << 3)   ; 11-bit, b0 = high 8 bits, b1[2:0] = low 3 bits
+quality = (b1 >> 3) & 0x03
+flag    =  b1 >> 5
 ```
-**NOOP filter:** accept sample only if `qual_a ≤ 1 && qual_b == 0`. [open_ring]
-(7 samples per 14-byte record.) [open_ring]
+**NOOP filter:** accept sample only if `quality == 1` (the ring's "good beat" flag) and the IBI is
+physiological (300–2000 ms). (Up to 7 samples per 14-byte record.) [oura-rs]
+**Validated (decode fix):** the earlier reading treated the pair as a little-endian u16 masked to bits 0–10,
+placing the high byte in the LOW bits — a bit-order error (real-capture within-record jitter 583 ms). The
+high-byte-first layout with the `quality == 1` gate yields a clean beat train (45 ms jitter) and keeps more
+good beats. Matches `open_oura`'s `parse_api_green_ibi_quality_event`.
 
 ### 6.5 SpO2 per-sample - `0x6F` `spo2_event` (5–18 B, 1 s spacing)
 - Byte 6: bits `[7:4]` = SpO2 base (<<7); bits `[3:0]` = status flag. [ringverse]
