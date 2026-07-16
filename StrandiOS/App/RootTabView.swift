@@ -119,7 +119,13 @@ struct RootTabView: View {
                     QuickLaunchPanel(
                         isOpen: $launchPanelOpen,
                         currentPage: $launchPanelPage,
-                        onSelect: { id in launchedDestination = destination(for: id) }
+                        onSelect: { id in
+                            if id == "coach" {
+                                presentCoachPage()
+                            } else {
+                                launchedDestination = destination(for: id)
+                            }
+                        }
                     )
                     // Same transition both directions — slides up + fades in on appear, slides back
                     // DOWN + fades out on dismiss (an `.asymmetric` removal of plain `.opacity`, the
@@ -127,14 +133,19 @@ struct RootTabView: View {
                     // Under Reduce Motion the slide is dropped for a plain opacity fade.
                     .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
                 }
-                FloatingTabBar(selection: $selectedTab, panelOpen: $launchPanelOpen, onReselect: { tag in
-                    Task { await repo.refresh() }
-                    if !tabPaths[tag].isEmpty {
-                        tabPaths[tag] = NavigationPath()
-                    } else {
-                        scrollTop[tag] += 1
-                    }
-                })
+                FloatingTabBar(
+                    selection: $selectedTab,
+                    panelOpen: $launchPanelOpen,
+                    onReselect: { tag in
+                        Task { await repo.refresh() }
+                        if !tabPaths[tag].isEmpty {
+                            tabPaths[tag] = NavigationPath()
+                        } else {
+                            scrollTop[tag] += 1
+                        }
+                    },
+                    onCoach: presentCoachPage
+                )
                 // Everything outside the rectangle is dismiss-only while it is open. Disabling the
                 // bar lets its taps fall through to the full-screen backdrop instead of switching tabs.
                 .allowsHitTesting(!launchPanelOpen)
@@ -278,7 +289,6 @@ struct RootTabView: View {
         switch id {
         case "insightsHub":   return .insightsHub
         case "intelligence":  return .intelligence
-        case "coach":         return .coach
         case "insights":      return .insights
         case "journal":       return .insights   // "Log journal" opens the same InsightsView
         case "explore":       return .explore
@@ -304,6 +314,12 @@ struct RootTabView: View {
         case "settings":      return .settings
         default:              return nil
         }
+    }
+
+    /// Coach is a real page in the currently selected tab's navigation stack, matching its former
+    /// More-tab behavior. Quick Launch's Coach item and the plus-button hold both use this route.
+    private func presentCoachPage() {
+        tabPaths[selectedTab].append(TabRoute.coach)
     }
 
     /// Calm-easing curve (cubic-bezier(0.22,1,0.36,1)) at the README sheet-present duration.
@@ -405,7 +421,7 @@ struct RootTabView: View {
 
 /// Every screen the quick-launch panel can open. `Identifiable` so it drives `.sheet(item:)`.
 private enum LaunchDestination: Hashable, Identifiable {
-    case insightsHub, intelligence, coach, insights, explore, compare
+    case insightsHub, intelligence, insights, explore, compare
     case live, workouts, health, labBook, stress, breathe, intervals, rhythm
     case fusedRecord, appleHealth, miBand, dataSources, backupSync, shortcutsExport
     case alarms, automations, testCentre, siriShortcuts, settings
@@ -416,7 +432,6 @@ private enum LaunchDestination: Hashable, Identifiable {
         switch self {
         case .insightsHub:     InsightsHubView()
         case .intelligence:    IntelligenceView()
-        case .coach:           CoachView()
         case .insights:        InsightsView()
         case .explore:         MetricExplorerView()
         case .compare:         CompareView()
@@ -535,6 +550,7 @@ private struct FloatingTabBar: View {
     @Binding var selection: Int
     @Binding var panelOpen: Bool
     var onReselect: (Int) -> Void = { _ in }
+    var onCoach: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct Item: Identifiable { let title: LocalizedStringKey; let icon: String; let tag: Int; var id: Int { tag } }
@@ -554,11 +570,8 @@ private struct FloatingTabBar: View {
             .padding(.horizontal, NoopMetrics.space2)
             .noopLiquidGlassSurface(in: Capsule())
 
-            // Right circle — + / × launch toggle.
-            Button {
-                // Opening and closing use the same spring as an interactive pull-down finish.
-                withAnimation(StrandMotion.panel(reduced: reduceMotion)) { panelOpen.toggle() }
-            } label: {
+            // Right circle — a tap toggles Quick Launch; a deliberate hold opens Coach directly.
+            Group {
                 // A SINGLE "plus" glyph, rotated 45° to form the ×. Two distinct SF Symbols ("plus" +
                 // "xmark") can NEVER be forced to match visually — each has its own ink-to-bounding-box
                 // ratio baked into its design (xmark's diagonal strokes reach further into their box
@@ -577,9 +590,35 @@ private struct FloatingTabBar: View {
                     )
                     .contentShape(Circle())
             }
-            .buttonStyle(.plain)
+            // The exclusive gesture guarantees a completed hold cannot also fire the normal tap.
+            .gesture(
+                LongPressGesture(minimumDuration: 0.5, maximumDistance: NoopMetrics.space3)
+                    .exclusively(before: TapGesture())
+                    .onEnded { result in
+                        switch result {
+                        case .first:
+                            StrandHaptic.commit.play()
+                            onCoach()
+                        case .second:
+                            // Opening and closing use the same spring as an interactive pull-down finish.
+                            withAnimation(StrandMotion.panel(reduced: reduceMotion)) {
+                                panelOpen.toggle()
+                            }
+                        }
+                    }
+            )
             .noopLiquidGlassSurface(in: Circle())
             .accessibilityLabel(panelOpen ? "Close menu" : "Open menu")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                withAnimation(StrandMotion.panel(reduced: reduceMotion)) {
+                    panelOpen.toggle()
+                }
+            }
+            .accessibilityAction(named: Text("Coach")) {
+                StrandHaptic.commit.play()
+                onCoach()
+            }
         }
     }
 

@@ -6,9 +6,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -80,8 +82,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -203,6 +208,12 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                         if (dest.route != currentRoute) nav.navigateTopLevel(dest.route)
                     },
                     onTogglePanel = { showQuickLaunch = !showQuickLaunch },
+                    onOpenCoach = {
+                        showQuickLaunch = false
+                        if (Destination.Coach.route != currentRoute) {
+                            nav.navigateTopLevel(Destination.Coach.route)
+                        }
+                    },
                 )
             },
         ) { inner ->
@@ -505,15 +516,18 @@ private val barTabs = listOf(
     BarTab(Destination.Sleep, Icons.Filled.Bedtime, R.string.nav_sleep),
 )
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GlassBottomBar(
     current: Destination,
     panelOpen: Boolean,
     onTabSelected: (Destination) -> Unit,
     onTogglePanel: () -> Unit,
+    onOpenCoach: () -> Unit,
 ) {
     val barShape = RoundedCornerShape(Metrics.cornerPill)
     val materialColor = Palette.surfaceRaised.copy(alpha = Metrics.quickLaunchGlassAlpha)
+    val haptics = LocalHapticFeedback.current
     val controlDescription = stringResource(
         if (panelOpen) R.string.quick_launch_close_menu else R.string.quick_launch_open_menu,
     )
@@ -547,7 +561,10 @@ private fun GlassBottomBar(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = Metrics.space8, vertical = Metrics.space6),
+                        .padding(
+                            horizontal = Metrics.space8,
+                            vertical = Metrics.quickLaunchBottomBarVerticalPadding,
+                        ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     barTabs.forEach { tab ->
@@ -570,10 +587,16 @@ private fun GlassBottomBar(
                     .size(Metrics.quickLaunchBottomBarButton)
                     .border(Metrics.divider, Palette.hairlineStrong, CircleShape)
                     .clip(CircleShape)
-                    .clickable(
+                    .combinedClickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
+                        role = Role.Button,
                         onClick = onTogglePanel,
+                        onLongClickLabel = stringResource(R.string.nav_coach),
+                        onLongClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onOpenCoach()
+                        },
                     )
                     .semantics { contentDescription = controlDescription },
             ) {

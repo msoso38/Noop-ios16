@@ -444,7 +444,8 @@ object Metrics {
     val quickLaunchDismissDragDistance = 76.dp
     val quickLaunchHeaderChipMinWidth = 68.dp
     const val quickLaunchStackedHeaderFontScale = 1.3f
-    val quickLaunchBottomBarButton = 50.dp
+    val quickLaunchBottomBarVerticalPadding = space8
+    val quickLaunchBottomBarButton = 54.dp
     val quickLaunchRemoveTarget = 30.dp
     val quickLaunchRemoveGlyph = 19.dp
     val quickLaunchPlaceholderStroke = 1.5.dp

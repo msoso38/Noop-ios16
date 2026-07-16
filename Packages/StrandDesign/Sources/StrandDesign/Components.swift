@@ -60,12 +60,12 @@ public enum NoopMetrics {
     public enum LaunchChrome {
         // Split tab bar
         public static let shellInset: CGFloat = 22
-        public static let pillVInset: CGFloat = 7
+        public static let pillVInset: CGFloat = 9
         public static let pillTabGap: CGFloat = 2
         public static let tabIcon: CGFloat = 18
         public static let tabIconLabelGap: CGFloat = 3
         public static let actionIcon: CGFloat = 16
-        public static let toggleDiameter: CGFloat = 50
+        public static let toggleDiameter: CGFloat = 54
 
         // Quick-launch tiles
         public static let tileIcon: CGFloat = 19
