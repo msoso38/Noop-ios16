@@ -1,5 +1,7 @@
 package com.noop.ui
 
+import com.noop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -144,11 +146,15 @@ fun HealthScreen(
     // background" pref (default ON) exactly like Today; OFF passes null so the scaffold paints the flat
     // surface canvas instead.
     val showDayCycleBackground = remember { NoopPrefs.showDayCycleBackground(context) }
+    val skyBehindCards = remember { NoopPrefs.skyBehindCards(context) }
 
     LazyScreenScaffold(
-        title = "Health Monitor",
+        title = uiString(R.string.l10n_health_screen_health_monitor_c4abc3fc),
         subtitle = "Live vitals, streamed from the strap.",
-        topBackground = if (showDayCycleBackground) { { LiquidScreenSky() } } else null,
+        topBackground = if (showDayCycleBackground) { { LiquidScreenSky(fillHeight = skyBehindCards) } } else null,
+        // Sky-behind-cards fills the viewport so the transparent cards reveal the sky the whole way
+        // down (Today / Trends / Sleep / metric-detail parity - same two prefs, same two behaviours).
+        fullBleedBackground = showDayCycleBackground && skyBehindCards,
     ) {
         if (today == null && !hasLiveHr) {
             // Even with no history yet, a freshly-connected strap can be told to sync now (#364) — the
@@ -167,7 +173,7 @@ fun HealthScreen(
             item { Spacer(Modifier.height(Metrics.selectorTopUp)) }
             item {
                 VitalsSection(
-                    title = "Vital Signs",
+                    title = uiString(R.string.l10n_health_screen_vital_signs_e7d9e1b1),
                     overline = "Latest readings",
                     trailing = null,
                     vitals = latestVitals(days, UnitPrefs.temperature(LocalContext.current)),
@@ -250,7 +256,7 @@ private fun SyncStatusSection(vm: AppViewModel, onSyncNow: () -> Unit) {
                 when {
                     live.backfilling -> SyncingHistoryNote(chunks = live.syncChunksThisSession)
                     !live.connected -> StatePill(
-                        title = "No strap connected",
+                        title = uiString(R.string.l10n_health_screen_no_strap_connected_fb37b99e),
                         tone = StrandTone.Neutral,
                         showsDot = false,
                     )
@@ -258,7 +264,7 @@ private fun SyncStatusSection(vm: AppViewModel, onSyncNow: () -> Unit) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(Metrics.space8),
                     ) {
-                        StatePill(title = "History synced", tone = StrandTone.Positive)
+                        StatePill(title = uiString(R.string.l10n_health_screen_history_synced_8339779d), tone = StrandTone.Positive)
                         Text(
                             relativeAgo(live.lastSyncAt!!),
                             style = NoopType.footnote,
@@ -336,14 +342,14 @@ private fun RecordsAndSourcesSection(
         RecordRow(
             icon = Icons.AutoMirrored.Filled.MenuBook,
             tint = Palette.metricCyan,
-            title = "Lab Book",
+            title = uiString(R.string.l10n_health_screen_lab_book_f966c140),
             subtitle = "Your bloods, BP and body numbers. Kept private here.",
             onClick = onOpenLabBook,
         )
         RecordRow(
             icon = Icons.AutoMirrored.Filled.CompareArrows,
             tint = Palette.accent,
-            title = "Your Data, Fused",
+            title = uiString(R.string.l10n_health_screen_your_data_fused_a740fd4a),
             subtitle = "The best-sourced number per metric, across your bands.",
             onClick = onOpenFusedRecord,
         )
@@ -371,7 +377,7 @@ private fun RecordRow(
                 indication = null,
                 onClick = onClick,
             )
-            .semantics { contentDescription = "$title. $subtitle" },
+            .semantics { contentDescription = uiString(R.string.l10n_health_screen_title_subtitle_8d9004e8, title, subtitle) },
         padding = Metrics.space16,
     ) {
         Row(
@@ -453,7 +459,7 @@ private fun SkinTempSuiteSection(
         signals?.bodyClock?.let { BodyClockCard(estimate = it) }
 
         Text(
-            "Cycle phase, body-clock and illness heads-up are approximations computed on your device from " +
+            uiString(R.string.l10n_health_screen_cycle_phase_body_clock_and_illness_59e2d9a4) +
                 "your own nightly temperature, heart rate and HRV: observations about your own numbers, " +
                 "never a diagnosis. They never leave this phone.",
             style = NoopType.footnote,
@@ -505,28 +511,28 @@ private fun HealthContributorsSection(day: DailyMetric?) {
                     modifier = Modifier.staggeredAppear(0),
                 )
                 ContributorBar(
-                    label = "Resting HR",
+                    label = uiString(R.string.l10n_health_screen_resting_hr_26677094),
                     readout = rhr?.let { "${it.roundToInt()} bpm" } ?: "—",
                     fraction = rhr?.let { 1.0 - ((it - 40.0) / 40.0) },
                     color = Palette.chargeColor,
                     modifier = Modifier.staggeredAppear(1),
                 )
                 ContributorBar(
-                    label = "Sleep",
+                    label = uiString(R.string.l10n_health_screen_sleep_3cac34e6),
                     readout = sleepMin?.let { sleepHoursText(it) } ?: "—",
                     fraction = sleepMin?.let { (it / 60.0) / 8.0 },
                     color = Palette.sleepLight,
                     modifier = Modifier.staggeredAppear(2),
                 )
                 ContributorBar(
-                    label = "Respiratory",
+                    label = uiString(R.string.l10n_health_screen_respiratory_1cd8c175),
                     readout = resp?.let { String.format(Locale.US, "%.1f rpm", it) } ?: "—",
                     fraction = resp?.let { 1.0 - ((it - 12.0) / 8.0) },
                     color = Palette.sleepLight,
                     modifier = Modifier.staggeredAppear(3),
                 )
                 Text(
-                    "Baselines learned on-device over 14 days. Bars read each signal against a " +
+                    uiString(R.string.l10n_health_screen_baselines_learned_on_device_over_14_c107f375) +
                         "typical adult range (approximate, not medical advice).",
                     style = NoopType.footnote,
                     color = Palette.textTertiary,
@@ -557,7 +563,7 @@ private fun ContributorBar(
     // PipBar takes a 0…100 value; map the presentation fraction up onto that span (null → empty bar).
     val strength = fraction?.coerceIn(0.0, 1.0)?.let { (it * 100.0).toFloat() } ?: 0f
     Column(
-        modifier = modifier.semantics { contentDescription = "$label $readout" },
+        modifier = modifier.semantics { contentDescription = uiString(R.string.l10n_health_screen_label_readout_3f166607, label, readout) },
         verticalArrangement = Arrangement.spacedBy(Metrics.space6),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -742,7 +748,7 @@ private fun VitalityHero(
                         tint = Palette.chargeColor,
                         diameter = 96.dp,
                     )
-                    Text("out of 100", style = NoopType.footnote, color = Palette.textTertiary)
+                    Text(uiString(R.string.l10n_health_screen_out_of_100_da0953a8), style = NoopType.footnote, color = Palette.textTertiary)
                 }
                 Column(horizontalAlignment = Alignment.End) {
                     Overline("Body Age")
@@ -762,13 +768,13 @@ private fun VitalityHero(
                 }
             }
             if (best != null && best.lnHazard < 0) {
-                Text("Helping most: ${best.label}", style = NoopType.footnote, color = Palette.statusPositive)
+                Text(uiString(R.string.l10n_health_screen_helping_most_best_label_edee8773, best.label), style = NoopType.footnote, color = Palette.statusPositive)
             }
             if (worst != null && worst.lnHazard > 0) {
-                Text("Holding you back: ${worst.label}", style = NoopType.footnote, color = Palette.statusWarning)
+                Text(uiString(R.string.l10n_health_screen_holding_you_back_worst_label_863a1809, worst.label), style = NoopType.footnote, color = Palette.statusWarning)
             }
             Text(
-                "A wellness estimate from your habits, not a clinical biological age.",
+                uiString(R.string.l10n_health_screen_a_wellness_estimate_from_your_habits_d00f36de),
                 style = NoopType.footnote, color = Palette.textTertiary,
             )
         }
@@ -892,7 +898,7 @@ private fun FitnessAgeHero(
                 }
                 if (vo2max != null) {
                     StatePill(
-                        title = "VO₂max ${vo2max.roundToInt()}",
+                        title = uiString(R.string.l10n_health_screen_vo_max_vo2max_roundtoint_c32a04b3, vo2max.roundToInt()),
                         tone = StrandTone.Accent,
                         showsDot = false,
                     )
@@ -900,7 +906,7 @@ private fun FitnessAgeHero(
             }
 
             Text(
-                text = "± 5 yr · a fitness comparison, not a biological age",
+                text = uiString(R.string.l10n_health_screen_5_yr_a_fitness_comparison_not_418aa11d),
                 style = NoopType.footnote,
                 color = Palette.textTertiary,
             )
@@ -916,12 +922,12 @@ private fun FitnessAgeHero(
                         onClick = onHowAccurate,
                     )
                     .padding(vertical = Metrics.space4)
-                    .semantics { contentDescription = "How accurate is this Fitness Age?" },
+                    .semantics { contentDescription = uiString(R.string.l10n_health_screen_how_accurate_is_this_fitness_age_935c9a6d) },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Metrics.space6),
             ) {
                 Text(
-                    "How accurate is this?",
+                    uiString(R.string.l10n_health_screen_how_accurate_is_this_dae653a8),
                     style = NoopType.captionNumber,
                     color = Palette.accent,
                 )
@@ -995,7 +1001,7 @@ private fun FitnessReadinessCard(
                                 IconButton(onClick = onRefresh, modifier = Modifier.size(28.dp)) {
                                     Icon(
                                         Icons.Filled.Refresh,
-                                        contentDescription = "Refresh Fitness Age now",
+                                        contentDescription = uiString(R.string.l10n_health_screen_refresh_fitness_age_now_85fc516f),
                                         tint = Palette.accent,
                                     )
                                 }
@@ -1003,7 +1009,7 @@ private fun FitnessReadinessCard(
                         }
                     }
                     Text(
-                        "It compares your resting heart rate and recent activity against people your age. " +
+                        uiString(R.string.l10n_health_screen_it_compares_your_resting_heart_rate_e83e00f5) +
                             "Wear your strap for a full week and it appears here.",
                         style = NoopType.subhead,
                         color = Palette.textSecondary,
@@ -1011,11 +1017,11 @@ private fun FitnessReadinessCard(
                 }
             }
 
-            ReadinessGroup(title = "Drives your Fitness Age", items = drivesAge)
-            ReadinessGroup(title = "Unlocks your VO₂max", items = unlocksVo2)
+            ReadinessGroup(title = uiString(R.string.l10n_health_screen_drives_your_fitness_age_9d0d1219), items = drivesAge)
+            ReadinessGroup(title = uiString(R.string.l10n_health_screen_unlocks_your_vo_max_b3c67dda), items = unlocksVo2)
 
             Text(
-                "Weight, height and waist add a VO₂max estimate. They don't change the Fitness Age itself.",
+                uiString(R.string.l10n_health_screen_weight_height_and_waist_add_a_fd2699f5),
                 style = NoopType.footnote,
                 color = Palette.textTertiary,
             )
@@ -1055,7 +1061,7 @@ private fun ReadinessRow(item: FitnessReadinessItem) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .semantics { contentDescription = "${item.label}: ${item.detail}" },
+            .semantics { contentDescription = uiString(R.string.l10n_health_screen_item_label_item_detail_5985e927, item.label, item.detail) },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Metrics.space10),
     ) {
@@ -1096,7 +1102,7 @@ fun VitalSignsScreen(vm: AppViewModel, onVitalClick: (String) -> Unit = {}) {
     }
 
     ScreenScaffold(
-        title = "Vital Signs",
+        title = uiString(R.string.l10n_health_screen_vital_signs_e7d9e1b1),
         subtitle = "Historical vitals from your cached daily metrics.",
     ) {
         RecentDaySelectorBar(selectedOffset = selectedDayOffset, onSelect = { selectedDayOffset = it })
@@ -1107,7 +1113,7 @@ fun VitalSignsScreen(vm: AppViewModel, onVitalClick: (String) -> Unit = {}) {
             )
         } else {
             VitalsSection(
-                title = "Vital Signs",
+                title = uiString(R.string.l10n_health_screen_vital_signs_e7d9e1b1),
                 overline = selectedDayLabel(selectedDayOffset),
                 trailing = "as of ${selectedMetric.day}",
                 vitals = vitals,
@@ -1250,7 +1256,7 @@ private fun HeartRateSection(vm: AppViewModel, hrMax: Int) {
 
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
         SectionHeader(
-            title = "Heart Rate",
+            title = uiString(R.string.l10n_health_screen_heart_rate_dde6e8f7),
             overline = "Live",
             trailing = if (derived) "from R-R" else null,
         )
@@ -1272,7 +1278,7 @@ private fun HeartRateSection(vm: AppViewModel, hrMax: Int) {
                     verticalAlignment = Alignment.Top,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Heart Rate", style = NoopType.headline, color = Palette.textPrimary)
+                        Text(uiString(R.string.l10n_health_screen_heart_rate_dde6e8f7), style = NoopType.headline, color = Palette.textPrimary)
                         Text(
                             text = when {
                                 derived -> "Estimated from R-R interval"
@@ -1562,7 +1568,7 @@ private fun VitalsSection(
 
         if (footer) {
             Text(
-                text = "SpO₂, respiratory rate and skin temperature are sleep-window " +
+                text = uiString(R.string.l10n_health_screen_spo_respiratory_rate_and_skin_temperature_0ae0ad8f) +
                     "aggregates from your most recent imported day; resting HR and HRV update daily. " +
                     "Once NOOP has 14 nights of history, in-range compares each vital to your own " +
                     "baseline (approximate, not medical advice); until then typical adult ranges apply.",
@@ -1716,7 +1722,7 @@ private fun vitalsFor(
         rangeCaption(days.mapNotNull(spo2RawMean), "ADC") { String.format(Locale.US, "%.0f", it) }
     return listOf(
         Vital(
-            key = "resp", label = "Resp Rate", unit = "rpm",
+            key = "resp", label = uiString(R.string.l10n_health_screen_resp_rate_1c48dbd8), unit = "rpm",
             value = d?.respRateBpm, format = { String.format("%.1f", it) },
             deltaText = deltaText(d?.respRateBpm, previous { it.respRateBpm }),
             readingDay = todayKey,
@@ -1727,7 +1733,7 @@ private fun vitalsFor(
             sparkline = trail(d?.respRateBpm) { it.respRateBpm },
         ),
         Vital(
-            key = "spo2", label = "Blood O₂", unit = "%",
+            key = "spo2", label = uiString(R.string.l10n_health_screen_blood_o_9bf5ed9b), unit = "%",
             value = d?.spo2Pct, format = { String.format("%.0f", it) },
             deltaText = deltaText(d?.spo2Pct, previous { it.spo2Pct }, decimals = 0),
             readingDay = todayKey,
@@ -1745,7 +1751,7 @@ private fun vitalsFor(
             // the sensor data decoded, without fabricating a clinical-looking number. Banding over the
             // full u16 span just keeps the tile cyan (never "off range"); `stateCaption` labels it
             // uncalibrated, so we never assert an in/out-of-range clinical judgment on raw sensor data.
-            key = "spo2raw", label = "Raw SpO₂", unit = "ADC",
+            key = "spo2raw", label = uiString(R.string.l10n_health_screen_raw_spo_ccfe80c1), unit = "ADC",
             value = d?.let(spo2RawMean), format = { String.format("%.0f", it) },
             deltaText = deltaText(d?.let(spo2RawMean), previous(spo2RawMean), decimals = 0),
             readingDay = todayKey,
@@ -1756,7 +1762,7 @@ private fun vitalsFor(
             sparkline = trail(d?.let(spo2RawMean)) { spo2RawMean(it) },
         ),
         Vital(
-            key = "rhr", label = "Resting HR", unit = "bpm",
+            key = "rhr", label = uiString(R.string.l10n_health_screen_resting_hr_26677094), unit = "bpm",
             value = d?.restingHr?.toDouble(), format = { it.roundToInt().toString() },
             deltaText = deltaText(d?.restingHr?.toDouble(), previous { it.restingHr?.toDouble() }, decimals = 0),
             readingDay = todayKey,
@@ -1781,7 +1787,7 @@ private fun vitalsFor(
             sparkline = trail(d?.avgHrv) { it.avgHrv },
         ),
         Vital(
-            key = "skin", label = "Skin Temp", unit = skinUnitLabel,
+            key = "skin", label = uiString(R.string.l10n_health_screen_skin_temp_a4affc5a), unit = skinUnitLabel,
             value = skin, format = skinFormat,
             deltaText = deltaText(skin, previousSkin),
             readingDay = todayKey,
@@ -1949,13 +1955,15 @@ private data class VitalDetailModel(
  *  (Fitness Age + Vitality under the computed strap, Steps estimate, Apple active energy). Each Today
  *  dashboard card taps through to ITS OWN focused trend here (2026-07-03), so these load their
  *  series from the repo on demand rather than off the cached `days` columns. Mirrors iOS metricDetail. */
-private val SERIES_BACKED_VITAL_KEYS = setOf("fitness_age", "vitality", "steps_est", "active_kcal")
+private val SERIES_BACKED_VITAL_KEYS = setOf("fitness_age", "vitality", "steps_est", "active_kcal", "rest")
 
 @Composable
 fun VitalDetailScreen(vm: AppViewModel, key: String) {
     val days by vm.recentDays.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val tempUnit = UnitPrefs.temperature(context)
+    // The Effort detail renders per the user's Effort display scale (0-100 vs 0-21), like the Today tile.
+    val effortScale = UnitPrefs.effortScale(context)
     // Profile drives the Fitness Age readiness/countdown shown when that vital has no value yet.
     val profile = remember { ProfileStore.from(context.applicationContext) }
     val isSeriesBacked = key in SERIES_BACKED_VITAL_KEYS
@@ -1976,13 +1984,19 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
         }
     }
     val detail = if (isSeriesBacked) seriesDetail
-    else remember(days, key, tempUnit) { buildVitalDetail(days, key, tempUnit) }
+    else remember(days, key, tempUnit, effortScale) { buildVitalDetail(days, key, tempUnit, effortScale) }
     var range by remember { mutableStateOf(VitalDetailRange.MONTH) }
 
     // The subtitle tracks how much history the metric has, so we never promise a "historical trend" the
     // view isn't showing: Fitness Age with no reading yet -> what it still needs; ANY metric with a single
     // reading -> that reading (trend to follow); two+ -> the trend. Pre-load falls through to trend.
     val loadedPoints = if (seriesLoaded) (detail?.points?.size ?: 0) else -1
+    // #430 parity: the detail carries the SAME backdrop as the screen that pushed it — the day-cycle sky
+    // when the setting is on (full-viewport when "Sky behind cards" is also on, so the transparent cards
+    // reveal it the whole way down; the top band otherwise), the plain canvas when off. Same gates the
+    // Today screen uses.
+    val showDayCycleBackground = remember { NoopPrefs.showDayCycleBackground(context) }
+    val skyBehindCards = remember { NoopPrefs.skyBehindCards(context) }
     ScreenScaffold(
         title = detail?.title ?: "Vital Signs",
         subtitle = when {
@@ -1990,10 +2004,14 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
             loadedPoints == 1 -> "Your latest reading — trend to follow."
             else -> "Historical trend from cached daily metrics."
         },
+        topBackground = if (showDayCycleBackground) { { LiquidScreenSky(fillHeight = skyBehindCards) } } else null,
+        // Sky-behind-cards needs the full-viewport container too — the band container's status-bar
+        // offset left the lower cards on plain canvas (tester report).
+        fullBleedBackground = showDayCycleBackground && skyBehindCards,
     ) {
         if (isSeriesBacked && !seriesLoaded) {
             DataPendingNote(
-                title = "Loading…",
+                title = uiString(R.string.l10n_health_screen_loading_33ce4174),
                 body = "Fetching this metric's history.",
             )
             return@ScreenScaffold
@@ -2036,17 +2054,17 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Overline("Latest")
                         Text(
-                            text = "${detail.format(one.second)} ${detail.unit}".trim(),
+                            text = uiString(R.string.l10n_health_screen_detail_format_one_second_detail_unit_6fde90d3, detail.format(one.second), detail.unit).trim(),
                             style = NoopType.chartValueLarge,
                             color = detail.color,
                         )
                         Text(
-                            text = "as of ${one.first}",
+                            text = uiString(R.string.l10n_health_screen_as_of_one_first_2b409612, one.first),
                             style = NoopType.footnote,
                             color = Palette.textTertiary,
                         )
                         Text(
-                            text = "One reading so far — your trend chart fills in here once a second " +
+                            text = uiString(R.string.l10n_health_screen_one_reading_so_far_your_trend_eaad57f2) +
                                 "reading lands.",
                             style = NoopType.subhead,
                             color = Palette.textSecondary,
@@ -2056,7 +2074,7 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
                 return@ScreenScaffold
             }
             DataPendingNote(
-                title = "Not enough history yet",
+                title = uiString(R.string.l10n_health_screen_not_enough_history_yet_0e2f93b6),
                 body = "This vital needs at least two historical readings before NOOP can chart it.",
             )
             return@ScreenScaffold
@@ -2074,7 +2092,7 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
         val filteredPoints = filteredReadings.map { it.day to it.value }
         if (filteredPoints.size < 2) {
             DataPendingNote(
-                title = "Not enough history in this range",
+                title = uiString(R.string.l10n_health_screen_not_enough_history_in_this_range_2da72f80),
                 body = "Try a longer interval like 3M, 6M, 1Y, or ALL to see this vital’s trend.",
             )
             return@ScreenScaffold
@@ -2093,12 +2111,12 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
                     Column(modifier = Modifier.weight(1f)) {
                         Overline("Latest")
                         Text(
-                            text = "${detail.format(latest.second)} ${detail.unit}".trim(),
+                            text = uiString(R.string.l10n_health_screen_detail_format_latest_second_detail_unit_9664278b, detail.format(latest.second), detail.unit).trim(),
                             style = NoopType.chartValueLarge,
                             color = detail.color,
                         )
                         Text(
-                            text = "as of ${latest.first}",
+                            text = uiString(R.string.l10n_health_screen_as_of_latest_first_726f20bb, latest.first),
                             style = NoopType.footnote,
                             color = Palette.textTertiary,
                         )
@@ -2113,7 +2131,7 @@ fun VitalDetailScreen(vm: AppViewModel, key: String) {
                 )
                 if (unlockedRanges.size < VitalDetailRange.entries.size) {
                     Text(
-                        "Longer ranges unlock as more history builds.",
+                        uiString(R.string.l10n_health_screen_longer_ranges_unlock_as_more_history_d7da5fee),
                         style = NoopType.footnote,
                         color = Palette.textTertiary,
                     )
@@ -2222,18 +2240,18 @@ private fun VitalReadingsTable(rows: List<VitalReadingRow>) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "Date",
+                    uiString(R.string.l10n_health_screen_date_eb9a4bc1),
                     style = NoopType.footnote,
                     color = Palette.textSecondary,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    "Value",
+                    uiString(R.string.l10n_health_screen_value_8dce170d),
                     style = NoopType.footnote,
                     color = Palette.textSecondary,
                 )
                 Text(
-                    "Source",
+                    uiString(R.string.l10n_health_screen_source_6da13add),
                     style = NoopType.footnote,
                     color = Palette.textSecondary,
                     textAlign = TextAlign.End,
@@ -2333,6 +2351,8 @@ private fun asOfLabel(day: String?): String? {
 
 internal enum class VitalDetailRange(val label: String, val days: Long?) {
     WEEK("W", 7),
+    TWO_WEEK("2W", 14),
+    THREE_WEEK("3W", 21),
     MONTH("M", 30),
     THREE_MONTH("3M", 90),
     SIX_MONTH("6M", 180),
@@ -2352,10 +2372,11 @@ internal fun vitalHistorySpanDays(points: List<Pair<String, Double>>): Long {
  *  LATEST reading, so with under a week of history every window returned the identical full point set
  *  and all six chips drew the same line (a week of data stretched full-width under a "1Y" label). A
  *  range only differs from its predecessor once the data span EXCEEDS the predecessor's window, so the
- *  unlocked set is a contiguous prefix: W always, M once span > 7 days, 3M once > 30, 6M once > 90,
- *  1Y once > 180, ALL once > 365. Locked chips render disabled rather than hidden so a calibrating
- *  user still learns the longer views exist; W staying unconditional means nobody is ever stranded
- *  with zero ranges. */
+ *  unlocked set is a contiguous prefix: W always, 2W once span > 7 days, 3W once > 14, M once > 21,
+ *  3M once > 30, 6M once > 90, 1Y once > 180, ALL once > 365. (The 1D/2D experiment was dropped: daily
+ *  metrics hold at most one point per day, so those windows could never draw a line.) Locked chips render
+ *  disabled rather than hidden so a calibrating user still learns the longer views exist; W (the shortest)
+ *  staying unconditional means nobody is ever stranded with zero ranges. */
 /**
  * The range the chips + caption actually describe, resolved NON-DESTRUCTIVELY (Swift parity with
  * MetricExplorerView.coercedSelection). A locked selection renders as the largest unlocked range with
@@ -2421,11 +2442,32 @@ private fun buildVitalDetail(
     days: List<DailyMetric>,
     key: String,
     tempUnit: TemperatureUnit,
+    effortScale: EffortScale = EffortScale.HUNDRED,
 ): VitalDetailModel? {
     return when (key) {
+    // The Today Key-Metrics Recovery tile's drill-in: the Recovery (Charge) trend timeline, matching the
+    // Sleep night-detail pattern. Today's DRIVERS stay on the hero ring's breakdown sheet; this is history.
+    "recovery" -> VitalDetailModel(
+        key = key,
+        title = uiString(R.string.l10n_health_screen_recovery_ea924f72),
+        unit = "%",
+        color = Palette.chargeColor,
+        readings = days.mapNotNull { row -> row.recovery?.let { VitalReading(row.day, it, row.deviceId) } },
+        format = { it.roundToInt().toString() },
+    )
+    // The Today Key-Metrics Effort tile's drill-in: the day-strain trend, rendered per the user's Effort
+    // display scale like the tile itself. Readings store the RAW 0-100 composite; only format() scales.
+    "strain" -> VitalDetailModel(
+        key = key,
+        title = uiString(R.string.l10n_health_screen_effort_8c974bc6),
+        unit = if (effortScale == EffortScale.HUNDRED) "%" else "",
+        color = Palette.effortColor,
+        readings = days.mapNotNull { row -> row.strain?.let { VitalReading(row.day, it, row.deviceId) } },
+        format = { UnitFormatter.effortDisplay(it, effortScale) },
+    )
     "resp" -> VitalDetailModel(
         key = key,
-        title = "Respiratory Rate",
+        title = uiString(R.string.l10n_health_screen_respiratory_rate_3fbb532f),
         unit = "rpm",
         color = Palette.metricCyan,
         readings = days.mapNotNull { row -> row.respRateBpm?.let { VitalReading(row.day, it, row.deviceId) } },
@@ -2433,7 +2475,7 @@ private fun buildVitalDetail(
     )
     "spo2" -> VitalDetailModel(
         key = key,
-        title = "Blood Oxygen",
+        title = uiString(R.string.l10n_health_screen_blood_oxygen_a8ad9ff5),
         unit = "%",
         color = Palette.metricCyan,
         readings = days.mapNotNull { row -> row.spo2Pct?.let { VitalReading(row.day, it, row.deviceId) } },
@@ -2441,7 +2483,7 @@ private fun buildVitalDetail(
     )
     "rhr" -> VitalDetailModel(
         key = key,
-        title = "Resting Heart Rate",
+        title = uiString(R.string.l10n_health_screen_resting_heart_rate_9700f4d8),
         unit = "bpm",
         color = Palette.metricRose,
         readings = days.mapNotNull { row -> row.restingHr?.toDouble()?.let { VitalReading(row.day, it, row.deviceId) } },
@@ -2449,7 +2491,7 @@ private fun buildVitalDetail(
     )
     "hrv" -> VitalDetailModel(
         key = key,
-        title = "Heart Rate Variability",
+        title = uiString(R.string.l10n_health_screen_heart_rate_variability_20f0069e),
         unit = "ms",
         color = Palette.metricPurple,
         readings = days.mapNotNull { row -> row.avgHrv?.let { VitalReading(row.day, it, row.deviceId) } },
@@ -2469,7 +2511,7 @@ private fun buildVitalDetail(
         }
         VitalDetailModel(
             key = key,
-            title = "Skin Temperature",
+            title = uiString(R.string.l10n_health_screen_skin_temperature_f59127f6),
             unit = unit,
             color = Palette.metricAmber,
             readings = days.mapNotNull { row ->
@@ -2489,9 +2531,22 @@ private fun buildVitalDetail(
  *  off the resolved step series (imported ∪ estimated), Active Energy off the Apple-Health import. Colours
  *  match each card's dashboard tint. Returns null for an unknown key. */
 private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): VitalDetailModel? = when (key) {
+    // The Today Key-Metrics Rest tile's drill-in: the Rest composite (sleep_performance) trend, read via
+    // the SAME imported-wins resolvedSeries merge the tile's score/sparkline use, so the detail can never
+    // disagree with the tile (#248 lineage). Each reading names its winning source for the caption.
+    "rest" -> VitalDetailModel(
+        key = key,
+        title = uiString(R.string.l10n_health_screen_rest_b79e5f48),
+        unit = "%",
+        color = Palette.restColor,
+        readings = vm.repo.resolvedSeries("sleep_performance", "my-whoop", "0000-00-00", "9999-99-99",
+            strapDeviceId = vm.activeStrapId)
+            .points.map { VitalReading(it.day, it.value, it.source) },
+        format = { it.roundToInt().toString() },
+    )
     "fitness_age" -> VitalDetailModel(
         key = key,
-        title = "Fitness Age",
+        title = uiString(R.string.l10n_health_screen_fitness_age_12383b4a),
         unit = "yrs",
         color = Palette.chargeColor,
         readings = vm.repo.metricSeriesComputedUnion(vm.activeStrapId, "fitness_age", "0000-01-01", "9999-12-31")
@@ -2500,7 +2555,7 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
     )
     "vitality" -> VitalDetailModel(
         key = key,
-        title = "Vitality",
+        title = uiString(R.string.l10n_health_screen_vitality_be320b06),
         unit = "",
         color = Palette.metricPurple,
         readings = vm.repo.metricSeriesComputedUnion(vm.activeStrapId, "vitality", "0000-01-01", "9999-12-31")
@@ -2532,7 +2587,7 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
             .points.associateBy({ it.day }, { VitalReading(it.day, it.value, it.source) })
         VitalDetailModel(
             key = key,
-            title = "Steps",
+            title = uiString(R.string.l10n_health_screen_steps_cdde4f20),
             unit = "steps",
             color = Palette.metricCyan,
             readings = mergeStepsReadings(real, imported, est),
@@ -2551,7 +2606,7 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
         for (r in rows) r.activeKcal?.let { byDay.putIfAbsent(r.day, VitalReading(r.day, it, r.deviceId)) }
         VitalDetailModel(
             key = key,
-            title = "Active Energy",
+            title = uiString(R.string.l10n_health_screen_active_energy_2d3288f9),
             unit = "kcal",
             color = Palette.metricAmber,
             readings = byDay.entries.sortedBy { it.key }.map { it.value },
@@ -2566,7 +2621,7 @@ private suspend fun buildSeriesVitalDetail(vm: AppViewModel, key: String): Vital
 @Composable
 private fun HealthEmptyState() {
     DataPendingNote(
-        title = "No biometrics yet",
+        title = uiString(R.string.l10n_health_screen_no_biometrics_yet_7c594a6c),
         body = "No biometrics yet. Import your WHOOP export (and Apple Health if you " +
             "have it) in Data Sources to fill this in.",
     )
