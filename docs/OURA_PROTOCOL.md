@@ -308,24 +308,32 @@ All records share the §2.3 TLV header (`type`, `len`, 4-byte `ringTimestamp`). 
 - 7 amplitudes: first `byte<<3`, rest `byte<<shift`. [ringverse]
 
 ### 6.4 Green IBI quality - `0x80` `green_ibi_quality_event` (4–18 B, 2 B/sample)
-Per 16-bit LE sample: [open_ring][ringverse]
+Per 2-byte sample, **high byte first** (NOT a little-endian u16): [oura-rs][ringverse]
 ```
-bits 0–10  : value_11bit  → IBI in ms
-bits 11–13 : qual_a
-bits 14–15 : qual_b
+ibi_ms  = (b1 & 0x07) | (b0 << 3)   ; 11-bit, b0 = high 8 bits, b1[2:0] = low 3 bits
+quality = (b1 >> 3) & 0x03
+flag    =  b1 >> 5
 ```
-**NOOP filter:** accept sample only if `qual_a ≤ 1 && qual_b == 0`. [open_ring]
-(7 samples per 14-byte record.) [open_ring]
+**NOOP filter:** accept sample only if `quality == 1` (the ring's "good beat" flag) and the IBI is
+physiological (300–2000 ms). (Up to 7 samples per 14-byte record.) [oura-rs]
+**Validated (decode fix):** the earlier reading treated the pair as a little-endian u16 masked to bits 0–10,
+placing the high byte in the LOW bits — a bit-order error (real-capture within-record jitter 583 ms). The
+high-byte-first layout with the `quality == 1` gate yields a clean beat train (45 ms jitter) and keeps more
+good beats. Matches `open_oura`'s `parse_api_green_ibi_quality_event`. (Same class of fix as `0x60`, §6.1.)
 
 **IBI → HR (NOOP research, Tier-B):** each accepted sample is a per-beat interval, so an instantaneous HR
 follows as `60000 / IBI_ms`. open_oura feeds this record's per-minute HR (`hr_bpm`) into its activity
 classifier (`oura-cli/src/activity_model.rs`, alongside `met`←`0x50`, motion←`0x47`, temp←`0x46`) — i.e. HR
 comes from THIS record, not from the `0x50` MET record. NOOP already decodes these IBIs for HRV; a diagnostic
 sidecar (`oura-ibihr-<id>.jsonl`, records tagged by source event `0x80`/`0x60`/`0x6E`/`0x44`) also
-reconstructs an HR history from the banked stream for offline study — NEVER scored. First live Gen 3 sample
-(2026-07-15, daytime wrist-motion) was SPARSE and noisy: ≈7 usable beats/min (~10 % of a real ~65 bpm) and
-~15 % of intervals sub-272 ms (impossible HR, rejected) — consistent with a quality-sampled subset, not a
-full beat record. Overnight density (ring still → cleanest optics) is the open question. [open_oura-act]
+reconstructs an HR history from the banked stream for offline study — NEVER scored. **Result (2026-07-16,
+first full overnight):** the earlier "sparse + ~15 % impossible-HR" daytime reading was largely the DECODE
+BUG above (wrong bit layout), not a ring limitation. With the corrected layout, one full night decoded to
+**94 % minute coverage, ~10 % beat-to-beat artifact, a clean ~56 bpm resting level with a real nocturnal dip
+that tracks the reconstructed hypnogram** — i.e. usable as an overnight HR/HRV source. Daytime/activity is
+sparser (~43 % coverage — wrist motion thins the banked beats) but the surviving beats are clean and HR
+tracks effort (rest ≈ 59 → moderate ≈ 100 bpm). Still Tier-B, never scored; promotion to
+`restingHr`/`avgHrv` is gated on multi-night validation against a reference. [open_oura-act]
 
 ### 6.5 SpO2 per-sample - `0x6F` `spo2_event` (5–18 B, 1 s spacing)
 - Byte 6: bits `[7:4]` = SpO2 base (<<7); bits `[3:0]` = status flag. [ringverse]
