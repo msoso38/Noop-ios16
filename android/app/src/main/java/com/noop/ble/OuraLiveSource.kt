@@ -436,12 +436,16 @@ class OuraLiveSource(
     private val pendingUnanchoredBursts = ArrayList<OuraHypnogramBurst>()
 
     /**
-     * The latest 0x49 sleep_summary_1 window (rt, start/end offsets in MINUTES BEFORE the event time,
-     * ringverse-validated): pairs with the hypnogram burst of the SAME finalization so its end anchors
-     * at the TRUE sleep end (`event − end_offset`) instead of the write moment (observed trailing the
-     * real sleep end by 10–43 min). Twin of Swift's lastSleepWindow049.
+     * The recent 0x49 sleep_summary_1 windows (rt, start/end offsets in MINUTES BEFORE the event time,
+     * ringverse-validated): each pairs with the hypnogram burst of the SAME finalization so its end
+     * anchors at the TRUE sleep end (`event − end_offset`) instead of the write moment (observed trailing
+     * the real sleep end by 10–43 min). A COLLECTION, not a single slot: a drain can carry an overnight
+     * AND a daytime nap, and keeping only the latest let the nap's 0x49 clobber the overnight's before
+     * its burst finalized (overnight then fell back to its +4 h write time, 2026-07-17 capture). Each
+     * burst matches its OWN by ring-time proximity. Bounded (oldest dropped past the cap). Twin of Swift's
+     * recentSleepWindows049.
      */
-    private var lastSleepWindow049: Triple<Long, Int, Int>? = null
+    private val recentSleepWindows049 = ArrayList<Triple<Long, Int, Int>>()
 
     /** 0x71 fixture capture (#287): per-session count + observed payload lengths; log cap vs flooding. */
     private var greenIbiAmpCount = 0
@@ -616,25 +620,20 @@ class OuraLiveSource(
                 " - sequence order taken from arrival order")
         }
         var end = writeEnd
-        val w = lastSleepWindow049
+        // Same-finalization match: the 0x49 and the phase records carry near-identical envelope ring-times
+        // (observed seconds apart); 6000 ticks = 10 min never pairs a different night. Pick the CLOSEST
+        // window, not merely the newest — a drain can hold an overnight AND a nap, and the newer (nap)
+        // window would otherwise mis-anchor the overnight burst.
+        val w = closestSleepWindow049(recentSleepWindows049, burst.lastRingTimestamp, 6_000L)
         if (w != null) {
-            // Same-finalization match: the 0x49 and the phase records carry near-identical envelope
-            // ring-times (observed seconds apart); 6000 ticks = 10 min never pairs a different night.
-            val gap = if (w.first >= burst.lastRingTimestamp) {
-                w.first - burst.lastRingTimestamp
-            } else {
-                burst.lastRingTimestamp - w.first
-            }
-            if (gap <= 6_000L) {
-                val eventUtc = d.unixSeconds(forRingTimestamp = w.first)
-                if (eventUtc != null) {
-                    val sleepEnd = eventUtc - w.third * 60L
-                    // Sanity: the true end precedes the write and by a plausible margin (< 6 h).
-                    if (sleepEnd <= writeEnd && writeEnd - sleepEnd < 6 * 3600L) {
-                        end = sleepEnd
-                        log("Oura: hypnogram burst end refined by 0x49 - SleepNet write $writeEnd -> " +
-                            "true sleep end $sleepEnd (event-${w.third} min)")
-                    }
+            val eventUtc = d.unixSeconds(forRingTimestamp = w.first)
+            if (eventUtc != null) {
+                val sleepEnd = eventUtc - w.third * 60L
+                // Sanity: the true end precedes the write and by a plausible margin (< 6 h).
+                if (sleepEnd <= writeEnd && writeEnd - sleepEnd < 6 * 3600L) {
+                    end = sleepEnd
+                    log("Oura: hypnogram burst end refined by 0x49 - SleepNet write $writeEnd -> " +
+                        "true sleep end $sleepEnd (event-${w.third} min)")
                 }
             }
         }
@@ -808,7 +807,7 @@ class OuraLiveSource(
         handler.removeCallbacks(chainedDrainRunnable)
         hypnogramAssembler.reset()        // never replay a half-accumulated burst from a dead session
         pendingUnanchoredBursts.clear()
-        lastSleepWindow049 = null
+        recentSleepWindows049.clear()
         greenIbiAmpCount = 0
         greenIbiAmpLengths.clear()
         // Resume the GetEvents cursor from where the LAST connection to this ring left off (s5.1/5.3), so a
@@ -1484,7 +1483,12 @@ class OuraLiveSource(
                     if (e.value.tag == 0x49 && e.value.rawPayload.size >= 4) {
                         val startOff = (e.value.rawPayload[0] and 0xFF) or ((e.value.rawPayload[1] and 0xFF) shl 8)
                         val endOff = (e.value.rawPayload[2] and 0xFF) or ((e.value.rawPayload[3] and 0xFF) shl 8)
-                        lastSleepWindow049 = Triple(e.value.ringTimestamp, startOff, endOff)
+                        // Append (don't overwrite): a drain may carry an overnight AND a nap window, and
+                        // each burst pairs with its OWN by ring-time proximity. Bounded — oldest dropped.
+                        recentSleepWindows049.add(Triple(e.value.ringTimestamp, startOff, endOff))
+                        if (recentSleepWindows049.size > RECENT_SLEEP_WINDOWS_049_CAP) {
+                            recentSleepWindows049.subList(0, recentSleepWindows049.size - RECENT_SLEEP_WINDOWS_049_CAP).clear()
+                        }
                         log("Oura: 0x49 sleep window candidate [ringverse] offsets start-${startOff}min " +
                             "end-${endOff}min")
                     }
@@ -1604,6 +1608,34 @@ class OuraLiveSource(
 
         /** Per-session cap on individually-logged 0x71 records (twin of Swift's greenIbiAmpLogCap). */
         private const val GREEN_IBI_AMP_LOG_CAP = 50
+
+        /** Bound on stashed 0x49 windows (twin of Swift's recentSleepWindows049Cap). */
+        private const val RECENT_SLEEP_WINDOWS_049_CAP = 16
+
+        /**
+         * The 0x49 window in [windows] whose envelope ring-time is nearest [rt] and within [tolerance]
+         * ticks, or null when none is in range. A drain can hold several windows (overnight + nap); each
+         * burst must pair with its OWN, so match by ring-time proximity — keeping a single latest slot
+         * mis-anchored the overnight burst to the nap's window when both finalized in one drain
+         * (2026-07-17 capture). Pure + static so the pairing is unit-testable. Twin of Swift's
+         * closestSleepWindow049.
+         */
+        internal fun closestSleepWindow049(
+            windows: List<Triple<Long, Int, Int>>,
+            rt: Long,
+            tolerance: Long,
+        ): Triple<Long, Int, Int>? {
+            var best: Triple<Long, Int, Int>? = null
+            var bestGap = Long.MAX_VALUE
+            for (w in windows) {
+                val gap = if (w.first >= rt) w.first - rt else rt - w.first
+                if (gap <= tolerance && gap < bestGap) {
+                    bestGap = gap
+                    best = w
+                }
+            }
+            return best
+        }
 
         /** The SetAuthKey-response OUTER opcode (`0x25`) and its OK status byte (`0x00`). The ring replies
          *  `25 01 00` to a successful `0x24` key install (OURA_PROTOCOL.md s3.2). */

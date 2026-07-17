@@ -188,14 +188,19 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private var greenIbiAmpLengths: Set<Int> = []
     private static let greenIbiAmpLogCap = 50
 
-    /// The latest 0x49 sleep_summary_1 window (ringverse: start/end offsets in MINUTES BEFORE the event
-    /// time), stashed so the hypnogram burst it belongs to can anchor its END at the TRUE sleep end
+    /// The recent 0x49 sleep_summary_1 windows (ringverse: start/end offsets in MINUTES BEFORE the event
+    /// time), stashed so the hypnogram burst each one belongs to can anchor its END at the TRUE sleep end
     /// (`event − end_offset`) instead of the SleepNet WRITE moment. Validated 2026-07-13: the write
     /// trailed the real sleep end by 43 min, shifting the whole reconstructed night +43 min; the 0x49
     /// window matched the wearer's report within minutes (23:32→08:08 vs 23:34→08:03). The 0x49 arrives
     /// in the same finalization burst right BEFORE the phase records, so stash-then-match by ring-time
-    /// proximity pairs them. Reset per session.
-    private var lastSleepWindow049: (ringTimestamp: UInt32, startOffMin: Int, endOffMin: Int)?
+    /// proximity pairs them. A single drain can carry SEVERAL windows (e.g. an overnight AND a daytime
+    /// nap), so this is a COLLECTION, not a single slot: keeping only the latest let a nap's 0x49 clobber
+    /// the overnight's before the overnight burst finalized, and the overnight then fell back to its
+    /// +4 h write time (2026-07-17 capture). Each burst matches its OWN window by ring-time proximity.
+    /// Bounded (oldest dropped past the cap); reset per session.
+    private var recentSleepWindows049: [(ringTimestamp: UInt32, startOffMin: Int, endOffMin: Int)] = []
+    private static let recentSleepWindows049Cap = 16
 
     // MARK: - Activity (0x50 MET) estimate accumulation — INVESTIGATION ONLY
     // Aggregate the decoded 0x50 MET stream into an honest, clearly-labeled per-day estimate
@@ -496,6 +501,28 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         }
     }
 
+    /// The 0x49 window in `windows` whose envelope ring-time is nearest `rt` and within `tolerance` ticks,
+    /// or nil when none is in range. A drain can hold several windows (overnight + nap); each burst must
+    /// pair with its OWN, so match by ring-time proximity — keeping a single latest slot mis-anchored the
+    /// overnight burst to the nap's window when both finalized in one drain (2026-07-17 capture). Pure +
+    /// static so the pairing is unit-testable without a strap. Twin of Kotlin's closestSleepWindow049.
+    nonisolated static func closestSleepWindow049(
+        in windows: [(ringTimestamp: UInt32, startOffMin: Int, endOffMin: Int)],
+        toRingTimestamp rt: UInt32,
+        within tolerance: UInt32
+    ) -> (ringTimestamp: UInt32, startOffMin: Int, endOffMin: Int)? {
+        var best: (ringTimestamp: UInt32, startOffMin: Int, endOffMin: Int)?
+        var bestGap = UInt32.max
+        for w in windows {
+            let gap = w.ringTimestamp >= rt ? w.ringTimestamp - rt : rt - w.ringTimestamp
+            if gap <= tolerance, gap < bestGap {
+                bestGap = gap
+                best = w
+            }
+        }
+        return best
+    }
+
     /// Persist a closed hypnogram burst with its RECONSTRUCTED time axis: codes laid backward at the
     /// 30 s SleepNet epoch from the anchored burst END. The end is the matching 0x49 window's TRUE
     /// sleep end (`event − end_offset` min, ringverse-validated within minutes of the wearer's report)
@@ -515,22 +542,18 @@ public final class OuraLiveSource: NSObject, ObservableObject {
             return
         }
         var end = writeEnd
-        if let w = lastSleepWindow049 {
-            // Same-finalization match: the 0x49 and the phase records carry near-identical envelope
-            // ring-times (observed seconds apart). 6000 ticks = 10 min is generous while still never
-            // pairing a different night's summary.
-            let gap = w.ringTimestamp >= burst.lastRingTimestamp
-                ? w.ringTimestamp - burst.lastRingTimestamp
-                : burst.lastRingTimestamp - w.ringTimestamp
-            if gap <= 6_000,
-               let eventUtc = driver.unixSeconds(forRingTimestamp: w.ringTimestamp) {
-                let sleepEnd = eventUtc - w.endOffMin * 60
-                // Sanity: the true end precedes the write and by a plausible margin (< 6 h).
-                if sleepEnd <= writeEnd, writeEnd - sleepEnd < 6 * 3600 {
-                    end = sleepEnd
-                    let fmt = Self.cursorDateFormatter
-                    log("Oura: hypnogram burst end refined by 0x49 - SleepNet write \(fmt.string(from: Date(timeIntervalSince1970: TimeInterval(writeEnd)))) → true sleep end \(fmt.string(from: Date(timeIntervalSince1970: TimeInterval(sleepEnd)))) (event-\(w.endOffMin) min)")
-                }
+        // Same-finalization match: the 0x49 and the phase records carry near-identical envelope ring-times
+        // (observed seconds apart). 6000 ticks = 10 min is generous while still never pairing a different
+        // night's summary. Pick the CLOSEST window, not merely the newest — a drain can hold an overnight
+        // AND a nap, and the newer (nap) window would otherwise mis-anchor the overnight burst.
+        if let w = Self.closestSleepWindow049(in: recentSleepWindows049, toRingTimestamp: burst.lastRingTimestamp, within: 6_000),
+           let eventUtc = driver.unixSeconds(forRingTimestamp: w.ringTimestamp) {
+            let sleepEnd = eventUtc - w.endOffMin * 60
+            // Sanity: the true end precedes the write and by a plausible margin (< 6 h).
+            if sleepEnd <= writeEnd, writeEnd - sleepEnd < 6 * 3600 {
+                end = sleepEnd
+                let fmt = Self.cursorDateFormatter
+                log("Oura: hypnogram burst end refined by 0x49 - SleepNet write \(fmt.string(from: Date(timeIntervalSince1970: TimeInterval(writeEnd)))) → true sleep end \(fmt.string(from: Date(timeIntervalSince1970: TimeInterval(sleepEnd)))) (event-\(w.endOffMin) min)")
             }
         }
         if burst.hasNonMonotonicRingTimes {
@@ -773,7 +796,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         loggedTierBKinds.removeAll()
         greenIbiAmpCount = 0
         greenIbiAmpLengths.removeAll()
-        lastSleepWindow049 = nil
+        recentSleepWindows049.removeAll()
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
@@ -1154,7 +1177,12 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                     let endOff = Int(summary.rawPayload[2]) | (Int(summary.rawPayload[3]) << 8)
                     // Stash for the hypnogram burst of the SAME finalization (it follows right after):
                     // its end anchors at the TRUE sleep end (event − end_offset), not the write moment.
-                    lastSleepWindow049 = (summary.ringTimestamp, startOff, endOff)
+                    // Append (don't overwrite): a drain may carry an overnight AND a nap window, and each
+                    // burst pairs with its OWN by ring-time proximity. Bounded — oldest dropped past the cap.
+                    recentSleepWindows049.append((summary.ringTimestamp, startOff, endOff))
+                    if recentSleepWindows049.count > Self.recentSleepWindows049Cap {
+                        recentSleepWindows049.removeFirst(recentSleepWindows049.count - Self.recentSleepWindows049Cap)
+                    }
                     if let utc = driver.unixSeconds(forRingTimestamp: summary.ringTimestamp) {
                         let startStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(utc - startOff * 60)))
                         let endStr = Self.cursorDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(utc - endOff * 60)))
@@ -1357,7 +1385,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedTierBKinds.removeAll()
         greenIbiAmpCount = 0
         greenIbiAmpLengths.removeAll()
-        lastSleepWindow049 = nil
+        recentSleepWindows049.removeAll()
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
         hypnogramAssembler.reset()        // ditto for a half-accumulated burst from a dead session
         pendingUnanchoredBursts.removeAll()
@@ -1437,7 +1465,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedTierBKinds.removeAll()
         greenIbiAmpCount = 0
         greenIbiAmpLengths.removeAll()
-        lastSleepWindow049 = nil
+        recentSleepWindows049.removeAll()
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
