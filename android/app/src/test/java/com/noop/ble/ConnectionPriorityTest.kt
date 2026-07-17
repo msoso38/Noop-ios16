@@ -48,6 +48,48 @@ class ConnectionPriorityTest {
         )
     }
 
+    // --- #533: which ACTIVE work escalates, once the safe half is switched on ---
+
+    /**
+     * The production wiring passes `liveHrActive = realtimeArmed && escalateForLiveHr`, and
+     * `escalateForLiveHr` is DEFAULT OFF. That matters because `realtimeArmed` is true for the whole
+     * OVERNIGHT continuous-HRV window, not just while a Live screen is open: escalating it would hold an
+     * ~11.25 ms interval for hours to carry a 1 Hz stream BALANCED already serves. Pin that an armed live
+     * stream alone stays BALANCED, while the bounded offload burst still escalates through it.
+     */
+    @Test fun liveHrAloneDoesNotEscalateByDefault() {
+        val realtimeArmed = true
+        val escalateForLiveHr = false      // the shipped default
+        val liveHrActive = realtimeArmed && escalateForLiveHr
+
+        // Overnight capture armed, no offload → stays BALANCED (no all-night HIGH).
+        assertEquals(
+            BluetoothGatt.CONNECTION_PRIORITY_BALANCED,
+            WhoopBleClient.connectionPriorityFor(
+                offloadActive = false, liveHrActive = liveHrActive, idleThrottleEnabled = false,
+            ),
+        )
+        // ...but an offload burst during that same window DOES escalate — the point of #533.
+        assertEquals(
+            BluetoothGatt.CONNECTION_PRIORITY_HIGH,
+            WhoopBleClient.connectionPriorityFor(
+                offloadActive = true, liveHrActive = liveHrActive, idleThrottleEnabled = false,
+            ),
+        )
+    }
+
+    /** Opting the knob ON restores the #477 behaviour (the R22 deep-buffer capture is the one high-rate
+     *  live case that could legitimately want it), so the resolver branch stays live, not dead. */
+    @Test fun liveHrEscalatesWhenTheKnobIsOptedIn() {
+        val liveHrActive = true && true     // realtimeArmed && escalateForLiveHr
+        assertEquals(
+            BluetoothGatt.CONNECTION_PRIORITY_HIGH,
+            WhoopBleClient.connectionPriorityFor(
+                offloadActive = false, liveHrActive = liveHrActive, idleThrottleEnabled = false,
+            ),
+        )
+    }
+
     // --- battery-adaptive gate, keyed on STRAP battery only (#477) ---
 
     @Test fun idleThrottleEngagesOnlyWhenDischargingAtOrBelowThreshold() {

@@ -898,6 +898,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  pending on-strap validation (#478). */
     private fun applyPowerSaving() {
         val on = NoopPrefs.powerSaving(appContext)
+        // #533: turn on the SAFE half of #477's connection-priority management, which shipped fully
+        // implemented but DORMANT (nothing ever called this, so refreshConnectionPriority early-returned
+        // and every historical offload ran at the stack default). HIGH for the bounded offload burst
+        // drains a backlog faster; the RISKY idle→LOW_POWER half stays at 0 (still dormant, #478), and
+        // live-HR does not escalate (see WhoopBleClient.escalateForLiveHr). Independent of the
+        // Power-saving master: this is a sync-speed lever, not a power-saving one.
+        ble.setConnectionPriorityManagement(enabled = true, idleThrottleBatteryPct = 0)
         ble.setLowBatteryOffloadThrottle(if (on) NoopPrefs.powerSavingBatteryPct(appContext) else 0)
         // HRV pause is a sub-option: only effective while the master is on (defaults on when it is), and
         // now battery-%-aware like the offload lever — pass the same threshold.

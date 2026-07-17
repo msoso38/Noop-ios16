@@ -1195,11 +1195,27 @@ class WhoopBleClient(
      *  half only). The Settings picker offers 10/15/20/25/30. */
     @Volatile private var idleThrottleBatteryPct: Int = 0
 
+    /** #533: also escalate to HIGH for the LIVE-HR stream, not just the offload burst. DEFAULT OFF, and
+     *  deliberately so: [realtimeArmed] is true for the whole OVERNIGHT continuous-HRV window (22:00–07:00
+     *  by default via [continuousCaptureWantsNow]), NOT just while a Live screen is open. Escalating it
+     *  would hold an ~11.25 ms interval for hours to carry a 1 Hz HR/RR stream that BALANCED already
+     *  serves — a sustained drain on both strap and phone for no throughput gain. The offload burst is the
+     *  opposite: bounded (HISTORY_COMPLETE / idle timeout) and bandwidth-hungry, so escalating it moves the
+     *  same bytes in LESS radio-on wall-clock. Kept as a knob rather than deleted because the opt-in R22
+     *  deep-buffer capture IS high-rate and is the one live case that could legitimately want HIGH. */
+    @Volatile private var escalateForLiveHr: Boolean = false
+
     /** Opt into connection-priority management (#477). No-op by default; see the fields above.
-     *  [idleThrottleBatteryPct] 0 disables the risky idle throttle (safe half only). */
-    fun setConnectionPriorityManagement(enabled: Boolean, idleThrottleBatteryPct: Int) {
+     *  [idleThrottleBatteryPct] 0 disables the risky idle throttle (safe half only).
+     *  [escalateForLiveHr] false keeps the escalation to the bounded offload burst (#533). */
+    fun setConnectionPriorityManagement(
+        enabled: Boolean,
+        idleThrottleBatteryPct: Int,
+        escalateForLiveHr: Boolean = false,
+    ) {
         connectionPriorityEnabled = enabled
         this.idleThrottleBatteryPct = if (enabled) idleThrottleBatteryPct else 0
+        this.escalateForLiveHr = enabled && escalateForLiveHr
         handler.post { refreshConnectionPriority() }
     }
 
@@ -1266,7 +1282,10 @@ class WhoopBleClient(
         // published LiveState mirror, which `exitBackfilling` may update a beat later.
         val priority = connectionPriorityFor(
             offloadActive = backfilling,
-            liveHrActive = realtimeArmed,
+            // #533: gated — the live stream does NOT escalate by default. See [escalateForLiveHr]: the
+            // overnight continuous-HRV window keeps this armed for hours, and a 1 Hz stream gains nothing
+            // from HIGH. The offload burst below is the case that actually wants the shorter interval.
+            liveHrActive = realtimeArmed && escalateForLiveHr,
             idleThrottleEnabled = idleThrottle,
         )
         // Deliberately NOT via safeGatt: a battery HINT must never tear the link down. safeGatt's policy
