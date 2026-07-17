@@ -1,6 +1,7 @@
 # WHOOP 5.0 / MG deep data — the "R22" unlock
 
-**Status:** experimental, opt-in, awaiting on-hardware confirmation.
+**Status:** experimental, opt-in. Deep-history delivery and v20/v21/v26 structural layouts are
+confirmed on hardware; wavelength identity and product-grade optical ingestion remain open.
 **Tracking:** [#103](https://github.com/ryanbr/noop/issues/103) (raw HCI captures + new deep-record layouts).
 
 ## The problem
@@ -86,9 +87,17 @@ that otherwise reproduced flags 1–15 byte-for-byte in this order.
   confirm is whether a clocked 5/MG already returns deep history through the plain
   `get_data_range`/`send_historical_data` loop NOOP already runs. If it does, the write path is belt-and-
   suspenders.
-- **The decode of what comes back is the next step.** Once a tester confirms deep records start arriving,
-  we map the type-`0x2F` layout (documented as HR @ byte 14, accel x/y/z float32 @ 37/41/45) and feed the
-  motion into NOOP's existing v25-style sleep stager.
+- **The large records are no longer an undifferentiated type-`0x2F` blob.** Layout v21 (1,244 bytes)
+  contains six-axis IMU data; layout v20 (2,140 bytes) contains five repeated optical measurement
+  blocks; layout v26 contains a 24-sample PPG waveform. The v20 blocks are preserved without
+  wavelength labels because the current capture does not prove red/IR identity.
+- **SpO₂ is not “one calibration away.”** The current v20 corpus has three active measurement blocks,
+  but it has not established two separate red and infrared illumination measurements. See
+  [`WHOOP5_OPTICAL_EXPERIMENT.md`](WHOOP5_OPTICAL_EXPERIMENT.md) for the passive controlled experiment
+  that must precede reference-oximeter calibration.
+- **Blood pressure is not a decode target yet.** No hidden BP scalar has been identified. BP would
+  require a validated model, reference-cuff data, population calibration, and an explicitly
+  non-medical product boundary after the underlying optical/motion channels are established.
 
 ## Why SpO₂ (and the raw respiration track) aren't available on 5.0
 

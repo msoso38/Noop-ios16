@@ -146,6 +146,11 @@ struct SettingsView: View {
     @State private var rawCsvBusy = false
     @State private var lastRawCsvURL: URL?
 
+    /// Passive WHOOP 5/MG optical experiment: the picker writes local timestamp markers into the
+    /// durable deep-buffer JSONL. It never calls a BLE write path.
+    @State private var showOpticalPhasePicker = false
+    @State private var opticalPhaseStatus = ""
+
     /// Confirm gate for the "Recalibrate Charge baseline" action (it re-learns the HRV anchor from tonight).
     @State private var showRecalibrateConfirm = false
 
@@ -234,6 +239,15 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays. Use it if a bad first week, like wearing it while sick, set your baseline off.")
+        }
+        .confirmationDialog("Mark optical experiment phase",
+                            isPresented: $showOpticalPhasePicker, titleVisibility: .visible) {
+            ForEach(PuffinOpticalExperimentPhase.allCases, id: \.self) { phase in
+                Button(phase.displayName) { markOpticalPhase(phase) }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("A marker starts the selected phase and ends the previous one. This only timestamps the local capture file; it sends nothing to the strap.")
         }
         .sheet(isPresented: $showWhatsNew) {
             WhatsNewView(onClose: { showWhatsNew = false })
@@ -1501,6 +1515,31 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                if puffinCapture {
+                    Divider().overlay(StrandPalette.hairline)
+                    Text("Optical block experiment")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Text("Mark the start of each physical phase while wearing or handling the strap. NOOP aligns the marker to the timestamp inside delayed history buffers, then the offline analyzer compares block activation, header bytes and raw ADC changes. It does not assume a wavelength or calculate SpO₂/BP.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: NoopMetrics.space3) {
+                        NoopButton("Mark phase…", systemImage: "flag.fill", kind: .primary) {
+                            showOpticalPhasePicker = true
+                        }
+                        NoopButton("Export experiment…", systemImage: "square.and.arrow.up", kind: .secondary) {
+                            exportOpticalExperiment()
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    if !opticalPhaseStatus.isEmpty {
+                        Text(opticalPhaseStatus)
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    }
+                }
+
                 if live.puffinCaptureCount > 0 {
                     Text(live.puffinCaptureCount == 1
                          ? "1 frame captured this session."
@@ -1656,6 +1695,28 @@ struct SettingsView: View {
         #else
         FileExport.exportFile(at: src, suggestedName: suggested)
         #endif
+    }
+
+    private func markOpticalPhase(_ phase: PuffinOpticalExperimentPhase) {
+        if model.ble.markWhoop5OpticalPhase(phase) {
+            opticalPhaseStatus = String(localized: "Marked: \(phase.displayName)")
+        } else {
+            opticalPhaseStatus = String(localized: "Marker wasn't saved. Keep frame recording on and try again.")
+        }
+    }
+
+    /// Export the durable JSONL used by the optical comparison CLI. Closing its append handle first
+    /// makes the user-selected copy complete; logging reopens lazily on the next buffer or marker.
+    private func exportOpticalExperiment() {
+        guard let src = model.ble.whoop5OpticalExperimentURL() else {
+            backupAlertTitle = String(localized: "Nothing to export")
+            backupAlertMessage = String(localized: "No WHOOP 5/MG deep buffers or phase markers have been recorded yet.")
+            showBackupAlert = true
+            return
+        }
+        FileExport.exportFile(
+            at: src,
+            suggestedName: FileExport.timestampedName("noop-whoop5-optical-experiment", ext: "jsonl"))
     }
 
     /// One-tap matched-pair export (#510): export the raw puffin capture AND the strap log together,

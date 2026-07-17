@@ -696,6 +696,18 @@ public final class BLEManager: NSObject, ObservableObject {
     /// Force the puffin capture buffer to disk so the Settings export/reveal targets a current file.
     public func flushPuffinCaptures() { puffinRecorder.flush() }
 
+    /// Record a local physical-phase marker for the passive optical experiment. This deliberately has
+    /// no peripheral/write path: it only appends to `puffin-deepbuffers.jsonl` when capture is enabled.
+    @discardableResult
+    func markWhoop5OpticalPhase(_ phase: PuffinOpticalExperimentPhase) -> Bool {
+        puffinDeepBufferLog.appendOpticalPhase(phase)
+    }
+
+    /// Flush and expose the passive deep-buffer experiment log for a user-initiated export.
+    func whoop5OpticalExperimentURL() -> URL? {
+        puffinDeepBufferLog.opticalExperimentURL()
+    }
+
     // MARK: CoreBluetooth
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
