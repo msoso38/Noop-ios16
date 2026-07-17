@@ -97,7 +97,10 @@ def android_strings_xml_gaps() -> dict[str, set[str]]:
     existing values-<lang>/strings.xml. (Doesn't invent missing locale dirs —
     see the audit summary for languages with NO directory at all.)"""
     base_path = ROOT / "android/app/src/main/res/values/strings.xml"
-    base_keys = set(re.findall(r'<string name="([^"]+)"', base_path.read_text(encoding="utf-8")))
+    # <plurals> count too: converting a hand-rolled singular/plural PAIR into one <plurals> would
+    # otherwise DROP those keys out of this gate's view entirely, so a locale could silently lose them —
+    # fixing the plural model must not open a coverage hole (see #540 for the same class of blind spot).
+    base_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', base_path.read_text(encoding="utf-8")))
     exempt = {"app_name"}  # brand name, deliberately identical everywhere
     gaps: dict[str, set[str]] = {}
     for lang in LANGS:
@@ -105,7 +108,7 @@ def android_strings_xml_gaps() -> dict[str, set[str]]:
         if not lang_path.exists():
             gaps[lang] = {"<entire values-%s/ directory is missing>" % lang}
             continue
-        lang_keys = set(re.findall(r'<string name="([^"]+)"', lang_path.read_text(encoding="utf-8")))
+        lang_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', lang_path.read_text(encoding="utf-8")))
         missing = (base_keys - exempt) - lang_keys
         if missing:
             gaps[lang] = missing
