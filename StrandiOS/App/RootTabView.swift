@@ -352,8 +352,8 @@ struct RootTabView: View {
                     MoreRow("Mi Band", "figure.walk.motion", .miBand)
                     MoreRow("Data Sources", "externaldrive.fill", .dataSources)
                     MoreRow("Backup & Sync", "externaldrive.fill.badge.icloud", .backupSync)
-                    // #155: HealthKit-free Apple Health path for sideloaded installs (Siri Shortcut
-                    // reads the opt-in Documents/noop_sync.txt drop file).
+                    // HealthKit-free Apple Health path for sideloaded installs (Siri Shortcut
+                    // reads the opt-in NDJSON export files).
                     MoreRow("Shortcuts Export", "square.and.arrow.up.fill", .shortcutsExport)
                 }
                 moreSection("App") {
