@@ -128,10 +128,14 @@ def android_format_gaps() -> dict[str, list[str]]:
     for lang, path in paths.items():
         if not path.exists():
             continue
-        values[lang] = {
-            node.attrib["name"]: node.text or ""
-            for node in ET.parse(path).getroot().findall("string")
-        }
+        root = ET.parse(path).getroot()
+        entries = {node.attrib["name"]: node.text or "" for node in root.findall("string")}
+        # <plurals> carry their format args on the <item> CHILDREN, so a plain findall("string") leaves
+        # every plural's placeholders unchecked — a locale could drop the %1$d from a quantity form and
+        # this gate would not notice. Fold each plural's items into one value so the signature covers them.
+        for node in root.findall("plurals"):
+            entries[node.attrib["name"]] = " ".join((i.text or "") for i in node.findall("item"))
+        values[lang] = entries
 
     def signature(value: str) -> list[str]:
         return sorted(ANDROID_FORMAT_PATTERN.findall(value))
