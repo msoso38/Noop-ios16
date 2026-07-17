@@ -90,6 +90,26 @@ class ConnectionPriorityTest {
         )
     }
 
+    // --- #533: turning the experiment OFF must UNDO a live escalation ---
+
+    /**
+     * `refreshConnectionPriority` early-returns once management is disabled, so disabling can only stop
+     * FUTURE escalations — a link already pinned at HIGH would stay there until the next reconnect unless
+     * the on→off edge explicitly releases it. That would break the toggle's own promise ("turn it back off"
+     * if it costs battery) for anyone on a background connection.
+     */
+    @Test fun disablingReleasesTheLinkBackToDefault() {
+        assertTrue(WhoopBleClient.releasesConnectionPriority(wasEnabled = true, nowEnabled = false))
+    }
+
+    /** Every other transition must issue NO request — notably the default launch path, which re-applies
+     *  `enabled = false` while already off and must stay byte-for-byte today's zero-BLE-op behaviour. */
+    @Test fun onlyTheOnToOffEdgeReleases() {
+        assertFalse(WhoopBleClient.releasesConnectionPriority(wasEnabled = false, nowEnabled = false))
+        assertFalse(WhoopBleClient.releasesConnectionPriority(wasEnabled = false, nowEnabled = true))
+        assertFalse(WhoopBleClient.releasesConnectionPriority(wasEnabled = true, nowEnabled = true))
+    }
+
     // --- battery-adaptive gate, keyed on STRAP battery only (#477) ---
 
     @Test fun idleThrottleEngagesOnlyWhenDischargingAtOrBelowThreshold() {

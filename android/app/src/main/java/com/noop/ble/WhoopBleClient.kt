@@ -496,6 +496,15 @@ class WhoopBleClient(
         fun idleThrottleActive(batteryPct: Int, charging: Boolean, thresholdPct: Int): Boolean =
             thresholdPct > 0 && !charging && batteryPct <= thresholdPct
 
+        /** #533: whether flipping connection-priority management from [wasEnabled] to [nowEnabled] must
+         *  RELEASE the link back to the stack default. ONLY the on→off edge does: [refreshConnectionPriority]
+         *  early-returns once disabled, so without an explicit release a link currently pinned at HIGH would
+         *  stay there until the next reconnect — a user turning the experiment off *because* of battery would
+         *  keep paying for it. Enabling, or re-applying while already off (every launch on the default), must
+         *  issue no request at all. */
+        fun releasesConnectionPriority(wasEnabled: Boolean, nowEnabled: Boolean): Boolean =
+            wasEnabled && !nowEnabled
+
         /** Stretched periodic-offload interval while the STRAP is low on battery (#477). The offload tick
          *  is a PURE sync timer (the live-stream keep-alive is separate), so stretching it can't affect
          *  link health — worst case is data arriving in slightly larger batches; the strap banks
@@ -1213,10 +1222,32 @@ class WhoopBleClient(
         idleThrottleBatteryPct: Int,
         escalateForLiveHr: Boolean = false,
     ) {
+        val wasEnabled = connectionPriorityEnabled
         connectionPriorityEnabled = enabled
         this.idleThrottleBatteryPct = if (enabled) idleThrottleBatteryPct else 0
         this.escalateForLiveHr = enabled && escalateForLiveHr
-        handler.post { refreshConnectionPriority() }
+        handler.post {
+            // #533: switching the experiment OFF must UNDO a live escalation, not merely stop future ones.
+            // [refreshConnectionPriority] early-returns on !connectionPriorityEnabled, so without this a
+            // link currently pinned at HIGH would STAY there until the next reconnect — a user turning the
+            // toggle off *because* of battery would keep paying for it, potentially for hours on a
+            // background connection. Only fires on a real on→off edge; enabling (or a no-op re-apply while
+            // already off) never issues a stray request. See [releasesConnectionPriority].
+            if (releasesConnectionPriority(wasEnabled, enabled)) releaseConnectionPriority()
+            else refreshConnectionPriority()
+        }
+    }
+
+    /** #533: hand the link back to the stack default (BALANCED) when connection-priority management is
+     *  switched off, undoing any escalation still in force. Same swallow-don't-teardown policy as
+     *  [refreshConnectionPriority]: a priority hint must never drop the link. */
+    private fun releaseConnectionPriority() {
+        val ops = gattOps ?: return
+        try {
+            ops.requestConnectionPriorityCompat(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+        } catch (t: Throwable) {
+            log("connection-priority release failed (${t.javaClass.simpleName}); skipped")
+        }
     }
 
     /** Battery-% at/below which the periodic offload cadence stretches to
