@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.Uri
 import android.util.Xml
 import com.noop.analytics.RouteMath
-import com.noop.data.DailyMetric
 import com.noop.data.HrSample
 import com.noop.data.ImportSummary
 import com.noop.data.WhoopRepository
@@ -227,14 +226,15 @@ object ActivityFileImporter {
         if (activity.hrSamples.isNotEmpty()) {
             repo.insertHr(activity.hrSamples.map { HrSample(deviceId = deviceId, ts = it.ts, bpm = it.bpm) })
         }
-        if (activity.steps != null && activity.steps > 0) {
-            repo.upsertDailyMetrics(
-                listOf(DailyMetric(deviceId = deviceId, day = localDayString(activity.startTs), steps = activity.steps)),
-            )
-        }
+        // #568: do NOT write the activity's steps as a DAILY metric. A single imported workout's steps are
+        // that activity's steps, not the day's total — writing them under the "activity-file" day-owner
+        // (#137, which exists for HR/Effort) made one walk stand in for the whole day's step count (shown
+        // in place of the on-device total). The steps stay on the workout (its note carries "<n> steps");
+        // matches iOS, whose ActivityFileImporter writes no daily-steps metric either. Summing imported
+        // steps INTO the daily total is a separate, double-count-aware feature (see #585), deliberately not
+        // done here.
 
         val counts = linkedMapOf("workouts" to 1)
-        if (activity.steps != null && activity.steps > 0) counts["dailyMetric"] = 1
         return ImportSummary(
             source = SOURCE_LABEL,
             counts = counts,
@@ -557,9 +557,6 @@ object ActivityFileImporter {
 
     private fun dayString(ts: Long): String =
         Instant.ofEpochSecond(ts).atOffset(ZoneOffset.UTC).toLocalDate().toString()
-
-    private fun localDayString(ts: Long): String =
-        Instant.ofEpochSecond(ts).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
 
     private fun displayName(context: Context, uri: Uri): String? = runCatching {
         context.contentResolver.query(uri, null, null, null, null)?.use { c ->

@@ -573,25 +573,12 @@ struct DataSourcesView: View {
                     let hr = activity.hrSamples.map { HRSample(ts: $0.ts, bpm: $0.bpm) }
                     _ = try? await store.insert(Streams(hr: hr), deviceId: ActivityFileImporter.sourceId)
                 }
-                if let steps = activity.steps, steps > 0 {
-                    let day = Repository.localDayKey(activity.start)
-                    let metric = DailyMetric(
-                        day: day,
-                        totalSleepMin: nil,
-                        efficiency: nil,
-                        deepMin: nil,
-                        remMin: nil,
-                        lightMin: nil,
-                        disturbances: nil,
-                        restingHr: nil,
-                        avgHrv: nil,
-                        recovery: nil,
-                        strain: nil,
-                        exerciseCount: nil,
-                        steps: steps
-                    )
-                    try? await store.upsertDailyMetrics([metric], deviceId: ActivityFileImporter.sourceId)
-                }
+                // #568: do NOT write the activity's steps as a DAILY metric. A single imported workout's
+                // steps are that activity's steps, not the day's total — writing them under the
+                // activity-file day-owner (#137, which exists for HR/Effort) made one walk stand in for
+                // the whole day's step count, shown in place of the on-device total. The steps stay on
+                // the workout (its note carries "<n> steps"). Summing imported steps INTO the daily total
+                // is a separate, double-count-aware feature (see #585), deliberately not done here.
 
                 // #137 (B1): register `activity-file` as an `.activityFile` device so the per-day owner
                 // resolver can pick it as the day owner on a strap-less day (it iterates the registry's
