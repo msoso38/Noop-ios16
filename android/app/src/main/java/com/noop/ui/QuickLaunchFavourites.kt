@@ -146,7 +146,7 @@ internal fun FavouriteLaunchGrid(
             val liftScale by animateFloatAsState(
                 targetValue = if (isDragging && !settling) NoopMotion.favouriteDragLiftScale else 1f,
                 animationSpec = if (reduceMotion) tween(durationMillis = 0) else NoopMotion.card(),
-                label = "favouriteDragLift",
+                label = "favourite_drag_lift",
             )
             val removeDescription = stringResource(R.string.quick_launch_remove_from_favourites, stringResource(item.titleRes))
             var iconOriginInRoot by remember(item.id) { mutableStateOf(Offset.Zero) }
@@ -308,7 +308,7 @@ private fun EmptyFavouriteSlot(onChoose: (() -> Unit)?, highlighted: Boolean) {
 @Composable
 private fun rememberFavouriteJiggle(enabled: Boolean, index: Int): Float {
     if (!enabled) return 0f
-    val transition = rememberInfiniteTransition(label = "favouriteJiggle")
+    val transition = rememberInfiniteTransition(label = "favourite_jiggle")
     val angle by transition.animateFloat(
         initialValue = -NoopMotion.favouriteJiggleDegrees,
         targetValue = NoopMotion.favouriteJiggleDegrees,
@@ -316,7 +316,7 @@ private fun rememberFavouriteJiggle(enabled: Boolean, index: Int): Float {
             animation = tween(durationMillis = NoopMotion.favouriteJiggleMs),
             repeatMode = RepeatMode.Reverse,
         ),
-        label = "favouriteJiggleAngle",
+        label = "favourite_jiggle_angle",
     )
     return if (index % 2 == 0) angle else -angle
 }

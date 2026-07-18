@@ -169,7 +169,7 @@ public extension View {
 #if DEBUG
 private struct NoopLiquidGlassSurfacePreview: View {
     var body: some View {
-        Text("Floating glass")
+        Text(verbatim: "Floating glass")
             .font(StrandFont.body)
             .foregroundStyle(StrandPalette.textPrimary)
             .padding(NoopMetrics.cardPadding)
