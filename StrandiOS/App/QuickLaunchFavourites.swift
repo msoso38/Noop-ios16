@@ -155,6 +155,12 @@ struct FavouritesSlotGrid: View {
                 guard !editing else { return }
                 onLongPressItem()
             },
+            onAccessibilityMoveEarlier: editing && entry.slot > 0 ? {
+                commitPlacement(from: entry.slot, to: entry.slot - 1)
+            } : nil,
+            onAccessibilityMoveLater: editing && entry.slot < 8 ? {
+                commitPlacement(from: entry.slot, to: entry.slot + 1)
+            } : nil,
             onCircleDragChanged: { value in
                 handleDragChanged(value, startSlot: entry.slot, itemId: entry.id)
             },
@@ -231,11 +237,20 @@ struct FavouritesSlotGrid: View {
         guard let target = dragHoverSlot, target != origin,
               let originFrame = slotFrames[origin], let targetFrame = slotFrames[target] else {
             // Dropped back on (or near) the origin, or on nothing — spring the tile home, then reset.
+            if reduceMotion {
+                resetDrag(animated: false)
+                return
+            }
             withAnimation(reduceMotion ? nil : StrandMotion.interactive) {
                 dragTranslation = .zero
                 dragIsLifted = false
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { resetDrag(animated: false) }
+            return
+        }
+        if reduceMotion {
+            commitPlacement(from: origin, to: target)
+            resetDrag(animated: false)
             return
         }
         // GLIDE-then-commit: animate the floating tile from wherever the finger released to the exact

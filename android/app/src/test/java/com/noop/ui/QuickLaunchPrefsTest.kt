@@ -87,7 +87,11 @@ class QuickLaunchPrefsTest {
             Destination.Automations, Destination.SmartAlarm, Destination.Notifications,
             Destination.TestCentre, Destination.Settings,
         )
-        assertEquals(expected, QuickLaunchCatalog.all.map(LaunchItem::destination).toSet())
+        assertEquals(expected, QuickLaunchCatalog.all.mapNotNull(LaunchItem::destination).toSet())
+        assertEquals(
+            QuickLaunchAction.Updates,
+            QuickLaunchCatalog.byId.getValue("updates").action,
+        )
         assertTrue(QuickLaunchCatalog.pages.all { it.items.size <= 9 })
         assertEquals(QuickLaunchCatalog.all.size, QuickLaunchCatalog.all.map(LaunchItem::id).toSet().size)
         assertTrue(QuickLaunchPrefs.defaultSlots.filterNotNull().all(QuickLaunchCatalog.byId::containsKey))

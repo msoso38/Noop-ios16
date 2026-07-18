@@ -41,8 +41,10 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.zIndex
 import com.noop.R
@@ -62,7 +64,7 @@ internal fun FavouriteLaunchGrid(
     onEditingChange: (Boolean) -> Unit,
     onSlotsChange: (List<String?>) -> Unit,
     onChoose: (() -> Unit)?,
-    onNavigate: (Destination) -> Unit,
+    onLaunch: (LaunchItem) -> Unit,
 ) {
     val normalized = QuickLaunchPrefs.normalize(slots)
     val density = LocalDensity.current
@@ -149,7 +151,27 @@ internal fun FavouriteLaunchGrid(
                 label = "favourite_drag_lift",
             )
             val removeDescription = stringResource(R.string.quick_launch_remove_from_favourites, stringResource(item.titleRes))
+            val moveEarlierLabel = stringResource(R.string.quick_launch_move_earlier)
+            val moveLaterLabel = stringResource(R.string.quick_launch_move_later)
             var iconOriginInRoot by remember(item.id) { mutableStateOf(Offset.Zero) }
+            val reorderActions = if (!editing) {
+                emptyList()
+            } else {
+                buildList {
+                    if (logicalIndex > 0) {
+                        add(CustomAccessibilityAction(moveEarlierLabel) {
+                            onSlotsChange(QuickLaunchPrefs.swap(normalized, logicalIndex, logicalIndex - 1))
+                            true
+                        })
+                    }
+                    if (logicalIndex < QuickLaunchPrefs.SLOT_COUNT - 1) {
+                        add(CustomAccessibilityAction(moveLaterLabel) {
+                            onSlotsChange(QuickLaunchPrefs.swap(normalized, logicalIndex, logicalIndex + 1))
+                            true
+                        })
+                    }
+                }
+            }
 
             Box(
                 modifier = Modifier
@@ -168,7 +190,8 @@ internal fun FavouriteLaunchGrid(
             ) {
                 LaunchTile(
                     item = item,
-                    onClick = { if (!editing) onNavigate(item.destination) },
+                    modifier = Modifier.semantics { customActions = reorderActions },
+                    onClick = { if (!editing) onLaunch(item) },
                     onLongClick = if (editing) null else ({ onEditingChange(true) }),
                     iconModifier = Modifier
                         .rotate(jiggle)

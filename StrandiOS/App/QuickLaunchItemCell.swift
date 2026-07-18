@@ -10,13 +10,15 @@ struct LaunchItemCell: View {
     var isJiggling: Bool = false
     /// Whether the long-press-to-enter-editing gesture recognizer should be attached at all. Once
     /// already editing, this is false so the circle-only rearrangement gesture owns that interaction.
-    var enableLongPress: Bool = true
+    var enableLongPress: Bool = false
     /// Rearrangement deliberately begins only on the visible icon circle. The rest of the cell keeps
     /// its generous tap/long-press area without becoming an invisible drag handle during edit mode.
     var enableCircleDrag: Bool = false
     var onTap: () -> Void = {}
     var onRemove: () -> Void = {}
     var onLongPress: () -> Void = {}
+    var onAccessibilityMoveEarlier: (() -> Void)? = nil
+    var onAccessibilityMoveLater: (() -> Void)? = nil
     var onCircleDragChanged: (DragGesture.Value) -> Void = { _ in }
     var onCircleDragEnded: () -> Void = {}
 
@@ -63,6 +65,20 @@ struct LaunchItemCell: View {
         .onTapGesture(perform: onTap)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onTap() }
+        .accessibilityActions {
+            if enableLongPress {
+                Button("Edit Favourites", action: onLongPress)
+            }
+            if showRemoveBadge {
+                Button("Remove from favourites", action: onRemove)
+            }
+        }
+        .modifier(
+            ReorderAccessibilityModifier(
+                moveEarlier: onAccessibilityMoveEarlier,
+                moveLater: onAccessibilityMoveLater
+            )
+        )
         .rotationEffect(.degrees(renderedWiggleAngle))
         // Real home-screen jiggle is not a pure pendulum: a sub-point translation running slightly
         // out of phase with rotation gives each icon the subtle physical looseness of iOS edit mode.
@@ -142,7 +158,8 @@ struct LaunchItemCell: View {
                 .zIndex(2)
                 .allowsHitTesting(showRemoveBadge)
                 .accessibilityHidden(!showRemoveBadge)
-                .accessibilityLabel("Remove from favourites")
+                .accessibilityLabel(Text(LocalizedStringKey(item.title)))
+                .accessibilityHint("Remove from favourites")
                 .animation(reduceMotion ? nil : StrandMotion.quick, value: showRemoveBadge)
             }
 
@@ -187,6 +204,31 @@ struct LaunchItemCell: View {
         withTransaction(transaction) {
             renderedWiggleAngle = 0
             renderedWiggleOffset = .zero
+        }
+    }
+}
+
+/// Makes custom fixed-slot reordering operable with VoiceOver. An adjustable element maps swipe up/down
+/// to the same earlier/later swap used by pointer dragging, without exposing inert actions at either edge.
+private struct ReorderAccessibilityModifier: ViewModifier {
+    let moveEarlier: (() -> Void)?
+    let moveLater: (() -> Void)?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if moveEarlier != nil || moveLater != nil {
+            content.accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    moveLater?()
+                case .decrement:
+                    moveEarlier?()
+                @unknown default:
+                    break
+                }
+            }
+        } else {
+            content
         }
     }
 }

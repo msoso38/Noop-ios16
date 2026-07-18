@@ -59,11 +59,13 @@
     <string name="quick_launch_close_menu">Close Quick Launch</string>
     <string name="quick_launch_edit_favourites">Edit favourites</string>
     <plurals name="quick_launch_slots">
-        <item quantity="one">%1$d of %2$d slot · drag to arrange</item>
+        <item quantity="one">%1$d of %2$d slots · drag to arrange</item>
         <item quantity="other">%1$d of %2$d slots · drag to arrange</item>
     </plurals>
     <string name="quick_launch_empty_slot">Empty favourite slot</string>
     <string name="quick_launch_remove_from_favourites">Remove %1$s from favourites</string>
+    <string name="quick_launch_move_earlier">Move to the previous position</string>
+    <string name="quick_launch_move_later">Move to the next position</string>
     <string name="quick_launch_add_to_favourites">Add %1$s to favourites</string>
     <string name="quick_launch_reset_description">Restore the default favourites</string>
 

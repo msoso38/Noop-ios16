@@ -2219,6 +2219,28 @@
         }
       }
     },
+    "Floating glass": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schwebendes Glas"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cristal flotante"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verre flottant"
+          }
+        }
+      }
+    },
     "Footnote 11": {
       "localizations": {
         "de": {

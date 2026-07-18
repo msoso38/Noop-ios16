@@ -64,7 +64,7 @@ import com.noop.R
 @Composable
 internal fun QuickLaunchPanel(
     onDismiss: () -> Unit,
-    onNavigate: (Destination) -> Unit,
+    onLaunch: (LaunchItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -162,12 +162,12 @@ internal fun QuickLaunchPanel(
                         onEditingChange = { editing = it },
                         onSlotsChange =(::updateSlots),
                         onChoose = { showPicker = true },
-                        onNavigate = onNavigate,
+                        onLaunch = onLaunch,
                     )
                 } else {
                     StaticLaunchGrid(
                         items = QuickLaunchCatalog.pages[page - 1].items,
-                        onNavigate = onNavigate,
+                        onLaunch = onLaunch,
                     )
                 }
             }
@@ -272,7 +272,7 @@ private fun QuickLaunchHeaderChip(label: String, color: androidx.compose.ui.grap
 }
 
 @Composable
-private fun StaticLaunchGrid(items: List<LaunchItem>, onNavigate: (Destination) -> Unit) {
+private fun StaticLaunchGrid(items: List<LaunchItem>, onLaunch: (LaunchItem) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -284,7 +284,7 @@ private fun StaticLaunchGrid(items: List<LaunchItem>, onNavigate: (Destination) 
                 repeat(3) { column ->
                     val item = items.getOrNull(row * 3 + column)
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                        if (item != null) LaunchTile(item = item, onClick = { onNavigate(item.destination) })
+                        if (item != null) LaunchTile(item = item, onClick = { onLaunch(item) })
                     }
                 }
             }
@@ -444,7 +444,7 @@ private fun QuickLaunchPicker(
                     onEditingChange = {},
                     onSlotsChange = onSlotsChange,
                     onChoose = null,
-                    onNavigate = {},
+                    onLaunch = {},
                 )
             }
             QuickLaunchCatalog.pages.forEach { page ->

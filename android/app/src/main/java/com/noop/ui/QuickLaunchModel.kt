@@ -32,8 +32,18 @@ internal data class LaunchItem(
     val id: String,
     @StringRes val titleRes: Int,
     val icon: ImageVector,
-    val destination: Destination,
-)
+    val destination: Destination? = null,
+    val action: QuickLaunchAction? = null,
+) {
+    init {
+        require((destination == null) != (action == null))
+    }
+}
+
+/** App-shell actions presented modally instead of owning a navigation route. */
+internal enum class QuickLaunchAction {
+    Updates,
+}
 
 internal data class QuickLaunchPage(
     @StringRes val titleRes: Int,
@@ -79,6 +89,12 @@ internal object QuickLaunchCatalog {
         LaunchItem("alarms", R.string.nav_alarms, Icons.Filled.Alarm, Destination.SmartAlarm),
         LaunchItem("automations", R.string.nav_automations, Icons.Filled.Bolt, Destination.Automations),
         LaunchItem("notifications", R.string.nav_notifications, Icons.Filled.Notifications, Destination.Notifications),
+        LaunchItem(
+            id = "updates",
+            titleRes = R.string.l10n_app_root_updates_c76d1807,
+            icon = Icons.Filled.Notifications,
+            action = QuickLaunchAction.Updates,
+        ),
         LaunchItem("testCentre", R.string.nav_test_centre, Icons.Filled.BugReport, Destination.TestCentre),
         LaunchItem("settings", R.string.nav_settings, Icons.Filled.Settings, Destination.Settings),
     )

@@ -5,10 +5,6 @@ import XCTest
 /// single "Alarms" entry in the macOS/iPad sidebar (`NavItem.smartAlarm`), but an earlier iPhone
 /// navigation shell dropped the entry, leaving Alarms unreachable on iPhone.
 ///
-/// The iOS quick-launch panel is not compiled into the macOS test target, so this pins the shared side
-/// of its contract: the sidebar exposes `smartAlarm` with the exact `alarm.fill` symbol used by the
-/// launch catalogue. A future icon rename then fails here so both shells are reviewed in lockstep.
-///
 /// Notifications (`NavItem.notifications`) is deliberately NOT mirrored on iPhone: its screen
 /// (`NotificationSettingsView`) is macOS-only (NSWorkspace app picker, imports AppKit, excluded from the
 /// iOS target in project.yml), so quick launch correctly omits it. The enum case still exists for the
@@ -24,7 +20,25 @@ final class IOSNavigationParityTests: XCTestCase {
 
     /// Keep the sidebar symbol identical to the iOS quick-launch item.
     func testAlarmsIconMatchesTheQuickLaunchItem() {
-        XCTAssertEqual(NavItem.smartAlarm.icon, "alarm.fill")
+        XCTAssertEqual(
+            LaunchItem.all.first(where: { $0.id == "alarms" })?.icon,
+            NavItem.smartAlarm.icon
+        )
+    }
+
+    func testQuickLaunchCatalogueKeepsEveryDestinationUniqueAndDefaultReachable() {
+        let expectedIDs: Set<String> = [
+            "insightsHub", "intelligence", "coach", "insights", "journal", "explore", "compare",
+            "live", "workouts", "health", "labBook", "stress", "breathe", "intervals", "rhythm",
+            "fusedRecord", "appleHealth", "miBand", "dataSources", "backupSync", "shortcuts",
+            "alarms", "automations", "testCentre", "siri", "settings",
+        ]
+        let actualIDs = LaunchItem.all.map(\.id)
+
+        XCTAssertEqual(Set(actualIDs), expectedIDs)
+        XCTAssertEqual(actualIDs.count, expectedIDs.count, "Quick Launch contains a duplicate identity.")
+        XCTAssertEqual(LaunchItem.defaultFavouriteIDs.count, 9)
+        XCTAssertTrue(Set(LaunchItem.defaultFavouriteIDs).isSubset(of: expectedIDs))
     }
 
     /// Notifications stays a (macOS-only) sidebar destination. It is intentionally absent from the iPhone

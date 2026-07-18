@@ -23,6 +23,8 @@
     </plurals>
     <string name="quick_launch_empty_slot">Espacio de favorito vacío</string>
     <string name="quick_launch_remove_from_favourites">Quitar %1$s de favoritos</string>
+    <string name="quick_launch_move_earlier">Mover a la posición anterior</string>
+    <string name="quick_launch_move_later">Mover a la posición siguiente</string>
     <string name="quick_launch_add_to_favourites">Añadir %1$s a favoritos</string>
     <string name="quick_launch_reset_description">Restablecer los favoritos predeterminados</string>
 
@@ -1538,11 +1540,6 @@
     <string name="nav_support">Soporte</string>
     <string name="nav_settings">Ajustes</string>
     <string name="nav_test_centre">Centro de pruebas</string>
-    <string name="nav_more">Más</string>
-    <string name="more_group_insights">Análisis</string>
-    <string name="more_group_body">Cuerpo</string>
-    <string name="more_group_data">Datos</string>
-    <string name="more_group_app">App</string>
     <string name="action_live_hr">FC en vivo</string>
     <string name="action_start_workout">Iniciar entrenamiento</string>
     <string name="action_log_journal">Registrar diario</string>

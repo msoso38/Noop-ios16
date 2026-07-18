@@ -1675,12 +1675,6 @@ fun TodayScreen(
 }
 
 /**
- * The accent quick-action "+" in the Today header's top-right. It opens the existing quick-action sheet.
- * A small contained accent disc, the primary among an otherwise-neutral icon set, ~36dp, no float or glow:
- * accent fill with a hairline rim, the "+" glyph in crisp white. Mirrors the iOS quick-action + (a glyph on
- * Circle().fill(StrandPalette.accent)).
- */
-/**
  * Today "workout in progress" indicator (iOS parity: ActiveWorkoutIndicatorCard). A metricRose-tinted card
  * with a decorative live dot + "WORKOUT IN PROGRESS" overline, a live H:MM:SS clock, the sport label, and a
  * "Return to workout" button. The whole card is tappable; [onReturn] routes to Live and re-opens the

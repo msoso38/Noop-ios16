@@ -38,7 +38,6 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FitnessCenter
@@ -60,8 +59,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.NavigationDrawerItem
-import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -189,10 +186,9 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
     val current = Destination.forRoute(currentRoute)
-    var showQuickActions by remember { mutableStateOf(false) }
     var showQuickLaunch by remember { mutableStateOf(false) }
-    // The Updates inbox is reached from Quick Actions. The process singleton keeps Today cards and
-    // imports posting to the same inbox this sheet renders.
+    // The process singleton keeps Today cards and imports posting to the same Updates inbox that
+    // Quick Launch presents.
     val context = androidx.compose.ui.platform.LocalContext.current
     val updateStore = remember { UpdateStore.from(context) }
     var showUpdatesInbox by remember { mutableStateOf(false) }
@@ -381,9 +377,16 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                     )
                     QuickLaunchPanel(
                         onDismiss = { showQuickLaunch = false },
-                        onNavigate = { destination ->
+                        onLaunch = { item ->
                             showQuickLaunch = false
-                            if (destination.route != currentRoute) nav.navigateTopLevel(destination.route)
+                            when (item.action) {
+                                QuickLaunchAction.Updates -> showUpdatesInbox = true
+                                null -> item.destination?.let { destination ->
+                                    if (destination.route != currentRoute) {
+                                        nav.navigateTopLevel(destination.route)
+                                    }
+                                }
+                            }
                         },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
@@ -395,77 +398,7 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
             }
         }
 
-        // Quick-actions sheet, opened by the Today header's plus button. Each row routes to an
-        // existing destination — nothing new is built here, the FAB is just a faster door in.
-        if (showQuickActions) {
-            ModalBottomSheet(
-                onDismissRequest = { showQuickActions = false },
-                containerColor = Palette.surfaceRaised,
-                contentColor = Palette.textPrimary,
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp)
-                        .padding(bottom = 24.dp),
-                ) {
-                    Overline(
-                        "Quick actions",
-                        modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 6.dp),
-                        color = Palette.textTertiary,
-                    )
-                    // Updates inbox — relocated here off the Today header (the liquid Today header mirrors iOS,
-                    // which has no notifications bell). The feature is fully intact and one tap away: this row
-                    // opens the same inbox sheet, showing the unread count as a trailing badge.
-                    NavigationDrawerItem(
-                        selected = false,
-                        onClick = {
-                            showQuickActions = false
-                            showUpdatesInbox = true
-                        },
-                        icon = { Icon(Icons.Filled.Notifications, contentDescription = null) },
-                        label = { Text(uiString(R.string.l10n_app_root_updates_c76d1807), style = NoopType.body) },
-                        badge = {
-                            val unread = updateStore.unreadCount
-                            if (unread > 0) {
-                                Text(
-                                    if (unread > 99) "99+" else unread.toString(),
-                                    style = NoopType.captionNumber,
-                                    color = Palette.statusCritical,
-                                )
-                            }
-                        },
-                        colors = NavigationDrawerItemDefaults.colors(
-                            unselectedContainerColor = Palette.surfaceRaised,
-                            unselectedIconColor = Palette.accent,
-                            unselectedTextColor = Palette.textPrimary,
-                        ),
-                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                    )
-                    quickActions.forEach { action ->
-                        NavigationDrawerItem(
-                            selected = false,
-                            onClick = {
-                                showQuickActions = false
-                                if (action.route != currentRoute) {
-                                    nav.navigateTopLevel(action.route)
-                                }
-                            },
-                            icon = { Icon(action.icon, contentDescription = null) },
-                            label = { Text(stringResource(action.titleRes), style = NoopType.body) },
-                            colors = NavigationDrawerItemDefaults.colors(
-                                unselectedContainerColor = Palette.surfaceRaised,
-                                unselectedIconColor = Palette.accent,
-                                unselectedTextColor = Palette.textPrimary,
-                            ),
-                            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                        )
-                    }
-                }
-            }
-        }
-
-        // The Updates inbox (opened by Quick Actions). Presented here so it has the nav for
+        // The Updates inbox (opened from Quick Launch). Presented here so it has the nav for
         // deep-links — a row's "trends" key switches the bottom tab, mirroring the iOS NavRouter route.
         if (showUpdatesInbox) {
             ModalBottomSheet(
@@ -647,17 +580,6 @@ private fun BarSlot(
         )
     }
 }
-
-/** A Today-header quick action: display title, icon and destination route. */
-private data class QuickAction(@StringRes val titleRes: Int, val icon: ImageVector, val route: String)
-
-/** The quick actions opened from Today's plus button, each routing to an existing destination. */
-private val quickActions: List<QuickAction> = listOf(
-    QuickAction(R.string.action_live_hr, Destination.Live.icon, Destination.Live.route),
-    QuickAction(R.string.action_start_workout, Icons.Filled.FitnessCenter, Destination.Workouts.route),
-    QuickAction(R.string.action_log_journal, Icons.Filled.Edit, Destination.Insights.route),
-    QuickAction(R.string.action_breathe, Icons.Filled.Air, Destination.Breathe.route),
-)
 
 // MARK: - Navigation motion (README §Motion)
 //
