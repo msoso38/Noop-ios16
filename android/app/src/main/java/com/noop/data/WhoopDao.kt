@@ -87,6 +87,10 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertPpgWaveform(rows: List<PpgWaveformSampleEntity>): List<Long>
 
+    /** PPG-derived respiratory rate from the SAME v26 optical waveform. Idempotent by (deviceId, ts). (#103) */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertPpgResp(rows: List<PpgRespSample>): List<Long>
+
     // MARK: - Server-derived caches (latest value wins)
 
     @Upsert
@@ -235,6 +239,14 @@ interface WhoopDao : DeviceRegistryDao {
     )
     suspend fun ppgWaveformSamples(deviceId: String, from: Long, to: Long, limit: Int):
         List<PpgWaveformSampleEntity>
+
+    /** Raw v26 PPG-derived respiratory-rate samples in [from, to] (ascending), own stream — never
+     *  COALESCEd with `respSample`. (#103) */
+    @Query(
+        "SELECT * FROM ppgRespSample WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
+            "ORDER BY ts ASC LIMIT :limit"
+    )
+    suspend fun ppgRespSamples(deviceId: String, from: Long, to: Long, limit: Int): List<PpgRespSample>
 
     /** Aggregate HR over a window (one indexed (deviceId,ts) range scan — no row materialisation,
      *  no [hrSamples] LIMIT truncation). Backs the imported-workout HR fallback (#77). */
@@ -703,6 +715,9 @@ interface WhoopDao : DeviceRegistryDao {
 
     @Query("DELETE FROM ppgHrSample WHERE ts < :minTs OR ts > :maxTs")
     suspend fun prunePpgHrByTs(minTs: Long, maxTs: Long): Int
+
+    @Query("DELETE FROM ppgRespSample WHERE ts < :minTs OR ts > :maxTs")
+    suspend fun prunePpgRespByTs(minTs: Long, maxTs: Long): Int
 
     @Query("DELETE FROM rrInterval WHERE ts < :minTs OR ts > :maxTs")
     suspend fun pruneRrByTs(minTs: Long, maxTs: Long): Int

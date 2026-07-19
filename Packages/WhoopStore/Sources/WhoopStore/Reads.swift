@@ -192,6 +192,22 @@ extension WhoopStore {
         }
     }
 
+    /// PPG-derived per-burst respiratory rate from the WHOOP 5.0 v26 optical buffer (#103). Unlike
+    /// `ppgHrSample` (which COALESCEs into the plain `hr` stream at read time, so has no dedicated
+    /// reader), this is consumed as its own typed array by the fusion logic in
+    /// `StrandAnalytics.SleepStager.respRateFromPpg` — it must stay distinguishable from the R-R/RSA
+    /// stream, not silently merged.
+    public func ppgRespSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [PpgRespSample] {
+        try syncRead { db in
+            try Row.fetchAll(db, sql: """
+                SELECT ts, bpm, conf FROM ppgRespSample
+                WHERE deviceId = ? AND ts >= ? AND ts <= ?
+                ORDER BY ts ASC LIMIT ?
+                """, arguments: [deviceId, from, to, limit])
+                .map { PpgRespSample(ts: $0["ts"], bpm: $0["bpm"], conf: $0["conf"]) }
+        }
+    }
+
     public func gravitySamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [GravitySample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """

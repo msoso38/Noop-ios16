@@ -190,11 +190,18 @@ object ReadinessEngine {
         if (rhrSignal != null) signals.add(rhrSignal)
 
         // Respiratory-rate drift (illness early signal) ----------------------
-        // respRateBpm may be a clean cloud value OR a higher-variance on-device RSA estimate
-        // (WHOOP5 BLE-only) and carries no source flag, so gate conservatively for BOTH: keep the
-        // minBaseline + sd>0 guard, only act on physiologically plausible sleeping-RR (~8-25 bpm),
-        // and use wider resp-only z thresholds (WATCH 1.5 / BAD 2.0) so a single noisy night can't
-        // reach BAD (which would feed recoveryDown), while a sustained genuine rise still flags.
+        // respRateBpm may be a clean cloud value OR a higher-variance on-device RSA estimate, so gate
+        // conservatively: keep the minBaseline + sd>0 guard, only act on physiologically plausible
+        // sleeping-RR (~8-25 bpm), and use wider resp-only z thresholds (WATCH 1.5 / BAD 2.0) so a
+        // single noisy night can't reach BAD (which would feed recoveryDown), while a sustained
+        // genuine rise still flags.
+        //
+        // #103 explicitly does NOT reach here: an experimental PPG-derived respiratory-rate estimate
+        // exists (SleepStager.respRateFromPpg) but is deliberately never mixed into respRateBpm — a
+        // series that silently switches estimator night to night injects a ~1-1.5 bpm step that alone
+        // can brush the WATCH threshold for a stable sleeper, a false signal from the estimator
+        // flipping, not physiology. This gate only ever sees one consistent estimator (RSA), by
+        // construction, so it doesn't need — and must not be given — provenance.
         val rr = latest.respRateBpm
         if (rr != null && rr in respPlausibleRange) {
             val base = history.takeLast(baselineWindow).mapNotNull { it.respRateBpm }

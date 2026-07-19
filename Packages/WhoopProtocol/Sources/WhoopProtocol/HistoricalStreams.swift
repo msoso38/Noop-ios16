@@ -279,6 +279,9 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
     // Derive per-second HR from the collected v26 PPG bursts (issue #156). Empty when there were no v26
     // records (the WHOOP 4 / v18-only common case), so this is a no-op cost there.
     out.ppgHr = PpgHr.derivePpgHr(records: ppgRecords, subLagInterp: subLagInterp)
+    // Derive per-burst respiratory rate from the SAME v26 PPG bursts (issue #103) — no new buffering,
+    // reuses `ppgRecords`. Empty under the same conditions as `ppgHr` above.
+    out.ppgResp = PpgResp.deriveRespRate(records: ppgRecords)
     out.droppedImplausible = droppedImplausible   // #547 diag count (not persisted, not encoded)
     out.droppedImplausibleOldestTs = droppedOldest   // #324 poisoned-range epoch span (diag only)
     out.droppedImplausibleNewestTs = droppedNewest

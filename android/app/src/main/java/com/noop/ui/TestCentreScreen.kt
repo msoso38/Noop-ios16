@@ -471,6 +471,7 @@ private fun ExperimentalAlgorithmsCard(vm: AppViewModel) {
     val puffin = remember { PuffinExperiment.from(context) }
     var ppgHrSubLag by remember { mutableStateOf(puffin.ppgHrSubLagInterp) }
     var hrvReadiness by remember { mutableStateOf(puffin.hrvReadiness) }
+    var ppgRespRate by remember { mutableStateOf(puffin.ppgRespRate) }
     // The SAME nightly HRV series the recovery UI reads (repo-merged DailyMetric.avgHrv, oldest-first), fed
     // into the pure HRVReadiness engine ONLY to render the toggle's own reading inline below — the default
     // Charge ring / analyzeDay path is never touched, and this feeds no downstream gate.
@@ -502,6 +503,18 @@ private fun ExperimentalAlgorithmsCard(vm: AppViewModel) {
             // The toggle's OWN effect, shown in place: when on, the live Plews/Altini reading. Nothing renders
             // when off, so the flag off is zero behaviour change and feeds no downstream gate.
             if (hrvReadiness) HrvReadinessReadoutTC(recentDays)
+            ToggleRowTC(
+                title = uiString(R.string.l10n_test_centre_screen_ppg_derived_respiratory_rate_diagnostic_103_7a24fb36),
+                description = "Logs a spectral respiratory-rate estimate off the WHOOP5 v26 optical PPG " +
+                    "buffer alongside the shipped R-R estimate, for comparison. Read-only, like HRV " +
+                    "readiness above: it never overrides DailyMetric.respRateBpm or the illness-detection " +
+                    "signal, which always reads the R-R estimate only - a value that silently switched " +
+                    "estimator night to night could fake an illness warning on its own. Validated on only " +
+                    "2 real nights from one subject whose own respiratory rate barely varies night to " +
+                    "night. Off by default; the log line only appears when this is on.",
+                checked = ppgRespRate,
+                onCheckedChange = { ppgRespRate = it; puffin.ppgRespRate = it },
+            )
         }
     }
 }

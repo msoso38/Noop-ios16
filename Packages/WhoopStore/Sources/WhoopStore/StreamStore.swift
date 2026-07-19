@@ -216,6 +216,17 @@ extension WhoopStore {
                     try stmt.execute(arguments: [deviceId, s.ts, WhoopStore.packPpgSamples(s.samples)])
                 }
             }
+            // PPG-derived respiratory rate from the SAME v26 optical buffer (#103). Same persist-only
+            // shape as ppgHr above — one row per burst, ON CONFLICT DO NOTHING keeps the first estimate.
+            if !streams.ppgResp.isEmpty {
+                let stmt = try db.cachedStatement(sql: """
+                    INSERT INTO ppgRespSample (deviceId, ts, bpm, conf) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(deviceId, ts) DO NOTHING
+                    """)
+                for s in streams.ppgResp {
+                    try stmt.execute(arguments: [deviceId, s.ts, s.bpm, s.conf])
+                }
+            }
             return (hr, rr, ev, bat, spo2, skin, resp, grav)
         }
     }
@@ -225,15 +236,16 @@ extension WhoopStore {
     /// Long-format CSV column order. One stream's columns are filled per row; the rest stay blank.
     private static let rawCSVHeader =
         "unix_s,iso_utc,stream,hr_bpm,rr_ms,grav_x,grav_y,grav_z,step_counter," +
-        "ppg_bpm,ppg_conf,spo2_red,spo2_ir,skintemp_raw,resp_raw,band_sleep_state,event_kind,event_payload"
+        "ppg_bpm,ppg_conf,spo2_red,spo2_ir,skintemp_raw,resp_raw,band_sleep_state,event_kind,event_payload," +
+        "ppgresp_bpm,ppgresp_conf"
 
-    /// One assembled CSV line: the 16 columns AFTER the `unix_s,iso_utc` prefix, joined with commas.
-    /// `cols[0]` is the `stream` name; `cols[1...15]` are the per-stream value slots, only the ones
+    /// One assembled CSV line: the 18 columns AFTER the `unix_s,iso_utc` prefix, joined with commas.
+    /// `cols[0]` is the `stream` name; `cols[1...17]` are the per-stream value slots, only the ones
     /// that belong to this row's stream are non-empty.
     private struct RawCSVRow {
         let ts: Int
         var cols: [String]
-        init(ts: Int) { self.ts = ts; self.cols = Array(repeating: "", count: 16) }
+        init(ts: Int) { self.ts = ts; self.cols = Array(repeating: "", count: 18) }
     }
 
     /// Export the decoded per-sample sensor streams NOOP already stores to ONE combined long-format CSV
@@ -333,6 +345,15 @@ extension WhoopStore {
                 var row = RawCSVRow(ts: r["ts"]); row.cols[0] = "event"
                 row.cols[14] = WhoopStore.csvField(r["kind"] ?? "")
                 row.cols[15] = WhoopStore.csvField(r["payloadJSON"] ?? "")
+                out.append(row)
+            }
+            // ppgresp (#103): stream=ppgresp → ppgresp_bpm/ppgresp_conf (cols 18–19).
+            for r in try Row.fetchAll(db, sql:
+                "SELECT ts, bpm, conf FROM ppgRespSample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
+                arguments: [deviceId, floor]) {
+                var row = RawCSVRow(ts: r["ts"]); row.cols[0] = "ppgresp"
+                row.cols[16] = WhoopStore.dblStr(r["bpm"])
+                row.cols[17] = WhoopStore.dblStr(r["conf"])
                 out.append(row)
             }
 
@@ -456,6 +477,10 @@ extension WhoopStore {
 
     public func ppgWaveformCountForTest() async throws -> Int {
         try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ppgWaveformSample") ?? 0 }
+    }
+
+    public func ppgRespCountForTest() async throws -> Int {
+        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ppgRespSample") ?? 0 }
     }
 
     public func deviceRowForTest(id: String) async throws -> (mac: String?, name: String?)? {

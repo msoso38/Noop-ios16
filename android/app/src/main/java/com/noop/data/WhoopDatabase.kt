@@ -48,8 +48,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LabMarkerRow::class,
         LiveSessionRow::class,
         PpgWaveformSampleEntity::class,
+        PpgRespSample::class,
     ],
-    version = 20,
+    version = 21,
     exportSchema = false,
 )
 abstract class WhoopDatabase : RoomDatabase() {
@@ -502,11 +503,6 @@ abstract class WhoopDatabase : RoomDatabase() {
          * cross-platform parity contract (stored data must be byte-identical) needs the heal on both
          * platforms, not just the write-boundary fix.
          *
-         * SEQUENCING CAVEAT: this claims Room version 18 -> 19 as the next free slot as of this PR. The
-         * Swift v26 GRDB slot has the identical collision risk against other pending PRs (flagged in the
-         * same review) — if another pending PR also lands a Room migration first, whichever merges
-         * SECOND must renumber. Coordinate before merging both.
-         *
          * The SQL is exposed as [EFFICIENCY_HEAL_MIGRATION_SQL] so a plain-JVM unit test
          * ([com.noop.data.EfficiencyHealMigrationTest]) can pin this shape without Robolectric.
          */
@@ -547,9 +543,40 @@ abstract class WhoopDatabase : RoomDatabase() {
                 "`ts` INTEGER NOT NULL, `samples` BLOB NOT NULL, PRIMARY KEY(`deviceId`, `ts`))",
         )
 
+        /**
+         * v20 -> v21: ADDITIVE, adds the `ppgRespSample` table (#103): respiratory rate DERIVED FROM
+         * the same WHOOP 5/MG v26 optical PPG buffer the v19->v20 `ppgWaveformSample` table above now
+         * stores raw and `ppgHrSample` (v5_6) reads for HR — three streams off one buffer, each in its
+         * own table. Same rationale as v5_6: never conflated with the strap's own resp_rate_raw
+         * (`respSample`, WHOOP4-only — the two never overlap on a given device). `bpm` is REAL and NOT
+         * rounded (unlike `ppgHrSample.bpm`, which rounds to whole HR) — respiratory-rate precision
+         * at ~14-15 bpm is the point. CREATE TABLE only (no existing data touched). The SQL MUST match
+         * Room's generated schema for [PpgRespSample] exactly, every column NOT NULL, composite
+         * PRIMARY KEY (deviceId, ts) in declaration order, and deliberately WITHOUT a `synced` column
+         * (that field on `ppgHrSample` is vestigial, added for a since-removed server-upload feature —
+         * not propagated here). Exposed as [PPG_RESP_SAMPLE_MIGRATION_SQL] so a plain-JVM unit test
+         * can pin the shape without Robolectric.
+         *
+         * SEQUENCING: renumbered v18->v19 → v19->v20 → v20->v21 as efficiency-heal and then
+         * ppg-waveform took the slot first; the GRDB twin is `v28-ppg-resp-sample` (Swift's next slot
+         * after v27-ppg-waveform), so the two platforms' migration counts stay aligned. The #103
+         * review's coordination note called this collision.
+         */
+        internal val PPG_RESP_SAMPLE_MIGRATION_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `ppgRespSample` (`deviceId` TEXT NOT NULL, " +
+                "`ts` INTEGER NOT NULL, `bpm` REAL NOT NULL, `conf` REAL NOT NULL, " +
+                "PRIMARY KEY(`deviceId`, `ts`))",
+        )
+
         internal val MIGRATION_19_20 = object : Migration(19, 20) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 for (stmt in PPG_WAVEFORM_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        internal val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in PPG_RESP_SAMPLE_MIGRATION_SQL) db.execSQL(stmt)
             }
         }
 
@@ -568,7 +595,7 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18,
-                    MIGRATION_18_19, MIGRATION_19_20,
+                    MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21,
                 )
                 // #1037: a FRESH install builds the schema straight at the current version and runs NO
                 // migrations, so the MIGRATION_7_8 "my-whoop" registry seed never fires and the WHOOP,

@@ -549,6 +549,18 @@ final class IntelligenceEngine: ObservableObject {
                 // #93: WHOOP 4.0 raw SpO2 PPG samples for the night; analyzeDay banks the nightly red/IR ADC
                 // means on the DailyMetric. Empty on a 5/MG (no v24 spo2 channels) → the raw means stay nil.
                 let spo2 = (try? await store.spo2Samples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
+                // #103: PPG-derived per-burst respiratory rate from the WHOOP 5.0 v26 optical buffer.
+                // analyzeDay NEVER lets this override DailyMetric.respRateBpm (always RSA, so the
+                // illness-detection gate never sees an estimator switch) — it only logs a comparison
+                // against RSA when both this array is non-empty AND the diagnostic trace is active.
+                // Gated behind the default-OFF Experimental toggle (PuffinExperiment.
+                // ppgRespRateEnabled): validated on only 2 real nights from one low-resp-variance subject,
+                // the exact single-stable-night trap the project's derived-biosignal standard warns
+                // about. The stream itself is still decoded + persisted unconditionally as
+                // instrumentation — only whether analyzeDay gets to SEE it here is gated.
+                let ppgResp = PuffinExperiment.ppgRespRateEnabled
+                    ? (try? await store.ppgRespSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
+                    : []
                 // #938: the strap family that WROTE this owner's skin-temp rows, so analyzeDay converts the raw
                 // register on the right scale (5/MG banks centidegrees, a WHOOP 4.0 v24 banks a raw ADC). The
                 // registry knows each device's model; unknown/non-WHOOP owners fall back to `.whoop5` (the prior
@@ -686,6 +698,7 @@ final class IntelligenceEngine: ObservableObject {
                                                      skinTempFamily: skinFamily,   // #938
                                                      skinTempAnchorRaw: skinAnchorRaw,   // #938 second capture
                                                      spo2: spo2,                   // #93
+                                                     ppgResp: ppgResp,             // #103
                                                      profile: up, baselines: baselines1, maxHROverride: maxHR,
                                                      tzOffsetSeconds: tzOffset, wristOff: wristOff,
                                                      habitualMidsleepSec: habitualMidsleepSec,

@@ -32,6 +32,9 @@ data class StreamBatch(
     val sleepState: List<SleepStateRow> = emptyList(),
     /** HR derived from the WHOOP 5/MG v26 optical PPG waveform (autocorrelation). (#156) */
     val ppgHr: List<PpgHrRow> = emptyList(),
+    /** Respiratory rate derived from the SAME v26 optical PPG buffer as [ppgHr] (#103), one estimate
+     *  per ~40s burst rather than per-second. */
+    val ppgResp: List<PpgRespRow> = emptyList(),
     /**
      * The RAW WHOOP 5/MG v26 optical PPG waveform itself, one record per second (#156 follow-up) — the
      * 24 Hz samples [ppgHr] is derived FROM. Kept separate so a consumer that only wants the HR estimate
@@ -64,7 +67,8 @@ data class StreamBatch(
     val isEmpty: Boolean
         get() = hr.isEmpty() && rr.isEmpty() && events.isEmpty() && battery.isEmpty() &&
             spo2.isEmpty() && skinTemp.isEmpty() && resp.isEmpty() && gravity.isEmpty() &&
-            steps.isEmpty() && sleepState.isEmpty() && ppgHr.isEmpty() && ppgWaveform.isEmpty()
+            steps.isEmpty() && sleepState.isEmpty() && ppgHr.isEmpty() && ppgWaveform.isEmpty() &&
+            ppgResp.isEmpty()
 }
 
 // Device-agnostic decoded rows (deviceId attached when inserted). Mirror Streams.swift shapes.
@@ -123,6 +127,9 @@ data class PpgHrRow(val ts: Long, val bpm: Int, val conf: Double)
  * attached on insert; the samples are packed to a little-endian i16 BLOB by [StreamPersistence.packPpgSamples].
  */
 data class PpgWaveformRow(val ts: Long, val samples: List<Int>)
+/** Respiratory rate derived from the SAME v26 PPG waveform: [ts] burst-start sec, [bpm] NOT rounded,
+ *  [conf] = spectral prominence. (#103) */
+data class PpgRespRow(val ts: Long, val bpm: Double, val conf: Double)
 
 /** Count of rows ACTUALLY inserted per stream (mirrors WhoopStore.insert return tuple). */
 data class InsertCounts(
@@ -263,6 +270,11 @@ class WhoopRepository(private val dao: WhoopDao) {
                     PpgWaveformSampleEntity(deviceId, it.ts, StreamPersistence.packPpgSamples(it.samples))
                 },
             )
+        }
+        // v26 PPG-derived respiratory rate (#103). Persist-only, same as ppgHr's own precedent — not
+        // added to InsertCounts (no consumer reads a count for it); idempotent by (deviceId, ts).
+        if (streams.ppgResp.isNotEmpty()) {
+            dao.insertPpgResp(streams.ppgResp.map { PpgRespSample(deviceId, it.ts, it.bpm, it.conf) })
         }
 
         // OnConflictStrategy.IGNORE returns -1 for skipped (already-present) rows; count the inserts.
@@ -411,6 +423,7 @@ class WhoopRepository(private val dao: WhoopDao) {
         // (a) raw streams (all keyed by ts)
         deleted += dao.pruneHrByTs(minTs, maxTs)
         deleted += dao.prunePpgHrByTs(minTs, maxTs)
+        deleted += dao.prunePpgRespByTs(minTs, maxTs)
         deleted += dao.pruneRrByTs(minTs, maxTs)
         deleted += dao.pruneSkinTempByTs(minTs, maxTs)
         deleted += dao.pruneStepByTs(minTs, maxTs)
@@ -589,6 +602,11 @@ class WhoopRepository(private val dao: WhoopDao) {
         List<PpgWaveformRow> =
         dao.ppgWaveformSamples(deviceId, from, to, limit)
             .map { PpgWaveformRow(it.ts, StreamPersistence.unpackPpgSamples(it.samples)) }
+
+    /** v26 PPG-derived respiratory-rate samples (own stream), consumed as its own distinct list by
+     *  SleepStager.respRateFromPpg's fusion — never merged with the R-R/RSA stream. (#103) */
+    suspend fun ppgRespSamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT) =
+        dao.ppgRespSamples(deviceId, from, to, limit)
 
     /** Downsampled HR (mean bpm per [bucketSeconds]) for the strap, for the Today 24h trend chart. */
     suspend fun hrBuckets(deviceId: String, from: Long, to: Long, bucketSeconds: Long = 300L) =

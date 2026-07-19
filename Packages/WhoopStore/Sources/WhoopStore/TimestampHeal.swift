@@ -47,7 +47,7 @@ extension WhoopStore {
             // REALTIME paths the #547 gate now guards, so the same out-of-bounds predicate cleans them.
             let rawTables = ["hrSample", "rrInterval", "event", "battery",
                              "spo2Sample", "skinTempSample", "respSample",
-                             "gravitySample", "stepSample", "ppgHrSample"]
+                             "gravitySample", "stepSample", "ppgHrSample", "ppgRespSample"]
             var rawDeleted = 0
             for table in rawTables {
                 try db.execute(sql: "DELETE FROM \(table) WHERE ts < ? OR ts > ?",

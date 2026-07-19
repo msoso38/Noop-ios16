@@ -813,6 +813,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         useExperimentalSleepV2 = PuffinExperiment.from(appContext).experimentalSleepV2,
                         // Opt-in motion-aware wake refinement (#364 follow-up) — same Context-free threading.
                         useMotionAwareWake = PuffinExperiment.from(appContext).motionAwareWake,
+                        // Opt-in "PPG-derived respiratory rate" diagnostic (#103) — same Context-free-layer pattern.
+                        ppgRespRateEnabled = PuffinExperiment.from(appContext).ppgRespRate,
                         // Sleep & Rest test mode (Test Centre E5): when the SLEEP domain is on, route the
                         // per-day sleep gate trace into the SAME shareable strap log, tagged .sleep so it
                         // lands under the profile in the export. Zero-cost when off: the gate is one
@@ -1411,6 +1413,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 useExperimentalSleepV2 = PuffinExperiment.from(appContext).experimentalSleepV2,
                 // Opt-in motion-aware wake refinement (#364 follow-up) — same flag the 15-min loop reads.
                 useMotionAwareWake = PuffinExperiment.from(appContext).motionAwareWake,
+                // Opt-in "PPG-derived respiratory rate" diagnostic (#103) — same flag the 15-min loop reads.
+                ppgRespRateEnabled = PuffinExperiment.from(appContext).ppgRespRate,
             )
         }.onFailure { if (it is kotlin.coroutines.cancellation.CancellationException) throw it }
     }

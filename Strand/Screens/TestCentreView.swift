@@ -40,6 +40,7 @@ struct TestCentreView: View {
     // both default OFF.
     @AppStorage(PuffinExperiment.ppgHrSubLagInterpKey) private var ppgHrSubLagInterpEnabled = false
     @AppStorage(PuffinExperiment.hrvReadinessKey) private var hrvReadinessEnabled = false
+    @AppStorage(PuffinExperiment.ppgRespRateKey) private var ppgRespRateEnabled = false
 
     /// True when the connected strap is a 5/MG, so the 5/MG experimental block shows. Mirrors the
     /// SettingsView gate (#22): a confident 4.0 owner never sees controls that cannot touch their strap.
@@ -263,6 +264,17 @@ struct TestCentreView: View {
                 // The toggle's OWN effect, shown in place: when on, the live Plews/Altini reading. Nothing
                 // renders when off, so the flag off is zero behaviour change and feeds no downstream gate.
                 if hrvReadinessEnabled { hrvReadinessReadout }
+
+                Divider().overlay(StrandPalette.hairline)
+
+                Toggle(isOn: $ppgRespRateEnabled) {
+                    Text("PPG-derived respiratory rate diagnostic (#103)")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch).tint(StrandPalette.accent)
+                Text("Logs a spectral respiratory-rate estimate off the WHOOP5 v26 optical PPG buffer alongside the shipped R-R estimate, for comparison. Read-only, like HRV readiness above: it never overrides DailyMetric.respRateBpm or the illness-detection signal, which always reads the R-R estimate only - a value that silently switched estimator night to night could fake an illness warning on its own. Validated on only 2 real nights from one subject whose own respiratory rate barely varies night to night. Off by default; the log line only appears when this is on.")
+                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

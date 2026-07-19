@@ -68,6 +68,23 @@ data class PpgHrSample(
     val synced: Int = 0,
 )
 
+/**
+ * Respiratory rate derived from the SAME WHOOP 5/MG **v26** optical PPG buffer `ppgHrSample` above
+ * already reads (#103). Own table, same rationale as `ppgHrSample`: never conflated with the strap's
+ * own resp_rate_raw (`respSample`, WHOOP4-only — the two streams never overlap on a given device).
+ * [bpm] is REAL and NOT rounded (unlike `ppgHrSample.bpm`, which rounds to whole HR) — respiratory-
+ * rate precision at ~14-15 bpm is the point. PK (deviceId, ts) = one estimate per burst-start second.
+ * Deliberately WITHOUT the vestigial `synced` column `ppgHrSample` carries (added for a
+ * since-removed server-upload feature — not propagated into a new table). v18_19 migration.
+ */
+@Entity(tableName = "ppgRespSample", primaryKeys = ["deviceId", "ts"])
+data class PpgRespSample(
+    val deviceId: String,
+    val ts: Long,
+    val bpm: Double,
+    val conf: Double,
+)
+
 /** One downsampled HR point, the bucket's start (unix seconds) + the mean bpm over it. Query
  *  result of [WhoopDao.hrBuckets], not a table. Mirrors the macOS `HRBucket`. */
 data class HrBucket(

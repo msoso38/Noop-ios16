@@ -164,6 +164,13 @@ public enum ReadinessEngine {
         // BOTH the latest value and the baseline mean to the plausible sleeping-RR band (8–25 bpm) and
         // use wider resp-only z thresholds (WATCH 1.5 / BAD 2.0) than HRV/RHR so a single noisy night
         // can't flip RUNDOWN. Mirrors the Kotlin reference (#78) for cross-platform parity.
+        //
+        // #103 explicitly does NOT reach here: an experimental PPG-derived respiratory-rate estimate
+        // exists (SleepStager.respRateFromPpg) but is deliberately never mixed into respRateBpm — a
+        // series that silently switches estimator night to night injects a ~1-1.5 bpm step that alone
+        // can brush the WATCH threshold for a stable sleeper, a false signal from the estimator
+        // flipping, not physiology. This gate only ever sees one consistent estimator (RSA), by
+        // construction, so it doesn't need — and must not be given — provenance.
         if let rr = latest.respRateBpm, SleepStager.respPlausibleRangeBpm.contains(rr) {
             let base = history.suffix(baselineWindow).compactMap { $0.respRateBpm }
             if base.count >= minBaseline, let m = mean(base),

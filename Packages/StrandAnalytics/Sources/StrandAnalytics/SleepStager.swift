@@ -1518,6 +1518,45 @@ public enum SleepStager {
         return respPlausibleRangeBpm.contains(median) ? median : nan
     }
 
+    // MARK: - Respiration rate from PPG (issue #103) — WHOOP5 v26 optical path
+
+    /// Minimum number of qualifying PPG bursts (see `PpgResp.deriveRespRate`) required in-session
+    /// before trusting a PPG-derived respiratory rate at all — below this, too few bursts for a stable
+    /// top-third-by-confidence median. Tied to observed burst density (~20-25 bursts across a full
+    /// ~7-8h night in the 2 validated real captures, not a theoretical minimum) — tunable, not sacred.
+    static let minPpgBurstsForEstimate = 9
+
+    /// APPROXIMATE respiratory rate (breaths/min) from the PPG-derived per-burst stream (issue #103,
+    /// `PpgResp.deriveRespRate`), for use ALONGSIDE `respRateFromRR` above — see `AnalyticsEngine`'s
+    /// prefer-PPG-else-RSA fusion, which tries this first per session and falls back to the RSA
+    /// estimate when this returns NaN.
+    ///
+    /// Validated (n=2 real overnight captures against the WHOOP app's own reading) to land within
+    /// 2-6%, vs. `respRateFromRR`'s 6-11% low bias on the SAME nights — but that is thin evidence (one
+    /// person, two nights, a person whose own respiratory rate barely moves night to night; see the
+    /// #103 discussion), so treat this as a real quality-filtered signal, not a settled ground truth.
+    /// v26 PPG coverage is a SPARSE minority of any given night (the strap alternates between v18 and
+    /// v26 recording, never both at once), so this returns NaN far more often than `respRateFromRR`
+    /// does — that is expected, not a bug; the fusion falls back to RSA in that case.
+    ///
+    /// Pipeline: filter samples to `[start, end]`; require >= `minPpgBurstsForEstimate` qualifying
+    /// bursts else NaN (honest no-data, mirrors `respRateFromRR`'s own too-little-data gate); take the
+    /// top third by `conf` (floor division — a burst's `conf` is the DSP estimator's own
+    /// spectral-prominence quality signal, not re-derived here); return the median of THEIR `bpm`, not
+    /// a blend of every burst, since a low-confidence burst is more likely motion/off-wrist artifact
+    /// than real respiratory signal.
+    static func respRateFromPpg(_ samples: [PpgRespSample], start: Int, end: Int) -> Double {
+        let nan = Double.nan
+        if end <= start { return nan }
+        let inWindow = samples.filter { $0.ts >= start && $0.ts <= end }
+        guard inWindow.count >= minPpgBurstsForEstimate else { return nan }
+        let topThird = inWindow.sorted { $0.conf > $1.conf }.prefix(max(1, inWindow.count / 3))
+        let median = HRVAnalyzer.median(topThird.map(\.bpm))
+        // Same canonical-band reject as respRateFromRR, so a fused value never silently disagrees
+        // with the illness/readiness plausibility gate regardless of which estimator produced it.
+        return respPlausibleRangeBpm.contains(median) ? median : nan
+    }
+
     // MARK: - Per-epoch features
 
     struct EpochFeatures {

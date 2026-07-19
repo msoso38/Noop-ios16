@@ -95,6 +95,9 @@ public struct DeviceRegistryStore: Sendable {
         // "delete all of this device's data" leaves the raw waveform behind (the same privacy defect
         // this list exists to close).
         "ppgWaveformSample",
+        // v28-ppg-resp-sample (#103): PPG-derived respiratory rate, same deviceId-keyed shape as
+        // ppgHrSample above — added at creation time, not backfilled later like the block above.
+        "ppgRespSample",
     ]
 
     /// Permanently delete every recorded sample/derived row belonging to one device, across all

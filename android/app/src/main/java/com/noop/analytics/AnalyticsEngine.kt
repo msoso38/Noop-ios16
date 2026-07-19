@@ -4,6 +4,7 @@ import com.noop.data.DailyMetric
 import com.noop.data.EventRow
 import com.noop.data.GravitySample
 import com.noop.data.HrSample
+import com.noop.data.PpgRespSample
 import com.noop.data.SkinTempSample
 import com.noop.data.Spo2Sample
 import com.noop.data.RespSample
@@ -182,6 +183,13 @@ object AnalyticsEngine {
         // decoded" data, NOT a calibrated blood-oxygen % (that needs WHOOP's proprietary curve). Default
         // empty keeps pure-function callers/tests + non-4.0 nights null.
         spo2: List<Spo2Sample> = emptyList(),
+        // PPG-derived per-burst respiratory rate from the WHOOP 5.0 v26 optical buffer (#103,
+        // com.noop.protocol.PpgResp). NEVER overrides respRateDaily below (that always comes from
+        // R-R/RSA, so the illness-detection gate never sees an estimator switch) — when non-empty,
+        // it's only computed alongside RSA for a diagnostic comparison logged through hrvTraceSink.
+        // Default empty keeps pure-function callers/tests + WHOOP4/no-v26/opted-out nights identical
+        // (no comparison computed, nothing logged).
+        ppgResp: List<PpgRespSample> = emptyList(),
         profile: UserProfile,
         baselines: ProfileBaselines = ProfileBaselines(),
         maxHROverride: Double? = null,
@@ -403,15 +411,32 @@ object AnalyticsEngine {
             )
         }
 
-        // Nightly APPROXIMATE respiratory rate (breaths/min) from the R-R stream via
-        // RSA. WHOOP5 v18 carries no raw resp ADC, so this is an on-device estimate,
-        // NOT a cloud/clinical respiration value. Per matched in-bed session, estimate
-        // over [start, end]; the night's value = median of finite per-session
-        // estimates; null only when no session yields a finite estimate.
+        // Nightly APPROXIMATE respiratory rate (breaths/min) from the R-R stream via RSA; NOT a
+        // cloud/clinical respiration value. This is the ONLY estimator that ever reaches
+        // DailyMetric.respRateBpm / the ReadinessEngine illness-detection gate — see #103 review: an
+        // earlier version of this preferred a PPG-derived estimate (SleepStager.respRateFromPpg,
+        // WHOOP5 v26 optical buffer) per session when available, but that let the persisted value
+        // silently switch estimator night to night. RSA and PPG read ~1-1.5 bpm apart even when both
+        // are "right," so for a stable sleeper (resp SD ~1 bpm) a night that merely SWITCHES which
+        // estimator fired injects a step large enough to brush the illness WATCH z-threshold — a false
+        // signal from the estimator flipping, not physiology. So the gate-facing value now always
+        // comes from one consistent estimator (RSA), full stop. The night's value = median of finite
+        // per-session RSA estimates; null only when no session yields one.
+        //
+        // The PPG estimate is still computed for comparison (never stored, never gates anything) when
+        // ppgResp is non-empty — i.e. only when the caller's Experimental toggle supplied it — and
+        // logged alongside RSA through hrvTraceSink (the existing per-day diagnostic hook) when
+        // active, so opt-in nights keep generating the RSA-vs-PPG evidence #103 needs to eventually
+        // trust PPG on its own.
         val respRateDaily: Double? = run {
-            val perSession = matched
-                .map { SleepStager.respRateFromRR(rr, it.start, it.end) }
-                .filter { it.isFinite() }
+            val perSession = matched.mapNotNull { session ->
+                val rsa = SleepStager.respRateFromRR(rr, session.start, session.end)
+                if (ppgResp.isNotEmpty()) {
+                    val ppg = SleepStager.respRateFromPpg(ppgResp, session.start, session.end)
+                    hrvTraceSink?.invoke("respRate session start=${session.start} rsa=$rsa ppg=$ppg used=rsa")
+                }
+                if (rsa.isFinite()) rsa else null
+            }
             if (perSession.isEmpty()) null else HrvAnalyzer.median(perSession)
         }
 

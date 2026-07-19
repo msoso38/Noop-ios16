@@ -141,4 +141,21 @@ final class TimestampHealTests: XCTestCase {
         let survivors = try await store.hrSamples(deviceId: "dev1", from: 0, to: Int.max, limit: 1000)
         XCTAssertEqual(survivors.map(\.ts).sorted(), [floor, ceiling])
     }
+
+    /// #103: `ppgRespSample` must be in the raw-tables heal list, same as every other ts-keyed stream —
+    /// pin it directly since `rawTables` itself is a private local, not reflectively guarded like
+    /// `DeviceRegistryStore.deviceScopedTables`.
+    func testPurgesImplausiblePpgRespRows() async throws {
+        let store = try await WhoopStore.inMemory()
+        let good = now - 3600
+        let farPast = 1_250_000_000
+        _ = try await store.insert(Streams(ppgResp: [
+            PpgRespSample(ts: good, bpm: 15.0, conf: 8.0),
+            PpgRespSample(ts: farPast, bpm: 15.0, conf: 8.0),
+        ]), deviceId: "dev1")
+        let result = try await store.healImplausibleTimestamps(now: now, todayLocalDayKey: todayKey)
+        XCTAssertEqual(result.rawRowsDeleted, 1)
+        let survivors = try await store.ppgRespSamples(deviceId: "dev1", from: 0, to: Int.max, limit: 1000)
+        XCTAssertEqual(survivors.map(\.ts), [good])
+    }
 }

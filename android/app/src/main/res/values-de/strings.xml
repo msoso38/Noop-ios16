@@ -850,6 +850,7 @@
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">HRV-Bereitschaft (experimentell)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_word_a471930e">HRV-Reife (experimentell): %1$s</string>
     <string name="l10n_test_centre_screen_hrv_readiness_plews_altini_bce6578f">HRV-Bereitschaft (Plews/Altini)</string>
+    <string name="l10n_test_centre_screen_ppg_derived_respiratory_rate_diagnostic_103_7a24fb36">PPG-basierte Atemfrequenz-Diagnose (#103)</string>
     <string name="l10n_test_centre_screen_recalibrate_aaa989ea">Neu kalibrieren</string>
     <string name="l10n_test_centre_screen_recalibrate_charge_baseline_52a05a26">Ladungs-Basislinie neu kalibrieren</string>
     <string name="l10n_test_centre_screen_recalibrate_your_charge_baseline_018e3846">Deine Ladungs-Basislinie neu kalibrieren?</string>

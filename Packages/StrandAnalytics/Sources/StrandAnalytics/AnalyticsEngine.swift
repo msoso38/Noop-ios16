@@ -279,6 +279,15 @@ public enum AnalyticsEngine {
                                   // calibrated blood-oxygen % (that needs WHOOP's proprietary curve).
                                   // Default empty keeps pure-function callers/tests + non-4.0 nights nil.
                                   spo2: [SpO2Sample] = [],
+                                  // PPG-derived per-burst respiratory rate from the WHOOP 5.0 v26
+                                  // optical buffer (#103, `PpgResp.deriveRespRate`). NEVER overrides
+                                  // `respRateDaily` below (that always comes from R-R/RSA, so the
+                                  // illness-detection gate never sees an estimator switch) — when
+                                  // non-empty, it's only computed alongside RSA for a diagnostic
+                                  // comparison logged through `hrvTraceSink`. Default empty keeps
+                                  // pure-function callers/tests + WHOOP4/no-v26/opted-out nights
+                                  // identical (no comparison computed, nothing logged).
+                                  ppgResp: [PpgRespSample] = [],
                                   profile: UserProfile,
                                   baselines: ProfileBaselines = ProfileBaselines(),
                                   maxHROverride: Double? = nil,
@@ -572,15 +581,32 @@ public enum AnalyticsEngine {
             hrvTraceSink("hrv nightSummary reported=\(reported) wholeNight=\(meanMs(withR)) deepOnly=\(meanMs(deepW)) lastSWS=\(meanMs(lastSws)) nWin=\(withR.count) nDeep=\(deepW.count)")
         }
 
-        // Nightly APPROXIMATE respiratory rate (breaths/min) from the R-R stream via
-        // RSA. WHOOP5 v18 carries no raw resp ADC, so this is an on-device estimate,
-        // NOT a cloud/clinical respiration value. Per matched in-bed session, estimate
-        // over [start, end]; the night's value = median of finite per-session
-        // estimates; nil only when no session yields a finite estimate.
+        // Nightly APPROXIMATE respiratory rate (breaths/min) from the R-R stream via RSA; NOT a
+        // cloud/clinical respiration value. This is the ONLY estimator that ever reaches
+        // `DailyMetric.respRateBpm` / the ReadinessEngine illness-detection gate — see #103 review:
+        // an earlier version of this preferred a PPG-derived estimate (SleepStager.respRateFromPpg,
+        // WHOOP5 v26 optical buffer) per session when available, but that let the persisted value
+        // silently switch estimator night to night. RSA and PPG read ~1-1.5 bpm apart even when both
+        // are "right," so for a stable sleeper (resp SD ~1 bpm) a night that merely SWITCHES which
+        // estimator fired injects a step large enough to brush the illness WATCH z-threshold — a false
+        // signal from the estimator flipping, not physiology. So the gate-facing value now always
+        // comes from one consistent estimator (RSA), full stop. The night's value = median of finite
+        // per-session RSA estimates; nil only when no session yields one.
+        //
+        // The PPG estimate is still computed for comparison (never stored, never gates anything) when
+        // `ppgResp` is non-empty — i.e. only when the caller's Experimental toggle supplied it — and
+        // logged alongside RSA through `hrvTraceSink` (the existing per-day diagnostic hook) when
+        // active, so opt-in nights keep generating the RSA-vs-PPG evidence #103 needs to eventually
+        // trust PPG on its own.
         let respRateDaily: Double? = {
-            let perSession = matched
-                .map { SleepStager.respRateFromRR(rr, start: $0.start, end: $0.end) }
-                .filter { $0.isFinite }
+            let perSession: [Double] = matched.compactMap { session in
+                let rsa = SleepStager.respRateFromRR(rr, start: session.start, end: session.end)
+                if !ppgResp.isEmpty {
+                    let ppg = SleepStager.respRateFromPpg(ppgResp, start: session.start, end: session.end)
+                    hrvTraceSink?("respRate session start=\(session.start) rsa=\(rsa) ppg=\(ppg) used=rsa")
+                }
+                return rsa.isFinite ? rsa : nil
+            }
             return perSession.isEmpty ? nil : HRVAnalyzer.median(perSession)
         }()
 

@@ -235,6 +235,10 @@ public struct Streams: Equatable, Codable {
     /// samples `ppgHr` is derived FROM. Kept separate so a consumer that only wants the HR estimate
     /// never pays for the 24x-larger raw stream, and so the two can be persisted/pruned independently.
     public var ppgWaveform: [PpgWaveformSample]
+    /// PPG-derived per-burst (~40s) respiratory rate from the same v26 optical buffer (issue #103).
+    /// One sample per burst, not per second — see `PpgResp` for why. Kept separate from `resp` (the
+    /// strap's own, WHOOP4-only, resp_rate_raw stream) — the two never overlap on a given device.
+    public var ppgResp: [PpgRespSample]
     public var events: [WhoopEvent]
     public var battery: [BatterySample]
     /// #547 diagnostic: how many historical records `extractHistoricalStreams` DROPPED this chunk for an
@@ -258,11 +262,12 @@ public struct Streams: Equatable, Codable {
                 resp: [RespSample] = [], gravity: [GravitySample] = [],
                 steps: [StepSample] = [], sleepState: [SleepStateSample] = [],
                 ppgHr: [PpgHrSample] = [], ppgWaveform: [PpgWaveformSample] = [],
+                ppgResp: [PpgRespSample] = [],
                 events: [WhoopEvent] = [], battery: [BatterySample] = []) {
         self.hr = hr; self.rr = rr
         self.spo2 = spo2; self.skinTemp = skinTemp; self.resp = resp; self.gravity = gravity
         self.steps = steps; self.sleepState = sleepState; self.ppgHr = ppgHr
-        self.ppgWaveform = ppgWaveform
+        self.ppgWaveform = ppgWaveform; self.ppgResp = ppgResp
         self.events = events; self.battery = battery
     }
 
@@ -272,7 +277,7 @@ public struct Streams: Equatable, Codable {
     public var isEmpty: Bool {
         hr.isEmpty && rr.isEmpty && spo2.isEmpty && skinTemp.isEmpty && resp.isEmpty
             && gravity.isEmpty && steps.isEmpty && sleepState.isEmpty && ppgHr.isEmpty
-            && ppgWaveform.isEmpty && events.isEmpty && battery.isEmpty
+            && ppgWaveform.isEmpty && ppgResp.isEmpty && events.isEmpty && battery.isEmpty
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -280,6 +285,7 @@ public struct Streams: Equatable, Codable {
         case sleepState = "sleep_state"
         case ppgHr = "ppg_hr"
         case ppgWaveform = "ppg_waveform"
+        case ppgResp = "ppg_resp"
         case events, battery
     }
 
@@ -297,6 +303,7 @@ public struct Streams: Equatable, Codable {
         sleepState = try c.decodeIfPresent([SleepStateSample].self, forKey: .sleepState) ?? []
         ppgHr = try c.decodeIfPresent([PpgHrSample].self, forKey: .ppgHr) ?? []
         ppgWaveform = try c.decodeIfPresent([PpgWaveformSample].self, forKey: .ppgWaveform) ?? []
+        ppgResp = try c.decodeIfPresent([PpgRespSample].self, forKey: .ppgResp) ?? []
         events = try c.decodeIfPresent([WhoopEvent].self, forKey: .events) ?? []
         battery = try c.decodeIfPresent([BatterySample].self, forKey: .battery) ?? []
     }

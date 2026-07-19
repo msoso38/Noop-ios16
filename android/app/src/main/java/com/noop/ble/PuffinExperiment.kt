@@ -95,6 +95,26 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(KEY_MOTION_AWARE_WAKE, false)
         set(v) = prefs.edit().putBoolean(KEY_MOTION_AWARE_WAKE, v).apply()
 
+    /** True if the user opted in to the "PPG-derived respiratory rate diagnostic" (default false,
+     *  #103): a spectral estimate off the WHOOP5 v26 optical PPG buffer
+     *  ([com.noop.protocol.PpgResp], top-confidence-burst aggregation), compared against the shipped
+     *  R-R/RSA estimate ([com.noop.analytics.SleepStager.respRateFromRR]) purely for a diagnostic log
+     *  line — it NEVER overrides `DailyMetric.respRateBpm` or reaches the ReadinessEngine
+     *  illness-detection signal, which always reads RSA only. (An earlier version of this preferred
+     *  PPG when available; per #103 review, a persisted value that silently switches estimator night
+     *  to night can inject a step large enough to brush the illness WATCH threshold on its own — a
+     *  false signal from the estimator flipping, not physiology. So the comparison stays diagnostic.)
+     *  Validated on only 2 real overnight captures from ONE subject whose own night-to-night
+     *  respiratory rate barely moves (stdev ~0.56 bpm) — exactly the single-stable-night validation
+     *  trap the project's derived-biosignal standard warns about. Default false means the comparison
+     *  is never computed; the app-layer call site ([com.noop.analytics.IntelligenceEngine]) reads this
+     *  flag and only supplies the real ppgResp stream to `analyzeDay` when it's on. `ppgResp` is still
+     *  decoded + persisted (`ppgRespSample`) unconditionally as instrumentation regardless of this
+     *  flag. Mirrors the macOS `PuffinExperiment.ppgRespRateKey`. */
+    var ppgRespRate: Boolean
+        get() = prefs.getBoolean(KEY_PPG_RESP_RATE, false)
+        set(v) = prefs.edit().putBoolean(KEY_PPG_RESP_RATE, v).apply()
+
     companion object {
         /** Persisted preferences file. */
         private const val PREFS = "noop_experiments"
@@ -122,6 +142,9 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
 
         /** "Motion-aware wake refinement" opt-in (mirrors macOS `PuffinExperiment.motionAwareWakeKey`). */
         const val KEY_MOTION_AWARE_WAKE = "noopMotionAwareWake"
+
+        /** "PPG-derived respiratory rate" opt-in (mirrors macOS `PuffinExperiment.ppgRespRateKey`). */
+        const val KEY_PPG_RESP_RATE = "noopPpgRespRate"
 
         fun from(context: Context): PuffinExperiment =
             PuffinExperiment(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE))

@@ -5,6 +5,7 @@ import com.noop.data.EventEntry
 import com.noop.data.GravityRow
 import com.noop.data.HrRow
 import com.noop.data.PpgHrRow
+import com.noop.data.PpgRespRow
 import com.noop.data.PpgWaveformRow
 import com.noop.data.RespRow
 import com.noop.data.RrRow
@@ -735,6 +736,9 @@ fun extractHistoricalStreams(
     // unless the strap sent v26 records; falls back gracefully (no rows) on noise (#156).
     val ppgHr = PpgHr.estimate(ppgSamples, subLagInterp = ppgHrSubLagInterp)
         .map { PpgHrRow(ts = it.ts, bpm = it.bpm, conf = it.conf) }
+    // Derive respiratory rate from the SAME accumulated v26 PPG waveform (#103) — no new buffering,
+    // reuses ppgSamples. Empty under the same conditions as ppgHr above.
+    val ppgResp = PpgResp.deriveRespRate(ppgSamples).map { PpgRespRow(ts = it.ts, bpm = it.bpm, conf = it.conf) }
 
     return StreamBatch(
         hr = hr, rr = rr, events = events, battery = battery,
@@ -742,6 +746,7 @@ fun extractHistoricalStreams(
         sleepState = sleepState,
         ppgHr = ppgHr,
         ppgWaveform = ppgWaveform,
+        ppgResp = ppgResp,
         droppedImplausibleTs = droppedImplausible,
         droppedImplausibleOldestTs = droppedOldest,   // #324 poisoned-range epoch span (diag only)
         droppedImplausibleNewestTs = droppedNewest,

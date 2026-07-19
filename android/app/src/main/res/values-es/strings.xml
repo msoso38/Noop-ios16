@@ -690,6 +690,7 @@
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">HRV preparedness (experimental)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_word_a471930e">HRV preparedness (experimental): %1$s</string>
     <string name="l10n_test_centre_screen_hrv_readiness_plews_altini_bce6578f">HRV preparedness (Plews/Altini)</string>
+    <string name="l10n_test_centre_screen_ppg_derived_respiratory_rate_diagnostic_103_7a24fb36">Diagnóstico de frecuencia respiratoria derivada del PPG (#103)</string>
     <string name="l10n_test_centre_screen_recalibrate_aaa989ea">Recalibrar</string>
     <string name="l10n_test_centre_screen_recalibrate_charge_baseline_52a05a26">Recalibrar la línea base de Carga</string>
     <string name="l10n_test_centre_screen_recalibrate_your_charge_baseline_018e3846">¿Recalibrar tu línea base de Carga?</string>

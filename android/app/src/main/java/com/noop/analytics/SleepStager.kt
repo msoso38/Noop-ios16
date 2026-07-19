@@ -2,6 +2,7 @@ package com.noop.analytics
 
 import com.noop.data.GravitySample
 import com.noop.data.HrSample
+import com.noop.data.PpgRespSample
 import com.noop.data.RespSample
 import com.noop.data.RrInterval
 import kotlin.math.abs
@@ -1690,6 +1691,48 @@ object SleepStager {
         // Reject estimates outside the canonical consumer band (NaN = "no usable estimate") so the
         // persisted value never silently disagrees with ReadinessEngine's plausibility gate. (#78)
         val median = HrvAnalyzer.median(perWindowRates)
+        return if (median in respPlausibleRangeBpm) median else nan
+    }
+
+    // --- Respiration rate from PPG (issue #103) — WHOOP5 v26 optical path ---
+
+    /** Minimum number of qualifying PPG bursts (see com.noop.protocol.PpgResp) required in-session
+     *  before trusting a PPG-derived respiratory rate at all — below this, too few bursts for a
+     *  stable top-third-by-confidence median. Tied to observed burst density (~20-25 bursts across a
+     *  full ~7-8h night in the 2 validated real captures, not a theoretical minimum) — tunable, not
+     *  sacred. Mirrors the Swift SleepStager.minPpgBurstsForEstimate. */
+    internal const val minPpgBurstsForEstimate = 9
+
+    /**
+     * APPROXIMATE respiratory rate (breaths/min) from the PPG-derived per-burst stream (issue #103,
+     * com.noop.protocol.PpgResp), for use ALONGSIDE respRateFromRR above — see AnalyticsEngine's
+     * prefer-PPG-else-RSA fusion, which tries this first per session and falls back to the RSA
+     * estimate when this returns NaN.
+     *
+     * Validated (n=2 real overnight captures against the WHOOP app's own reading) to land within
+     * 2-6%, vs. respRateFromRR's 6-11% low bias on the SAME nights — but that is thin evidence (one
+     * person, two nights, a person whose own respiratory rate barely moves night to night; see the
+     * #103 discussion), so treat this as a real quality-filtered signal, not a settled ground truth.
+     * v26 PPG coverage is a SPARSE minority of any given night (the strap alternates between v18 and
+     * v26 recording, never both at once), so this returns NaN far more often than respRateFromRR
+     * does — that is expected, not a bug; the fusion falls back to RSA in that case.
+     *
+     * Pipeline: filter samples to [start, end]; require >= minPpgBurstsForEstimate qualifying bursts
+     * else NaN (honest no-data, mirrors respRateFromRR's own too-little-data gate); take the top
+     * third by conf (floor division — a burst's conf is the DSP estimator's own spectral-prominence
+     * quality signal, not re-derived here); return the median of THEIR bpm, not a blend of every
+     * burst, since a low-confidence burst is more likely motion/off-wrist artifact than real
+     * respiratory signal. Mirrors the Swift SleepStager.respRateFromPpg value-for-value.
+     */
+    internal fun respRateFromPpg(samples: List<PpgRespSample>, start: Long, end: Long): Double {
+        val nan = Double.NaN
+        if (end <= start) return nan
+        val inWindow = samples.filter { it.ts in start..end }
+        if (inWindow.size < minPpgBurstsForEstimate) return nan
+        val topThird = inWindow.sortedByDescending { it.conf }.take(maxOf(1, inWindow.size / 3))
+        val median = HrvAnalyzer.median(topThird.map { it.bpm })
+        // Same canonical-band reject as respRateFromRR, so a fused value never silently disagrees
+        // with ReadinessEngine's plausibility gate regardless of which estimator produced it.
         return if (median in respPlausibleRangeBpm) median else nan
     }
 

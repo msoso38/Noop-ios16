@@ -180,6 +180,16 @@ object IntelligenceEngine {
         // OWN observed gravity + step density (see [WakeMotionRefinement]), so existing callers / tests
         // and any night too sparse to trust (e.g. a WHOOP 4.0) are unaffected either way.
         useMotionAwareWake: Boolean = false,
+        // Opt-in "PPG-derived respiratory rate diagnostic" flag (#103, Settings → Experimental). The
+        // analytics layer is Context-free, so the Context-aware caller (AppViewModel / WhoopBleClient)
+        // reads it off SharedPreferences (PuffinExperiment.ppgRespRate) and threads it down here: only
+        // when true does this pass the real ppgRespSample stream into analyzeDay, which computes it
+        // ALONGSIDE the shipped R-R/RSA estimate purely for a diagnostic comparison log line — it never
+        // overrides DailyMetric.respRateBpm or the illness-detection gate, which always reads RSA only.
+        // Default false keeps the comparison uncomputed; validated on only 2 real nights from one
+        // low-resp-variance subject, the exact single-stable-night trap the project's derived-biosignal
+        // standard warns about.
+        ppgRespRateEnabled: Boolean = false,
         // Sleep & Rest test-mode trace sink (Test Centre E5). The analytics layer is Context-free, so the
         // Context-aware caller (AppViewModel / WhoopBleClient) reads TestCentre.active(SLEEP) and passes a
         // non-null sink ONLY when the mode is on, routing each line to the .sleep-tagged strap log. null (the
@@ -227,8 +237,9 @@ object IntelligenceEngine {
         analyzeGate.withLock {
             val (out, healed) = analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
                 nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
-                recoveryEpoch, diag, useExperimentalSleepV2, useMotionAwareWake, sleepTraceSink, recoveryTraceSink,
-                stepsTraceSink, universalSink, workoutsTraceSink, hrvTraceSink, deepHrvWindow)
+                recoveryEpoch, diag, useExperimentalSleepV2, useMotionAwareWake, ppgRespRateEnabled,
+                sleepTraceSink, recoveryTraceSink, stepsTraceSink, universalSink, workoutsTraceSink,
+                hrvTraceSink, deepHrvWindow)
             if (healed == 0) out
             // #899 heal re-pass: the pass above deleted overlapping duplicate sleep sessions AFTER its days
             // were scored, and the read-side dedup those days consumed had no bank-recency witness (the fresh
@@ -237,8 +248,9 @@ object IntelligenceEngine {
             // are gone), so this can never loop. Mirrors the Swift pendingForcedRescore re-arm.
             else analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
                 nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
-                recoveryEpoch, diag, useExperimentalSleepV2, useMotionAwareWake, sleepTraceSink, recoveryTraceSink,
-                stepsTraceSink, universalSink, workoutsTraceSink, hrvTraceSink, deepHrvWindow).first
+                recoveryEpoch, diag, useExperimentalSleepV2, useMotionAwareWake, ppgRespRateEnabled,
+                sleepTraceSink, recoveryTraceSink, stepsTraceSink, universalSink, workoutsTraceSink,
+                hrvTraceSink, deepHrvWindow).first
         }
     }
 
@@ -301,6 +313,16 @@ object IntelligenceEngine {
         useExperimentalSleepV2: Boolean = false,
         // Opt-in motion-aware wake refinement (#364 follow-up), threaded the same way. Default false.
         useMotionAwareWake: Boolean = false,
+        // Opt-in "PPG-derived respiratory rate diagnostic" flag (#103, Settings → Experimental). The
+        // analytics layer is Context-free, so the Context-aware caller (AppViewModel / WhoopBleClient)
+        // reads it off SharedPreferences (PuffinExperiment.ppgRespRate) and threads it down here: only
+        // when true does this pass the real ppgRespSample stream into analyzeDay, which computes it
+        // ALONGSIDE the shipped R-R/RSA estimate purely for a diagnostic comparison log line — it never
+        // overrides DailyMetric.respRateBpm or the illness-detection gate, which always reads RSA only.
+        // Default false keeps the comparison uncomputed; validated on only 2 real nights from one
+        // low-resp-variance subject, the exact single-stable-night trap the project's derived-biosignal
+        // standard warns about.
+        ppgRespRateEnabled: Boolean = false,
         // Sleep & Rest test-mode trace sink (Test Centre E5). null = byte-identical default; when non-null
         // each scored day threads it into AnalyticsEngine.analyzeDay so detectSleep's gate trace + the Rest
         // sub-score line forward line-by-line to the .sleep-tagged strap log. Mirrors Swift.
@@ -472,6 +494,13 @@ object IntelligenceEngine {
             // #93: WHOOP 4.0 raw SpO2 PPG samples for the night; analyzeDay banks the nightly red/IR ADC
             // means on the DailyMetric. Empty on a 5/MG (no v24 spo2 channels) → the raw means stay null.
             val spo2 = repo.spo2Samples(owner, from, to, STREAM_LIMIT)
+            // #103: PPG-derived per-burst respiratory rate from the WHOOP 5.0 v26 optical buffer.
+            // analyzeDay NEVER lets this override DailyMetric.respRateBpm (always RSA, so the
+            // illness-detection gate never sees an estimator switch) — it only logs a comparison
+            // against RSA when both this array is non-empty AND the diagnostic trace is active. Gated
+            // behind ppgRespRateEnabled (default false) — validated on only 2 real nights from one
+            // low-resp-variance subject. The stream is still persisted unconditionally.
+            val ppgResp = if (ppgRespRateEnabled) repo.ppgRespSamples(owner, from, to, STREAM_LIMIT) else emptyList()
             // #938: the strap family that WROTE this owner's skin-temp rows, so analyzeDay converts the raw
             // register on the right scale (5/MG banks centidegrees, a WHOOP 4.0 v24 banks a raw ADC). The
             // owner source resolves it from the registry; unknown/non-WHOOP owners fall back to WHOOP5 (the
@@ -558,6 +587,7 @@ object IntelligenceEngine {
                 skinTempFamily = skinFamily,   // #938
                 skinTempAnchorRaw = skinAnchorRaw,   // #938 second capture: per-device worn anchor
                 spo2 = spo2,                   // #93
+                ppgResp = ppgResp,             // #103
                 profile = profile,
                 baselines = baselines1,
                 maxHROverride = maxHROverride,

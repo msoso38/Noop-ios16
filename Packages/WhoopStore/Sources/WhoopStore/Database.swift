@@ -552,6 +552,25 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "ts"])
             }
         }
+
+        // v28-ppg-resp-sample (#103): PPG-derived per-burst (~40s) respiratory rate DERIVED FROM the
+        // same WHOOP 5.0 v26 optical buffer the v27 `ppgWaveformSample` table above now stores raw and
+        // `ppgHrSample` (v12) reads for HR — three streams off one buffer, each in its own table. Same
+        // rationale as v12: never conflated with the strap's own resp_rate_raw (`respSample`,
+        // WHOOP4-only — the two never overlap on a given device). bpm is REAL and NOT rounded (unlike
+        // ppgHrSample's bpm, which rounds to whole HR) — respiratory-rate precision at ~14-15 bpm is
+        // the point. Additive only; no existing row touched. (Renumbered v26 → v27 → v28 as
+        // v26-efficiency-heal and then v27-ppg-waveform landed in the slot first — the #103 review's
+        // coordination note called this collision.)
+        migrator.registerMigration("v28-ppg-resp-sample") { db in
+            try db.create(table: "ppgRespSample") { t in
+                t.column("deviceId", .text).notNull()
+                t.column("ts", .integer).notNull()
+                t.column("bpm", .double).notNull()
+                t.column("conf", .double).notNull()
+                t.primaryKey(["deviceId", "ts"])
+            }
+        }
         return migrator
     }
 }
