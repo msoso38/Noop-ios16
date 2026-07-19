@@ -594,14 +594,16 @@ private func decodeWhoop5HistoricalV26(_ frame: [UInt8], fb: FieldBuilder) {
 ///     accelerometer at @28 / @228 / @428 and gyroscope at @640 / @840 / @1040 (200 B apart; countB @630 =
 ///     100). This is 6-axis IMU, not optical: the accel channels sphere-fit to a ~1 g gravity shell on a
 ///     stationary strap (validated by Whoop5RawImu over 1423 real buffers, #423/#493).
-///   • v20 (2140 B): five channel blocks, each preceded by a presence byte (0x19 = active, 0x00 =
-///     empty / zero-filled); an active block holds two 50-sample i32 channels. The presence bytes sit at
-///     @0x1a / @0x1c0 / @0x366 / @0x50c / @0x6b2; the ten channel slots start at
-///     @0x2f / 0xf7 / 0x1d5 / 0x29d / 0x37b / 0x443 / 0x521 / 0x5e9 / 0x6c7 / 0x78f.
+///   • v20 (2140 B): five repeated 422-byte optical-measurement blocks. Each has a 21-byte header,
+///     two 200-byte channel slots, and one reserved byte. Header byte 0 is the shared sample count; an
+///     active block holds two 25-sample i32 channels (~25 Hz). The two channels share one measurement
+///     header and must not be interpreted as two wavelengths. See `Whoop5RawOptical` for the lossless
+///     structural model and the 25-vs-50 sample-count evidence.
 ///
-/// v21 channels are named accel_/gyro_ per the gravity-shell evidence above; v20 sensor identity is still
-/// OPEN (no labelled/moving v20 capture in the tree) so its channels stay neutrally named. Both are exposed
-/// as raw i16 sample arrays with no scale applied here — Whoop5RawImu.decode applies the physical scales.
+/// v21 channels are named accel_/gyro_ per the gravity-shell evidence above. The v20 record is optical,
+/// but its measurement wavelengths and channel geometry remain OPEN, so those channels stay neutrally
+/// named. This layer exposes raw i16 (v21) or sign-extended i32 (v20) arrays; `Whoop5RawImu.decode`
+/// applies the v21 physical scales.
 private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, version: Int, payloadEnd: Int?) {
     if frame.count > 10 {
         fb.add(10, 1, "layout_marker", "meta", value: .int(Int(frame[10])))
@@ -638,28 +640,42 @@ private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, ver
         fb.parsed["sensor_channel_samples"] = .int(100)
         return
     }
-    // version == 20: five blocks of two 50-sample i32 channels, each block gated by a presence byte.
-    let blocks: [(present: Int, ch0: Int, ch1: Int)] = [
-        (0x1a, 0x2f, 0xf7), (0x1c0, 0x1d5, 0x29d), (0x366, 0x37b, 0x443),
-        (0x50c, 0x521, 0x5e9), (0x6b2, 0x6c7, 0x78f),
-    ]
+    // version == 20: five repeated optical-measurement blocks. Each block carries one shared header and
+    // two channel slots. This matters semantically: the two channels within a block are a detector/readout
+    // pair for one measurement configuration, not evidence for two different LED wavelengths.
+    //
+    // EVIDENCE (why 25, not 50): across all 29,203 captured 2140-B buffers, exactly blocks 0/3/4 are active
+    // (channel slots @47/247/1313/1513/1735/1935) and, in every active channel, sample slots 25..49 are
+    // exactly 0.0 — only samples 0..24 carry data. Earlier builds read 50 and emitted arrays that were half
+    // zeros. The block-header byte itself reads 0x19 = 25 on every active block, consistent with a live
+    // per-block sample count. Each sample is a 4-byte LE container holding a 20-bit signed value (its upper
+    // 12 bits are only ever 0x000/0xFFF — pure sign extension — across all captures), so reading it as i32
+    // recovers the correct signed magnitude with no masking.
+    //
+    // Wavelength identity remains open. The six active channels in the current corpus are three pairs
+    // (blocks 0/3/4), not six independent colors. In particular, block 4's two channels cannot be named
+    // IR and red without independent evidence because they share the same block-level configuration.
+    guard let optical = Whoop5RawOptical.decode(frame) else { return }
+    fb.parsed["sensor_block_count"] = .int(optical.blocks.count)
     var present = 0
-    for (b, blk) in blocks.enumerated() {
-        guard frame.count > blk.present, frame[blk.present] != 0 else { continue }
-        for (half, start) in [(0, blk.ch0), (1, blk.ch1)] {
-            var samples: [Int] = []
-            for i in 0..<50 {
-                guard let v = readI32(frame, start + i * 4) else { break }
-                samples.append(v)
-            }
-            if samples.count == 50 {
-                fb.add(start, 200, "channel_b\(b)_\(half)", "sensor", value: .intArray(samples),
-                       note: "raw i32 channel samples (no absolute unit)")
-                present += 1
-            }
+    for block in optical.blocks {
+        let start = Whoop5RawOptical.blockStart + block.index * Whoop5RawOptical.blockLength
+        fb.add(start, Whoop5RawOptical.headerLength, "block_b\(block.index)_header", "optical_config",
+               value: .intArray(block.rawHeader.map(Int.init)),
+               note: "raw: sample count + shared metadata + two 7-byte channel descriptors")
+        fb.parsed["block_b\(block.index)_sample_count"] = .int(block.sampleCount)
+        guard block.sampleCount > 0 else { continue }
+        for (channelIndex, channel) in block.channels.enumerated() {
+            let sampleStart = start + Whoop5RawOptical.headerLength
+                + channelIndex * Whoop5RawOptical.channelSlotLength
+            fb.add(sampleStart, block.sampleCount * 4,
+                   "channel_b\(block.index)_\(channelIndex)", "sensor",
+                   value: .intArray(channel.samples.map(Int.init)),
+                   note: "raw signed i32 samples; paired under one block config; no wavelength or absolute unit asserted")
+            present += 1
         }
     }
-    fb.parsed["sensor_channel_samples"] = .int(50)
+    fb.parsed["sensor_channel_samples"] = .int(optical.blocks.map(\.sampleCount).max() ?? 0)
     fb.parsed["sensor_channels_present"] = .int(present)
 }
 

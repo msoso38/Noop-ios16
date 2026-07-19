@@ -44,6 +44,7 @@ import com.noop.ingest.HealthConnectWriter
 import com.noop.ingest.LiftingImporter
 import com.noop.notif.IllnessAlertNotifier
 import com.noop.notif.ScheduledReportNotifier
+import com.noop.notif.StrainTargetNotifier
 import com.noop.notif.ScheduledReportPolicy
 import com.noop.notif.scorePctOrNull
 import com.noop.protocol.CommandNumber
@@ -646,10 +647,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     if (todayRow.totalSleepMin != null) {
                         ScheduledReportNotifier.onMorning(
                             context = appContext,
+                            // Key the once-per-recap gate on the banked NIGHT's day, not the calendar day —
+                            // otherwise the midnight rollover re-fires last night's recap for late-nighters (#567).
+                            reportDay = todayRow.day,
                             chargePct = todayRow.recovery.scorePctOrNull(),
                             restPct = RestScorer.restFromDaily(todayRow).scorePctOrNull(),
                         )
                     }
+                    // #593: once-a-day optimal-strain-reached nudge. Convert the stored 0-100 Effort to the
+                    // 0-21 coupled axis with the SHIPPED formatter (so it matches every Effort read-out), and
+                    // gate against the LOW end of today's recovery-derived optimal band (#43). The notifier's
+                    // persisted day gate makes this safe to fire on every republish; null recovery (calibrating)
+                    // yields a null band → no target → no notification.
+                    StrainTargetNotifier.onStrainTarget(
+                        context = appContext,
+                        day = todayRow.day,
+                        dayStrain21 = todayRow.strain?.let { UnitFormatter.effortValue(it, EffortScale.WHOOP) },
+                        target21 = optimalStrainRange(todayRow.recovery)?.low,
+                    )
                 }
                 // v5 skin-temp suite: run the Cycle / Body-clock / Illness-heads-up engines over the same
                 // cached history and publish their RESULTS for the Health hub. The richer IllnessSignalEngine
@@ -892,12 +907,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         autoReconnectOnLaunch()
     }
 
-    /** Push the persisted #477 Power-saving prefs to the BLE client. The offload-cadence stretch uses the
-     *  battery-% threshold (0 = off when the master is off); the HRV pause is its own Battery-Saver toggle.
-     *  The riskier connection-priority idle throttle is deliberately NOT exposed here — it stays dormant
-     *  pending on-strap validation (#478). */
+    /** Push the persisted BLE-behaviour prefs to the client. The #477 Power-saving levers: the
+     *  offload-cadence stretch uses the battery-% threshold (0 = off when the master is off); the HRV pause
+     *  is its own Battery-Saver toggle. The riskier connection-priority idle throttle is deliberately NOT
+     *  exposed here — it stays dormant pending on-strap validation (#478). Also pushes the independent
+     *  #533 "Faster history sync" experiment (its own toggle, NOT gated on the Power-saving master: it is a
+     *  sync-speed lever, not a power-saving one). */
     private fun applyPowerSaving() {
         val on = NoopPrefs.powerSaving(appContext)
+        // #533: the SAFE half of #477's connection-priority management shipped fully implemented but
+        // DORMANT — nothing ever called this, so refreshConnectionPriority early-returned and EVERY
+        // historical offload ran at the stack default. Behind the experimental toggle it escalates to HIGH
+        // for the bounded offload burst (faster backlog drain). The RISKY idle→LOW_POWER half stays at 0
+        // (still dormant, #478), and live-HR does not escalate (see WhoopBleClient.escalateForLiveHr) —
+        // realtimeArmed covers the overnight capture window, which would otherwise hold HIGH for hours.
+        ble.setConnectionPriorityManagement(
+            enabled = NoopPrefs.fastHistorySync(appContext),
+            idleThrottleBatteryPct = 0,
+        )
+        // #533: the second, orthogonal sync-speed lever — prefer LE 2M around the offload burst. Also
+        // independent of the Power-saving master, and its own toggle so a field report can tell the two
+        // apart (they have opposite battery profiles). No-op unless on.
+        ble.setFastLinkPhy(NoopPrefs.fastLinkPhy(appContext))
         ble.setLowBatteryOffloadThrottle(if (on) NoopPrefs.powerSavingBatteryPct(appContext) else 0)
         // HRV pause is a sub-option: only effective while the master is on (defaults on when it is), and
         // now battery-%-aware like the offload lever — pass the same threshold.
@@ -922,6 +953,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Flip "Pause HRV capture in Battery Saver" (Settings). Persists + applies immediately. */
     fun setPauseHrvOnPowerSave(enabled: Boolean) {
         NoopPrefs.setPauseHrvOnPowerSave(appContext, enabled)
+        applyPowerSaving()
+    }
+
+    /** Flip the experimental "Faster history sync" (#533). Persists + applies immediately, so the next
+     *  offload burst uses the new priority without waiting for a reconnect. */
+    fun setFastHistorySync(enabled: Boolean) {
+        NoopPrefs.setFastHistorySync(appContext, enabled)
+        applyPowerSaving()
+    }
+
+    /** Flip the experimental LE 2M PHY preference (#533). Persists + pushes it to the client; it applies
+     *  at the next offload burst, and switching it off releases an already-2M link back to 1M. */
+    fun setFastLinkPhy(enabled: Boolean) {
+        NoopPrefs.setFastLinkPhy(appContext, enabled)
         applyPowerSaving()
     }
 
@@ -1276,6 +1321,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         rescoreAfterEdit()
     }
 
+    /** Re-open one deliberately deleted sleep window (#515): remove its durable tombstone first, then
+     *  immediately run the normal detector/scorer over the stored raw data. Unlike optimistic edits, this
+     *  returns false when the marker could not be removed — rescoring while it is still present would keep
+     *  suppressing the night and make a successful-looking button a no-op. */
+    suspend fun recomputeDeletedSleep(marker: com.noop.data.DismissedSleep): Boolean {
+        val cleared = runCatching {
+            repository.allowSleepReDetection(marker.deviceId, marker.startTs)
+        }.isSuccess
+        if (!cleared) return false
+        rescoreAfterEdit()
+        return true
+    }
+
     /** Manually add a missed nap as its OWN session (#508) — staged from raw, written under the computed
      *  source with userEdited=true so the recompute guard keeps it and it's never folded into main sleep —
      *  then re-score the affected day immediately so the day's aggregates pick up the new session, matching
@@ -1610,6 +1668,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Send one WHOOP 4.0 reboot-probe candidate (Test Centre → Connection, 4.0 only). Confirmation-gated
      *  in DevicesScreen; finds the real 4.0 reboot frame when the production one is ignored (#235). */
     fun rebootProbe(variant: com.noop.protocol.RebootProbeVariant) = ble.rebootProbe(variant)
+
+    /** #592 opcode probe: read-only GET_EXTENDED_BATTERY_INFO(98) with a full raw-response dump to the
+     *  strap log. Confirmation-gated in DevicesScreen (Test Centre → Connection); settles the disputed
+     *  battery-info opcode (98 vs an APK decompile's 87) from a normal strap-log export. */
+    fun probeExtendedBatteryInfo() = ble.probeExtendedBatteryInfo()
+
+    /** #592 probe result text (null until a reply lands; " waiting" sentinel while in flight). */
+    val extendedBatteryProbe = ble.extendedBatteryProbe
+
+    fun clearExtendedBatteryProbe() = ble.clearExtendedBatteryProbe()
 
     /**
      * Flip the "keep connected in the background" preference (driven by Settings). Turning it on

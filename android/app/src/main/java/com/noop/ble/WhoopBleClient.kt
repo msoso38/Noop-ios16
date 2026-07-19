@@ -119,6 +119,10 @@ data class LiveState(
      *  [withRRIntervals]; emptied by [clearedBiometrics]. Twin of macOS LiveState.rrRecent (PR#191). */
     val rrRecent: List<Int> = emptyList(),
     val batteryPct: Double? = null,
+    /** Strap battery pack VOLTAGE (mV), decoded from the ~8-min BATTERY_LEVEL event (mv@21/@25) and the
+     *  GET_EXTENDED_BATTERY_INFO response (#592). Shown on the Devices card as a "x.xx V" readout beside
+     *  the percent. null until the first battery event lands. */
+    val batteryMv: Int? = null,
     /** Strap firmware version captured during the connect handshake: WHOOP 4.0 reports `fw_harvard`
      *  (a.b.c.d) via REPORT_VERSION_INFO, WHOOP 5/MG reports `fw_version` via GET_HELLO. Shown on the
      *  Devices card. Null until the handshake response decodes. The Swift WhoopProtocol decodes the
@@ -281,6 +285,11 @@ interface GattOps {
     /** Request a GATT connection priority (battery, #477). Mirrors `BluetoothGatt`'s boolean contract;
      *  the stack no-ops a request equal to the current interval. */
     fun requestConnectionPriorityCompat(priority: Int): Boolean
+
+    /** Ask the controller to prefer a PHY for this link (#533). Mirrors `BluetoothGatt.setPreferredPhy`,
+     *  which is VOID and fire-and-forget: the real outcome arrives on `onPhyUpdate`, and the peer can
+     *  decline. Masks (not single values) so the controller may fall back. API 26 = our minSdk. */
+    fun setPreferredPhyCompat(txPhy: Int, rxPhy: Int, phyOptions: Int)
 }
 
 /**
@@ -332,6 +341,8 @@ class RealGattOps(private val gatt: BluetoothGatt) : GattOps {
     override fun readRemoteRssiCompat(): Boolean = gatt.readRemoteRssi()
     override fun discoverServicesCompat(): Boolean = gatt.discoverServices()
     override fun requestConnectionPriorityCompat(priority: Int): Boolean = gatt.requestConnectionPriority(priority)
+    override fun setPreferredPhyCompat(txPhy: Int, rxPhy: Int, phyOptions: Int) =
+        gatt.setPreferredPhy(txPhy, rxPhy, phyOptions)
 }
 
 class WhoopBleClient(
@@ -495,6 +506,45 @@ class WhoopBleClient(
          *  (battery % moves slowly, so a boundary crossing flips at most once per point). */
         fun idleThrottleActive(batteryPct: Int, charging: Boolean, thresholdPct: Int): Boolean =
             thresholdPct > 0 && !charging && batteryPct <= thresholdPct
+
+        /** #533: whether flipping an experimental link lever from [wasEnabled] to [nowEnabled] must RELEASE
+         *  what it changed. Shared by BOTH levers — the connection-priority escalation and the 2M PHY
+         *  preference — hence the neutral name; each applies its own release.
+         *
+         *  ONLY the on→off edge does: both apply-paths early-return once disabled, so without an explicit
+         *  release a link left pinned at HIGH (or at 2M) would stay there until the next reconnect — and a
+         *  user switching an experiment off *because* it hurt would keep paying for it. Enabling, or
+         *  re-applying while already off (every launch on the default), must issue no request at all. */
+        fun releasesOnDisable(wasEnabled: Boolean, nowEnabled: Boolean): Boolean =
+            wasEnabled && !nowEnabled
+
+        /** #533: the PHY mask to ask the controller for. NOOP has never called `setPreferredPhy`, so every
+         *  offload has run on the 1M PHY. LE 2M doubles the symbol rate, which for a bulk transfer means the
+         *  SAME bytes spend HALF the air-time — unlike the connection-interval lever above it should cost
+         *  LESS radio energy per byte, not more. The two are orthogonal and stack.
+         *
+         *  Always a MASK INCLUDING 1M, never 2M alone: this is a preference, and leaving 1M in it lets the
+         *  controller fall back rather than cling to a 2M link that has gone marginal (2M trades range for
+         *  speed). Off → plain 1M, byte-for-byte today's link. The peer still has the final say, and
+         *  `onPhyUpdate` reports what was actually negotiated.
+         *
+         *  Android-only by necessity, exactly like [connectionPriorityFor]: CoreBluetooth exposes no
+         *  app-side PHY API — Apple's stack negotiates the PHY itself and gives apps no say — so there is
+         *  no Swift twin. A deliberate platform divergence, not a parity gap. (It also makes iOS/macOS a
+         *  useful control: their link parameters are chosen for them, so a Mac draining a backlog faster
+         *  than Android would show the strap is not the bottleneck.) */
+        fun preferredPhyMask(fastLinkEnabled: Boolean): Int =
+            if (fastLinkEnabled) BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK
+            else BluetoothDevice.PHY_LE_1M_MASK
+
+        /** Human-readable PHY for the strap log (#533). `onPhyUpdate` reports a PHY_LE_* VALUE (1/2/3),
+         *  not the *_MASK constants used to request one — don't compare the two. */
+        fun phyLabel(phy: Int): String = when (phy) {
+            BluetoothDevice.PHY_LE_1M -> "1M"
+            BluetoothDevice.PHY_LE_2M -> "2M"
+            BluetoothDevice.PHY_LE_CODED -> "coded"
+            else -> "unknown($phy)"
+        }
 
         /** Stretched periodic-offload interval while the STRAP is low on battery (#477). The offload tick
          *  is a PURE sync timer (the live-stream keep-alive is separate), so stretching it can't affect
@@ -918,9 +968,122 @@ class WhoopBleClient(
         fun dataRangeOldestUnix(frame: ByteArray): Long? = com.noop.protocol.DataRange.oldestUnix(frame)
 
         /** #364 auto-continue cap: consecutive immediate re-kicks per connection before falling back to
-         *  the 900s periodic timer. 6 × ~60s ≈ 6 min of back-to-back draining without letting a
-         *  misbehaving strap monopolise Bluetooth. Mirrors Swift BackfillContinuation.defaultMaxAutoContinues. */
-        const val MAX_AUTO_CONTINUES = 6
+         *  the 900s periodic timer. Guards 1-3 in [shouldAutoContinue] (healthy link, genuine backlog,
+         *  advancing trim, plus the #928/#1012 future-clock exclusion) already stop the pathological cases;
+         *  this cap is only the backstop against a strap that advances its trim but never advances OUR
+         *  frontier (a data-shape spin). #533: at 6, a WELL-BEHAVED deep backlog hit the cap and got
+         *  throttled to the 15-min floor mid-drain (~9s bursts, 15-20 min apart, 95% waiting), so recent
+         *  nights landed hours after waking (which surfaced as a false sleep-detection bug in #515). Raised
+         *  so a typical deep backlog drains in ONE connection: 24 productive passes (~10-15s each) ≈ a few
+         *  minutes of back-to-back draining; the ~24-min backstop only ever bites the rare data-shape spin.
+         *  Mirrors Swift BackfillContinuation.defaultMaxAutoContinues. TUNABLE — needs on-strap validation. */
+        /** #592: sentinel value of [extendedBatteryProbe] between sending the probe and its reply landing. */
+        const val WAITING_EXTENDED_BATTERY_PROBE = "__waiting__"
+
+        /** #592: how long to wait for a probe COMMAND_RESPONSE before treating silence as "no reply". */
+        const val EXTENDED_BATTERY_PROBE_TIMEOUT_MS = 8_000L
+
+        /** #592: persisted previous extended-battery payload hex, so a new capture can diff against it. */
+        private const val KEY_592_PREV_PAYLOAD = "noop.592.prevPayload"
+
+        /**
+         * #592: format a GET_EXTENDED_BATTERY_INFO COMMAND_RESPONSE into a clean, readable, copyable report
+         * (verdict, full raw hex, an offset-labelled payload hex grid, the decoded voltage, and a per-byte
+         * diff vs [prevPayloadHex]). Pure + deterministic so it's unit-tested without a strap. Returns the
+         * display text and the payload hex to persist for the next capture's diff (null when there's no
+         * decodable payload). [cmdOff] is the response-command byte offset (6 on WHOOP4, 10 on 5/MG); the
+         * 4-byte CRC32 trailer both families carry is excluded from the payload.
+         */
+        internal fun formatExtendedBatteryProbe(
+            frame: ByteArray,
+            cmdOff: Int,
+            isWhoop5: Boolean,
+            prevPayloadHex: String?,
+        ): Pair<String, String?> {
+            val fam = if (isWhoop5) "WHOOP 5/MG" else "WHOOP 4.0"
+            val payStart = cmdOff + 1
+            val payEnd = frame.size - 4
+            val hasPayload = payEnd > payStart
+            val pay = if (hasPayload) frame.copyOfRange(payStart, payEnd) else ByteArray(0)
+
+            // 5/MG replies carry an explicit result code @12 (0 FAILURE / 1 SUCCESS / 2 PENDING /
+            // 3 UNSUPPORTED — 3 is the MG's hardware-confirmed rejection code, #48).
+            val resultCode = if (isWhoop5 && frame.size > 12) frame[12].toInt() and 0xFF else null
+            val resultLabel = when (resultCode) {
+                0 -> "FAILURE"; 1 -> "SUCCESS"; 2 -> "PENDING"; 3 -> "UNSUPPORTED"
+                null -> null; else -> "result$resultCode"
+            }
+            val verdict = when {
+                resultCode == 3 -> "opcode 98 REJECTED by firmware (UNSUPPORTED) — evidence for the decompile's 87"
+                hasPayload -> "opcode 98 ACCEPTED — ${pay.size}-byte payload"
+                else -> "opcode 98 answered with a bare stub — ambiguous"
+            }
+
+            val sb = StringBuilder()
+            sb.append("#592 EXTENDED-BATTERY PROBE — ").append(fam).append('\n')
+            sb.append("Verdict: ").append(verdict).append('\n')
+            if (resultLabel != null) sb.append("Result code @12: ").append(resultLabel).append('(').append(resultCode).append(")\n")
+            // Full raw hex on ONE line so it copies cleanly for sharing.
+            sb.append("\nRaw frame (").append(frame.size).append(" B):\n")
+            sb.append(frame.joinToString("") { "%02x".format(it) }).append('\n')
+
+            var payloadHex: String? = null
+            if (hasPayload) {
+                payloadHex = pay.joinToString("") { "%02x".format(it) }
+                sb.append("\nPayload (").append(pay.size).append(" B, CRC excluded):\n")
+                sb.append(hexGrid(pay))
+                // NOOP's decoder reads the pack voltage at payload bytes 7..8 (LE) — but that offset is only
+                // confirmed on WHOOP 4.0 (the 5/MG response to 98 is an undecoded stub, #592), so DON'T print
+                // a decoded voltage for 5/MG where it'd be a guess presented as fact; the raw grid stands.
+                if (!isWhoop5 && pay.size >= 9) {
+                    val mv = (pay[7].toInt() and 0xFF) or ((pay[8].toInt() and 0xFF) shl 8)
+                    sb.append("\nVoltage: ").append("%.2f V".format(java.util.Locale.US, mv / 1000.0))
+                        .append("  (mV=").append(mv).append(" @07) — the field NOOP already reads\n")
+                }
+                // Per-byte diff vs the previous capture — the field-mapping signal.
+                sb.append('\n')
+                if (prevPayloadHex != null && prevPayloadHex.length == payloadHex.length) {
+                    val prev = prevPayloadHex.chunked(2).map { it.toInt(16) }
+                    val deltas = StringBuilder()
+                    for (i in pay.indices) {
+                        val a = prev[i]
+                        val b = pay[i].toInt() and 0xFF
+                        if (a != b) deltas.append(" @%02d:%02x→%02x".format(i, a, b))
+                    }
+                    if (deltas.isEmpty()) {
+                        sb.append("Δ vs previous capture: identical — re-probe at a different % / after wear to expose the fields")
+                    } else {
+                        sb.append("Δ vs previous capture:").append(deltas).append('\n')
+                        sb.append("(a byte tracking battery % = SoC/capacity; drifting with wear = temperature; only ever climbing = cycle count)")
+                    }
+                } else {
+                    sb.append("Δ vs previous capture: first capture — probe again at another battery % to diff")
+                }
+            } else {
+                sb.append("\nNo payload beyond the command byte (bare stub) — no data over the battery event; ")
+                sb.append("opcode 98 may be an unknown-command ack on this firmware")
+            }
+            return sb.toString() to payloadHex
+        }
+
+        /** Offset-labelled hex grid, 8 bytes per row ("  @00  0d 01 …"), for the #592 payload dump. */
+        private fun hexGrid(bytes: ByteArray): String {
+            val sb = StringBuilder()
+            var i = 0
+            while (i < bytes.size) {
+                sb.append("  @%02d ".format(i))
+                var j = i
+                while (j < minOf(i + 8, bytes.size)) {
+                    sb.append(" %02x".format(bytes[j]))
+                    j++
+                }
+                sb.append('\n')
+                i += 8
+            }
+            return sb.toString()
+        }
+
+        const val MAX_AUTO_CONTINUES = 24
 
         /** #364 "more backlog remains" margin (seconds): how far ahead the strap must be of our persisted
          *  data frontier before we treat it as behind, not clock noise. Matches the Swift
@@ -991,8 +1154,8 @@ class WhoopBleClient(
          * #1012: a FUTURE-dated [strapNewestTs] (more than [futureSkewSeconds] past the wall clock, #928)
          * not only nulls guard 2a — it also STOPS guard 2b. A future-clock strap banks future-dated
          * records, so the rows it hands over are future-timestamped too and "real rows persisted" is no
-         * evidence of genuine backlog; 2b would chase the future-dated range through the whole cap (six
-         * back-to-back passes, each to its idle timeout — the reported ~15-min sync). The stale/PAST-epoch
+         * evidence of genuine backlog; 2b would chase the future-dated range through the whole cap (every
+         * consecutive pass back-to-back, each to its idle timeout — the reported ~15-min sync). The stale/PAST-epoch
          * case 2b actually exists for (#451) reads BEHIND the frontier, never future-dated, so it is
          * untouched.
          */
@@ -1023,8 +1186,8 @@ class WhoopBleClient(
             // #1012: a future-dated newest also gates 2b, not just 2a. A strap whose clock is set ahead
             // (#928) BANKED future-dated records, so the rows this session persisted are themselves
             // future-timestamped — "real rows" is NOT evidence of genuine backlog there, and 2b used to
-            // chase the future-dated range through the whole cap (six back-to-back passes, each run to
-            // its idle timeout: the reported ~15-min sync). Stop after this single pass; the periodic
+            // chase the future-dated range through the whole cap (every consecutive pass back-to-back,
+            // each run to its idle timeout: the reported ~15-min sync). Stop after this single pass; the periodic
             // floor keeps draining across connects, restoring the pre-#928 single-pass behaviour. The
             // stale/PAST-epoch case 2b exists for (#451) reads BEHIND the frontier, never future-dated,
             // so it falls through untouched below.
@@ -1122,6 +1285,11 @@ class WhoopBleClient(
      *  auto-connecting. Cleared at the start of each [scanForWhoops]. Empty/unused on the default path. */
     val discoveredWhoops: StateFlow<List<DiscoveredWhoop>> = _discoveredWhoops.asStateFlow()
 
+    // #592 extended-battery probe result text (raw hex + payload triage), null until a probe reply lands.
+    // Drives the Devices result dialog so a capture is readable/copyable without a full log export.
+    private val _extendedBatteryProbe = MutableStateFlow<String?>(null)
+    val extendedBatteryProbe: StateFlow<String?> = _extendedBatteryProbe.asStateFlow()
+
     private val _connectedPeripheralAddress = MutableStateFlow<String?>(null)
     /** The BLE address of the strap currently connected, or null when disconnected. Twin of macOS
      *  BLEManager.connectedPeripheralUUID — drives SourceCoordinator's first-connect identity adoption. */
@@ -1195,12 +1363,101 @@ class WhoopBleClient(
      *  half only). The Settings picker offers 10/15/20/25/30. */
     @Volatile private var idleThrottleBatteryPct: Int = 0
 
+    /** #533: also escalate to HIGH for the LIVE-HR stream, not just the offload burst. DEFAULT OFF, and
+     *  deliberately so: [realtimeArmed] is true for the whole OVERNIGHT continuous-HRV window (22:00–07:00
+     *  by default via [continuousCaptureWantsNow]), NOT just while a Live screen is open. Escalating it
+     *  would hold an ~11.25 ms interval for hours to carry a 1 Hz HR/RR stream that BALANCED already
+     *  serves — a sustained drain on both strap and phone for no throughput gain. The offload burst is the
+     *  opposite: bounded (HISTORY_COMPLETE / idle timeout) and bandwidth-hungry, so escalating it moves the
+     *  same bytes in LESS radio-on wall-clock. Kept as a knob rather than deleted because the opt-in R22
+     *  deep-buffer capture IS high-rate and is the one live case that could legitimately want HIGH. */
+    @Volatile private var escalateForLiveHr: Boolean = false
+
     /** Opt into connection-priority management (#477). No-op by default; see the fields above.
-     *  [idleThrottleBatteryPct] 0 disables the risky idle throttle (safe half only). */
-    fun setConnectionPriorityManagement(enabled: Boolean, idleThrottleBatteryPct: Int) {
+     *  [idleThrottleBatteryPct] 0 disables the risky idle throttle (safe half only).
+     *  [escalateForLiveHr] false keeps the escalation to the bounded offload burst (#533). */
+    fun setConnectionPriorityManagement(
+        enabled: Boolean,
+        idleThrottleBatteryPct: Int,
+        escalateForLiveHr: Boolean = false,
+    ) {
+        val wasEnabled = connectionPriorityEnabled
         connectionPriorityEnabled = enabled
         this.idleThrottleBatteryPct = if (enabled) idleThrottleBatteryPct else 0
-        handler.post { refreshConnectionPriority() }
+        this.escalateForLiveHr = enabled && escalateForLiveHr
+        handler.post {
+            // #533: switching the experiment OFF must UNDO a live escalation, not merely stop future ones.
+            // [refreshConnectionPriority] early-returns on !connectionPriorityEnabled, so without this a
+            // link currently pinned at HIGH would STAY there until the next reconnect — a user turning the
+            // toggle off *because* of battery would keep paying for it, potentially for hours on a
+            // background connection. Only fires on a real on→off edge; enabling (or a no-op re-apply while
+            // already off) never issues a stray request. See [releasesOnDisable].
+            if (releasesOnDisable(wasEnabled, enabled)) releaseConnectionPriority()
+            else refreshConnectionPriority()
+        }
+    }
+
+    /** #533: hand the link back to the stack default (BALANCED) when connection-priority management is
+     *  switched off, undoing any escalation still in force. Same swallow-don't-teardown policy as
+     *  [refreshConnectionPriority]: a priority hint must never drop the link. */
+    private fun releaseConnectionPriority() {
+        val ops = gattOps ?: return
+        try {
+            ops.requestConnectionPriorityCompat(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+        } catch (t: Throwable) {
+            log("connection-priority release failed (${t.javaClass.simpleName}); skipped")
+        }
+    }
+
+    /** #533 (EXPERIMENTAL, default off): ask for the LE 2M PHY around the historical offload. See
+     *  [preferredPhyMask]. Requested at offload START rather than on connect ON PURPOSE: the connect
+     *  handshake is fragile — an extra GATT op before `requestMtu` can make it return false, which skips
+     *  the MTU bump and caps the very offload this is trying to speed up (#85/#50). The offload burst is
+     *  where the throughput matters anyway, and PHY is a link-level setting that persists once negotiated. */
+    @Volatile private var fastLinkPhyEnabled: Boolean = false
+
+    /** Opt into the experimental LE 2M PHY preference (#533). No-op by default; applied at the next offload.
+     *
+     *  Turning it OFF hands the link back to 1M rather than merely stopping future offloads from asking for
+     *  2M. A PHY PERSISTS once negotiated, so without this an already-2M link would stay 2M until the next
+     *  reconnect — and this toggle's own copy tells the user to switch it off if syncing goes flaky at
+     *  range, which is exactly the case where 2M is the suspect. Reuses [releasesOnDisable]'s
+     *  edge rule, so the default path (re-applying `false` while already off, every launch) issues ZERO
+     *  BLE ops. */
+    fun setFastLinkPhy(enabled: Boolean) {
+        val wasEnabled = fastLinkPhyEnabled
+        fastLinkPhyEnabled = enabled
+        if (releasesOnDisable(wasEnabled, enabled)) handler.post { releasePreferredPhy() }
+    }
+
+    /** #533: ask the controller to prefer 2M for this link (mask always includes 1M so it can fall back).
+     *  Fire-and-forget — `setPreferredPhy` is void and the peer may decline; `onPhyUpdate` logs the PHY
+     *  actually negotiated, which is also how we learn whether WHOOP supports 2M at all. Swallows throws
+     *  like the connection-priority hint: a PHY preference must never tear the link down. No-op when off,
+     *  so the default path issues ZERO extra BLE ops. */
+    private fun applyPreferredPhy() {
+        if (!fastLinkPhyEnabled) return
+        val ops = gattOps ?: return
+        val mask = preferredPhyMask(true)
+        try {
+            ops.setPreferredPhyCompat(mask, mask, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
+            log("Offload: requested LE 2M PHY preference (#533)")
+        } catch (t: Throwable) {
+            log("preferred-PHY request failed (${t.javaClass.simpleName}); skipped")
+        }
+    }
+
+    /** #533: ask the controller back down to 1M when the experiment is switched off, undoing a 2M link
+     *  still in force. Swallows throws like [applyPreferredPhy]. */
+    private fun releasePreferredPhy() {
+        val ops = gattOps ?: return
+        val mask = preferredPhyMask(false)
+        try {
+            ops.setPreferredPhyCompat(mask, mask, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
+            log("Offload: released the LE 2M PHY preference — back to 1M (#533)")
+        } catch (t: Throwable) {
+            log("preferred-PHY release failed (${t.javaClass.simpleName}); skipped")
+        }
     }
 
     /** Battery-% at/below which the periodic offload cadence stretches to
@@ -1266,7 +1523,10 @@ class WhoopBleClient(
         // published LiveState mirror, which `exitBackfilling` may update a beat later.
         val priority = connectionPriorityFor(
             offloadActive = backfilling,
-            liveHrActive = realtimeArmed,
+            // #533: gated — the live stream does NOT escalate by default. See [escalateForLiveHr]: the
+            // overnight continuous-HRV window keeps this armed for hours, and a 1 Hz stream gains nothing
+            // from HIGH. The offload burst below is the case that actually wants the shorter interval.
+            liveHrActive = realtimeArmed && escalateForLiveHr,
             idleThrottleEnabled = idleThrottle,
         )
         // Deliberately NOT via safeGatt: a battery HINT must never tear the link down. safeGatt's policy
@@ -2245,6 +2505,10 @@ class WhoopBleClient(
                 // below. NOT hardware-confirmed on 5/MG — rebootStrap() logs the COMMAND_RESPONSE so a strap
                 // log confirms whether the frame is accepted. User-initiated + confirmation-gated only.
                 cmd != CommandNumber.REBOOT_STRAP &&
+                // GET_EXTENDED_BATTERY_INFO (98) over puffin: read-only opcode probe (#592) — a real
+                // WHOOP 5 (fw 50.38.1.0) already answered this number, proving the frame is at least
+                // accepted. Driven only by probeExtendedBatteryInfo() (user-initiated, Test Centre gated).
+                cmd != CommandNumber.GET_EXTENDED_BATTERY_INFO &&
                 // SET_CONFIG (the R22 deep-stream unlock) is allowed ONLY while the deep-data experiment
                 // is opted in — it writes a persistent feature flag to the strap, so it must never fire
                 // on a default install. Reversible; driven only by enableWhoop5DeepData(). (#174)
@@ -2615,6 +2879,42 @@ class WhoopBleClient(
         }
         sendRebootFrame(variant.command, variant.payload, variant)
     }
+
+    /** #592 opcode probe: send the read-only GET_EXTENDED_BATTERY_INFO(98) and let the COMMAND_RESPONSE
+     *  hook dump the full raw reply to the strap log. The number is disputed (an APK decompile reads 87);
+     *  a battery-shaped payload in the reply confirms 98 on this firmware, a short generic stub keeps it
+     *  ambiguous. Works on both families (the 4.0 is the discriminating device — its firmware banks real
+     *  EXTENDED_BATTERY_INFORMATION event payloads; the 5.0 answered 98 with a stub on fw 50.38.1.0).
+     *  User-initiated only (Devices → strap menu, Test Centre → Connection gated); never automatic. */
+    fun probeExtendedBatteryInfo() {
+        if (!_state.value.connected) {
+            log("Extended-battery probe (#592) ignored — not connected")
+            return
+        }
+        // Sentinel so the Devices dialog can show "waiting for the strap's reply…" until the response lands
+        // (or the user closes it). The COMMAND_RESPONSE hook overwrites this with the decoded result text.
+        _extendedBatteryProbe.value = WAITING_EXTENDED_BATTERY_PROBE
+        log("Extended-battery probe (#592): sending GET_EXTENDED_BATTERY_INFO(98, read-only) on family=$connectedFamily; the raw COMMAND_RESPONSE is dumped below when it lands")
+        send(CommandNumber.GET_EXTENDED_BATTERY_INFO)
+        // #592: if NO COMMAND_RESPONSE for 98 arrives within the window, the silence is itself the verdict —
+        // the firmware served no reply, which is evidence AGAINST 98 (toward the decompile's 87). Surface +
+        // log that instead of a dialog stuck on "waiting" forever. Guarded on the value still being the
+        // sentinel, so a real reply (which overwrites it) is never clobbered by this late timeout.
+        handler.postDelayed({
+            val msg = "Extended-battery probe (#592): no COMMAND_RESPONSE for opcode 98 within " +
+                "${EXTENDED_BATTERY_PROBE_TIMEOUT_MS / 1000}s — the strap served no reply. That silence " +
+                "is evidence AGAINST 98 on this firmware (toward the decompile's 87); a gated 87 probe is " +
+                "the follow-up. (If a sync/offload was mid-flight the response can be delayed — retry idle.)"
+            // ATOMIC compare-and-set: only replace the still-waiting sentinel. If a real reply landed on the
+            // binder thread in the meantime (even microseconds before this fires at the timeout boundary),
+            // it already overwrote the value and the CAS fails — so a genuine capture is never clobbered by
+            // a late "no reply". Log only when the CAS actually wins.
+            if (_extendedBatteryProbe.compareAndSet(WAITING_EXTENDED_BATTERY_PROBE, msg)) log(msg)
+        }, EXTENDED_BATTERY_PROBE_TIMEOUT_MS)
+    }
+
+    /** Clear the #592 probe result (Devices dialog dismissed). */
+    fun clearExtendedBatteryProbe() { _extendedBatteryProbe.value = null }
 
     /** Shared reboot send + debug trail + watchdog, used by both the production [rebootStrap] and the
      *  4.0 [rebootProbe]. `probe == null` is the normal restart; a non-null variant is a probe attempt
@@ -3416,6 +3716,15 @@ class WhoopBleClient(
             kickServiceDiscovery(g, "mtu=$mtu")
         }
 
+        /** #533: what the controller and the strap ACTUALLY settled on — the request is only a preference
+         *  and the peer can decline, so this is the only way to know whether 2M took (and whether WHOOP
+         *  supports it at all). Fires on any PHY change, including a fall back to 1M on a marginal link, so
+         *  a before/after strap log shows the negotiated PHY next to the offload's records/sec.
+         *  Log-only: nothing branches on the PHY. */
+        override fun onPhyUpdate(g: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
+            log("PHY negotiated: tx=${phyLabel(txPhy)} rx=${phyLabel(rxPhy)} (status=$status)")
+        }
+
         override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
             // Signal strength at connect — diagnoses weak-link syncs (drops/busy storms/timeouts) that
             // otherwise look mysterious in the log. Only on a clean read; a failure just stays silent.
@@ -3686,6 +3995,23 @@ class WhoopBleClient(
                     // stays: on 5/MG it lands word-aligned with the body at 11, and a straddling word
                     // can't fall in the unix-range window. (#78 fork)
                     val cmdOff = if (connectedFamily == DeviceFamily.WHOOP5) 10 else 6
+                    // #592 opcode probe: dump the raw GET_EXTENDED_BATTERY_INFO(98) response in FULL (no
+                    // prefix cap — the tail fields are the evidence) so a normal strap-log export settles
+                    // the disputed number: a battery-shaped payload (mV etc.) confirms 98 on this firmware;
+                    // a short generic stub keeps it ambiguous (see the probe note on the enum case).
+                    if (frame.size > cmdOff && (frame[cmdOff].toInt() and 0xFF) == CommandNumber.GET_EXTENDED_BATTERY_INFO.rawValue) {
+                        // Format the #592 result (pure + testable), then BOTH log it (so it rides the strap-log
+                        // bundle) AND publish it to the StateFlow the Devices dialog shows + copies — so a
+                        // capture doesn't require a full log export. Diffs against the persisted previous
+                        // payload to help map the fields across captures.
+                        val prevHex = NoopPrefs.of(context).getString(KEY_592_PREV_PAYLOAD, null)
+                        val (text, payHex) = formatExtendedBatteryProbe(
+                            frame, cmdOff, connectedFamily == DeviceFamily.WHOOP5, prevHex,
+                        )
+                        log("Extended-battery probe (#592):\n$text")
+                        _extendedBatteryProbe.value = text
+                        if (payHex != null) NoopPrefs.of(context).edit().putString(KEY_592_PREV_PAYLOAD, payHex).apply()
+                    }
                     if (frame.size > cmdOff && (frame[cmdOff].toInt() and 0xFF) == CommandNumber.GET_DATA_RANGE.rawValue) {
                         // #451: dump raw GET_DATA_RANGE response bytes unconditionally (even if decode returns
                         // null) so a stale/wrong-epoch "newest" can be told apart from a frame-alignment bug in
@@ -3886,6 +4212,8 @@ class WhoopBleClient(
 
             "COMMAND_RESPONSE" -> {
                 doubleValue(parsed.parsed["battery_pct"])?.let { setBattery(it) }
+                // #592: GET_EXTENDED_BATTERY_INFO / GET_BATTERY_LEVEL responses may carry pack voltage.
+                (parsed.parsed["battery_mV"] as? Int)?.let { mv -> _state.update { it.copy(batteryMv = mv) } }
                 // Firmware version from the handshake: 4.0 reports fw_harvard (REPORT_VERSION_INFO),
                 // 5/MG reports fw_version (GET_HELLO). Keyed on whichever field decoded rather than
                 // resp_cmd, so a single branch covers both families. Stable for the connection, so we
@@ -4024,6 +4352,11 @@ class WhoopBleClient(
                         if (ev.startsWith("BATTERY_LEVEL") && shouldApplyChargingFromBatteryEvent(replayedOffload)) {
                             (parsed.parsed["battery_charging"] as? Int)?.let {
                                 _state.update { s -> s.copy(charging = it != 0) }
+                            }
+                            // #592: the same battery event carries pack voltage (mv@21) — surface it on the
+                            // Devices card. Range-gated by the parser already; only a live (non-replayed) event.
+                            (parsed.parsed["battery_mV"] as? Int)?.let { mv ->
+                                _state.update { s -> s.copy(batteryMv = mv) }
                             }
                         }
                         // PR #577: the strap fired its firmware smart alarm (STRAP_DRIVEN_ALARM_EXECUTED,
@@ -4905,6 +5238,7 @@ class WhoopBleClient(
         historicalKickSent = false
         _state.update { it.copy(backfilling = true, syncChunksThisSession = 0) }
         refreshConnectionPriority()   // #477: escalate to HIGH for the offload burst (faster sync). No-op unless enabled.
+        applyPreferredPhy()           // #533: prefer LE 2M for the burst (halves air-time). No-op unless enabled.
         // Opt-in raw capture (research aid): pref read fresh per session, like the probes gate.
         if (connectedFamily == DeviceFamily.WHOOP5 && PuffinExperiment.from(context).isCaptureEnabled) {
             startWhoop5BackfillCapture()
@@ -5083,6 +5417,15 @@ class WhoopBleClient(
         if (!backfilling) return
         backfilling = false
         refreshConnectionPriority()   // #477: offload done — drop back to idle priority. No-op unless enabled.
+        // #533: offload done — hand the PHY back to 1M too, so the 2M preference is BOUNDED to the burst
+        // exactly like the priority escalation above. A PHY PERSISTS once negotiated, so without this a link
+        // that went 2M for the sync stayed 2M for the WHOLE connection — including the overnight window —
+        // which is not what the toggle's copy promises ("while your strap hands over its stored history"),
+        // and left 2M's range trade-off in force long after the transfer it was for.
+        // Guarded here rather than inside releasePreferredPhy: that method cannot check the flag, because
+        // setFastLinkPhy's on→off edge calls it AFTER the flag is already false. So the default path still
+        // issues ZERO BLE ops.
+        if (fastLinkPhyEnabled) releasePreferredPhy()
         // #174: a backfill just ended. Start (or extend) the deep-packet cooldown from this instant so
         // any type-0x2F records the strap flushes in the seconds after the session aren't miscounted as
         // the live R22 stream — they're the offload's tail.

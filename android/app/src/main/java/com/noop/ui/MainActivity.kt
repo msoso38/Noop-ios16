@@ -244,6 +244,41 @@ object NoopPrefs {
         of(context).edit().putBoolean(KEY_PAUSE_HRV_ON_POWER_SAVE, enabled).apply()
     }
 
+    /** EXPERIMENTAL (#533): escalate the GATT connection interval to HIGH for the bounded historical
+     *  offload burst, so a large backlog drains faster. Drives the SAFE half of #477's connection-priority
+     *  management via [com.noop.ble.WhoopBleClient.setConnectionPriorityManagement]; the risky idle
+     *  throttle stays off, and the live/overnight stream never escalates.
+     *
+     *  DEFAULT OFF and behind an "(experimental)" label on purpose: BLE behaviour cannot be CI- or
+     *  Linux-tested, so both the speedup and its battery cost need real-strap field reports before this
+     *  could ever be considered for default-on. */
+    const val KEY_FAST_HISTORY_SYNC = "noop.fastHistorySync"
+
+    fun fastHistorySync(context: Context): Boolean =
+        of(context).getBoolean(KEY_FAST_HISTORY_SYNC, false)
+
+    fun setFastHistorySync(context: Context, enabled: Boolean) {
+        of(context).edit().putBoolean(KEY_FAST_HISTORY_SYNC, enabled).apply()
+    }
+
+    /** EXPERIMENTAL (#533): prefer the LE 2M PHY around the historical offload. LE 2M doubles the symbol
+     *  rate, so the same bytes spend half the air-time — it should cost LESS radio energy per byte, not
+     *  more (unlike [KEY_FAST_HISTORY_SYNC]'s connection-interval lever). NOOP has never called
+     *  setPreferredPhy, so every offload to date has run on 1M. Orthogonal to that lever; they stack, and
+     *  they are separate toggles so a field report can attribute which one did what.
+     *
+     *  DEFAULT OFF: it is a preference the strap may decline, 2M trades range for speed, and BLE behaviour
+     *  can't be CI-tested — the negotiated PHY and the speedup both need real-strap field reports. The
+     *  request always allows 1M too, so the controller can fall back. */
+    const val KEY_FAST_LINK_PHY = "noop.fastLinkPhy"
+
+    fun fastLinkPhy(context: Context): Boolean =
+        of(context).getBoolean(KEY_FAST_LINK_PHY, false)
+
+    fun setFastLinkPhy(context: Context, enabled: Boolean) {
+        of(context).edit().putBoolean(KEY_FAST_LINK_PHY, enabled).apply()
+    }
+
     /** #836, the raw-HR fingerprint ("count:maxTs") the last COMPLETED idle rescore scored against. The
      *  15-min backstop tick skips when the current fingerprint equals this; cleared implicitly by any HR
      *  insert/delete (the fingerprint moves). Mirrors the Swift `analyzeWatermark` UserDefaults key. */
@@ -662,6 +697,9 @@ object NoopPrefs {
     const val KEY_REPORT_MORNING = "noop.report.morningRecap"
     const val KEY_REPORT_WORKOUT = "noop.report.postWorkout"
     const val KEY_REPORT_MORNING_DAY = "noop.report.lastMorningDay"
+    // #593 target-strain nudge: opt-in enable flag + the once-per-day dedupe (last local day it fired).
+    const val KEY_REPORT_STRAIN_TARGET = "noop.report.strainTarget"
+    const val KEY_REPORT_STRAIN_TARGET_DAY = "noop.report.lastStrainTargetDay"
     const val KEY_REPORT_LAST_WORKOUT_TS = "noop.report.lastWorkoutTs"
 
     fun morningReportEnabled(context: Context): Boolean =
@@ -684,6 +722,22 @@ object NoopPrefs {
 
     fun setReportMorningDay(context: Context, day: String) {
         of(context).edit().putString(KEY_REPORT_MORNING_DAY, day).apply()
+    }
+
+    /** #593: opt-in (default OFF) for the once-a-day optimal-strain-reached nudge. */
+    fun strainTargetEnabled(context: Context): Boolean =
+        of(context).getBoolean(KEY_REPORT_STRAIN_TARGET, false)
+
+    fun setStrainTargetEnabled(context: Context, enabled: Boolean) {
+        of(context).edit().putBoolean(KEY_REPORT_STRAIN_TARGET, enabled).apply()
+    }
+
+    /** Last local day (ISO yyyy-MM-dd) the strain-target nudge was posted, the once-a-day gate. */
+    fun reportStrainTargetDay(context: Context): String? =
+        of(context).getString(KEY_REPORT_STRAIN_TARGET_DAY, null)
+
+    fun setReportStrainTargetDay(context: Context, day: String) {
+        of(context).edit().putString(KEY_REPORT_STRAIN_TARGET_DAY, day).apply()
     }
 
     /** Start-ts (epoch seconds) of the most recent workout already summarised, only a STRICTLY newer
