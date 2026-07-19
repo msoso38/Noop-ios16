@@ -532,10 +532,10 @@ private struct DeviceCard: View {
                     // #592: strap pack voltage beside the percent, when the battery event has reported it.
                     if let mv = liveBatteryMv {
                         Text("·").font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
-                        Text(String(format: "%.2f V", Double(mv) / 1000.0))
+                        Text("\(Double(mv) / 1000.0, specifier: "%.2f") V")
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textSecondary)
-                            .accessibilityLabel(String(format: "Battery voltage %.2f volts", Double(mv) / 1000.0))
+                            .accessibilityLabel("Battery voltage \(Double(mv) / 1000.0, specifier: "%.2f") volts")
                     }
                     if let layout = liveHistoryLayout {
                         Text("·").font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
