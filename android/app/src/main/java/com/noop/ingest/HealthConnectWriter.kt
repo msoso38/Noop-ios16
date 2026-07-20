@@ -99,10 +99,19 @@ object HealthConnectWriter {
      */
     suspend fun write(context: Context, repo: WhoopRepository, deviceId: String): WritebackResult {
         if (HealthConnectClient.getSdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) return WritebackResult.UNAVAILABLE
-        val client = HealthConnectClient.getOrCreate(context)
 
-        val cutoff = LocalDate.now().minusDays(WINDOW_DAYS).toString()
-        val days = repo.days(repo.computedDeviceId(deviceId)).filter { it.day >= cutoff }
+        // Guard the pre-insert work (client acquisition + the day read) the same way the concern inserts
+        // below are guarded, so a provider race or DB error can't throw PAST recordStatus and leave the
+        // UI showing a stale "OK" while sharing is actually broken (#660). Cancellation still propagates.
+        val (client, days) = runCatching {
+            val c = HealthConnectClient.getOrCreate(context)
+            val cutoff = LocalDate.now().minusDays(WINDOW_DAYS).toString()
+            c to repo.days(repo.computedDeviceId(deviceId)).filter { it.day >= cutoff }
+        }.getOrElse { t ->
+            val result = WritebackResult(0, listOf(t.writebackCategory()))
+            recordStatus(context, result)
+            return result
+        }
 
         val zone = ZoneId.systemDefault()
         // Stamp every record in this batch with one version so a later recompute (higher stamp)
