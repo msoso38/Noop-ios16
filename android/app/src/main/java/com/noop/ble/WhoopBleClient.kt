@@ -6248,11 +6248,23 @@ class WhoopBleClient(
         val cols = Whoop5RawImu.rawColumns(frame) ?: return
         val baseTs = PuffinDeepBufferLog.strapTs(frame)?.toLong() ?: return
         val dev = deviceId
+        // #423 debug heartbeat: confirm the offload IMU is arriving + decoding on-device without pulling the
+        // JSONL. Throttled (first buffer, then every 500) so a large offload can't flood the strap log; the
+        // count is a per-connection running total. Off unless raw capture is enabled (gated above).
+        rawImuDecodedCount++
+        if (rawImuDecodedCount == 1 || rawImuDecodedCount % 500 == 0) {
+            log("RAW IMU capture: $rawImuDecodedCount buffer(s) decoded, latest ts=$baseTs " +
+                "(${cols.size / 6} samples/axis) — storing (retain ${WhoopRepository.RAW_IMU_RETENTION_ROWS})")
+        }
         val row = RawImuSampleEntity(dev, baseTs, StreamPersistence.packImuColumns(cols))
         ioScope.launch {
             runCatching { repository.insertRawImu(dev, listOf(row)) }
+                .onFailure { log("RAW IMU capture: store failed (${it.message})") }
         }
     }
+
+    /** #423 debug: raw-IMU buffers decoded this connection (drives the throttled strap-log heartbeat). */
+    private var rawImuDecodedCount = 0
 
     private fun writeWhoop5DeepBufferIfBig(characteristic: String, frame: ByteArray, isOffload: Boolean) {
         if (deepBufferDisabled || !PuffinDeepBufferLog.isDeepBuffer(frame)) return
