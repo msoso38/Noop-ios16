@@ -12,12 +12,12 @@ protocol StoreWriting: AnyObject {
         -> (hr: Int, rr: Int, events: Int, battery: Int,
             spo2: Int, skinTemp: Int, resp: Int, gravity: Int)
     func enqueueRawBatch(_ meta: RawBatchMeta, frames: [[UInt8]]) async throws
-    func insertRawImu(deviceId: String, rows: [(ts: Int, samples: Data)], retentionRows: Int) async throws
+    func insertRawImu(deviceId: String, rows: [(ts: Int, cols: [Int16])], retentionRows: Int) async throws
 }
 extension StoreWriting {
     /// #423: default no-op so a test SpyStore needn't implement the raw-IMU capture path. WhoopStore's
     /// real impl (StreamStore.swift) satisfies the requirement and is used in production.
-    func insertRawImu(deviceId: String, rows: [(ts: Int, samples: Data)], retentionRows: Int) async throws {}
+    func insertRawImu(deviceId: String, rows: [(ts: Int, cols: [Int16])], retentionRows: Int) async throws {}
 }
 extension WhoopStore: StoreWriting {}
 
@@ -136,11 +136,10 @@ final class Collector {
     func storeRawImu(frame: [UInt8]) {
         guard UserDefaults.standard.bool(forKey: PuffinFrameRecorder.enabledKey) else { return }
         guard let cols = Whoop5RawImu.rawColumns(frame), let baseTs = Whoop5RawImu.baseTs(frame) else { return }
-        let data = WhoopStore.packImuColumns(cols)
         let dev = deviceId
         Task { [store] in
             try? await store.insertRawImu(
-                deviceId: dev, rows: [(ts: baseTs, samples: data)], retentionRows: WhoopStore.rawImuRetentionRows)
+                deviceId: dev, rows: [(ts: baseTs, cols: cols)], retentionRows: WhoopStore.rawImuRetentionRows)
         }
     }
 

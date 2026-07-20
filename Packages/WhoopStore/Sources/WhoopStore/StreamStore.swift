@@ -81,14 +81,16 @@ extension WhoopStore {
     /// then bound the table to the newest `retentionRows` for the device (rolling retention). Written from
     /// the deep-buffer capture seam, not the normal stream path, so it inserts directly (idempotent by ts).
     /// Twin of Kotlin `WhoopRepository.insertRawImu`.
-    public func insertRawImu(deviceId: String, rows: [(ts: Int, samples: Data)], retentionRows: Int) async throws {
+    public func insertRawImu(deviceId: String, rows: [(ts: Int, cols: [Int16])], retentionRows: Int) async throws {
         guard !rows.isEmpty else { return }
         try syncWrite { db in
             let ins = try db.cachedStatement(sql: """
                 INSERT INTO rawImuSample (deviceId, ts, samples) VALUES (?, ?, ?)
                 ON CONFLICT(deviceId, ts) DO NOTHING
                 """)
-            for r in rows { try ins.execute(arguments: [deviceId, r.ts, r.samples]) }
+            // Pack the raw i16 columns to the LE BLOB HERE (packImuColumns is module-internal), so the
+            // caller passes plain [Int16] and never needs the packer. Mirrors how `insert` packs ppgWaveform.
+            for r in rows { try ins.execute(arguments: [deviceId, r.ts, WhoopStore.packImuColumns(r.cols)]) }
             try db.execute(sql: """
                 DELETE FROM rawImuSample WHERE deviceId = ? AND ts < (
                     SELECT MIN(ts) FROM (SELECT ts FROM rawImuSample WHERE deviceId = ? ORDER BY ts DESC LIMIT ?))
