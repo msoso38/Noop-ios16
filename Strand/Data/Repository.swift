@@ -1536,6 +1536,15 @@ final class Repository: ObservableObject {
         return out
     }
 
+    /// Family of the ACTIVE strap (#623), for the deep timeline's family-specific empty-state copy. Reuses
+    /// the canonical `DeviceFamily.forRegistryModel` (#171) with its `.whoop5` fallback for nil/unknown/
+    /// ambiguous, matching Android's `FullDayChartScreen`. Best-effort: no store / unreadable registry → `.whoop5`.
+    func activeStrapFamily() -> DeviceFamily {
+        guard let store else { return .whoop5 }
+        let devices = (try? DeviceRegistryStore(dbQueue: store.registryWriter).all()) ?? []
+        return DeviceFamily.forRegistryModel(devices.first(where: { $0.id == deviceId })?.model)
+    }
+
     /// Raw points for a non-HR timeline metric, mapped to display units (skin temp → °C DEVICE-FAMILY-AWARE
     /// via `skinTempCelsius`: 5/MG centidegrees (#156), WHOOP 4.0 v24 raw ADC (#938); HRV → per-RR
     /// instantaneous from RR ms; respiration/SpO₂/motion as the stored signal). Empty when the strap

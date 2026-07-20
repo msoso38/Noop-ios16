@@ -92,6 +92,16 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
 
     var metric by remember { mutableStateOf(TimelineMetric.Hr) }
     var ownedOnly by remember { mutableStateOf(true) }
+    // #623: resolve the strap FAMILY via the canonical registry-model resolver (never a string compare, per
+    // DeviceFamily.forRegistryModel #171) so the empty state can explain that SpO2 + raw respiration are
+    // 4.0-only wire signals a 5.0/MG never emits — instead of a generic "nothing offloaded" that reads as
+    // broken. Async (pairedDevices is a suspend registry read); defaults false until resolved.
+    var isWhoop5 by remember { mutableStateOf(false) }
+    LaunchedEffect(deviceId) {
+        val model = runCatching { vm.pairedDevices() }.getOrDefault(emptyList())
+            .firstOrNull { it.id == deviceId }?.model
+        isWhoop5 = DeviceFamily.forRegistryModel(model) == DeviceFamily.WHOOP5
+    }
     // The visible window the gestures drive; null → the whole day.
     var window by remember { mutableStateOf<LongRange?>(null) }
     val visible = window ?: dayBounds
@@ -237,7 +247,7 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
                     when {
                         loading && points.isEmpty() ->
                             Text(stringResource(R.string.timeline_loading_day), style = NoopType.footnote, color = Palette.textTertiary)
-                        points.isEmpty() -> EmptyTimelineState(metric, ownedOnly)
+                        points.isEmpty() -> EmptyTimelineState(metric, ownedOnly, isWhoop5)
                         else -> TimelineChart(
                             points = displayPoints,
                             windowStart = visible.first,
@@ -281,7 +291,7 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun EmptyTimelineState(metric: TimelineMetric, ownedOnly: Boolean) {
+private fun EmptyTimelineState(metric: TimelineMetric, ownedOnly: Boolean, isWhoop5: Boolean) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -289,11 +299,20 @@ private fun EmptyTimelineState(metric: TimelineMetric, ownedOnly: Boolean) {
     ) {
         Text(stringResource(R.string.timeline_empty_metric, metric.title.lowercase(Locale.US)),
             style = NoopType.body, color = Palette.textSecondary)
-        Text(
-            if (ownedOnly) stringResource(R.string.timeline_nothing_offloaded)
-            else stringResource(R.string.timeline_other_sources_no_offload),
-            style = NoopType.footnote, color = Palette.textTertiary, textAlign = TextAlign.Center,
-        )
+        // #623: on a 5.0/MG the SpO2 + raw respiration tracks are PERMANENTLY empty — those are 4.0-only
+        // wire signals the 5.0 never emits (SpO2 needs WHOOP's proprietary curve; respiration here is a raw
+        // ADC stream the 5.0 lacks). Say so instead of a generic "nothing offloaded" that reads as broken,
+        // and point respiration at the Health screen where the R-R/RSA estimate does surface. Strap view only
+        // (ownedOnly) — with imports included, the generic message is still correct.
+        val reason = when {
+            isWhoop5 && ownedOnly && metric == TimelineMetric.Spo2 ->
+                stringResource(R.string.timeline_spo2_not_on_whoop5)
+            isWhoop5 && ownedOnly && metric == TimelineMetric.Respiration ->
+                stringResource(R.string.timeline_resp_not_on_whoop5)
+            ownedOnly -> stringResource(R.string.timeline_nothing_offloaded)
+            else -> stringResource(R.string.timeline_other_sources_no_offload)
+        }
+        Text(reason, style = NoopType.footnote, color = Palette.textTertiary, textAlign = TextAlign.Center)
     }
 }
 
