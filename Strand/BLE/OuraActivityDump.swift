@@ -48,7 +48,9 @@ final class OuraActivityDump {
         // #676 follow-up: bound the corpus (rotate to a single ".1", dropping the prior one) so an
         // always-on research sidecar can't grow unbounded — the same rotation the WHOOP5 deep-buffer log
         // uses. Twin of Kotlin OuraActivityDump. Best-effort: a rotation error falls through to the append.
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        // Read the size via FileManager (a fresh stat) rather than URL.resourceValues, whose cache on the
+        // reused URL object can return a stale small size and skip rotation entirely.
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
         if size > Self.maxBytes {
             let old = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".1")
             try? FileManager.default.removeItem(at: old)
