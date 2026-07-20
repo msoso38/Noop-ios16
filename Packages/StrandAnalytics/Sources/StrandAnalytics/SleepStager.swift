@@ -159,7 +159,7 @@ public enum SleepStager {
     /// Skip HR refinement (trust gravity) when fewer than this many HR samples.
     public static let hrRefineMinSamples: Int = 30
     /// Consecutive sleep epochs required to declare onset.
-    public static let onsetPersistEpochs: Int = 3
+    public static let onsetPersistEpochs: Int = 4
 
     // MARK: - Off-wrist backstop (#500)
 
@@ -1658,11 +1658,15 @@ public enum SleepStager {
         // over-promotes still sleep to wake. (#705)
         if moving && (cardiacActivatedForWake || !hasHR) { return "wake" }
         // DEEP: still + low HR + regular respiration, with high parasympathetic tone when measurable.
+        // Sparse cardiac: still + low HR alone when RRV missing (screenshot deep collapse).
         if still && parasympOK && hrLow && rrvRegular { return "deep" }
+        if cardiacSparse && still && hrLow && !f.rrv.isFinite { return "deep" }
         // REM: still body + activated cardiac + irregular respiration.
         if still && cardiacActivated && rrvIrregular { return "rem" }
         // REM fallback when respiration unavailable: require BOTH cardiac signals.
         if still && hrHigh && hrvarHigh && !f.rrv.isFinite { return "rem" }
+        // Sparse late-night REM: still + elevated HR after the first third (0% REM screenshot reopen).
+        if cardiacSparse && still && hrHigh && !f.rrv.isFinite && f.clock > deepFirstFraction { return "rem" }
         return "light"
     }
 
@@ -1803,9 +1807,13 @@ public enum SleepStager {
         // An epoch that wins WAKE or DEEP was never a REM candidate.
         if moving && (cardiacActivatedForWake || !hasHR) { return .wonOtherStage }     // → wake
         if still && parasympOK && hrLow && rrvRegular { return .wonOtherStage } // → deep
+        if cardiacSparse && still && hrLow && !f.rrv.isFinite { return .wonOtherStage } // → sparse deep
         // From here the epoch did NOT win wake/deep; it is either REM or falls through to LIGHT.
         if still && cardiacActivated && rrvIrregular { return .remEligible }
         if still && hrHigh && hrvarHigh && !f.rrv.isFinite { return .remEligible }
+        if cardiacSparse && still && hrHigh && !f.rrv.isFinite && f.clock > deepFirstFraction {
+            return .remEligible
+        }
         // Not REM → attribute to the FIRST unmet REM precondition (in REM-rule order).
         if !still { return .notStill }
         if !cardiacActivated { return .noCardiacActivation }

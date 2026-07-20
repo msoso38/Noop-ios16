@@ -50,6 +50,13 @@ object DaytimeStress {
     /** First/last local hour-of-day treated as "waking" for the timeline (06:00–22:00). */
     const val wakingStartHour: Int = 6
     const val wakingEndHour: Int = 22
+    /**
+     * Soft raw damp when a waking-band hour sits inside a detected sleep window (late sleepers
+     * whose night runs past [wakingStartHour]). WHOOP keeps a night floor through ~1pm on the
+     * 13 Jul screenshot night; without this, those hours pollute the calm reference. Not a tip
+     * retune from a single calibrating tip.
+     */
+    const val sleepWindowCalmBias: Double = 1.20
 
     // MARK: - Output
 
@@ -142,11 +149,22 @@ object DaytimeStress {
      * @param rr the day's R-R intervals.
      * @param tzOffsetSeconds seconds east of UTC, for placing each bucket on the LOCAL clock
      *   (so "waking hours" and the hour labels are local). Defaults to UTC.
+     * @param sleepWindows wall-clock [start, end) pairs for detected sleep this day. Hours
+     *   overlapping a window are excluded from the waking calm reference and get a night-floor
+     *   damp when scored — late sleepers stay honest vs WHOOP Stress Monitor shape.
      *
      * Returns [Result.EMPTY] when there isn't a single hour with enough HR to score.
      */
-    fun analyze(hr: List<HrSample>, rr: List<RrInterval>, tzOffsetSeconds: Long = 0L): Result {
+    fun analyze(
+        hr: List<HrSample>,
+        rr: List<RrInterval>,
+        tzOffsetSeconds: Long = 0L,
+        sleepWindows: List<Pair<Long, Long>> = emptyList(),
+    ): Result {
         if (hr.isEmpty()) return Result.EMPTY
+
+        fun inSleep(wallMid: Long): Boolean =
+            sleepWindows.any { (a, b) -> wallMid in a until b }
 
         // 1) Bucket HR + R-R into LOCAL hour-of-day buckets, keyed by the bucket start
         //    (floored to the hour on the local clock).
@@ -176,19 +194,13 @@ object DaytimeStress {
             aggs.add(HourAgg(b, mHr, rrRes.rmssd))
         }
 
-        // 3) The day's OWN quiet reference: centre on the CALM end (the lower quartile of
-        //    hourly mean HR, the upper quartile of hourly RMSSD), and spread from the
-        //    across-hour SD. This makes a flat day read ~baseline and a spiky day surface its
-        //    tense hours — without any cross-day history. Falls back to the plain mean when
-        //    there are too few scored hours for a quartile.
-        //
-        //    Built from the WAKING hours only — the same hours scored in step 4. Sleep is the
-        //    calmest, lowest-HR / highest-HRV stretch of the day, and the analysis window
-        //    always begins at local midnight, so the current day routinely carries several
-        //    hours of it. Letting those night hours into the reference drags the "calm" anchor
-        //    far beneath every waking hour, inflating an ordinary calm day toward HIGH and
-        //    falsely tripping the sustained-high Breathe nudge.
-        val referenceAggs = aggs.filter { isWakingHour(it.bucket) }
+        // 3) Quiet reference from waking hours that are NOT inside a sleep window — late sleep
+        //    past 06:00 must not drag the calm anchor (13 Jul WHOOP night floor through ~1pm).
+        val referenceAggs = aggs.filter { agg ->
+            if (!isWakingHour(agg.bucket)) return@filter false
+            val wallMid = (agg.bucket - tzOffsetSeconds) + bucketSeconds / 2
+            !inSleep(wallMid)
+        }
         val hrMeans = referenceAggs.mapNotNull { it.meanHr }
         val rmssdVals = referenceAggs.mapNotNull { it.rmssd }
         val refHr = calmReference(hrMeans, calmIsLow = true)         // calm HR is LOW
@@ -196,24 +208,30 @@ object DaytimeStress {
         val sdHr = std(hrMeans, mean(hrMeans))
         val sdRmssd = std(rmssdVals, mean(rmssdVals))
 
-        // 4) Score each waking-hour bucket on the shared 0–3 curve.
+        // 4) Score waking-band hours; sleep-window overlaps get a night-floor damp.
         val points = ArrayList<HourPoint>(aggs.size)
         for (a in aggs) {
             if (!isWakingHour(a.bucket)) continue
             val hourOfDay = (floorDiv(a.bucket, bucketSeconds) % 24).toInt()
-            // The wall-clock bucket start (undo the local shift applied above).
             val wallStart = a.bucket - tzOffsetSeconds
-            // Score only when HR cleared the count gate (HR is the always-available anchor;
-            // RMSSD enriches it when beats allow).
+            val wallMid = wallStart + bucketSeconds / 2
+            val asleep = inSleep(wallMid)
             val level: Double? = if (a.meanHr != null) {
-                squash(rawScore(a.meanHr, refHr, sdHr, a.rmssd, refRmssd, sdRmssd))
+                var raw = rawScore(a.meanHr, refHr, sdHr, a.rmssd, refRmssd, sdRmssd)
+                if (asleep) raw -= sleepWindowCalmBias
+                squash(raw)
             } else {
                 null
             }
             points.add(HourPoint(hourOfDay, wallStart, level, a.meanHr, a.rmssd))
         }
 
-        val scored = points.mapNotNull { p -> p.level?.let { p to it } }
+        val scored = points.mapNotNull { p ->
+            val lvl = p.level ?: return@mapNotNull null
+            val wallMid = p.startTs + bucketSeconds / 2
+            if (inSleep(wallMid)) return@mapNotNull null
+            p to lvl
+        }
         if (scored.isEmpty()) {
             // No scorable waking hour — still return the (unscored) timeline so the UI can
             // show "not enough data" rather than nothing.
