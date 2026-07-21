@@ -2671,6 +2671,9 @@ private fun DurationTrend(m: SleepModel) {
                             .semantics { contentDescription = uiString(R.string.l10n_sleep_screen_sleep_hours_trend_chart_a6fbc46d) },
                         color = Palette.restColor,
                         selectionEnabled = true,
+                        // #691: on tap, show the DATE alongside the value (the shared chart's tooltip),
+                        // matching the other trend graphs. trendDates is index-aligned with the values.
+                        selectionLabels = m.trendDates.map(::shortDayLabel),
                     )
                     DateAxisRow(m.trendDates)
                 }
@@ -2704,6 +2707,7 @@ private fun DurationTrend(m: SleepModel) {
                             .semantics { contentDescription = uiString(R.string.l10n_sleep_screen_sleep_debt_trend_chart_9e178776) },
                         color = Palette.metricRose,
                         selectionEnabled = true,
+                        selectionLabels = m.trendDates.map(::shortDayLabel),   // #691: hover shows date + value
                     )
                     DateAxisRow(m.trendDates)
                 }
@@ -3425,6 +3429,7 @@ private fun SleepMetricDetailSheetContent(vm: AppViewModel, key: String) {
                     color = spec.color,
                     fill = true,
                     selectionEnabled = true,
+                    selectionLabels = filteredPoints.map { shortDayLabel(it.first) },   // #691: hover shows date + value
                 )
             }
             Row(modifier = Modifier.fillMaxWidth()) {
