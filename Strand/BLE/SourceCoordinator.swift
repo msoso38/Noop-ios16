@@ -356,6 +356,12 @@ final class SourceCoordinator: ObservableObject {
             persist: { [storeHandle] streams in
                 Task { if let store = await storeHandle() { _ = try? await store.insert(streams, deviceId: id) } }
             },
+            persistSleepSession: { [storeHandle] session in
+                // The ring-PROVIDED hypnogram night, upserted under the ring's OWN id (the imported/measured
+                // side, NOT the "-noop" computed sibling) so SleepMerge's imported-over-computed rule makes
+                // Oura's SleepNet staging win over NOOP's sparse-motion computed night (#325).
+                Task { if let store = await storeHandle() { _ = try? await store.upsertSleepSessions([session], deviceId: id) } }
+            },
             log: straplog,
             onBattery: { [live] pct in live.setBattery(Double(pct)) },
             adoptIntent: adoptIntent)

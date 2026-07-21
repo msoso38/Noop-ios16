@@ -156,6 +156,14 @@ final class Repository: ObservableObject {
     var computedReadIds: [String] {
         computedDeviceId == canonicalComputedId ? [computedDeviceId] : [computedDeviceId, canonicalComputedId]
     }
+
+    /// True when the ACTIVE strap is an Oura ring, resolved from its registry id prefix against the canonical
+    /// brand table (`DeviceBrandCatalog.idPrefix`) rather than an ad-hoc "oura" literal. The device registry
+    /// mints every non-WHOOP id as "<idPrefix>-<uuid>", so the stored id's prefix IS its brand key. Read/UI
+    /// side only — it lets the sleep surfaces name an Oura night's provenance "Oura" (a ring-PROVIDED
+    /// hypnogram) instead of the generic "On-device", and flag the split as the ring's RAW on-device stages.
+    /// Not a stored value and never crosses `.noopbak`, so no Android twin is required.
+    var activeDeviceIsOura: Bool { DeviceBrandCatalog.isOura(deviceId) }
     private var store: WhoopStore?
 
     /// Daily metrics (recovery/strain/sleep/HRV/RHR…) over the recent window, oldest→newest.

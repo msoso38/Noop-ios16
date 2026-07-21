@@ -98,6 +98,50 @@ object OuraDecoders {
         return if (out.isEmpty()) null else out
     }
 
+    // MARK: - Green IBI + amplitude CANDIDATE decode (0x71; s6.2, upstream #287)
+
+    /** Result of [decodeGreenIBIAmpCandidate]: the amplitude exponent + the six walk-order entries. */
+    data class GreenIBIAmpCandidate(val shift: Int, val samples: List<OuraIBI>)
+
+    /**
+     * CANDIDATE decode of the 0x71 green_ibi_and_amp_event, ported verbatim from ringverse's
+     * `p_green_ibi_and_amp` (parse.js, firmware @0x503960): 5 densely bit-packed 11-bit IBIs +
+     * amplitudes (7-bit mantissa << shift), first entry amplitude-only (`ibiMs == 0`), timestamps
+     * walking backward from the event time by each IBI in turn (caller's job — entries are returned
+     * in that walk order). `shift` comes from payload[13] bits [2:0] (`s == 7 → 0`, else `s+1`);
+     * bit [3] set means a firmware-layout mismatch → null (never guess).
+     *
+     * TIER-B (#287): this layout has NO verified NOOP capture yet — the result is for the 0x71
+     * fixture-capture log ONLY (side-by-side with the raw bytes, cross-checked against concurrent
+     * live-HR R-R), never a stored rrInterval. Payload indexing: ringverse's `b[i]` spans the whole
+     * frame (type/len/rt4/body); our `payload` starts at spec offset 6, so `b[i] == payload[i-6]`.
+     * Strict 14-byte gate (= wire len 18). Byte-identical twin of Swift's decodeGreenIBIAmpCandidate.
+     */
+    fun decodeGreenIBIAmpCandidate(payload: IntArray, ringTimestamp: Long): GreenIBIAmpCandidate? {
+        if (payload.size != 14) return null
+        val b13 = payload[13] and 0xFF
+        if ((b13 shr 3) and 1 == 1) return null   // reserved bit set → firmware mismatch
+        val s = b13 and 7
+        val shift = if (s == 7) 0 else s + 1
+        val b12 = payload[12] and 0xFF
+        // Each 11-bit IBI: 1 low bit (an amplitude byte's LSB) | 8 mid bits (a full byte << 3)
+        // | 2 bits [2:1] from the pack bytes. Ordering per the firmware's scrambled layout.
+        val ds = intArrayOf(
+            (payload[10] and 1) or ((payload[4] and 0xFF) shl 3) or ((b13 shr 5) and 6),
+            (payload[9] and 1) or ((payload[3] and 0xFF) shl 3) or ((b12 and 3) shl 1),
+            (payload[8] and 1) or ((payload[2] and 0xFF) shl 3) or ((b12 shr 1) and 6),
+            (payload[7] and 1) or ((payload[1] and 0xFF) shl 3) or ((b12 shr 3) and 6),
+            (payload[6] and 1) or ((payload[0] and 0xFF) shl 3) or ((b12 shr 5) and 6),
+        )
+        val amps = IntArray(5) { ((payload[6 + it] and 0xFF) shr 1) shl shift }
+        val samples = ArrayList<OuraIBI>(6)
+        samples.add(OuraIBI(ringTimestamp = ringTimestamp, ibiMs = 0, amplitude = amps[0]))
+        for (i in 0 until 5) {
+            samples.add(OuraIBI(ringTimestamp = ringTimestamp, ibiMs = ds[i], amplitude = amps[i]))
+        }
+        return GreenIBIAmpCandidate(shift = shift, samples = samples)
+    }
+
     // MARK: - Green IBI quality, 2 bytes/sample (0x80; s6.4)
 
     /**
