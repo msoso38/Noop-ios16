@@ -99,6 +99,11 @@ private struct DevicesContent: View {
                         ? String(localized: "1 paired")
                         : String(localized: "\(activeDevices.count) paired"))
             ForEach(Array(activeDevices.enumerated()), id: \.element.id) { idx, device in
+                // Shared read-only probe gate (Test Centre → Connection + a live WHOOP), hoisted so the two
+                // probe closures below don't each re-inline a 4-term && chain — which tips the iOS Swift
+                // type-checker over its budget ("unable to type-check this expression in reasonable time").
+                let probeGate = device.status == .active && live.connected
+                    && SourceCoordinator.isWhoop(device) && TestCentre.active(.connection)
                 DeviceCard(
                     device: device,
                     isActive: device.status == .active,
@@ -146,13 +151,9 @@ private struct DevicesContent: View {
                                     && TestCentre.active(.connection)) ? { probeTarget = device } : nil,
                     // #592 extended-battery probe: read-only, BOTH families (the 4.0 is discriminating).
                     // Same Test Centre → Connection gate as the reboot probe, minus the 4.0-only clause.
-                    onExtendedBatteryProbe: (device.status == .active && live.connected
-                                             && SourceCoordinator.isWhoop(device)
-                                             && TestCentre.active(.connection)) ? { batteryProbeTarget = device } : nil,
+                    onExtendedBatteryProbe: probeGate ? { batteryProbeTarget = device } : nil,
                     // #690 body-location probe: read-only, both families. Same Test Centre → Connection gate.
-                    onBodyLocationProbe: (device.status == .active && live.connected
-                                          && SourceCoordinator.isWhoop(device)
-                                          && TestCentre.active(.connection)) ? { bodyLocationProbeTarget = device } : nil)
+                    onBodyLocationProbe: probeGate ? { bodyLocationProbeTarget = device } : nil)
                     .staggeredAppear(index: idx)
             }
 
