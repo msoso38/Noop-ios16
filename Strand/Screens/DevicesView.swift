@@ -251,24 +251,11 @@ private struct DevicesContent: View {
                 text: live.extendedBatteryProbe ?? "",
                 onClose: { model.clearExtendedBatteryProbe() })
         }
-        // #690 body-location opcode probe: read-only, decodes revision/location/confidence/status.
-        .confirmationDialog("Body-location probe (#690 RE)",
-                            isPresented: Binding(get: { bodyLocationProbeTarget != nil },
-                                                 set: { if !$0 { bodyLocationProbeTarget = nil } }),
-                            titleVisibility: .visible,
-                            presenting: bodyLocationProbeTarget) { _ in
-            Button("Send probe (read-only)") { model.probeBodyLocationAndStatus(); bodyLocationProbeTarget = nil }
-            Button("Cancel", role: .cancel) { bodyLocationProbeTarget = nil }
-        } message: { _ in
-            Text("Sends the read-only GET_BODY_LOCATION_AND_STATUS (0x54) and shows the strap's full raw reply, decoding the body-location record (revision / location / confidence / status) on WHOOP 4.0. Nothing is written to the strap, and it never changes wear detection or scoring.")
-        }
-        // #690 probe result: the strap's reply (or a "waiting…" state), readable + copyable in place.
-        .sheet(isPresented: Binding(get: { live.bodyLocationProbe != nil },
-                                    set: { if !$0 { model.clearBodyLocationProbe() } })) {
-            BodyLocationProbeResultView(
-                text: live.bodyLocationProbe ?? "",
-                onClose: { model.clearBodyLocationProbe() })
-        }
+        // #690 body-location probe (confirm + result), isolated into a ViewModifier so its two heavy
+        // dialog modifiers type-check in their OWN scope — the DevicesView dialog chain is already near the
+        // iOS Swift type-checker's budget, and inlining a 6th/7th modifier here tips it over ("unable to
+        // type-check in reasonable time"). macOS tolerates the inline form; iOS's type-inference is stricter.
+        .modifier(BodyLocationProbeSheets(target: $bodyLocationProbeTarget))
         // Second, strongly-worded delete-data confirm (reached from the Remove card's secondary control)
         .alert("Delete all of this device's data?",
                isPresented: Binding(get: { deleteDataTarget != nil },
@@ -973,6 +960,35 @@ private struct ExtendedBatteryProbeResultView: View {
         .padding(20)
         .frame(minWidth: 340, minHeight: 260)
         .background(StrandPalette.surfaceOverlay)
+    }
+}
+
+/// #690: the body-location probe's confirm + result dialogs as one ViewModifier, so they're type-checked
+/// in isolation instead of extending the DevicesView `.confirmationDialog`/`.sheet` chain (which is already
+/// near the iOS Swift type-checker's budget). `model`/`live` auto-inject from the parent's environment.
+private struct BodyLocationProbeSheets: ViewModifier {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var live: LiveState
+    @Binding var target: PairedDevice?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Body-location probe (#690 RE)",
+                                isPresented: Binding(get: { target != nil },
+                                                     set: { if !$0 { target = nil } }),
+                                titleVisibility: .visible,
+                                presenting: target) { _ in
+                Button("Send probe (read-only)") { model.probeBodyLocationAndStatus(); target = nil }
+                Button("Cancel", role: .cancel) { target = nil }
+            } message: { _ in
+                Text("Sends the read-only GET_BODY_LOCATION_AND_STATUS (0x54) and shows the strap's full raw reply, decoding the body-location record (revision / location / confidence / status) on WHOOP 4.0. Nothing is written to the strap, and it never changes wear detection or scoring.")
+            }
+            .sheet(isPresented: Binding(get: { live.bodyLocationProbe != nil },
+                                        set: { if !$0 { model.clearBodyLocationProbe() } })) {
+                BodyLocationProbeResultView(
+                    text: live.bodyLocationProbe ?? "",
+                    onClose: { model.clearBodyLocationProbe() })
+            }
     }
 }
 
