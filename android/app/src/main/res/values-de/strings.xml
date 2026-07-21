@@ -1772,4 +1772,6 @@
     <string name="battery_channel_name">Akku-Hinweise</string>
     <string name="battery_channel_desc">Hinweise, wenn der Strap-Akku schwach oder voll geladen ist.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">Energiesparmodus beruhigt die Anzeigen, übersetzte Android-Benachrichtigungen und sofort geladene Diagramme</string>
+    <string name="l10n_test_centre_screen_diagnostics_capture_50a07985">Diagnose-Aufzeichnung</string>
+    <string name="l10n_test_centre_screen_write_research_artifacts_to_the_705b2423">Schreibt Forschungsartefakte in den Diagnose-Ordner: die Tier-B-Begleitdateien des Oura-Rings (Aktivität/MET; IBI-HR und Rohdaten, sobald verfügbar) und die Rohbild-Aufzeichnung des WHOOP 5/MG. Standardmäßig aus. Wird bei der nächsten Verbindung wirksam.</string>
 </resources>

@@ -41,6 +41,11 @@ struct TestCentreView: View {
     @AppStorage(PuffinExperiment.ppgHrSubLagInterpKey) private var ppgHrSubLagInterpEnabled = false
     @AppStorage(PuffinExperiment.hrvReadinessKey) private var hrvReadinessEnabled = false
 
+    // Section 2: "Diagnostics capture" master switch (default OFF). Bound to the SAME PuffinExperiment key the
+    // Android card writes. Gates the Oura Tier-B JSONL sidecars + the WHOOP raw-frame capture (see
+    // PuffinExperiment.diagnosticsCaptureEnabled / rawCaptureActive). Takes effect on the next connection.
+    @AppStorage(PuffinExperiment.diagnosticsCaptureKey) private var diagnosticsCaptureEnabled = false
+
     /// True when the connected strap is a 5/MG, so the 5/MG experimental block shows. Mirrors the
     /// SettingsView gate (#22): a confident 4.0 owner never sees controls that cannot touch their strap.
     private var is5MG: Bool { selectedWhoopModelRaw == WhoopModel.whoop5mg.rawValue }
@@ -151,6 +156,21 @@ struct TestCentreView: View {
                 NoopButton("Copy environment dump", systemImage: "info.circle", kind: .secondary) {
                     PlatformPasteboard.copy(live.exportableLogText())
                 }
+
+                Divider().overlay(StrandPalette.hairline)
+
+                // Diagnostics capture master switch: gates the on-device research artifacts in the Diagnostics
+                // folder (Oura Tier-B JSONL sidecars + the WHOOP raw-frame capture). Default OFF keeps the
+                // folder empty; flip it on for a capture session. Takes effect on the next ring/strap connection.
+                Toggle(isOn: $diagnosticsCaptureEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Diagnostics capture").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                        Text("Write research artifacts to the Diagnostics folder: the Oura ring's Tier-B sidecars (activity/MET; IBI-HR and raw once those ship) and the WHOOP 5/MG raw-frame capture. Off by default. Applies on the next connection.")
+                            .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .tint(StrandPalette.accent)
             }
         }
     }

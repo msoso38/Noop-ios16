@@ -240,8 +240,8 @@ object LogExport {
         return when {
             !whoop5Connected ->
                 "Raw capture records WHOOP 5/MG history syncs and doesn't apply to WHOOP 4.0 (already fully decoded).$tail"
-            !PuffinExperiment.from(context).isCaptureEnabled ->
-                "No raw capture yet. Turn on \"Record 5/MG raw capture\" above, then let a history sync run.$tail"
+            !PuffinExperiment.from(context).rawCaptureActive ->
+                "No raw capture yet. Turn on \"Record 5/MG raw capture\" (or the Test Centre \"Diagnostics capture\" switch), then let a history sync run.$tail"
             else ->
                 "Raw capture is on. Let a 5/MG history sync run, then try again.$tail"
         }

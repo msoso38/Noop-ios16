@@ -163,4 +163,24 @@ enum PuffinExperiment {
     static func resetFiveMGGatedProbes() {
         for key in fiveMGGatedKeys { UserDefaults.standard.set(false, forKey: key) }
     }
+
+    // MARK: - Diagnostics capture (Test Centre master switch)
+
+    /// Opt-in "Diagnostics capture" master switch (default OFF): gates the on-device RESEARCH artifacts written
+    /// to `<App Support>/OpenWhoop/Diagnostics` — the Oura Tier-B JSONL sidecars (`oura-activity` / `oura-motion`
+    /// today; `oura-raw` on its own branch) — and ALSO the WHOOP 5/MG raw-frame capture (via `rawCaptureActive`).
+    /// Default OFF keeps the Diagnostics folder empty in normal use; a tester flips it on in the Test Centre for a
+    /// capture session. Read where each dump/capture is CREATED, so a flip takes effect on the next ring/strap
+    /// connection. Mirrors the Android `PuffinExperiment.KEY_DIAGNOSTICS_CAPTURE`.
+    static let diagnosticsCaptureKey = "noopDiagnosticsCapture"
+
+    static var diagnosticsCaptureEnabled: Bool { UserDefaults.standard.bool(forKey: diagnosticsCaptureKey) }
+
+    /// Whether the WHOOP 5/MG continuous raw-frame capture should persist. TRUE when EITHER the long-standing
+    /// per-strap `enableRawCapture` opt-in OR the Test Centre `diagnosticsCapture` master is on — so the master
+    /// switch turns raw capture on too, while the independent `enableRawCapture` flag keeps working on its own.
+    /// (The on-demand bounded raw-capture window is separate and always honoured; this is only the 24/7 gate.)
+    static var rawCaptureActive: Bool {
+        UserDefaults.standard.bool(forKey: "enableRawCapture") || diagnosticsCaptureEnabled
+    }
 }

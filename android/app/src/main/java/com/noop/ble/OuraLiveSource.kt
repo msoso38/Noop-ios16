@@ -241,14 +241,17 @@ class OuraLiveSource(
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
 
     /** Tier-B activity/MET research corpus writer (diagnostic JSONL sidecar; never scored, never a Streams
-     *  row). Null when there is no device id. The Kotlin twin of the Swift `OuraActivityDump`. */
+     *  row). Null when there is no device id OR the Test Centre "Diagnostics capture" master is OFF (default),
+     *  so no sidecar file is written in normal use. The Kotlin twin of the Swift `OuraActivityDump`. */
     private val activityDump: OuraActivityDump? =
-        if (deviceId.isNotEmpty()) OuraActivityDump(appContext, deviceId, log) else null
+        if (deviceId.isNotEmpty() && PuffinExperiment.from(appContext).diagnosticsCapture)
+            OuraActivityDump(appContext, deviceId, log) else null
 
     /** 0x47 motion calibration corpus (Tier-A), for offline LSB→g scale + cadence work (#804). Kotlin twin
-     *  of the Swift `OuraMotionDump`. Null when there is no device id. */
+     *  of the Swift `OuraMotionDump`. Null when there is no device id OR the "Diagnostics capture" master is OFF. */
     private val motionDump: OuraMotionDump? =
-        if (deviceId.isNotEmpty()) OuraMotionDump(appContext, deviceId, log) else null
+        if (deviceId.isNotEmpty() && PuffinExperiment.from(appContext).diagnosticsCapture)
+            OuraMotionDump(appContext, deviceId, log) else null
     private val scanner: BluetoothLeScanner? get() = adapter?.bluetoothLeScanner
 
     private var gatt: BluetoothGatt? = null

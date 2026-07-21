@@ -1685,4 +1685,6 @@
     <string name="battery_channel_name">电量提醒</string>
     <string name="battery_channel_desc">当手环电量低或已充满时提醒。</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">省电模式让仪表静止、Android 通知已翻译、图表秒开</string>
+    <string name="l10n_test_centre_screen_diagnostics_capture_50a07985">诊断采集</string>
+    <string name="l10n_test_centre_screen_write_research_artifacts_to_the_705b2423">将研究工件写入诊断文件夹：Oura 戒指的 Tier-B 附属文件（活动/MET；IBI-HR 和原始数据将在后续版本中提供）以及 WHOOP 5/MG 原始帧采集。默认关闭。在下次连接时生效。</string>
 </resources>

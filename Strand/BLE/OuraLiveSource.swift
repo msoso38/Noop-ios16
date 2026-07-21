@@ -772,10 +772,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         self.onSerial = onSerial
         self.feedsLive = feedsLive
         self.adoptIntent = adoptIntent
-        // Tier-B MET research corpus: only on a live/persisting source, never the discovery-only scanner.
-        self.activityDump = feedsLive && !deviceId.isEmpty ? OuraActivityDump(deviceId: deviceId, log: log) : nil
-        // 0x47 motion calibration corpus: same gate as the activity dump (live/persisting source only).
-        self.motionDump = feedsLive && !deviceId.isEmpty ? OuraMotionDump(deviceId: deviceId, log: log) : nil
+        // Tier-B MET research corpus: only on a live/persisting source, never the discovery-only scanner, and
+        // only when the Test Centre "Diagnostics capture" master switch is on (default OFF → no sidecar file).
+        self.activityDump = feedsLive && !deviceId.isEmpty && PuffinExperiment.diagnosticsCaptureEnabled
+            ? OuraActivityDump(deviceId: deviceId, log: log) : nil
+        // 0x47 motion calibration corpus: same gate as the activity dump (incl. the master switch).
+        self.motionDump = feedsLive && !deviceId.isEmpty && PuffinExperiment.diagnosticsCaptureEnabled
+            ? OuraMotionDump(deviceId: deviceId, log: log) : nil
         super.init()
         // Dedicated queue-less central -> callbacks arrive on the main queue, matching @MainActor.
         self.central = CBCentralManager(delegate: self, queue: nil)

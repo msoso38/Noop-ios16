@@ -1751,4 +1751,6 @@
     <string name="battery_channel_name">Alertas de bateria</string>
     <string name="battery_channel_desc">Avisos quando a bateria da correia está fraca ou totalmente carregada.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">A poupança de bateria acalma os indicadores, notificações Android traduzidas e gráficos instantâneos</string>
+    <string name="l10n_test_centre_screen_diagnostics_capture_50a07985">Captura de diagnósticos</string>
+    <string name="l10n_test_centre_screen_write_research_artifacts_to_the_705b2423">Escreve artefactos de investigação na pasta Diagnósticos: os ficheiros complementares Tier-B do anel Oura (atividade/MET; IBI-HR e dados em bruto quando disponíveis) e a captura de tramas em bruto do WHOOP 5/MG. Desativado por predefinição. Aplica-se na próxima ligação.</string>
 </resources>

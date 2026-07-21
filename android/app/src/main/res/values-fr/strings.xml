@@ -1757,4 +1757,6 @@
     <string name="battery_channel_name">Alertes de batterie</string>
     <string name="battery_channel_desc">Alertes lorsque la batterie du bracelet est faible ou complètement chargée.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">L\'économiseur de batterie fige les jauges, notifications Android traduites et graphiques instantanés</string>
+    <string name="l10n_test_centre_screen_diagnostics_capture_50a07985">Capture de diagnostics</string>
+    <string name="l10n_test_centre_screen_write_research_artifacts_to_the_705b2423">Écrit les artefacts de recherche dans le dossier Diagnostics : les fichiers annexes Tier-B de la bague Oura (activité/MET ; IBI-HR et données brutes à venir) et la capture de trames brutes du WHOOP 5/MG. Désactivé par défaut. S\'applique à la prochaine connexion.</string>
 </resources>

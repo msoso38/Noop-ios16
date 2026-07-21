@@ -115,6 +115,22 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         editor.apply()
     }
 
+    /** "Diagnostics capture" master switch (default false): gates the on-device RESEARCH artifacts written to
+     *  the Diagnostics folder — the Oura Tier-B JSONL sidecars (`oura-activity`/`oura-motion` today; `oura-raw`
+     *  on its own branch) — and ALSO the WHOOP 5/MG raw-frame capture (via [rawCaptureActive]). Default OFF keeps
+     *  the folder empty in normal use; a tester flips it on in the Test Centre for a capture session. Read where
+     *  each dump/capture is created, so a flip takes effect on the next connection. Mirrors the macOS
+     *  `PuffinExperiment.diagnosticsCaptureKey`. */
+    var diagnosticsCapture: Boolean
+        get() = prefs.getBoolean(KEY_DIAGNOSTICS_CAPTURE, false)
+        set(v) = prefs.edit().putBoolean(KEY_DIAGNOSTICS_CAPTURE, v).apply()
+
+    /** Whether the WHOOP 5/MG raw-frame capture should persist: TRUE when EITHER the per-strap [isCaptureEnabled]
+     *  opt-in OR the [diagnosticsCapture] master is on. So the Test Centre master turns raw capture on too, while
+     *  the independent capture flag keeps working on its own. Mirrors the macOS `PuffinExperiment.rawCaptureActive`. */
+    val rawCaptureActive: Boolean
+        get() = isCaptureEnabled || diagnosticsCapture
+
     companion object {
         /** Persisted preferences file. Internal so a UI screen can observe external writes to it. */
         internal const val PREFS = "noop_experiments"
@@ -146,6 +162,9 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
 
         /** "Motion-aware wake refinement" opt-in (mirrors macOS `PuffinExperiment.motionAwareWakeKey`). */
         const val KEY_MOTION_AWARE_WAKE = "noopMotionAwareWake"
+
+        /** "Diagnostics capture" master switch (mirrors macOS `PuffinExperiment.diagnosticsCaptureKey`). */
+        const val KEY_DIAGNOSTICS_CAPTURE = "noopDiagnosticsCapture"
 
         fun from(context: Context): PuffinExperiment =
             PuffinExperiment(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE))

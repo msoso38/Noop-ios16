@@ -937,9 +937,10 @@ public final class BLEManager: NSObject, ObservableObject {
             self.deviceId = activeId
         }
         try? await store.upsertDevice(id: deviceId, mac: nil, name: "WHOOP 4.0")
-        // Research toggle — OFF by default. When disabled the app is decoded-only and never
-        // persists raw frames. Flip "enableRawCapture" in UserDefaults to capture raw again.
-        let enableRawCapture = UserDefaults.standard.bool(forKey: "enableRawCapture")
+        // Research toggle — OFF by default. When disabled the app is decoded-only and never persists raw
+        // frames. Flip "enableRawCapture" in UserDefaults, OR the Test Centre "Diagnostics capture" master
+        // switch, to capture raw again (see PuffinExperiment.rawCaptureActive).
+        let enableRawCapture = PuffinExperiment.rawCaptureActive
         collector = Collector(store: store, deviceId: deviceId,
                               enableRawCapture: enableRawCapture)
         // The store can finish bootstrapping AFTER connect(model:) already ran (both wait on
@@ -1442,10 +1443,10 @@ public final class BLEManager: NSObject, ObservableObject {
         log("Raw-accel capture: started for \(secs)s")
         DispatchQueue.main.asyncAfter(deadline: .now() + secs) { [weak self] in
             guard let self else { return }
-            // Only stop the raw stream if the 24/7 research toggle is OFF.  When it's ON, the
-            // continuous stream must keep running — we just flush/upload the bounded window we
-            // captured without halting the wider session.
-            if !UserDefaults.standard.bool(forKey: "enableRawCapture") {
+            // Only stop the raw stream if the 24/7 research toggle is OFF.  When it's ON (either the
+            // per-strap flag or the Test Centre "Diagnostics capture" master), the continuous stream must
+            // keep running — we just flush/upload the bounded window we captured without halting the session.
+            if !PuffinExperiment.rawCaptureActive {
                 self.send(.stopRawData, payload: [0x01])
             }
             self.rawCaptureInFlight = false

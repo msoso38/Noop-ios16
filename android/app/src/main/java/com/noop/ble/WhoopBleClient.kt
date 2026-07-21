@@ -6096,7 +6096,7 @@ class WhoopBleClient(
         refreshConnectionPriority()   // #477: escalate to HIGH for the offload burst (faster sync). No-op unless enabled.
         applyPreferredPhy()           // #533: prefer LE 2M for the burst (halves air-time). No-op unless enabled.
         // Opt-in raw capture (research aid): pref read fresh per session, like the probes gate.
-        if (connectedFamily == DeviceFamily.WHOOP5 && PuffinExperiment.from(context).isCaptureEnabled) {
+        if (connectedFamily == DeviceFamily.WHOOP5 && PuffinExperiment.from(context).rawCaptureActive) {
             startWhoop5BackfillCapture()
         }
         if (connectedFamily == DeviceFamily.WHOOP5) {
@@ -7116,7 +7116,7 @@ class WhoopBleClient(
      */
     private fun writeWhoop5EventLogIfEvent(characteristic: String, frame: ByteArray) {
         if (eventLogDisabled || !isWhoop5EventFrame(frame)) return
-        if (!PuffinExperiment.from(context).isCaptureEnabled) return
+        if (!PuffinExperiment.from(context).rawCaptureActive) return
         runCatching {
             val f = java.io.File(context.filesDir, WHOOP5_EVENT_LOG_FILE)
             if (f.exists() && f.length() > WHOOP5_EVENT_LOG_MAX_BYTES) {
@@ -7154,7 +7154,7 @@ class WhoopBleClient(
      *  1244-B 6-axis buffer decodes (rawColumns null otherwise). IO-dispatched so it never blocks the GATT
      *  thread; bounded by a rolling retention prune. Raw i16, no downstream consumer yet (instrument-first). */
     private fun storeWhoop5RawImuIfBuffer(frame: ByteArray) {
-        if (!PuffinExperiment.from(context).isCaptureEnabled) return
+        if (!PuffinExperiment.from(context).rawCaptureActive) return
         val cols = Whoop5RawImu.rawColumns(frame) ?: return
         val baseTs = PuffinDeepBufferLog.strapTs(frame)?.toLong() ?: return
         val dev = deviceId
@@ -7178,7 +7178,7 @@ class WhoopBleClient(
 
     private fun writeWhoop5DeepBufferIfBig(characteristic: String, frame: ByteArray, isOffload: Boolean) {
         if (deepBufferDisabled || !PuffinDeepBufferLog.isDeepBuffer(frame)) return
-        if (!PuffinExperiment.from(context).isCaptureEnabled) return
+        if (!PuffinExperiment.from(context).rawCaptureActive) return
         runCatching {
             val f = java.io.File(context.filesDir, WHOOP5_DEEPBUFFER_FILE)
             if (f.exists() && f.length() > WHOOP5_DEEPBUFFER_MAX_BYTES) {

@@ -325,6 +325,9 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
     var showRecalibrate by remember { mutableStateOf(false) }
     // "Debug logging" moved here from Settings: dev-only, mirrors the strap log to logcat over adb.
     var debugLogging by remember { mutableStateOf(NoopPrefs.debugLogging(context)) }
+    // "Diagnostics capture" master switch (default off): the SAME PuffinExperiment key the Swift twin reads.
+    val puffin = remember { PuffinExperiment.from(context) }
+    var diagnosticsCapture by remember { mutableStateOf(puffin.diagnosticsCapture) }
     SettingsSectionTC(
         icon = Icons.Filled.Info,
         title = uiString(R.string.l10n_test_centre_screen_diagnostic_tools_04ba4d3f),
@@ -365,6 +368,31 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
                 Switch(
                     checked = debugLogging,
                     onCheckedChange = { debugLogging = it; vm.setDebugLogging(it) },
+                    colors = settingsSwitchColors(),
+                )
+            }
+            // Diagnostics capture master switch: gates the on-device research artifacts in the Diagnostics
+            // folder (Oura Tier-B JSONL sidecars + the WHOOP raw-frame capture). Off by default keeps the
+            // folder empty; flip on for a capture session. Applies on the next connection.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        uiString(R.string.l10n_test_centre_screen_diagnostics_capture_50a07985),
+                        style = NoopType.subhead, color = Palette.textPrimary,
+                    )
+                    Text(
+                        uiString(R.string.l10n_test_centre_screen_write_research_artifacts_to_the_705b2423),
+                        style = NoopType.footnote,
+                        color = Palette.textTertiary,
+                    )
+                }
+                Switch(
+                    checked = diagnosticsCapture,
+                    onCheckedChange = { diagnosticsCapture = it; puffin.diagnosticsCapture = it },
                     colors = settingsSwitchColors(),
                 )
             }

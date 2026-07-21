@@ -1757,4 +1757,6 @@
     <string name="battery_channel_name">Alertas de batería</string>
     <string name="battery_channel_desc">Avisos cuando la batería de la pulsera está baja o completamente cargada.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">El ahorro de batería calma los indicadores, notificaciones de Android traducidas y gráficos instantáneos</string>
+    <string name="l10n_test_centre_screen_diagnostics_capture_50a07985">Captura de diagnósticos</string>
+    <string name="l10n_test_centre_screen_write_research_artifacts_to_the_705b2423">Escribe artefactos de investigación en la carpeta Diagnósticos: los archivos complementarios Tier-B del anillo Oura (actividad/MET; IBI-HR y datos sin procesar cuando estén disponibles) y la captura de tramas sin procesar del WHOOP 5/MG. Desactivado de forma predeterminada. Se aplica en la próxima conexión.</string>
 </resources>
