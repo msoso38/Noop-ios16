@@ -1,0 +1,16 @@
+{
+  "version": "0.1.0-stress-tip-affine",
+  "generated_at": "2026-07-14T03:55:23Z",
+  "formula": "whoop_tip_hat = a * noop_tip + b",
+  "a": 1.0,
+  "b": 0.0,
+  "n_pairs": 1,
+  "mae_before": 0.40000000000000013,
+  "mae_after": 0.40000000000000013,
+  "accuracy_valid": false,
+  "citations": [
+    "docs/STRESS_FACTORS_AND_LITERATURE.md",
+    "docs/WHOOP_NOOP_SCREENSHOT_COMPARE.md",
+    "docs/STRESS_SLEEP_ML_REPRO.md"
+  ]
+}

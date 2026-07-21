@@ -98,3 +98,15 @@ err.txt
 
 # Oura OAuth app credentials (BYO; never committed)
 Strand/Oura/OuraSecrets.xcconfig
+
+# Pairing / ML large dumps (keep golden labels + status JSON only)
+pairing-logs/noop-pairing-log.txt
+pairing-logs/ml-samples.jsonl
+pairing-logs/exports/**/*.jpg
+pairing-logs/exports/**/*.jpeg
+pairing-logs/exports/**/*.png
+pairing-logs/datasets/
+pairing-logs/live/
+pairing-logs/whoop-apk/
+pairing-logs/*.db
+pairing-logs/*.db-*
