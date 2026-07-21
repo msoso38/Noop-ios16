@@ -61,6 +61,8 @@ private struct DevicesContent: View {
     @State private var probeTarget: PairedDevice?
     /// #592 extended-battery probe (Test Centre → Connection) — the device whose confirm dialog is open.
     @State private var batteryProbeTarget: PairedDevice?
+    /// #690 body-location probe (Test Centre → Connection) — the device whose confirm dialog is open.
+    @State private var bodyLocationProbeTarget: PairedDevice?
     /// After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     @State private var pickNewActive = false
 
@@ -146,7 +148,11 @@ private struct DevicesContent: View {
                     // Same Test Centre → Connection gate as the reboot probe, minus the 4.0-only clause.
                     onExtendedBatteryProbe: (device.status == .active && live.connected
                                              && SourceCoordinator.isWhoop(device)
-                                             && TestCentre.active(.connection)) ? { batteryProbeTarget = device } : nil)
+                                             && TestCentre.active(.connection)) ? { batteryProbeTarget = device } : nil,
+                    // #690 body-location probe: read-only, both families. Same Test Centre → Connection gate.
+                    onBodyLocationProbe: (device.status == .active && live.connected
+                                          && SourceCoordinator.isWhoop(device)
+                                          && TestCentre.active(.connection)) ? { bodyLocationProbeTarget = device } : nil)
                     .staggeredAppear(index: idx)
             }
 
@@ -243,6 +249,24 @@ private struct DevicesContent: View {
             ExtendedBatteryProbeResultView(
                 text: live.extendedBatteryProbe ?? "",
                 onClose: { model.clearExtendedBatteryProbe() })
+        }
+        // #690 body-location opcode probe: read-only, decodes revision/location/confidence/status.
+        .confirmationDialog("Body-location probe (#690 RE)",
+                            isPresented: Binding(get: { bodyLocationProbeTarget != nil },
+                                                 set: { if !$0 { bodyLocationProbeTarget = nil } }),
+                            titleVisibility: .visible,
+                            presenting: bodyLocationProbeTarget) { _ in
+            Button("Send probe (read-only)") { model.probeBodyLocationAndStatus(); bodyLocationProbeTarget = nil }
+            Button("Cancel", role: .cancel) { bodyLocationProbeTarget = nil }
+        } message: { _ in
+            Text("Sends the read-only GET_BODY_LOCATION_AND_STATUS (0x54) and shows the strap's full raw reply, decoding the body-location record (revision / location / confidence / status) on WHOOP 4.0. Nothing is written to the strap, and it never changes wear detection or scoring.")
+        }
+        // #690 probe result: the strap's reply (or a "waiting…" state), readable + copyable in place.
+        .sheet(isPresented: Binding(get: { live.bodyLocationProbe != nil },
+                                    set: { if !$0 { model.clearBodyLocationProbe() } })) {
+            BodyLocationProbeResultView(
+                text: live.bodyLocationProbe ?? "",
+                onClose: { model.clearBodyLocationProbe() })
         }
         // Second, strongly-worded delete-data confirm (reached from the Remove card's secondary control)
         .alert("Delete all of this device's data?",
@@ -429,6 +453,7 @@ private struct DeviceCard: View {
     var onRebootProbe: (() -> Void)? = nil
     /// #592 extended-battery opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
     var onExtendedBatteryProbe: (() -> Void)? = nil
+    var onBodyLocationProbe: (() -> Void)? = nil
     /// Removed-section affordances (re-add as active / delete its data).
     var onReAdd: (() -> Void)? = nil
     var onDeleteData: (() -> Void)? = nil
@@ -676,6 +701,10 @@ private struct DeviceCard: View {
                 if let onExtendedBatteryProbe {
                     Button { onExtendedBatteryProbe() } label: { Label("Battery-info probe (#592 RE)…", systemImage: "ladybug") }
                 }
+                // #690 body-location opcode probe (RE): read-only, both families. Test Centre → Connection.
+                if let onBodyLocationProbe {
+                    Button { onBodyLocationProbe() } label: { Label("Body-location probe (#690 RE)…", systemImage: "ladybug") }
+                }
                 if let onRemove {
                     Divider()
                     Button(role: .destructive) { onRemove() } label: {
@@ -917,6 +946,46 @@ private struct ExtendedBatteryProbeResultView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Battery-info probe result (#592)")
+                .font(StrandFont.title2)
+                .foregroundStyle(StrandPalette.textPrimary)
+            if waiting {
+                Text("Waiting for the strap's reply…")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            } else {
+                ScrollView {
+                    Text(text)
+                        .font(StrandFont.mono)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                if !waiting {
+                    Button("Copy") { PlatformPasteboard.copy(text) }
+                }
+                Spacer()
+                Button("Close") { onClose() }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 340, minHeight: 260)
+        .background(StrandPalette.surfaceOverlay)
+    }
+}
+
+/// The #690 body-location probe reply (raw hex + decoded record + capture diff), or a "waiting…" state
+/// while in flight. Read-only; selectable text + a Copy button. Twin of the Android BodyLocationProbe
+/// result dialog and structurally identical to ExtendedBatteryProbeResultView.
+private struct BodyLocationProbeResultView: View {
+    let text: String
+    let onClose: () -> Void
+    private var waiting: Bool { text == BLEManager.bodyLocationProbeWaiting }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Body-location probe result (#690)")
                 .font(StrandFont.title2)
                 .foregroundStyle(StrandPalette.textPrimary)
             if waiting {
