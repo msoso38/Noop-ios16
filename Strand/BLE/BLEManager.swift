@@ -3963,14 +3963,17 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
     }
 
     /// #695: process a GET_DATA_RANGE COMMAND_RESPONSE — the #451 raw dump, the #689 pagesBehind backlog, and
-    /// the strap's newest/oldest banked window (strapNewestTs liveness watchdog + #547 backfill session gate +
-    /// clock-drift snapshot). Shared by the WHOOP4 case (cmdOff 6) and the 5/MG case (cmdOff 10) so a 5/MG
-    /// data-range reply feeds the SAME path — it previously ran none of this (the handler keyed on frame[6],
-    /// the 4.0 offset). `dataRangeNewestUnix`/`dataRangeOldestUnix` SCAN the frame (offset-agnostic), so they
-    /// work on either family; only pagesBehind uses cmdOff. The 5/MG path is NOT yet hardware-confirmed — the
-    /// #451 raw dump + logs let a 5/MG strap log verify it (NOOP's unconfirmed-5/MG pattern), and the #547
-    /// window gate ignores a malformed range, so a mis-scan can't pollute ingest.
-    private func handleDataRangeResponse(_ frame: [UInt8], cmdOff: Int) {
+    /// the strap's newest/oldest banked window. Shared by the WHOOP4 case (cmdOff 6, `feedsSync: true`) and the
+    /// 5/MG case (cmdOff 10, `feedsSync: false`); previously only WHOOP4 ran it (the handler keyed on frame[6]).
+    /// `dataRangeNewestUnix`/`dataRangeOldestUnix` SCAN the frame (offset-agnostic), so they work on either
+    /// family; only pagesBehind uses cmdOff.
+    ///
+    /// `feedsSync` gates the SYNC-affecting side-effects (strapNewestTs liveness watchdog, #547 backfill
+    /// session window, LiveState range) — WHOOP4 only for now. The 5/MG path passes `false`: it LOGS the
+    /// dump/backlog/newest/oldest/clock-drift (so a strap log can VALIDATE the decode) but leaves sync
+    /// UNCHANGED, so 5/MG behaviour is byte-identical to before + the new diagnostic lines. Flip the 5/MG call
+    /// to `feedsSync: true` once a real 5.0/MG strap confirms the newest/oldest decode is correct.
+    private func handleDataRangeResponse(_ frame: [UInt8], cmdOff: Int, feedsSync: Bool) {
         // #451: the decoded "newest" can latch a stale/wrong-epoch field (claypilat saw 2024 when the real
         // newest was 2026). To tell a genuinely-stale strap apart from a frame-alignment bug in
         // dataRangeNewestUnix WITHOUT guessing, dump the raw GET_DATA_RANGE response bytes (logged
@@ -3983,7 +3986,11 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             log("Strap backlog pages behind: \(pages) (#689 — GET_DATA_RANGE ring backlog, diagnostic only)")
         }
         if let newest = BLEManager.dataRangeNewestUnix(from: frame) {
-            strapNewestTs = newest                    // feeds the liveness watchdog
+            // #695: the sync-affecting side-effects (strapNewestTs, backfill window, LiveState range) only
+            // apply when feedsSync — WHOOP4 today. The 5/MG path passes feedsSync=false: it LOGS the newest/
+            // oldest/backlog (so a strap log validates the decode) but leaves sync UNCHANGED until confirmed
+            // on hardware, so 5/MG behaviour is byte-identical to before + the new diagnostic lines.
+            if feedsSync { strapNewestTs = newest }   // feeds the liveness watchdog
             // #928: flag an implausibly FUTURE "newest" (strap clock set ahead) right where it lands, so a
             // Test Centre export shows WHY auto-continue refused to trust the range.
             let wallNowForSkew = Int(Date().timeIntervalSince1970)
@@ -3993,7 +4000,7 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             // #547 SESSION-RELATIVE gate: publish the strap's banked-record window to the Backfiller so the
             // historical ingest gate can reject a record dated months outside THIS strap's own [oldest,
             // newest]. The gate ignores a half/malformed window, so setting newest before oldest is safe.
-            backfiller?.sessionNewestUnix = newest
+            if feedsSync { backfiller?.sessionNewestUnix = newest }
             // Observability for "last night didn't sync" (#364): print the NEWEST record the strap holds.
             let d = ISO8601DateFormatter()
             d.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime, .withSpaceBetweenDateAndTime]
@@ -4001,13 +4008,13 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             // Also surface the OLDEST banked record so one connect shows the full backlog SPAN (#364).
             let oldest = BLEManager.dataRangeOldestUnix(from: frame)
             if let oldest, oldest < newest {
-                backfiller?.sessionOldestUnix = oldest   // #547: closes the session-relative window
+                if feedsSync { backfiller?.sessionOldestUnix = oldest }   // #547: closes the session-relative window
                 let spanDays = (newest - oldest) / 86_400
                 log("Strap banked history span: \(d.string(from: Date(timeIntervalSince1970: TimeInterval(oldest)))) → newest (~\(spanDays) day\(spanDays == 1 ? "" : "s") of backlog, drained oldest-first)")
             }
             // UNIVERSAL clock-drift snapshot (RTC cluster #531/#767/#804/#812): bank the [oldest, newest]
             // window onto LiveState UNCONDITIONALLY (observability, not gated) for the export assembler.
-            state.setStrapRange(newestUnix: newest, oldestUnix: (oldest.map { $0 < newest } ?? false) ? oldest : nil)
+            if feedsSync { state.setStrapRange(newestUnix: newest, oldestUnix: (oldest.map { $0 < newest } ?? false) ? oldest : nil) }
             // Connection test mode: promote the CLOCK-DRIFT picture to one upfront tagged line (#767/#754).
             if TestCentre.active(.connection) {
                 let line = ConnectionTrace.clockDriftLine(
@@ -4085,7 +4092,7 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 // handled in the 5/MG case below; both call handleDataRangeResponse so 5/MG now gets the same
                 // newest/oldest window (strapNewestTs / #547 backfill gate) + diagnostics it previously missed.
                 if frame.count > 6, frame[6] == WhoopCommand.getDataRange.rawValue {
-                    handleDataRangeResponse(frame, cmdOff: 6)
+                    handleDataRangeResponse(frame, cmdOff: 6, feedsSync: true)
                 }
                 // Clock correlation runs in both live and backfill modes. Once established it
                 // unblocks both the Collector (live path) and the Backfiller (chunk decoding).
@@ -4160,7 +4167,10 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // the SAME newest/oldest window + backfill gate + diagnostics as the 4.0 path above — this
                     // reply was previously ignored on 5/MG (the 4.0 handler keyed on frame[6]). cmdOff = 10.
                     if frame.count > 10, frame[8] == 0x24, frame[10] == WhoopCommand.getDataRange.rawValue {
-                        handleDataRangeResponse(frame, cmdOff: 10)
+                        // feedsSync: false — #695 diagnostic-only on 5/MG: log the dump/backlog/newest/oldest so
+                        // a strap log validates the decode, but DON'T feed strapNewestTs/backfill/state yet.
+                        // Flip to true once a real 5.0/MG strap confirms the newest/oldest are correct.
+                        handleDataRangeResponse(frame, cmdOff: 10, feedsSync: false)
                     }
                     // NOTE: we deliberately do NOT ingest live 5/MG REALTIME_DATA into the Collector
                     // here. For a 5/MG the standard 0x2A37 Heart-Rate profile is already the RELIABLE,
