@@ -369,9 +369,10 @@ like its sibling banked streams (`.hrv`/`.temp`/`.spo2`/`.sleepPhase`) — the f
 - **`0x69` `temp_period`** (6 B): single **int16 LE ÷ 100 = °C**. [ringverse]
 - **`0x75` `sleep_temp_event`** (6–18 B, 30 s spacing): values **uint16 LE ÷ 100 = °C**, timestamps walk backward from event UTC. [ringverse]
 
-### 6.9 HRV / RMSSD - `0x5D` `hrv_event` (6–16 B, 5-min spacing)
-- Samples each with `time_ms` + two int8 fields (`b1`,`b2`); timestamps walk backward from event UTC. [ringverse]
-- **NOOP note:** `0x5D` is the ring's own RMSSD-derived HRV tag; NOOP also reconstructs RMSSD/SDNN itself from the IBI streams (`0x60`/`0x80`) for our own scoring (we do not consume Oura's encrypted scores). [open_ring][ringverse]
+### 6.9 HRV / RMSSD - `0x5D` `hrv_event` (even-length body, 5-min buckets)
+- Body is a run of **`(u8 avg HR bpm, u8 avg RMSSD ms)` PAIRS**, one per 5-min bucket — HR at even byte offsets, RMSSD at odd; both **UNSIGNED, no scaling**. Decodes to nil on an empty or odd-length body. [oura-rs]
+- **DECODE CORRECTION:** earlier drafts read a 4-byte `time_ms(2 LE) + int8 + int8` stride [ringverse]; that mis-framed the first byte-pair into a bogus `time_ms`, sign-flipped the RMSSD byte, and only its `b1` accidentally landed on a real HR byte. Corrected to the pair layout above and validated against a real overnight capture: the HR byte tracks sleeping HR (~52 bpm), matching the #511 IBI-derived median.
+- **NOOP note:** `0x5D` is the ring's own summary HR+RMSSD tag; NOOP also reconstructs RMSSD/SDNN itself from the IBI streams (`0x60`/`0x80`) for its own scoring (we do not consume Oura's encrypted scores). [open_ring][oura-rs]
 
 ### 6.10 Battery - `0x0D` response (8 B body)
 - Layout: `percent, charging_progress, recommended_flag, 3 unknown bytes`. [open_oura-r3]
