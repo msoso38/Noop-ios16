@@ -268,6 +268,184 @@ struct CycleAwarenessOptInCard: View {
     }
 }
 
+// MARK: - Cycle tracker detail
+
+/// Local-only logged-period detail. It deliberately records only cycle day 1: the engine needs an
+/// anchor, while avoiding fabricated flow/fertility claims. Dates are editable through a real delete
+/// and re-log path, and every sensitive surface repeats the privacy + wellness-only contract.
+struct CycleTrackerView: View {
+    @EnvironmentObject private var repo: Repository
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    let result: CyclePhaseEngine.Result
+    var curve: [Double] = []
+
+    @State private var selectedDate = Date()
+    @State private var starts: [String] = []
+    @State private var confirmDeleteAll = false
+
+    private var selectedDay: String { Repository.localDayKey(selectedDate) }
+    private var alreadyLogged: Bool { starts.contains(selectedDay) }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
+                    SectionHeader("Cycle tracker", overline: "Period-start history")
+                    statusCard
+                    logCard
+                    historyCard
+                    VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                        Text(CyclePhaseEngine.awarenessLine)
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                        PrivacyNote()
+                    }
+                }
+                .padding(NoopMetrics.screenPadding)
+            }
+            .background(StrandPalette.surfaceBase)
+            .navigationTitle("Cycle tracker")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task(id: repo.cycleTrackingSeq) { starts = await repo.periodStarts() }
+            .confirmationDialog("Delete all logged period starts?",
+                                isPresented: $confirmDeleteAll,
+                                titleVisibility: .visible) {
+                Button("Delete all period history", role: .destructive) {
+                    Task {
+                        await repo.deleteAllPeriodStarts()
+                        await model.refreshV5Signals()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently removes the on-device period-start history. Sensor history is not changed.")
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: NoopMetrics.detailSheetMinWidth,
+               minHeight: NoopMetrics.detailSheetMinHeight)
+        #endif
+    }
+
+    private var statusCard: some View {
+        NoopCard(tint: StrandPalette.restColor) {
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                Text("Current estimate").strandOverline()
+                HStack(alignment: .firstTextBaseline) {
+                    Text(phaseTitle)
+                        .font(StrandFont.title2)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Spacer()
+                    if let lo = result.cycleDayLow, let hi = result.cycleDayHigh {
+                        Text(lo == hi ? "~day \(lo)" : "~day \(lo)-\(hi)")
+                            .font(StrandFont.bodyNumber)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    }
+                }
+                if curve.count > 1 {
+                    Sparkline(values: curve,
+                              gradient: Gradient(colors: [StrandPalette.restColor.opacity(0.4),
+                                                          StrandPalette.restBright]),
+                              showsHover: false)
+                        .frame(height: NoopMetrics.space10)
+                        .accessibilityHidden(true)
+                }
+                Text(result.note)
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                if let window = result.nextPeriodWindow {
+                    Text("Likely period window: \(prettyDay(window.earliestDay))-\(prettyDay(window.latestDay)). This is a range, not a fixed date.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+            }
+        }
+    }
+
+    private var logCard: some View {
+        NoopCard(tint: StrandPalette.restColor) {
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                Text("Log a period start").strandOverline()
+                DatePicker("Period started on", selection: $selectedDate, in: ...Date(),
+                           displayedComponents: .date)
+                    .font(StrandFont.body)
+                Button(alreadyLogged ? "Already logged" : "Log period start") {
+                    Task {
+                        await repo.logPeriodStart(day: selectedDay)
+                        await model.refreshV5Signals()
+                    }
+                }
+                .buttonStyle(.noopSecondary)
+                .disabled(alreadyLogged)
+                Text("This optional date anchors cycle day 1 and is checked against your nightly temperature pattern.")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+        }
+    }
+
+    private var historyCard: some View {
+        NoopCard {
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                HStack {
+                    Text("Logged starts").strandOverline()
+                    Spacer()
+                    if !starts.isEmpty {
+                        Button("Delete all") { confirmDeleteAll = true }
+                            .buttonStyle(.noopGhost)
+                            .foregroundStyle(StrandPalette.statusCritical)
+                    }
+                }
+                if starts.isEmpty {
+                    Text("No period starts logged yet.")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                } else {
+                    ForEach(starts.reversed(), id: \.self) { day in
+                        HStack {
+                            Image(systemName: "drop.fill")
+                                .foregroundStyle(StrandPalette.restColor)
+                                .accessibilityHidden(true)
+                            Text(prettyDay(day))
+                                .font(StrandFont.bodyNumber)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                            Spacer()
+                            Button {
+                                Task {
+                                    await repo.deletePeriodStart(day: day)
+                                    await model.refreshV5Signals()
+                                }
+                            } label: {
+                                Label("Delete \(prettyDay(day))", systemImage: "trash")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.noopGhost)
+                            .foregroundStyle(StrandPalette.statusCritical)
+                        }
+                        if day != starts.first { Divider().overlay(StrandPalette.hairline) }
+                    }
+                }
+            }
+        }
+    }
+
+    private var phaseTitle: String {
+        switch result.phase {
+        case .follicular: return String(localized: "Follicular")
+        case .periOvulatory: return String(localized: "Mid-cycle shift")
+        case .luteal: return String(localized: "Luteal")
+        case .unknown: return String(localized: "No clear pattern")
+        case .learning: return String(localized: "Learning your pattern")
+        }
+    }
+}
+
 // MARK: - 2. Body Clock card
 
 /// Estimated body-clock phase + an optional jet-lag / shift plan. The plan is LIGHT + SLEEP

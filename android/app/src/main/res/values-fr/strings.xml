@@ -1769,4 +1769,22 @@
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">L\'économiseur de batterie fige les jauges, notifications Android traduites et graphiques instantanés</string>
     <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">Aucune importation SpO₂ ni valeur Santé</string>
     <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Valeurs brutes uniquement — importation requise</string>
+    <string name="cycle_tracker_title">Suivi du cycle</string>
+    <string name="cycle_tracker_current_estimate">Estimation actuelle</string>
+    <string name="cycle_tracker_likely_window">Période probable entre %1$s et %2$s. Il s’agit d’une plage, pas d’une date fixe.</string>
+    <string name="cycle_tracker_log_heading">Enregistrer le début des règles</string>
+    <string name="cycle_tracker_already_logged">Déjà enregistré</string>
+    <string name="cycle_tracker_log_action">Enregistrer le début des règles</string>
+    <string name="cycle_tracker_anchor_help">Cette date facultative définit le jour 1 du cycle et est comparée à votre profil de température nocturne.</string>
+    <string name="cycle_tracker_logged_starts">Débuts enregistrés</string>
+    <string name="cycle_tracker_delete_all">Tout supprimer</string>
+    <string name="cycle_tracker_empty">Aucun début de règles enregistré pour le moment.</string>
+    <string name="cycle_tracker_delete_day">Supprimer %1$s</string>
+    <string name="cycle_tracker_privacy">Ces données restent sur votre appareil. Elles ne sont jamais téléversées, synchronisées ni partagées.</string>
+    <string name="cycle_tracker_done">Terminé</string>
+    <string name="cycle_tracker_delete_title">Supprimer tous les débuts de règles enregistrés ?</string>
+    <string name="cycle_tracker_delete_message">Cela supprime définitivement l’historique des débuts de règles enregistré sur cet appareil. L’historique du capteur reste inchangé.</string>
+    <string name="cycle_tracker_cancel">Annuler</string>
+    <string name="cycle_tracker_day_single">~jour %1$d</string>
+    <string name="cycle_tracker_day_range">~jour %1$d–%2$d</string>
 </resources>
