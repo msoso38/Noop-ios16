@@ -1813,4 +1813,13 @@
     <string name="cycle_tracker_cancel">Cancel</string>
     <string name="cycle_tracker_day_single">~day %1$d</string>
     <string name="cycle_tracker_day_range">~day %1$d–%2$d</string>
+    <string name="cycle_home_title">Menstrual Cycle</string>
+    <string name="cycle_home_private">Private, on-device tracking</string>
+    <string name="cycle_home_description">Log period starts locally and use them to anchor optional cycle estimates.</string>
+    <string name="cycle_home_latest">Latest period start</string>
+    <string name="cycle_home_learning">Learning your pattern</string>
+    <string name="cycle_home_open">Open tracker</string>
+    <string name="cycle_home_setup">Set up cycle tracking</string>
+    <string name="cycle_home_log_today">Log today</string>
+    <string name="cycle_home_logged_today">Logged today</string>
 </resources>

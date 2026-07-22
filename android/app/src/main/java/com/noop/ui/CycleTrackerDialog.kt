@@ -163,6 +163,91 @@ fun CycleTrackerDialog(
     }
 }
 
+/** Compact Today entry point for the local period-start tracker. Awareness only; never fertility advice. */
+@Composable
+fun MenstrualCycleHomeCard(
+    enabled: Boolean,
+    result: CyclePhaseEngine.Result?,
+    starts: List<String>,
+    onSetUp: () -> Unit,
+    onOpen: () -> Unit,
+    onLogToday: () -> Unit,
+) {
+    val today = LocalDate.now().toString()
+    val todayLogged = today in starts
+
+    NoopCard(tint = Palette.restColor) {
+        Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Metrics.space8)) {
+                Icon(
+                    Icons.Filled.CalendarMonth,
+                    contentDescription = null,
+                    tint = Palette.restColor,
+                    modifier = Modifier.size(Metrics.iconSmall),
+                )
+                Column {
+                    Text(uiString(com.noop.R.string.cycle_home_title), style = NoopType.headline, color = Palette.textPrimary)
+                    Text(uiString(com.noop.R.string.cycle_home_private), style = NoopType.footnote, color = Palette.textTertiary)
+                }
+            }
+
+            if (enabled) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        result?.let { cycleTrackerPhase(it.phase) }
+                            ?: uiString(com.noop.R.string.cycle_home_learning),
+                        style = NoopType.headline,
+                        color = Palette.textPrimary,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    result?.let(::cycleTrackerDay)?.let {
+                        Text(it, style = NoopType.bodyNumber, color = Palette.textSecondary)
+                    }
+                }
+            } else {
+                Text(
+                    uiString(com.noop.R.string.cycle_home_description),
+                    style = NoopType.subhead,
+                    color = Palette.textSecondary,
+                )
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(uiString(com.noop.R.string.cycle_home_latest), style = NoopType.subhead, color = Palette.textSecondary)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    starts.lastOrNull()?.let(::cycleTrackerPrettyDay)
+                        ?: uiString(com.noop.R.string.cycle_tracker_empty),
+                    style = NoopType.bodyNumber,
+                    color = if (starts.isEmpty()) Palette.textTertiary else Palette.textPrimary,
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(Metrics.space8)) {
+                TextButton(onClick = if (enabled) onOpen else onSetUp) {
+                    Text(
+                        uiString(if (enabled) com.noop.R.string.cycle_home_open else com.noop.R.string.cycle_home_setup),
+                        color = Palette.restColor,
+                    )
+                }
+                if (enabled) {
+                    TextButton(onClick = onLogToday, enabled = !todayLogged) {
+                        Text(
+                            uiString(if (todayLogged) com.noop.R.string.cycle_home_logged_today else com.noop.R.string.cycle_home_log_today),
+                            color = if (todayLogged) Palette.textTertiary else Palette.restColor,
+                        )
+                    }
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(Metrics.space8), verticalAlignment = Alignment.Top) {
+                Icon(Icons.Filled.Lock, contentDescription = null, tint = Palette.textTertiary, modifier = Modifier.size(Metrics.iconTiny))
+                Text(uiString(com.noop.R.string.cycle_tracker_privacy), style = NoopType.footnote, color = Palette.textTertiary)
+            }
+        }
+    }
+}
+
 private fun cycleTrackerPhase(phase: CyclePhaseEngine.Phase): String = when (phase) {
     CyclePhaseEngine.Phase.FOLLICULAR -> "Follicular"
     CyclePhaseEngine.Phase.PERI_OVULATORY -> "Mid-cycle shift"

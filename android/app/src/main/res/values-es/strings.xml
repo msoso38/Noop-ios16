@@ -1787,4 +1787,13 @@
     <string name="cycle_tracker_cancel">Cancelar</string>
     <string name="cycle_tracker_day_single">~día %1$d</string>
     <string name="cycle_tracker_day_range">~día %1$d–%2$d</string>
+    <string name="cycle_home_title">Ciclo menstrual</string>
+    <string name="cycle_home_private">Seguimiento privado en el dispositivo</string>
+    <string name="cycle_home_description">Registra localmente el inicio del período y úsalo para anclar estimaciones opcionales del ciclo.</string>
+    <string name="cycle_home_latest">Último inicio del período</string>
+    <string name="cycle_home_learning">Aprendiendo tu patrón</string>
+    <string name="cycle_home_open">Abrir seguimiento</string>
+    <string name="cycle_home_setup">Configurar seguimiento del ciclo</string>
+    <string name="cycle_home_log_today">Registrar hoy</string>
+    <string name="cycle_home_logged_today">Registrado hoy</string>
 </resources>

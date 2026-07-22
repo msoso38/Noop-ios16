@@ -1802,4 +1802,13 @@
     <string name="cycle_tracker_cancel">Abbrechen</string>
     <string name="cycle_tracker_day_single">~Tag %1$d</string>
     <string name="cycle_tracker_day_range">~Tag %1$d–%2$d</string>
+    <string name="cycle_home_title">Menstruationszyklus</string>
+    <string name="cycle_home_private">Privates Tracking auf dem Gerät</string>
+    <string name="cycle_home_description">Periodenbeginne lokal protokollieren und damit optionale Zyklusschätzungen verankern.</string>
+    <string name="cycle_home_latest">Letzter Periodenbeginn</string>
+    <string name="cycle_home_learning">Dein Muster wird gelernt</string>
+    <string name="cycle_home_open">Tracker öffnen</string>
+    <string name="cycle_home_setup">Zyklustracking einrichten</string>
+    <string name="cycle_home_log_today">Heute protokollieren</string>
+    <string name="cycle_home_logged_today">Heute protokolliert</string>
 </resources>
