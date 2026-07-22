@@ -1796,4 +1796,9 @@
     <string name="cycle_home_setup">Configurar seguimiento del ciclo</string>
     <string name="cycle_home_log_today">Registrar hoy</string>
     <string name="cycle_home_logged_today">Registrado hoy</string>
+    <string name="cycle_phase_follicular">Fase folicular</string>
+    <string name="cycle_phase_mid_cycle">Cambio de mitad de ciclo</string>
+    <string name="cycle_phase_luteal">Fase lútea</string>
+    <string name="cycle_phase_unclear">Sin patrón claro</string>
+    <string name="cycle_phase_learning">Aprendiendo tu patrón</string>
 </resources>

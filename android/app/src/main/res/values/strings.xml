@@ -1822,4 +1822,9 @@
     <string name="cycle_home_setup">Set up cycle tracking</string>
     <string name="cycle_home_log_today">Log today</string>
     <string name="cycle_home_logged_today">Logged today</string>
+    <string name="cycle_phase_follicular">Follicular</string>
+    <string name="cycle_phase_mid_cycle">Mid-cycle shift</string>
+    <string name="cycle_phase_luteal">Luteal</string>
+    <string name="cycle_phase_unclear">No clear pattern</string>
+    <string name="cycle_phase_learning">Learning your pattern</string>
 </resources>

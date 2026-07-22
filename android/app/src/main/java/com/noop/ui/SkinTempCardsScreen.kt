@@ -389,11 +389,11 @@ private fun WhyRow(label: String, values: List<String>, tint: Color) {
 // MARK: - Derived copy / presentation (mirror the Swift card exactly)
 
 private fun cyclePhaseTitle(phase: CyclePhaseEngine.Phase): String = when (phase) {
-    CyclePhaseEngine.Phase.FOLLICULAR -> "Follicular"
-    CyclePhaseEngine.Phase.PERI_OVULATORY -> "Mid-cycle shift"
-    CyclePhaseEngine.Phase.LUTEAL -> "Luteal"
-    CyclePhaseEngine.Phase.UNKNOWN -> "No clear pattern"
-    CyclePhaseEngine.Phase.LEARNING -> "Learning your pattern"
+    CyclePhaseEngine.Phase.FOLLICULAR -> uiString(R.string.cycle_phase_follicular)
+    CyclePhaseEngine.Phase.PERI_OVULATORY -> uiString(R.string.cycle_phase_mid_cycle)
+    CyclePhaseEngine.Phase.LUTEAL -> uiString(R.string.cycle_phase_luteal)
+    CyclePhaseEngine.Phase.UNKNOWN -> uiString(R.string.cycle_phase_unclear)
+    CyclePhaseEngine.Phase.LEARNING -> uiString(R.string.cycle_phase_learning)
 }
 
 /** "~day 18–22" — always a RANGE, never a single point. */

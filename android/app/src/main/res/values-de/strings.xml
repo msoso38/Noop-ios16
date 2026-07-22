@@ -1811,4 +1811,9 @@
     <string name="cycle_home_setup">Zyklustracking einrichten</string>
     <string name="cycle_home_log_today">Heute protokollieren</string>
     <string name="cycle_home_logged_today">Heute protokolliert</string>
+    <string name="cycle_phase_follicular">Follikelphase</string>
+    <string name="cycle_phase_mid_cycle">Zyklusmitte</string>
+    <string name="cycle_phase_luteal">Lutealphase</string>
+    <string name="cycle_phase_unclear">Kein klares Muster</string>
+    <string name="cycle_phase_learning">Dein Muster wird gelernt</string>
 </resources>

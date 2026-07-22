@@ -249,11 +249,11 @@ fun MenstrualCycleHomeCard(
 }
 
 private fun cycleTrackerPhase(phase: CyclePhaseEngine.Phase): String = when (phase) {
-    CyclePhaseEngine.Phase.FOLLICULAR -> "Follicular"
-    CyclePhaseEngine.Phase.PERI_OVULATORY -> "Mid-cycle shift"
-    CyclePhaseEngine.Phase.LUTEAL -> "Luteal"
-    CyclePhaseEngine.Phase.UNKNOWN -> "No clear pattern"
-    CyclePhaseEngine.Phase.LEARNING -> "Learning your pattern"
+    CyclePhaseEngine.Phase.FOLLICULAR -> uiString(com.noop.R.string.cycle_phase_follicular)
+    CyclePhaseEngine.Phase.PERI_OVULATORY -> uiString(com.noop.R.string.cycle_phase_mid_cycle)
+    CyclePhaseEngine.Phase.LUTEAL -> uiString(com.noop.R.string.cycle_phase_luteal)
+    CyclePhaseEngine.Phase.UNKNOWN -> uiString(com.noop.R.string.cycle_phase_unclear)
+    CyclePhaseEngine.Phase.LEARNING -> uiString(com.noop.R.string.cycle_phase_learning)
 }
 
 private fun cycleTrackerDay(result: CyclePhaseEngine.Result): String? {
