@@ -417,6 +417,18 @@ class SourceCoordinator(
             persist = { batch: StreamBatch, deviceId: String ->
                 scope.launch { runCatching { repo.insert(batch, deviceId) } }
             },
+            persistSleepSession = { s: com.noop.oura.OuraSleepSession, deviceId: String ->
+                // The ring-PROVIDED hypnogram night, upserted under the ring's OWN id (imported/measured
+                // side, NOT the "-noop" computed sibling) so mergeSleepRichness surfaces Oura's SleepNet
+                // staging over NOOP's sparse-motion computed night (#325).
+                scope.launch {
+                    runCatching {
+                        repo.upsertSleepSessions(listOf(com.noop.data.SleepSession(
+                            deviceId = deviceId, startTs = s.startTs, endTs = s.endTs,
+                            efficiency = s.efficiency, stagesJSON = s.stagesJson)))
+                    }
+                }
+            },
             log = straplog,           // Oura connect/auth/stream lifecycle → the SAME exported strap log (#421)
             onBattery = batterySink,  // ring battery → the same live state the WHOOP strap battery uses
         )
