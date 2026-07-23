@@ -573,6 +573,10 @@ fun <T> SegmentedPillControl(
     label: (T) -> String,
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
+    // Opt-in compact mode for long option sets. The track fills its parent and gives each segment an
+    // equal share instead of letting intrinsic label padding widen the surrounding card past the screen.
+    // Defaulted so the shorter controls keep their existing sizing.
+    adaptsToAvailableWidth: Boolean = false,
     // Per-segment availability (#943): a disabled segment stays VISIBLE (dimmed, not clickable) so the
     // control can teach that an option exists before it is usable, e.g. trend ranges that unlock as
     // history builds. Defaulted so every existing call site is untouched.
@@ -585,6 +589,7 @@ fun <T> SegmentedPillControl(
     // SegmentedPillControl refresh (segment height 36, pill fills it for an even inset).
     Row(
         modifier = modifier
+            .then(if (adaptsToAvailableWidth) Modifier.fillMaxWidth() else Modifier)
             .height(36.dp)
             .clip(outerShape)
             .background(Palette.surfaceInset)
@@ -609,16 +614,18 @@ fun <T> SegmentedPillControl(
             Box(
                 modifier = Modifier
                     // Fill the track height so the pill's inset is equal top/bottom/left/right.
+                    .then(if (adaptsToAvailableWidth) Modifier.weight(1f) else Modifier)
                     .fillMaxHeight()
                     .clip(pillShape)
                     .then(pillBg)
                     .then(if (itemEnabled) Modifier.clickableNoRipple { onSelect(item) } else Modifier)
-                    .padding(horizontal = 12.dp),
+                    .padding(horizontal = if (adaptsToAvailableWidth) Metrics.space4 else 12.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = label(item),
                     style = NoopType.captionNumber,
+                    maxLines = if (adaptsToAvailableWidth) 1 else Int.MAX_VALUE,
                     color = when {
                         selected && Palette.isLight -> androidx.compose.ui.graphics.Color.White
                         selected -> Palette.goldDeepText
