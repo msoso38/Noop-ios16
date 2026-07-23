@@ -376,6 +376,7 @@ public struct SegmentedPillControl<T: Hashable>: View {
     let isEnabled: (T) -> Bool
     @Binding var selection: T
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     public init(_ items: [T], selection: Binding<T>, adaptsToAvailableWidth: Bool = false,
                 label: @escaping (T) -> String) {
         self.init(items, selection: selection, adaptsToAvailableWidth: adaptsToAvailableWidth,
@@ -393,9 +394,16 @@ public struct SegmentedPillControl<T: Hashable>: View {
     @ViewBuilder
     public var body: some View {
         if adaptsToAvailableWidth {
-            ViewThatFits(in: .horizontal) {
-                track(equalWidth: false)
-                track(equalWidth: true)
+            if dynamicTypeSize > .large {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    track(equalWidth: false)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    track(equalWidth: false)
+                    track(equalWidth: true)
+                }
             }
         } else {
             track(equalWidth: false)
@@ -414,6 +422,7 @@ public struct SegmentedPillControl<T: Hashable>: View {
                 } label: {
                     Text(label(item))
                         .font(StrandFont.captionNumber)
+                        .lineLimit(equalWidth ? 1 : nil)
                         // Active segment is SELECTION CHROME, so it follows the accent: on dark a
                         // gold-gradient pill with gold-deep ink; on light a flat blue accent pill with
                         // white ink (so the light theme's selection matches its blue chrome, not gold).

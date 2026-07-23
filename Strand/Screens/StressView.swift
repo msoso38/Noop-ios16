@@ -503,6 +503,7 @@ struct StressView: View {
                 // the control stays inside the same page gutter as the chart on compact iPhones.
                 SegmentedPillControl(ExploreRange.allCases, selection: $range,
                                      adaptsToAvailableWidth: true) { $0.label }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 NoopCard(tint: StressRamp.calm) {
                     Text("Not enough recent days to chart a trend yet. Import a history or keep wearing your strap.")
@@ -1179,6 +1180,7 @@ private struct StressPreviewHarness: View {
                 }
                 SegmentedPillControl(ExploreRange.allCases, selection: $range,
                                      adaptsToAvailableWidth: true) { $0.label }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(NoopMetrics.screenPadding)
         }

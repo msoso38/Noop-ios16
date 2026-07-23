@@ -878,18 +878,16 @@ struct MetricDetailView: View {
                                    windowed: windowed,
                                    windowFellBack: windowFellBack)
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(MetricCatalog.categoryDisplayName(metric.category).uppercased()).strandOverline()
-                    Text(metric.title)
-                        .font(StrandFont.title2)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                Spacer()
-                SegmentedPillControl(ExploreRange.allCases, selection: selectionBinding,
-                                     adaptsToAvailableWidth: true,
-                                     isEnabled: isUnlocked) { $0.label }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(MetricCatalog.categoryDisplayName(metric.category).uppercased()).strandOverline()
+                Text(metric.title)
+                    .font(StrandFont.title2)
+                    .foregroundStyle(StrandPalette.textPrimary)
             }
+            SegmentedPillControl(ExploreRange.allCases, selection: selectionBinding,
+                                 adaptsToAvailableWidth: true,
+                                 isEnabled: isUnlocked) { $0.label }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             Text(caption)
                 .font(StrandFont.footnote)
                 .foregroundStyle(windowFellBack ? StrandPalette.statusWarning : StrandPalette.textTertiary)
