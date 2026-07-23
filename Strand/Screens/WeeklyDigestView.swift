@@ -128,7 +128,7 @@ struct WeeklyDigestContent: View {
 
     /// Display order: the two daily scores first, then the nightly signals.
     private static let order: [WeeklyMetric] = [.charge, .effort, .rest, .hrv, .rhr]
-    /// The three headline 0–100 scores that get their own domain summary card + gauge.
+    /// The three headline 0–100 scores shown as domain summaries.
     private static let scoreOrder: [WeeklyMetric] = [.charge, .effort, .rest]
 
     /// The Bevel colour world for each weekly metric — drives the summary card tint,
@@ -148,8 +148,7 @@ struct WeeklyDigestContent: View {
             // Headline over a subtle scenic backdrop (Charge-tinted starfield).
             header
 
-            // The three headline scores as frosted, domain-tinted summary cards — each a
-            // compact ring gauge + a week-over-week TrendChip.
+            // The three headline scores, each with a domain-tinted gauge and week-over-week context.
             scoreRow
 
             // Focal points + secondary signals + balance footer in one frosted card.
@@ -180,22 +179,49 @@ struct WeeklyDigestContent: View {
         }
     }
 
-    // MARK: Score row — three frosted domain summary cards
+    // MARK: Score row — three domain summaries
 
+    @ViewBuilder
     private var scoreRow: some View {
-        let cols = [GridItem(.adaptive(minimum: compact ? 140 : 168), spacing: NoopMetrics.gap)]
-        return LazyVGrid(columns: cols, spacing: NoopMetrics.gap) {
-            ForEach(Self.scoreOrder, id: \.rawValue) { metric in
-                if let s = digest.summary(metric) {
-                    DigestScoreCard(summary: s,
-                                    domain: domain(for: metric),
-                                    deltaText: deltaText(s),
-                                    deltaTone: chipTone(s),
-                                    accessibility: rowAccessibility(s, effortScale: effortScale),
-                                    effortScale: effortScale)
+        if compact {
+            let summaries = Self.scoreOrder.compactMap { digest.summary($0) }
+            if !summaries.isEmpty {
+                NoopCard(padding: NoopMetrics.space2) {
+                    HStack(spacing: 0) {
+                        ForEach(Array(summaries.enumerated()), id: \.element.metric.rawValue) { index, summary in
+                            scoreCard(summary: summary, presentation: .embedded)
+                            if index < summaries.count - 1 {
+                                Divider()
+                                    .overlay(StrandPalette.hairline)
+                                    .padding(.vertical, NoopMetrics.space3)
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 168), spacing: NoopMetrics.gap)],
+                spacing: NoopMetrics.gap
+            ) {
+                ForEach(Self.scoreOrder, id: \.rawValue) { metric in
+                    if let summary = digest.summary(metric) {
+                        scoreCard(summary: summary, presentation: .standalone)
+                    }
                 }
             }
         }
+    }
+
+    private func scoreCard(summary: WeeklyMetricSummary,
+                           presentation: DigestScoreCard.Presentation) -> some View {
+        DigestScoreCard(summary: summary,
+                        domain: domain(for: summary.metric),
+                        deltaText: deltaText(summary),
+                        deltaTone: chipTone(summary),
+                        accessibility: rowAccessibility(summary, effortScale: effortScale),
+                        effortScale: effortScale,
+                        presentation: presentation)
     }
 
     // MARK: Detail card (focal points · secondary signals · footer)
@@ -416,12 +442,18 @@ enum WeeklyDigestChipStyle {
     static func dropsVerdictFrame(_ s: WeeklyMetricSummary) -> Bool { s.isRoughComparison }
 }
 
-// MARK: - Digest score card (one headline domain: gauge + week-over-week chip)
+// MARK: - Digest score summary (one headline domain: gauge + week-over-week chip)
 
-/// A frosted, domain-tinted summary card for one 0–100 weekly score (Charge / Effort /
-/// Rest): a compact layered ring gauge for the week's mean, the domain label, and a
-/// TrendChip for the week-over-week move. Owns its own gauge draw-in @State, like Today.
+/// A summary for one 0–100 weekly score (Charge / Effort / Rest): a compact layered ring gauge for
+/// the week's mean, the domain label, and a TrendChip for the week-over-week move. It can own its
+/// domain-tinted card surface or sit inside the compact digest's shared surface. Owns its gauge
+/// draw-in @State, like Today.
 private struct DigestScoreCard: View {
+    enum Presentation: Equatable {
+        case embedded
+        case standalone
+    }
+
     let summary: WeeklyMetricSummary
     let domain: DomainTheme
     let deltaText: String
@@ -430,12 +462,14 @@ private struct DigestScoreCard: View {
     /// The Effort display scale (#268). Only consulted for the Effort card; Charge/Rest are genuine
     /// 0–100 scores and ignore it, keeping their "of 100" caption and integer mean.
     var effortScale: EffortScale = .hundred
+    let presentation: Presentation
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var animatedFraction: Double = 0
 
     /// The Effort card is the only one that follows the 0–100/0–21 toggle; the rest are fixed 0–100.
     private var isEffort: Bool { summary.metric == .effort }
+    private var isEmbedded: Bool { presentation == .embedded }
 
     private var fraction: Double {
         guard summary.thisWeek.n > 0 else { return 0 }
@@ -452,42 +486,75 @@ private struct DigestScoreCard: View {
         isEffort ? String(localized: "of \(UnitFormatter.effortScaleMax(effortScale))") : String(localized: "of 100")
     }
 
+    @ViewBuilder
     var body: some View {
-        NoopCard(padding: 14, tint: domain.color) {
-            VStack(spacing: 8) {
-                HStack {
-                    Text(summary.metric.label)
-                        .font(StrandFont.overline)
-                        .tracking(StrandFont.overlineTracking)
-                        .textCase(.uppercase)
-                        .foregroundStyle(domain.color)
-                    Spacer(minLength: 0)
-                    if summary.weekOverWeek.current.n > 0, summary.weekOverWeek.previous.n > 0 {
-                        TrendChip(text: deltaSigned, color: deltaTone)
-                    }
+        Group {
+            if isEmbedded {
+                content
+                    .padding(.horizontal, NoopMetrics.space1)
+            } else {
+                NoopCard(padding: 14, tint: domain.color) {
+                    content
                 }
-                BevelGauge(
-                    fraction: fraction,
-                    stops: domain.gradient.stops,
-                    tipColor: domain.bright,
-                    numberText: numberText,
-                    captionText: captionText,
-                    stateText: nil,
-                    supporting: nil,
-                    diameter: 118,
-                    lineWidth: 11,
-                    showsLabel: summary.thisWeek.n > 0,
-                    animatedFraction: animatedFraction
-                )
-                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity)
         }
         .onAppear {
             withAnimation(StrandMotion.drawIn(reduced: reduceMotion)) { animatedFraction = fraction }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibility)
+    }
+
+    private var content: some View {
+        VStack(spacing: NoopMetrics.space2) {
+            if isEmbedded {
+                Text(summary.metric.label)
+                    .font(StrandFont.overline)
+                    .tracking(StrandFont.overlineTracking)
+                    .textCase(.uppercase)
+                    .foregroundStyle(domain.color)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else {
+                HStack {
+                    metricLabel
+                    Spacer(minLength: 0)
+                    if hasComparison {
+                        TrendChip(text: deltaSigned, color: deltaTone)
+                    }
+                }
+            }
+            BevelGauge(
+                fraction: fraction,
+                stops: domain.gradient.stops,
+                tipColor: domain.bright,
+                numberText: numberText,
+                captionText: captionText,
+                stateText: nil,
+                supporting: nil,
+                diameter: isEmbedded ? NoopMetrics.compactGaugeDiameter : 118,
+                lineWidth: isEmbedded ? NoopMetrics.space2 : 11,
+                showsLabel: summary.thisWeek.n > 0,
+                animatedFraction: animatedFraction
+            )
+            .frame(maxWidth: .infinity)
+            if isEmbedded && hasComparison {
+                TrendChip(text: deltaSigned, color: deltaTone)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var metricLabel: some View {
+        Text(summary.metric.label)
+            .font(StrandFont.overline)
+            .tracking(StrandFont.overlineTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(domain.color)
+    }
+
+    private var hasComparison: Bool {
+        summary.weekOverWeek.current.n > 0 && summary.weekOverWeek.previous.n > 0
     }
 
     /// The week-over-week delta carrying a +/− so the TrendChip infers its arrow.
