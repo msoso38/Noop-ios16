@@ -564,7 +564,7 @@ fun InsightCard(
     }
 }
 
-// MARK: - SegmentedPillControl — the ONE segmented control
+// MARK: - SegmentedPillControl — shared segmented range control
 
 @Composable
 fun <T> SegmentedPillControl(
