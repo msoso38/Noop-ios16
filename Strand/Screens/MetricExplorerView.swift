@@ -774,6 +774,7 @@ struct MetricDetailView: View {
                 }
                 // Range control on its own row beneath the title.
                 SegmentedPillControl(ExploreRange.allCases, selection: selectionBinding,
+                                     adaptsToAvailableWidth: true,
                                      isEnabled: isUnlocked) { $0.label }
 
                 // The headline read-out in the liquid language: for a 0–100 score, the signature
@@ -886,6 +887,7 @@ struct MetricDetailView: View {
                 }
                 Spacer()
                 SegmentedPillControl(ExploreRange.allCases, selection: selectionBinding,
+                                     adaptsToAvailableWidth: true,
                                      isEnabled: isUnlocked) { $0.label }
             }
             Text(caption)

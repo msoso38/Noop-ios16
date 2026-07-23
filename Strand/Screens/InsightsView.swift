@@ -992,6 +992,7 @@ struct InsightsView: View {
                               overline: "What moves your \(outcome.outcomeName.lowercased())")
                 Spacer()
                 SegmentedPillControl(Outcome.allCases, selection: $outcome) { $0.label }
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityLabel("Outcome metric")
             }
 
