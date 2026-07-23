@@ -972,8 +972,10 @@ struct MetricDetailView: View {
         let deltaCaption = hasDelta ? String(localized: "vs prev \(effectiveRange.name)")
             : (effectiveRange == .all ? String(localized: "all history") : String(localized: "no prior \(effectiveRange.name)"))
 
+        #if os(iOS)
         return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-            // Average summarizes the selected range, so it leads at the full two-column width.
+            // On iOS, Average summarizes the selected range, so it leads at the full
+            // two-column width.
             StatTile(label: "Average", value: fmt(s.mean),
                      caption: s.n == 1 ? String(localized: "1 day") : String(localized: "\(s.n) days"),
                      accent: accent,
@@ -998,6 +1000,32 @@ struct MetricDetailView: View {
                          caption: latestCaption, accent: accent)
             }
         }
+        #else
+        // macOS keeps its adaptive multi-column dashboard. Promoting one tile to the
+        // unbounded screen width would turn a phone-specific hierarchy into an oversized
+        // desktop card and could leave the remaining adaptive row uneven.
+        return LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 168), spacing: NoopMetrics.gap)],
+            alignment: .leading,
+            spacing: NoopMetrics.gap
+        ) {
+            StatTile(label: "Average", value: fmt(s.mean),
+                     caption: s.n == 1 ? String(localized: "1 day") : String(localized: "\(s.n) days"),
+                     accent: accent,
+                     sparkline: windowValues.count > 1 ? windowValues : nil,
+                     sparkColor: accent)
+            StatTile(label: "Min", value: fmt(s.min),
+                     accent: StrandPalette.textPrimary)
+            StatTile(label: "Max", value: fmt(s.max),
+                     accent: StrandPalette.textPrimary)
+            StatTile(label: "Latest", value: latest.map { fmt($0.value) } ?? "—",
+                     caption: latestCaption, accent: accent)
+            StatTile(label: "Δ vs prev", value: deltaText ?? "—",
+                     caption: deltaCaption, accent: StrandPalette.textPrimary,
+                     delta: cmp.pctChange.map { "\($0 >= 0 ? "+" : "")\(String(format: "%.1f", $0))%" },
+                     deltaColor: deltaColor)
+        }
+        #endif
     }
 
     private var latestCaption: String? {

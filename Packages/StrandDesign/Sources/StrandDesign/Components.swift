@@ -12,7 +12,6 @@ public enum NoopMetrics {
     public static let sectionGap: CGFloat = 22   // Apple x WHOOP: breathing room (not cramped)
     public static let screenPadding: CGFloat = 18
     public static let tileHeight: CGFloat = 96   // Design Reset: tighter metric tile
-    public static let compactGaugeDiameter: CGFloat = 82
     // Key Metrics grid: one fixed height every tile snaps to, so a sparkline-and-caption tile and a
     // plain value tile read the same. maxHeight: .infinity can't equalise them inside a LazyVGrid (the
     // grid only offers a cell its content height, so there's nothing for the shorter tile to grow into),

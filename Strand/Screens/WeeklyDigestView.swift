@@ -125,6 +125,9 @@ struct WeeklyDigestContent: View {
     /// and the Trends small-multiple instead of being stuck on "of 100". Charge/Rest stay 0–100.
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
     private var effortScale: EffortScale { UnitPrefs.resolveEffortScale(effortScaleRaw) }
+    #if os(iOS)
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    #endif
 
     /// Display order: the two daily scores first, then the nightly signals.
     private static let order: [WeeklyMetric] = [.charge, .effort, .rest, .hrv, .rhr]
@@ -183,11 +186,43 @@ struct WeeklyDigestContent: View {
 
     @ViewBuilder
     private var scoreRow: some View {
+        #if os(iOS)
         if compact {
-            let summaries = Self.scoreOrder.compactMap { digest.summary($0) }
-            if !summaries.isEmpty {
-                NoopCard(padding: NoopMetrics.space2) {
-                    HStack(spacing: 0) {
+            compactScoreRow
+        } else {
+            scoreGrid
+        }
+        #else
+        // `compact` describes the embedded digest, not a compact desktop width.
+        // Keep macOS on its original adaptive, individually surfaced score cards.
+        scoreGrid
+        #endif
+    }
+
+    #if os(iOS)
+    @ViewBuilder
+    private var compactScoreRow: some View {
+        let summaries = Self.scoreOrder.compactMap { digest.summary($0) }
+        if !summaries.isEmpty {
+            NoopCard(padding: NoopMetrics.space2) {
+                if dynamicTypeSize.isAccessibilitySize {
+                    // At accessibility text sizes, three narrow columns would either truncate
+                    // localized labels/chips or force gauge text below a readable size.
+                    VStack(spacing: 0) {
+                        ForEach(Array(summaries.enumerated()), id: \.element.metric.rawValue) { index, summary in
+                            scoreCard(summary: summary, presentation: .embedded)
+                            if index < summaries.count - 1 {
+                                Divider()
+                                    .overlay(StrandPalette.hairline)
+                                    .padding(.horizontal, NoopMetrics.space3)
+                                    .padding(.vertical, NoopMetrics.space3)
+                            }
+                        }
+                    }
+                } else {
+                    // Top alignment keeps labels and gauges level when only some metrics have
+                    // enough previous-week data to render the optional comparison chip.
+                    HStack(alignment: .top, spacing: 0) {
                         ForEach(Array(summaries.enumerated()), id: \.element.metric.rawValue) { index, summary in
                             scoreCard(summary: summary, presentation: .embedded)
                             if index < summaries.count - 1 {
@@ -199,15 +234,18 @@ struct WeeklyDigestContent: View {
                     }
                 }
             }
-        } else {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 168), spacing: NoopMetrics.gap)],
-                spacing: NoopMetrics.gap
-            ) {
-                ForEach(Self.scoreOrder, id: \.rawValue) { metric in
-                    if let summary = digest.summary(metric) {
-                        scoreCard(summary: summary, presentation: .standalone)
-                    }
+        }
+    }
+    #endif
+
+    private var scoreGrid: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: compact ? 140 : 168), spacing: NoopMetrics.gap)],
+            spacing: NoopMetrics.gap
+        ) {
+            ForEach(Self.scoreOrder, id: \.rawValue) { metric in
+                if let summary = digest.summary(metric) {
+                    scoreCard(summary: summary, presentation: .standalone)
                 }
             }
         }
@@ -465,11 +503,15 @@ private struct DigestScoreCard: View {
     let presentation: Presentation
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var animatedFraction: Double = 0
 
     /// The Effort card is the only one that follows the 0–100/0–21 toggle; the rest are fixed 0–100.
     private var isEffort: Bool { summary.metric == .effort }
     private var isEmbedded: Bool { presentation == .embedded }
+    private var gaugeDiameter: CGFloat {
+        isEmbedded && !dynamicTypeSize.isAccessibilitySize ? 82 : 118
+    }
 
     private var fraction: Double {
         guard summary.thisWeek.n > 0 else { return 0 }
@@ -513,7 +555,8 @@ private struct DigestScoreCard: View {
                     .tracking(StrandFont.overlineTracking)
                     .textCase(.uppercase)
                     .foregroundStyle(domain.color)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                    .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 HStack {
@@ -529,15 +572,23 @@ private struct DigestScoreCard: View {
                 stops: domain.gradient.stops,
                 tipColor: domain.bright,
                 numberText: numberText,
-                captionText: captionText,
+                // The 82pt embedded gauge would reduce its proportional caption to
+                // roughly 7pt. Render that caption below with the scalable footnote role.
+                captionText: isEmbedded ? nil : captionText,
                 stateText: nil,
                 supporting: nil,
-                diameter: isEmbedded ? NoopMetrics.compactGaugeDiameter : 118,
-                lineWidth: isEmbedded ? NoopMetrics.space2 : 11,
+                diameter: gaugeDiameter,
+                lineWidth: isEmbedded && !dynamicTypeSize.isAccessibilitySize ? NoopMetrics.space2 : 11,
                 showsLabel: summary.thisWeek.n > 0,
                 animatedFraction: animatedFraction
             )
             .frame(maxWidth: .infinity)
+            if isEmbedded && summary.thisWeek.n > 0 {
+                Text(captionText)
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .lineLimit(1)
+            }
             if isEmbedded && hasComparison {
                 TrendChip(text: deltaSigned, color: deltaTone)
             }
@@ -594,6 +645,17 @@ private func previewDigest() -> WeeklyDigest {
         .background(StrandPalette.surfaceBase)
         .preferredColorScheme(.dark)
 }
+
+#if os(iOS)
+#Preview("Weekly digest – card · accessibility text") {
+    WeeklyDigestContent(digest: previewDigest(), compact: true)
+        .padding(24)
+        .frame(width: 390)
+        .background(StrandPalette.surfaceBase)
+        .preferredColorScheme(.dark)
+        .dynamicTypeSize(.accessibility1)
+}
+#endif
 
 #Preview("Weekly digest – full") {
     ScrollView {
