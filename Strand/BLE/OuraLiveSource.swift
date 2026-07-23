@@ -1127,6 +1127,23 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 persistHypnogramBurst(closed)
             }
         }
+        // #728: materialise `hrSample` from BANKED IBI. A batch with NO live-HR push (`.hr`) is history
+        // data — the ring banks overnight IBI (0x60/0x80/0x6E) but no HR, and the nightly pipeline gates on
+        // `hrSample` (day-owner probe + `hr.count >= 200`), so an Oura night otherwise never scores. Derive
+        // one median HR per IBI-record (`OuraIbiHr`) and enqueue it as `.hr` → the mapping writes
+        // `hrSample`, WITHOUT this switch's wear/live-badge side-effects (enqueue buffers for the mapping,
+        // it never re-enters ingest). Live batches ([.hr, .ibi]) are excluded, so live HR is never
+        // double-counted. Per-record ring-time anchored; an unanchored record is skipped (re-derived when
+        // it re-serves after the 0x42 anchor, exactly like the sibling `.ibi` rows).
+        let hasLiveHR = events.contains { if case .hr = $0 { return true } else { return false } }
+        if !hasLiveHR {
+            let bankedIbis: [OuraIBI] = events.compactMap { if case .ibi(let v) = $0 { return v } else { return nil } }
+            for hr in OuraIbiHr.perRecordMedianHR(bankedIbis) {
+                if let ts = driver.unixSeconds(forRingTimestamp: hr.ringTimestamp) {
+                    enqueue([.hr(hr)], ts: ts)
+                }
+            }
+        }
         for e in events {
             switch e {
             case .hr(let hr):

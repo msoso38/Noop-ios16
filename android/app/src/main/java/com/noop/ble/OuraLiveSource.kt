@@ -29,6 +29,7 @@ import com.noop.oura.OuraDriver
 import com.noop.oura.OuraDriverPhase
 import com.noop.oura.OuraEvent
 import com.noop.oura.OuraFraming
+import com.noop.oura.OuraIbiHr
 import com.noop.oura.OuraGatt
 import com.noop.oura.OuraCommands
 import com.noop.oura.OuraDecoders
@@ -1532,6 +1533,21 @@ class OuraLiveSource(
             log("Oura: sleep-phase record codes=${phases.size} " +
                 "deep/light/rem/awake=${counts[0]}/${counts[1]}/${counts[2]}/${counts[3]}")
             hypnogramAssembler.feed(phases.first().ringTimestamp, phases)?.let { persistHypnogramBurst(it) }
+        }
+        // #728: materialise hrSample from BANKED IBI. A batch with NO live-HR push (Hr) is history data —
+        // the ring banks overnight IBI (0x60/0x80/0x6E) but no HR, and the nightly pipeline gates on
+        // hrSample (day-owner probe + hr.count >= 200), so an Oura night otherwise never scores. Derive one
+        // median HR per IBI-record (OuraIbiHr) and enqueue it as Hr → the mapping writes hrSample, WITHOUT
+        // this switch's wear/live-badge side-effects (enqueue buffers for the mapping, it never re-enters
+        // emit). Live batches ([Hr, Ibi]) are excluded, so live HR is never double-counted. Per-record
+        // ring-time anchored; an unanchored record is skipped (re-derived when it re-serves after 0x42).
+        val hasLiveHR = events.any { it is OuraEvent.Hr }
+        if (!hasLiveHR) {
+            val bankedIbis = events.mapNotNull { (it as? OuraEvent.Ibi)?.value }
+            for (hr in OuraIbiHr.perRecordMedianHR(bankedIbis)) {
+                val ts = d.unixSeconds(forRingTimestamp = hr.ringTimestamp)
+                if (ts != null) enqueue(listOf(OuraEvent.Hr(hr)), ts.toInt())
+            }
         }
         for (e in events) when (e) {
             is OuraEvent.Hr -> {
