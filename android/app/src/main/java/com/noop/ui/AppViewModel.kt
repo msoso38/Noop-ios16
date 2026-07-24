@@ -112,6 +112,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** All paired devices (oldest first), read fresh. The screen re-reads after every mutation. */
     suspend fun pairedDevices(): List<com.noop.data.PairedDeviceRow> = noopApp.deviceRegistry.all()
 
+    /** Resolve a displayed score's storage namespace back to its input provider. Missing provenance on
+     *  a legacy computed row returns null rather than guessing from the computed namespace. */
+    internal suspend fun scoreInputProvider(
+        resolvedSource: String,
+        day: String,
+        metricKey: String,
+    ): ScoreInputProvider? {
+        val sourceId = if (resolvedSource.endsWith("-noop")) {
+            repository.scoreInputSource(resolvedSource, day, metricKey) ?: return null
+        } else {
+            resolvedSource
+        }
+        val brand = noopApp.deviceRegistry.all().firstOrNull { it.id == sourceId }?.brand
+        return ScoreInputProvider(sourceId, brand)
+    }
+
     /** Add (or update) a paired device. */
     suspend fun addPairedDevice(row: com.noop.data.PairedDeviceRow) = noopApp.deviceRegistry.add(row)
 

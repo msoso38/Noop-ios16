@@ -32,9 +32,8 @@ struct LiquidTodayView: View {
 
     // async-loaded via the confirmed Repository accessors
     @State private var restScore: Double?          // sleep_performance, day-keyed
-    /// Raw resolver source ids for the three scores, keyed by recovery / strain / sleep_performance.
-    /// Presentation uses Today's shared mapper so Liquid and Classic name a source consistently.
-    @State private var heroProvenanceByMetric: [String: String] = [:]
+    /// Input providers for the three scores, keyed by recovery / strain / sleep_performance.
+    @State private var heroProviderByMetric: [String: ScoreInputProvider] = [:]
     @State private var stress: Double?             // StressModel(...).score, 0–3
     @State private var fitnessAge: Double?         // exploreSeries("fitness_age").last
     @State private var vitality: Double?           // exploreSeries("vitality").last
@@ -520,14 +519,10 @@ struct LiquidTodayView: View {
                 .overlay(alignment: .top) {
                     if let sourceLabel = heroSourceLabel {
                         SourceBadge("\(sourceLabel)", tint: StrandPalette.onDarkSecondary)
-                            // Match the badge's trailing edge to the fixed-width Rest vessel on every card
-                            // width, then lift by the space4 gap above the cells so the badge's TOP sits on
-                            // the card's top edge — tucked into the top-right corner. (#486: the old
-                            // "+ half the badge height" centred it ON the border, reading as a pill floating
-                            // detached above the card; two users flagged it. Twin of Android TodayScreen.)
+                            // Match the badge's trailing edge to the Rest vessel and centre it on the card border.
                             .fixedSize()
                             .frame(width: HeroScoreCell.vesselDiameter, alignment: .trailing)
-                            .offset(y: -NoopMetrics.space4)
+                            .offset(y: -(NoopMetrics.space4 + NoopMetrics.sourceBadgeHeight / 2))
                             .allowsHitTesting(false)
                             .accessibilityLabel(Text("Source: \(sourceLabel)"))
                     }
@@ -1076,12 +1071,15 @@ struct LiquidTodayView: View {
                                                dayKeys: repo.days.map(\.day),
                                                hasRecovery: day?.recovery != nil)
             : nil
+        let priorScored = TodayView.lastScoredRecoveryDay(
+            days: repo.days, selectedDayKey: tkey,
+            isToday: selectedDayOffset == 0,
+            todayScored: day?.recovery != nil,
+            isCalibrating: calNights != nil
+        )
         cachedChargeDisplay = ChargeDisplay.resolve(
             todayRecovery: day?.recovery,
-            priorScored: TodayView.lastScoredRecoveryDay(days: repo.days, selectedDayKey: tkey,
-                                                         isToday: selectedDayOffset == 0,
-                                                         todayScored: day?.recovery != nil,
-                                                         isCalibrating: calNights != nil),
+            priorScored: priorScored,
             calibrationNights: calNights,
             todayKey: tkey)
 
@@ -1102,15 +1100,16 @@ struct LiquidTodayView: View {
         async let hrA = repo.hrBuckets(from: from, to: to, bucketSeconds: 300)
         async let wkA = repo.workoutRows()
         // Ask the same cross-source resolver the Classic Today view uses which source actually won each
-        // displayed score. Limit the read to the selected-day window instead of scanning full history.
+        // displayed score. Include the exact carried-Charge day; a fixed relative lookback can miss a
+        // legitimately old carried score.
         let sourceDayKey = selectedDayKey
-        let sourceLookback = max(2, selectedDayOffset + 2)
+        let sourceFromDay = min(sourceDayKey, priorScored?.day ?? sourceDayKey)
         async let chargeSourceA = repo.resolvedSeries(key: "recovery", source: Repository.whoopSource,
-                                                      days: sourceLookback)
+                                                      from: sourceFromDay, to: sourceDayKey)
         async let effortSourceA = repo.resolvedSeries(key: "strain", source: Repository.whoopSource,
-                                                      days: sourceLookback)
+                                                      from: sourceDayKey, to: sourceDayKey)
         async let restSourceA = repo.resolvedSeries(key: "sleep_performance", source: Repository.whoopSource,
-                                                    days: sourceLookback)
+                                                    from: sourceDayKey, to: sourceDayKey)
 
         let restSeries = await restA
         let stepsSeries = await stepsA
@@ -1193,13 +1192,22 @@ struct LiquidTodayView: View {
             ("strain", effortSource),
             ("sleep_performance", restSource),
         ]
-        var provenance: [String: String] = [:]
+        var providers: [String: ScoreInputProvider] = [:]
         for (metric, resolution) in sourceResolutions {
-            if let winner = resolution.points.last(where: { $0.day == sourceDayKey })?.source {
-                provenance[metric] = winner
+            let selectedPoint = resolution.points.last(where: { $0.day == sourceDayKey })
+            let winner = selectedPoint
+                ?? (metric == "recovery"
+                    ? priorScored.flatMap { prior in resolution.points.last(where: { $0.day == prior.day }) }
+                    : nil)
+            if let winner {
+                providers[metric] = await repo.scoreInputProvider(
+                    resolvedSource: winner.source,
+                    day: winner.day,
+                    metricKey: metric
+                )
             }
         }
-        heroProvenanceByMetric = provenance
+        heroProviderByMetric = providers
 
         // First load done — bring the hero gauges + sky to life now the launch churn has settled.
         if !dataLoaded { withAnimation(.easeIn(duration: 0.4)) { dataLoaded = true } }
@@ -1218,18 +1226,19 @@ struct LiquidTodayView: View {
     /// two distinct winners in Charge / Effort / Rest order so the compact badge stays readable.
     private var heroSourceLabel: String? {
         Self.heroSourceLabel(
-            rawSources: ["recovery", "strain", "sleep_performance"].compactMap { heroProvenanceByMetric[$0] },
-            deviceId: repo.deviceId)
+            providers: ["recovery", "strain", "sleep_performance"].compactMap { heroProviderByMetric[$0] })
     }
 
-    /// Pure aggregation seam for the Liquid hero. The existing Today mapper turns computed siblings into
-    /// "On-device", the Apple Health source into "Apple Watch", and imported strap rows into "Whoop".
-    static func heroSourceLabel(rawSources: [String], deviceId: String) -> String? {
+    /// Pure aggregation seam for the Liquid hero. The provider mapper names the sensors/imports that
+    /// supplied the score inputs; identical names collapse and the compact badge is capped at two.
+    static func heroSourceLabel(providers: [ScoreInputProvider]) -> String? {
         var seen = Set<String>()
         var labels: [String] = []
-        for raw in rawSources {
-            let label = TodayView.todayProvenanceChipLabel(
-                rawSource: raw, deviceId: deviceId, appleHealthSource: Repository.appleHealthSource)
+        for provider in providers {
+            let label = TodayView.todayScoreProviderLabel(
+                sourceId: provider.sourceId,
+                brand: provider.brand
+            )
             if seen.insert(label).inserted { labels.append(label) }
             if labels.count == 2 { break }
         }

@@ -88,6 +88,7 @@ public struct DeviceRegistryStore: Sendable {
         "hrSample", "rrInterval", "spo2Sample", "skinTempSample", "respSample", "gravitySample",
         "stepSample", "ppgHrSample", "event", "battery", "dailyMetric", "sleepSession",
         "journal", "workout", "appleDaily", "metricSeries", "dayOwnership",
+        "scoreInputProvenance",
         // Added: device-keyed tables introduced by later migrations that the list previously missed, so a
         // "delete all of this device's data" left raw captures (rawBatch), user-entered lab/blood markers
         // (labMarker), banked band sleep-state (sleepStateSample) and live coaching sessions
@@ -118,6 +119,10 @@ public struct DeviceRegistryStore: Sendable {
             for table in Self.deviceScopedTables {
                 try db.execute(sql: "DELETE FROM \(table) WHERE deviceId = ?", arguments: [deviceId])
             }
+            // Provenance also references the physical/import source separately from its computed
+            // namespace. Forgetting a provider must remove those associations too.
+            try db.execute(sql: "DELETE FROM scoreInputProvenance WHERE sourceId = ?",
+                           arguments: [deviceId])
         }
     }
 

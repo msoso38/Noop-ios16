@@ -86,6 +86,8 @@ interface DeviceRegistryDao {
     @Query("DELETE FROM appleDaily WHERE deviceId = :deviceId") suspend fun deleteAppleDailyFor(deviceId: String)
     @Query("DELETE FROM metricSeries WHERE deviceId = :deviceId") suspend fun deleteMetricSeriesFor(deviceId: String)
     @Query("DELETE FROM dayOwnership WHERE deviceId = :deviceId") suspend fun deleteDayOwnershipFor(deviceId: String)
+    @Query("DELETE FROM scoreInputProvenance WHERE deviceId = :deviceId OR sourceId = :deviceId")
+    suspend fun deleteScoreInputProvenanceFor(deviceId: String)
     // Added (audit finding): device-keyed tables the delete set previously missed, so "delete all data"
     // left raw band sleep-state (sleepStateSample), user-entered lab/blood markers (labMarker), live
     // coaching sessions (liveSession) and dismissed workout/sleep markers behind — a privacy defect for a

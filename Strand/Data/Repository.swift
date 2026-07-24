@@ -59,6 +59,14 @@ struct MetricSeriesResolution: Equatable, Sendable {
     }
 }
 
+/// The sensor/import provider whose inputs produced a resolved Today score. `sourceId` is durable and
+/// `brand` comes from the paired-device registry when available, so UI code can name every supported
+/// provider without guessing from opaque device ids.
+struct ScoreInputProvider: Equatable, Sendable {
+    let sourceId: String
+    let brand: String?
+}
+
 /// Source provenance for daily rows before product surfaces merge them. The UI uses this to say
 /// where a vital came from without changing the stored data.
 enum DailyMetricSource: Equatable {
@@ -1695,14 +1703,26 @@ final class Repository: ObservableObject {
     /// regardless of `days`; false (the default) honours `days` exactly as before, so existing callers are
     /// byte-identical.
     func resolvedSeries(key: String, source preferredSource: String, days: Int = 4000, fullHistory: Bool = false) async -> MetricSeriesResolution {
+        let now = Date()
+        let from = fullHistory ? "0000-01-01" : Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
+        let to = fullHistory ? "9999-12-31" : Self.dayString(now.addingTimeInterval(86_400))
+        return await resolvedSeries(key: key, source: preferredSource, from: from, to: to)
+    }
+
+    /// Exact-window variant used when a UI needs a known historical day (for example Charge carry).
+    /// This avoids guessing a relative lookback and keeps the same source precedence as the public
+    /// trailing-window resolver.
+    func resolvedSeries(
+        key: String,
+        source preferredSource: String,
+        from: String,
+        to: String
+    ) async -> MetricSeriesResolution {
         let candidates = Self.sourceCandidates(forKey: key, preferredSource: preferredSource,
                                                actualWhoopSource: deviceId)
         guard let store = await ensureStore() else {
             return MetricSeriesResolution(requestedSource: preferredSource, candidates: candidates, points: [])
         }
-        let now = Date()
-        let from = fullHistory ? "0000-01-01" : Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
-        let to = fullHistory ? "9999-12-31" : Self.dayString(now.addingTimeInterval(86_400))
 
         // First candidate wins per day; later candidates only fill days no earlier one covered.
         var byDay: [String: ResolvedMetricPoint] = [:]
@@ -1715,6 +1735,31 @@ final class Repository: ObservableObject {
         }
         let points = byDay.values.sorted { $0.day < $1.day }
         return MetricSeriesResolution(requestedSource: preferredSource, candidates: candidates, points: points)
+    }
+
+    /// Resolve a displayed score back to the provider that supplied its inputs. Direct imported points
+    /// already name their provider. A `-noop` point is looked up in the dedicated metric-level provenance
+    /// cache; missing legacy metadata returns nil rather than falsely claiming its parent device.
+    func scoreInputProvider(
+        resolvedSource: String,
+        day: String,
+        metricKey: String
+    ) async -> ScoreInputProvider? {
+        guard let store = await ensureStore() else { return nil }
+        let registry = DeviceRegistryStore(dbQueue: store.registryWriter)
+        let sourceId: String
+        if resolvedSource.hasSuffix("-noop") {
+            guard let cached = try? await store.scoreInputSource(
+                deviceId: resolvedSource,
+                day: day,
+                key: metricKey
+            ) else { return nil }
+            sourceId = cached
+        } else {
+            sourceId = resolvedSource
+        }
+        let brand = (try? registry.all())?.first(where: { $0.id == sourceId })?.brand
+        return ScoreInputProvider(sourceId: sourceId, brand: brand)
     }
 
     /// Read one candidate's rows for the window: its metricSeries, plus the matching DailyMetric column
