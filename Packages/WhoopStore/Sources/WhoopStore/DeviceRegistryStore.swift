@@ -121,6 +121,55 @@ public struct DeviceRegistryStore: Sendable {
         }
     }
 
+    /// #771: re-point the ACTIVE Oura device from its CoreBluetooth-UUID id (`activeId`, e.g.
+    /// "oura-4DD70E24-…") onto its STABLE serial id (`serialId`, e.g. "oura-2H3B2405003655"), so a re-pair —
+    /// which mints a fresh CB UUID — never orphans the ring's history again. The serial is read from the ring
+    /// on connect, so it is the one identity that survives a factory-reset-and-adopt.
+    ///
+    /// SCOPE (agreed with the user): moves ONLY `activeId`'s data + registry row onto `serialId` — a plain
+    /// rename when `serialId` is new, a merge (`UPDATE OR IGNORE`, canonical wins a PK clash) when it already
+    /// exists from a prior pairing. Any OTHER `oura-*` rows (older pairings) are DELIBERATELY left untouched;
+    /// consolidating those is a separate, explicit operation. One all-or-nothing transaction; idempotent
+    /// (no-op when `activeId == serialId` or `activeId` is absent). Returns true when a re-point happened; the
+    /// caller then `setActive(serialId)` so the read/write spine follows onto the serial id.
+    @discardableResult
+    public func adoptSerialIdentity(from activeId: String, to serialId: String) throws -> Bool {
+        guard activeId != serialId else { return false }
+        return try dbQueue.write { db in
+            guard try Bool.fetchOne(db, sql: "SELECT 1 FROM pairedDevice WHERE id = ?", arguments: [activeId]) ?? false
+            else { return false }   // nothing to re-point
+            let serialExists = try Bool.fetchOne(db, sql: "SELECT 1 FROM pairedDevice WHERE id = ?", arguments: [serialId]) ?? false
+            if serialExists {
+                // A prior pairing already established the serial id: carry THIS pairing's fresh BLE identity +
+                // model onto it so the coordinator reconnects to the right peripheral, keep it active.
+                try db.execute(sql: """
+                    UPDATE pairedDevice SET
+                        peripheralId = (SELECT peripheralId FROM pairedDevice WHERE id = :a),
+                        model        = (SELECT model        FROM pairedDevice WHERE id = :a),
+                        status = 'active',
+                        lastSeenAt   = (SELECT lastSeenAt   FROM pairedDevice WHERE id = :a)
+                    WHERE id = :s
+                """, arguments: ["a": activeId, "s": serialId])
+            } else {
+                // First time this serial is seen: clone the active (provisional) row under the serial id.
+                try db.execute(sql: """
+                    INSERT INTO pairedDevice (id, brand, model, nickname, peripheralId, sourceKind, capabilities, status, addedAt, lastSeenAt)
+                    SELECT ?, brand, model, nickname, peripheralId, sourceKind, capabilities, status, addedAt, lastSeenAt
+                    FROM pairedDevice WHERE id = ?
+                """, arguments: [serialId, activeId])
+            }
+            // Move the active id's recordings onto the serial id (canonical wins a PK clash), then clear it.
+            for table in Self.deviceScopedTables {
+                try db.execute(sql: "UPDATE OR IGNORE \(table) SET deviceId = ? WHERE deviceId = ?", arguments: [serialId, activeId])
+                try db.execute(sql: "DELETE FROM \(table) WHERE deviceId = ?", arguments: [activeId])
+            }
+            // Drop ONLY the provisional CB-UUID registry rows; other oura-* pairings are left as-is.
+            try db.execute(sql: "DELETE FROM pairedDevice WHERE id = ?", arguments: [activeId])
+            try db.execute(sql: "DELETE FROM device WHERE id = ?", arguments: [activeId])
+            return true
+        }
+    }
+
     // MARK: day ownership
     public struct DayOwner: Equatable { public let deviceId: String; public let locked: Bool }
 
