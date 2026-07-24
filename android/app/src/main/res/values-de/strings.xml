@@ -1715,6 +1715,13 @@
     <string name="today_greeting_afternoon">Guten Nachmittag</string>
     <string name="today_greeting_evening">Guten Abend</string>
     <string name="today_greeting_with_name">%1$s, %2$s</string>
+    <string name="today_syncing_accessibility">Armbandverlauf wird synchronisiert</string>
+    <plurals name="today_syncing_chunks_accessibility">
+        <item quantity="one">Armbandverlauf wird synchronisiert, %1$d Datenblock</item>
+        <item quantity="other">Armbandverlauf wird synchronisiert, %1$d Datenblöcke</item>
+    </plurals>
+    <string name="today_strap_battery_accessibility">Armbandakku</string>
+    <string name="today_strap_battery_percent_accessibility">Armbandakku, %1$d Prozent</string>
     <string name="settings_streak_title">Serie</string>
     <plurals name="settings_streak_run">
         <item quantity="one">%1$d Tag in Folge</item>

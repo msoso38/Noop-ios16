@@ -2197,10 +2197,14 @@ private fun LiquidBatteryRing(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val label = when {
-        syncing && chunks > 0 -> "Syncing strap history, $chunks chunks"
-        syncing -> "Syncing strap history"
-        batteryPct != null -> "Strap battery ${batteryPct.roundToInt()} percent"
-        else -> "Strap battery"
+        syncing && chunks > 0 ->
+            uiPlural(R.plurals.today_syncing_chunks_accessibility, chunks, chunks)
+        syncing ->
+            uiString(R.string.today_syncing_accessibility)
+        batteryPct != null ->
+            uiString(R.string.today_strap_battery_percent_accessibility, batteryPct.roundToInt())
+        else ->
+            uiString(R.string.today_strap_battery_accessibility)
     }
     Box(
         modifier = Modifier
@@ -2219,7 +2223,9 @@ private fun LiquidBatteryRing(
         contentAlignment = Alignment.Center,
     ) {
         if (syncing) {
-            val transition = rememberInfiniteTransition(label = "Today sync spinner")
+            val transition = rememberInfiniteTransition(
+                label = uiString(R.string.today_syncing_accessibility),
+            )
             val spinnerRotation by transition.animateFloat(
                 initialValue = 0f,
                 targetValue = 360f,
@@ -2227,7 +2233,7 @@ private fun LiquidBatteryRing(
                     animation = tween(durationMillis = 850, easing = LinearEasing),
                     repeatMode = RepeatMode.Restart,
                 ),
-                label = "Today sync rotation",
+                label = uiString(R.string.today_syncing_accessibility),
             )
             Canvas(modifier = Modifier.size(34.dp).padding(3.dp)) {
                 val strokePx = 3.dp.toPx()

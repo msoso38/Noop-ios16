@@ -1700,6 +1700,13 @@
     <string name="today_greeting_afternoon">Bon après-midi</string>
     <string name="today_greeting_evening">Bonsoir</string>
     <string name="today_greeting_with_name">%1$s, %2$s</string>
+    <string name="today_syncing_accessibility">Synchronisation de l’historique du bracelet</string>
+    <plurals name="today_syncing_chunks_accessibility">
+        <item quantity="one">Synchronisation de l’historique du bracelet, %1$d bloc</item>
+        <item quantity="other">Synchronisation de l’historique du bracelet, %1$d blocs</item>
+    </plurals>
+    <string name="today_strap_battery_accessibility">Batterie du bracelet</string>
+    <string name="today_strap_battery_percent_accessibility">Batterie du bracelet, %1$d pour cent</string>
     <string name="settings_streak_title">Série</string>
     <plurals name="settings_streak_run">
         <item quantity="one">%1$d jour d\'affilée</item>
