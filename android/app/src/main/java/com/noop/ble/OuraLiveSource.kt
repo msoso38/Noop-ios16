@@ -262,6 +262,9 @@ class OuraLiveSource(
     /** Feature ids whose status we have already logged this session (SpO2 0x04 / real_steps 0x0b), so the
      *  read-only feature-status diagnostic prints once per feature, not on every reconnect. */
     private val loggedFeatureStatuses = mutableSetOf<Int>()
+    /** Product-info reply ops already logged this session, so the #771/#772 serial/hardware capture prints
+     *  once per op, not on every notification. Twin of Swift's `loggedProductInfoOps`. Cleared on reset. */
+    private val loggedProductInfoOps = mutableSetOf<Int>()
 
     // MARK: - Auto-reconnect (#912)
 
@@ -572,6 +575,7 @@ class OuraLiveSource(
         loggedAnchor = false
         loggedTierBKinds.clear()
         loggedFeatureStatuses.clear()
+        loggedProductInfoOps.clear()
         pendingAnchorEvents.clear()
         // Resume the GetEvents cursor from where the LAST connection to this ring left off (s5.1/5.3), so a
         // routine reconnect doesn't re-fetch the ring's entire banked history every time.
@@ -622,6 +626,7 @@ class OuraLiveSource(
         loggedAnchor = false
         loggedTierBKinds.clear()
         loggedFeatureStatuses.clear()
+        loggedProductInfoOps.clear()
         reachedStreaming = false
         // A stop MID-install is an honest failure (no ack will come); a stop after streaming leaves the
         // completed Streaming outcome intact so the wizard's success transition is not undone.
@@ -753,6 +758,7 @@ class OuraLiveSource(
                     loggedAnchor = false
                     loggedTierBKinds.clear()
         loggedFeatureStatuses.clear()
+        loggedProductInfoOps.clear()
                     reachedStreaming = false
                     // A disconnect MID-install is an honest failure (no 0x25 ack will arrive); a disconnect
                     // after streaming leaves the completed Streaming outcome intact. Drop any in-flight key
@@ -910,6 +916,15 @@ class OuraLiveSource(
                     // subscription-gated OFF for an offline ring. NEVER an enable/set-mode write.
                     write(OuraCommands.spo2ReadStatus())
                     write(OuraCommands.realStepsReadStatus())
+                    // Read-only capture (#771/#772): the ring's GetProductInfo serial + hardware pages are
+                    // pre-auth readable. The SERIAL is a STABLE per-ring identity (Android mints the id from
+                    // the MAC today, but the serial is the platform-neutral identity Swift needs too, #771),
+                    // and the HARDWARE id (e.g. "BLB_03") maps to the generation, confirming it from the ring
+                    // instead of stray digits in the advertised name (#772). Here we only ASK and LOG the raw
+                    // replies to capture their byte layout; nothing is decoded, minted into an id, or persisted
+                    // yet (capture-first). Same read-only class as the SpO2 / real-steps reads above.
+                    write(OuraCommands.getProductSerial())
+                    write(OuraCommands.getProductHardware())
                 }
             }
             OuraDriverPhase.NeedsKeyInstall -> {
@@ -1025,6 +1040,18 @@ class OuraLiveSource(
         // and feed all other bytes to the TLV reassembler.
         val nonSecure = ArrayList<Int>()
         for (frame in OuraFraming.parseOuterFrames(bytes)) {
+            // #771/#772 capture: log the GetProductInfo reply (serial + hardware pages) raw, once per op per
+            // session. Peek only — like the 0x11 summary / 0x0D battery below, a product-info op is below the
+            // event-tag range (>= 0x41), so letting it fall through to the reassembler is a harmless
+            // unknown-tag no-op; nothing here decodes it into a stable id (#771) or a generation (#772) yet.
+            // Rendered as hex AND ASCII, since the serial / hardware id are strings (e.g. "BLB_03").
+            if (frame.op in PRODUCT_INFO_RESPONSE_OPS && loggedProductInfoOps.add(frame.op)) {
+                val hex = frame.body.joinToString(" ") { "%02x".format(it) }
+                val ascii = String(CharArray(frame.body.size) { i ->
+                    val b = frame.body[i]; if (b in 0x20..0x7e) b.toChar() else '.'
+                })
+                log("Oura: product-info reply op=0x%02x (%dB) raw: %s | ascii: %s".format(frame.op, frame.body.size, hex, ascii))
+            }
             if (frame.op == OuraFraming.secureSessionOp) {
                 val secure = OuraFraming.parseSecureFrame(frame) ?: continue
                 routeSecure(d, secure)
@@ -1366,6 +1393,13 @@ class OuraLiveSource(
         /** The SetAuthKey-response OUTER opcode (`0x25`) and its OK status byte (`0x00`). The ring replies
          *  `25 01 00` to a successful `0x24` key install (OURA_PROTOCOL.md s3.2). */
         private const val SET_AUTH_KEY_RESP_OP = 0x25
+
+        /** Outer-frame ops a GetProductInfo (`0x18`) reply can arrive under. The request op is `0x18`; by the
+         *  request→response +1 convention (GetBattery `0x0C` request → `0x0D` reply) it may be `0x19`. Both are
+         *  captured so the #771/#772 fixture lands whatever the firmware uses. Twin of Swift's
+         *  `productInfoResponseOps`. Neither is an event tag (tags are ≥ 0x41), so peeking never disturbs the
+         *  TLV decode. */
+        private val PRODUCT_INFO_RESPONSE_OPS = setOf(0x18, 0x19)
         private const val SET_AUTH_KEY_OK = 0x00
 
         /** Generate a fresh cryptographically-random 16-byte install key as unsigned bytes 0..255

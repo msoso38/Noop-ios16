@@ -94,6 +94,12 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// OURA_PROTOCOL.md s3.2. This is the install-ack the adopt key-install awaits.
     private static let setAuthKeyRespOp: UInt8 = 0x25
 
+    /// Outer-frame ops a GetProductInfo (`0x18`) reply can arrive under. The request op is `0x18`; by the
+    /// request→response +1 convention seen elsewhere (GetBattery `0x0C` request → `0x0D` reply) the reply may
+    /// be `0x19`. We capture both so the fixture lands whatever the firmware uses (#771/#772 capture). Neither
+    /// is an event tag (tags are ≥ 0x41), so peeking them never disturbs the TLV decode.
+    private static let productInfoResponseOps: Set<UInt8> = [0x18, 0x19]
+
     /// Local-time formatter for logging a decoded date/time next to a raw ring-tick cursor value, so a
     /// number like "1178203" reads as an actual date instead of an opaque tick count. Logging only.
     private static let cursorDateFormatter: DateFormatter = {
@@ -179,6 +185,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// Feature ids whose status we have already logged this session (SpO2 0x04 / real_steps 0x0b), so the
     /// read-only feature-status diagnostic prints once per feature, not on every reconnect.
     private var loggedFeatureStatuses: Set<Int> = []
+    /// Product-info reply ops already logged this session, so the #771/#772 serial/hardware capture prints
+    /// once per op, not on every notification. Reset on stop/disconnect.
+    private var loggedProductInfoOps: Set<UInt8> = []
 
     // MARK: - Activity (0x50 MET) estimate accumulation — INVESTIGATION ONLY
     // Aggregate the decoded 0x50 MET stream into an honest, clearly-labeled per-day estimate
@@ -550,6 +559,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         loggedAnchor = false
         loggedTierBKinds.removeAll()
         loggedFeatureStatuses.removeAll()
+        loggedProductInfoOps.removeAll()
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
@@ -615,6 +625,15 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // confirms (from the ring itself) that these server-flag features are subscription-gated OFF
                 // for an offline ring. NEVER an enable/set-mode write - purely the 0x20 read verb.
                 write([OuraCommands.spo2ReadStatus(), OuraCommands.realStepsReadStatus()])
+                // Read-only capture (#771/#772): the ring's GetProductInfo serial + hardware pages are
+                // pre-auth readable. The SERIAL is a STABLE per-ring identity — unlike the CoreBluetooth UUID,
+                // which rotates on re-pair and orphans the ring's history (#771) — and the HARDWARE id
+                // (e.g. "BLB_03") maps to the generation, confirming it from the ring instead of stray digits
+                // in the advertised name (#772). Here we only ASK and LOG the raw replies to capture their
+                // byte layout; nothing is decoded, minted into an id, or persisted yet (capture-first, so a
+                // real fixture backs the decode before it drives identity/generation). Same read-only class as
+                // the SpO2 / real-steps status reads above; never a set/enable write.
+                write([OuraCommands.getProductSerial(), OuraCommands.getProductHardware()])
             }
         default:
             break
@@ -1110,6 +1129,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedAnchor = false
         loggedTierBKinds.removeAll()
         loggedFeatureStatuses.removeAll()
+        loggedProductInfoOps.removeAll()
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
         pendingInstallKey = nil
         adoptPhase = .idle
@@ -1172,6 +1192,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedAnchor = false
         loggedTierBKinds.removeAll()
         loggedFeatureStatuses.removeAll()
+        loggedProductInfoOps.removeAll()
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
@@ -1292,6 +1313,18 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
         if let batteryFrame = frames.first(where: { $0.op == OuraFraming.batteryResponseOp }),
            let battery = OuraDecoders.decodeBattery(batteryFrame.body) {
             ingest([.battery(battery)])
+        }
+        // #771/#772 capture: log the GetProductInfo reply (serial + hardware pages) raw, once per op per
+        // session. Peek only — like the 0x11 summary / 0x0D battery above, a product-info op is below the
+        // event-tag range (≥ 0x41) so it round-trips through the TLV decoder as a harmless unknown-tag no-op;
+        // nothing here decodes it into a stable id (#771) or a generation (#772) yet — that waits on this
+        // fixture. Rendered as hex AND ASCII, since the serial / hardware id are strings (e.g. "BLB_03").
+        for frame in frames where Self.productInfoResponseOps.contains(frame.op)
+                                  && !loggedProductInfoOps.contains(frame.op) {
+            loggedProductInfoOps.insert(frame.op)
+            let hex = frame.body.map { String(format: "%02x", $0) }.joined(separator: " ")
+            let ascii = String(bytes: frame.body.map { (0x20...0x7e).contains($0) ? $0 : 0x2e }, encoding: .ascii) ?? ""
+            log("Oura: product-info reply op=0x\(String(format: "%02x", frame.op)) (\(frame.body.count)B) raw: \(hex) | ascii: \(ascii)")
         }
         if frames.contains(where: { $0.op == OuraFraming.secureSessionOp }) {
             for frame in frames where frame.op == OuraFraming.secureSessionOp {
