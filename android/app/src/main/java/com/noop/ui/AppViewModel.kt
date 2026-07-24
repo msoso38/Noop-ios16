@@ -128,6 +128,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _activeDeviceName = MutableStateFlow<String?>(null)
     val activeDeviceName: StateFlow<String?> = _activeDeviceName.asStateFlow()
 
+    /** WHOOP-style day streak (#569): consecutive local days that carry a Charge score, computed on
+     *  device from the merged daily metrics. A day "qualifies" when its [com.noop.data.DailyMetric] has a
+     *  non-null `recovery`. Pure math lives in [com.noop.analytics.StreakCalculator] (Swift/Kotlin twin). */
+    val streaks: StateFlow<com.noop.analytics.StreakCalculator.Streaks> =
+        repository.daysMergedFlow(noopApp.activeDeviceId)
+            .map { days ->
+                val nowSec = System.currentTimeMillis() / 1000L
+                val tz = java.util.TimeZone.getDefault().getOffset(nowSec * 1000L) / 1000L
+                val today = com.noop.analytics.AnalyticsEngine.dayString(nowSec, tz)
+                com.noop.analytics.StreakCalculator.streaks(
+                    dayKeys = days.map { it.day },
+                    qualified = days.map { it.recovery != null },
+                    today = today,
+                )
+            }
+            .stateIn(
+                viewModelScope,
+                kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5_000L),
+                com.noop.analytics.StreakCalculator.Streaks(0, 0),
+            )
+
     /** Re-read the active device row and republish its display name. Called at launch + after a setActive. */
     fun refreshActiveDeviceName() {
         viewModelScope.launch {
