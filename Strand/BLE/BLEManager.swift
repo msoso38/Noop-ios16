@@ -2826,9 +2826,15 @@ public final class BLEManager: NSObject, ObservableObject {
         // link must be encrypted first. Gated to 5/MG (a 4.0 issues NO new reads, exactly like the battery
         // re-read excludes it) and fired ONCE per connection: serial + hardware revision are immutable, so
         // unlike the battery they are never re-polled on the keep-alive tick.
-        if !disRead, selectedModel.deviceFamily != .whoop4 {
+        // NOTE: `disRead` is set only once a read is actually ISSUED — never merely because this ran.
+        // `enableLiveNotifications` fires from several callers (CLIENT_HELLO-ack, post-bond, keep-alive),
+        // and the earliest can land before DIS discovery has completed. Setting the flag unconditionally
+        // would burn the one-shot on a call where the characteristics were still nil, and the variant
+        // would never resolve. Leaving it unset lets a later caller (the keep-alive tick) pick it up.
+        if !disRead, selectedModel.deviceFamily != .whoop4,
+           let serialChar = disSerialCharacteristic, serialChar.properties.contains(.read) {
             disRead = true
-            if let c = disSerialCharacteristic, c.properties.contains(.read) { p.readValue(for: c) }
+            p.readValue(for: serialChar)
             if let c = disHwRevCharacteristic, c.properties.contains(.read) { p.readValue(for: c) }
         }
     }
