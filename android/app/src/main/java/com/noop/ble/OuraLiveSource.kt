@@ -104,6 +104,10 @@ class OuraLiveSource(
      *  resolves a generation on connect, so the app can correct a registry row mis-stamped from the
      *  advertised name (#772). Default no-op. Twin of Swift's `onModel`. */
     private val onModel: (String) -> Unit = {},
+    /** Fired with the ring's STABLE serial once the GetProductInfo serial page is read on connect, so the app
+     *  can re-point this device onto its `oura-<serial>` id — the identity that survives a re-pair, unlike the
+     *  transient address (#771). Default no-op. Only plausible serials are surfaced. Twin of Swift's `onSerial`. */
+    private val onSerial: (String) -> Unit = {},
     /**
      * Source of cryptographically-random bytes for a freshly-generated install key (adopt flow step 1).
      * Injected so a test can pin a deterministic key; production defaults to [java.security.SecureRandom]
@@ -1059,14 +1063,21 @@ class OuraLiveSource(
                         val b = frame.body[i]; if (b in 0x20..0x7e) b.toChar() else '.'
                     })
                     log("Oura: product-info reply op=0x%02x (%dB) raw: %s | ascii: %s".format(frame.op, frame.body.size, hex, ascii))
-                    // #772: the hardware page resolves the AUTHORITATIVE generation ("BLB_03" -> gen3). The
-                    // serial page has no "_NN" gen marker, so fromHardwareId returns null and only the
-                    // hardware reply corrects the model — even though both arrive under op 0x19.
+                    // The two GetProductInfo pages both arrive under op 0x19; tell them apart by content:
+                    //  • hardware page ("BLB_03") -> resolves a generation -> correct the model (#772).
+                    //  • serial page ("2H3B2405003655", no "_NN" gen marker) -> the ring's STABLE identity ->
+                    //    surface it so the app can re-point onto its `oura-<serial>` id (#771).
                     val str = OuraDecoders.productInfoString(frame.body)
-                    val gen = str?.let { OuraRingGen.fromHardwareId(it) }
-                    if (gen != null && gen != ringGen) {
-                        log("Oura: generation from hardware id $str is ${gen.displayName} (was ${ringGen.displayName}) - correcting model")
-                        onModel(gen.displayName)
+                    if (str != null) {
+                        val gen = OuraRingGen.fromHardwareId(str)
+                        if (gen != null) {
+                            if (gen != ringGen) {
+                                log("Oura: generation from hardware id $str is ${gen.displayName} (was ${ringGen.displayName}) - correcting model")
+                                onModel(gen.displayName)
+                            }
+                        } else if (isPlausibleSerial(str)) {
+                            onSerial(str)
+                        }
                     }
                 }
             }
@@ -1418,6 +1429,12 @@ class OuraLiveSource(
          *  `productInfoResponseOps`. Neither is an event tag (tags are ≥ 0x41), so peeking never disturbs the
          *  TLV decode. */
         private val PRODUCT_INFO_RESPONSE_OPS = setOf(0x18, 0x19)
+
+        /** A GetProductInfo string is a usable ring SERIAL only when it is plain alphanumeric and a sane
+         *  length, so a misframed reply can never mint a bogus `oura-<serial>` id (#771 honest-data guard).
+         *  Twin of Swift's `isPlausibleSerial`. */
+        private fun isPlausibleSerial(s: String): Boolean =
+            s.length in 8..24 && s.all { it.isLetterOrDigit() }
         private const val SET_AUTH_KEY_OK = 0x00
 
         /** Generate a fresh cryptographically-random 16-byte install key as unsigned bytes 0..255
