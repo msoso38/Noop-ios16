@@ -87,6 +87,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -665,19 +666,13 @@ fun SettingsScreen(
         val streaks by vm.streaks.collectAsStateWithLifecycle()
         NoopCard(tint = Palette.chargeColor) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Streak", style = NoopType.subhead, color = Palette.textPrimary)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text("${streaks.current}", style = NoopType.subhead, color = Palette.chargeColor)
-                    Text(
-                        if (streaks.current == 1) "day in a row" else "days in a row",
-                        style = NoopType.footnote, color = Palette.textTertiary,
-                    )
-                }
+                Text(uiString(R.string.settings_streak_title), style = NoopType.subhead, color = Palette.textPrimary)
                 Text(
-                    "Longest: ${streaks.longest} ${if (streaks.longest == 1) "day" else "days"}",
+                    pluralStringResource(R.plurals.settings_streak_run, streaks.current, streaks.current),
+                    style = NoopType.subhead, color = Palette.chargeColor,
+                )
+                Text(
+                    pluralStringResource(R.plurals.settings_streak_longest, streaks.longest, streaks.longest),
                     style = NoopType.footnote, color = Palette.textSecondary,
                 )
             }

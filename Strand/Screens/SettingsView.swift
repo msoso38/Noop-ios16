@@ -680,14 +680,14 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Streak").strandOverline()
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("\(s.current)")
+                    Text(verbatim: "\(s.current)")
                         .font(StrandFont.number(30))
                         .foregroundStyle(StrandPalette.accent)
                     Text(s.current == 1 ? "day in a row" : "days in a row")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                 }
-                Text("Longest: \(s.longest) \(s.longest == 1 ? "day" : "days")")
+                Text(s.longest == 1 ? "Longest: 1 day" : "Longest: \(s.longest) days")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textSecondary)
             }
