@@ -2970,14 +2970,23 @@ public final class BLEManager: NSObject, ObservableObject {
         // #34: clear the "strap keeps rejecting the alarm" streak/warning — it's about an ACTIVE arm being
         // refused, and there's nothing armed to refuse once disarmed.
         UserDefaults.standard.set(0, forKey: "alarm.rejectStreak")
+        // #730: report the OUTCOME, not the intent — using the SAME `commandChannelReady` gate the arm
+        // path already uses (it reports "queued" rather than a false "armed"). The disarm never adopted
+        // it: `send` drops the write when the link isn't up and logs "ignored — not connected", then this
+        // logged "Alarm: disarmed" anyway, telling the user the firmware alarm was cleared when the
+        // command never reached the strap — so a strap that IS armed would still buzz. (`applySmartAlarm`
+        // now re-runs on connectSettled, so a deferred disarm is re-issued once the link is really up.)
+        let willReach = commandChannelReady
         if selectedModel.deviceFamily == .whoop5 {
             // 5/MG DISABLE_ALARM is REVISION_2 [0x02, 0xFF]; the rev-1 [0x01] form below is WHOOP4.
             send(.disableAlarm, payload: AlarmPayload.disableRev2())
-            log("Alarm: disarmed (5/MG rev2)")
+            log(willReach ? "Alarm: disarmed (5/MG rev2)"
+                          : "Alarm: disarm NOT sent — not connected; will retry on connect (strap may still be armed)")
             return
         }
         send(.disableAlarm, payload: [0x01])
-        log("Alarm: disarmed")
+        log(willReach ? "Alarm: disarmed"
+                      : "Alarm: disarm NOT sent — not connected; will retry on connect (strap may still be armed)")
     }
 
     /// Request the currently-armed alarm time from the strap (response arrives on cmd-notify char).

@@ -286,9 +286,14 @@ final class AppModel: ObservableObject {
         // `connectSettled` only bumps once that channel is confirmed live, so the readback (and the arm
         // itself) always goes out on a link that's actually ready. `dropFirst()` skips the initial
         // published value (0) at subscribe time, so this doesn't fire on app launch before any connection.
+        // #730: do NOT gate this on `smartAlarmEnabled`. `applySmartAlarm()` already branches internally —
+        // enabled → arm, disabled → DISARM — and the disarm is exactly the case that needs re-applying on
+        // connect. With the guard, a user who turns the alarm off while disconnected had the disarm dropped
+        // by `send` and never retried, so the strap kept the old firmware alarm and still buzzed (the app
+        // meanwhile logged "Alarm: disarmed"). Re-asserting the desired state on every settle is the same
+        // discipline the continuous-HRV re-apply below already uses, and the #59 lesson: reassert, don't assume.
         live.$connectSettled.dropFirst().sink { [weak self] _ in
-            guard let self, self.behavior.smartAlarmEnabled else { return }
-            self.applySmartAlarm()
+            self?.applySmartAlarm()
         }.store(in: &hrCancellables)
         // The firmware alarm is a single absolute instant with no recurrence, and was re-armed ONLY on
         // a (re)bond or a settings change. A strap that stays continuously bonded (a Mac in range) would
