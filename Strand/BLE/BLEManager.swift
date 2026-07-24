@@ -466,6 +466,12 @@ public final class BLEManager: NSObject, ObservableObject {
     static let heartRateChar    = CBUUID(string: "2A37") // HR + R-R (works unbonded)
     static let batteryService   = CBUUID(string: "180F")
     static let batteryChar      = CBUUID(string: "2A19")
+    /// Standard Device Information Service — read-only. Used ONLY to tell a WHOOP MG apart from a
+    /// plain 5.0 (#520): the serial's prefix and the hardware-revision string are the two signals
+    /// `Whoop5Variant` resolves. No writes, and 4.0 never reads these (see the post-bond gate).
+    static let disService       = CBUUID(string: "180A")
+    static let disSerialChar    = CBUUID(string: "2A25") // Serial Number String
+    static let disHwRevChar     = CBUUID(string: "2A27") // Hardware Revision String
 
     static let restoreID = "com.openwhoop.ble.central"
 
@@ -731,6 +737,14 @@ public final class BLEManager: NSObject, ObservableObject {
     private var dataNotifyCharacteristic: CBCharacteristic?
     private var heartRateCharacteristic: CBCharacteristic?
     private var batteryCharacteristic: CBCharacteristic?
+    /// #520 DIS: remembered at discovery, READ post-bond (see the #490 note — a 5/MG refuses standard
+    /// reads before the link is encrypted). Serial + hardware revision are immutable, so they are read
+    /// ONCE per connection (`disRead`), never re-polled like the battery.
+    private var disSerialCharacteristic: CBCharacteristic?
+    private var disHwRevCharacteristic: CBCharacteristic?
+    private var disRead = false
+    private var disSerial: String?
+    private var disHwRev: String?
     /// EXPERIMENTAL WHOOP 5.0/MG puffin notify chars (fd4b0003/4/5/7), remembered at discovery so we
     /// can re-subscribe them AFTER bonding — the strap refuses them ("Authentication is insufficient")
     /// until the link is encrypted (issue #17).
@@ -2722,6 +2736,7 @@ public final class BLEManager: NSObject, ObservableObject {
     private func discoverPrimaryServices(on p: CBPeripheral) {
         p.discoverServices([
             selectedModel.scanService, BLEManager.heartRateService, BLEManager.batteryService,
+            BLEManager.disService,
         ])
     }
 
@@ -2732,6 +2747,11 @@ public final class BLEManager: NSObject, ObservableObject {
         dataNotifyCharacteristic = nil
         heartRateCharacteristic = nil
         batteryCharacteristic = nil
+        disSerialCharacteristic = nil
+        disHwRevCharacteristic = nil
+        disRead = false
+        disSerial = nil
+        disHwRev = nil
         whoop5NotifyCharacteristics.removeAll()
     }
 
@@ -2802,6 +2822,28 @@ public final class BLEManager: NSObject, ObservableObject {
            selectedModel.deviceFamily != .whoop4 {
             p.readValue(for: b)
         }
+        // #520 DIS identity read — same post-bond reasoning as the #490 battery read above: on a 5/MG the
+        // link must be encrypted first. Gated to 5/MG (a 4.0 issues NO new reads, exactly like the battery
+        // re-read excludes it) and fired ONCE per connection: serial + hardware revision are immutable, so
+        // unlike the battery they are never re-polled on the keep-alive tick.
+        if !disRead, selectedModel.deviceFamily != .whoop4 {
+            disRead = true
+            if let c = disSerialCharacteristic, c.properties.contains(.read) { p.readValue(for: c) }
+            if let c = disHwRevCharacteristic, c.properties.contains(.read) { p.readValue(for: c) }
+        }
+    }
+
+    /// Resolve + log the 5/MG hardware variant once a DIS string lands (#520). Both characteristics
+    /// arrive as SEPARATE async callbacks, so this runs on each and re-resolves — the contradiction rule
+    /// in `Whoop5Variant` needs both before it can disagree. Diagnostic only: nothing gates on it yet.
+    ///
+    /// The serial is a device identifier, so ONLY its 3-character prefix is logged (that is the entire
+    /// information content here) — never the full string, which would land in a shareable strap log.
+    private func noteWhoop5VariantFromDIS() {
+        let variant = Whoop5Variant.from(serial: disSerial, hardwareRevision: disHwRev)
+        let prefix = (disSerial?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())
+            .map { String($0.prefix(3)) } ?? "?"
+        log("DIS: serialPrefix=\(prefix) hwRev=\(disHwRev ?? "?") -> variant=\(variant.label)")
     }
 
     private func requestNotify(_ c: CBCharacteristic, on p: CBPeripheral, reason: String) {
@@ -3629,6 +3671,10 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 peripheral.discoverCharacteristics([BLEManager.heartRateChar], for: s)
             case BLEManager.batteryService:
                 peripheral.discoverCharacteristics([BLEManager.batteryChar], for: s)
+            case BLEManager.disService:
+                // #520: read-only identity strings. Discovered here, but READ post-bond (below).
+                peripheral.discoverCharacteristics(
+                    [BLEManager.disSerialChar, BLEManager.disHwRevChar], for: s)
             case BLEManager.whoop5Service:
                 // EXPERIMENTAL WHOOP 5.0/MG path: discover the puffin command + notify characteristics
                 // so we can send CLIENT_HELLO and receive frames. Live HR/battery still arrive over the
@@ -3699,6 +3745,16 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 default: break
                 }
                 requestNotify(c, on: peripheral, reason: "discovery")
+            case BLEManager.disSerialChar, BLEManager.disHwRevChar:
+                // #520: CAPTURE ONLY — the read is issued post-bond (a 5/MG refuses standard reads on an
+                // unencrypted link, see #490). These are read-only identity strings: never subscribed
+                // (no notify property) and never written. Must be handled BEFORE `default`, or they'd be
+                // retained as puffin notify characteristics.
+                if c.uuid == BLEManager.disSerialChar {
+                    disSerialCharacteristic = c
+                } else {
+                    disHwRevCharacteristic = c
+                }
             default:
                 // WHOOP 5.0/MG puffin notify characteristics (fd4b0003/0004/0005/0007). Retain them but DO
                 // NOT subscribe yet — on an unauthenticated link the strap rejects them with "Authentication
@@ -4121,6 +4177,15 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             if selectedModel.deviceFamily != .whoop4, let pct = bytes.first {
                 state.setBattery(Double(pct))
             }
+        case BLEManager.disSerialChar:
+            // #520: NUL-terminated ASCII per the DIS spec; trim any padding before resolving.
+            disSerial = String(decoding: bytes, as: UTF8.self)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\0").union(.whitespacesAndNewlines))
+            noteWhoop5VariantFromDIS()
+        case BLEManager.disHwRevChar:
+            disHwRev = String(decoding: bytes, as: UTF8.self)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\0").union(.whitespacesAndNewlines))
+            noteWhoop5VariantFromDIS()
         case BLEManager.dataNotifyChar,
              BLEManager.cmdNotifyChar,
              BLEManager.eventNotifyChar:
