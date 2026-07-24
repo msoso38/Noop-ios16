@@ -660,6 +660,29 @@ fun SettingsScreen(
         // Choose/Change button and, once set, a Remove. Local-only and honest: the picked image is
         // downscaled and kept on this phone, never uploaded. Reads ProfileAvatarStore.hasAvatar
         // (snapshot state) so the controls update the instant a photo is set or cleared.
+        // Day streak (#569): consecutive days with a Charge score, computed on-device from your own
+        // history. Uses NoopCard directly (not SettingsSection) to keep the wiring self-contained.
+        val streaks by vm.streaks.collectAsStateWithLifecycle()
+        NoopCard(tint = Palette.chargeColor) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Streak", style = NoopType.subhead, color = Palette.textPrimary)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("${streaks.current}", style = NoopType.subhead, color = Palette.chargeColor)
+                    Text(
+                        if (streaks.current == 1) "day in a row" else "days in a row",
+                        style = NoopType.footnote, color = Palette.textTertiary,
+                    )
+                }
+                Text(
+                    "Longest: ${streaks.longest} ${if (streaks.longest == 1) "day" else "days"}",
+                    style = NoopType.footnote, color = Palette.textSecondary,
+                )
+            }
+        }
+
         SettingsSection(
             icon = Icons.Outlined.AccountCircle,
             title = uiString(R.string.l10n_settings_screen_profile_photo_33f385bb),
