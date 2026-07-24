@@ -128,6 +128,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _activeDeviceName = MutableStateFlow<String?>(null)
     val activeDeviceName: StateFlow<String?> = _activeDeviceName.asStateFlow()
 
+    /** WHOOP-style day streak (#569): consecutive local days that carry a Charge score, computed on
+     *  device from the merged daily metrics. A day "qualifies" when its [com.noop.data.DailyMetric] has a
+     *  non-null `recovery`. Pure math lives in [com.noop.analytics.StreakCalculator] (Swift/Kotlin twin). */
+    val streaks: StateFlow<com.noop.analytics.StreakCalculator.Streaks> =
+        repository.daysMergedFlow(noopApp.activeDeviceId)
+            .map { days ->
+                val nowSec = System.currentTimeMillis() / 1000L
+                val tz = java.util.TimeZone.getDefault().getOffset(nowSec * 1000L) / 1000L
+                val today = com.noop.analytics.AnalyticsEngine.dayString(nowSec, tz)
+                com.noop.analytics.StreakCalculator.streaks(
+                    dayKeys = days.map { it.day },
+                    qualified = days.map { it.recovery != null },
+                    today = today,
+                )
+            }
+            .stateIn(
+                viewModelScope,
+                kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5_000L),
+                com.noop.analytics.StreakCalculator.Streaks(0, 0),
+            )
+
     /** Re-read the active device row and republish its display name. Called at launch + after a setActive. */
     fun refreshActiveDeviceName() {
         viewModelScope.launch {
@@ -1358,6 +1379,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return true
     }
 
+    /** Hide an unwanted deleted-sleep row from the persistent recompute card while preserving its
+     *  detector tombstone. This is deliberately separate from [recomputeDeletedSleep], which removes the
+     *  tombstone and can therefore allow that mistaken sleep to return (#515). */
+    suspend fun hideDeletedSleepWindow(marker: com.noop.data.DismissedSleep): Boolean =
+        runCatching {
+            repository.hideDeletedSleepWindow(marker.deviceId, marker.startTs)
+        }.getOrDefault(false)
+
     /** Manually add a missed nap as its OWN session (#508) — staged from raw, written under the computed
      *  source with userEdited=true so the recompute guard keeps it and it's never folded into main sleep —
      *  then re-score the affected day immediately so the day's aggregates pick up the new session, matching
@@ -1720,6 +1749,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val extendedBatteryProbe = ble.extendedBatteryProbe
 
     fun clearExtendedBatteryProbe() = ble.clearExtendedBatteryProbe()
+
+    /** #690: read-only body-location/status probe (0x54). User-initiated, Test-Centre-gated in
+     *  DevicesScreen; decodes revision/location/confidence/status to a diagnostic report + strap log.
+     *  Never changes wear detection, sleep gating, or scoring. */
+    fun probeBodyLocationAndStatus() = ble.probeBodyLocationAndStatus()
+
+    /** #690 probe result text (null until a reply lands; waiting sentinel while in flight). */
+    val bodyLocationProbe = ble.bodyLocationProbe
+
+    fun clearBodyLocationProbe() = ble.clearBodyLocationProbe()
 
     /**
      * Flip the "keep connected in the background" preference (driven by Settings). Turning it on

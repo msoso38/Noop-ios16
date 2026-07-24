@@ -12,6 +12,8 @@
 - **[open_oura-feat]** - Th0rgal/open_oura `docs/ring-features.md` (feature gating).
 - **[relue]** - relue/oura_ring_reverse `docs/.../heartbeat_replication_guide.md` and `heartbeat_complete_flow.md` (no-license; Ring 3 live-HR).
 - **[oura-rs]** - Th0rgal/open_oura `crates/oura-protocol/src/events.rs` (no-license Rust clean-room decoder; facts cited only, no code copied). Its event tags marked `"_status": "unvalidated"` are treated the same as our Tier B - plausible, not ground-truth-confirmed.
+- **[open_oura-act]** - Th0rgal/open_oura `crates/oura-cli/src/activity_model.rs` (no-license; facts cited only). The activity classifier's input assembly reads four SEPARATE event tags — `met`←`0x50`, motion←`0x47`, temp←`0x46`, `hr_bpm`←`0x80` — establishing which tag each signal comes from (notably HR from the `0x80` IBI record, not `0x50`).
+- **[ring4-ble]** - Defying/oura-ring4-ble `docs/apk-findings.md` + `docs/protocol-notes.md` (no-license; APK static-analysis + Ring-4 BLE captures, facts cited only). Confirms the framing/auth/tag set is generation-invariant (Ring 4 == Ring 3) and pins the full feature-ID table + the feature mode / subscription enums; also confirms the app derives BPM as `round(60000 / ibi_ms)`.
 
 > **CONFLICT NOTE (resolution rule):** The relue archive file `event_data_definition.md` describes events as **protobuf varint** records (e.g. `0x55` SLEEP_HR with field tags). This contradicts the **byte-for-byte verified TLV framing** in [open_ring] and [ringverse]. The TLV/bit-packed model from [open_ring]/[ringverse] is authoritative for our decoders; the protobuf description is treated as unverified/likely AI-fabricated and is NOT used. Where a layout is only attested by a single no-license, AI-generated doc, it is marked **(UNVERIFIED)** and our decoder must gate it behind a fixture test before trusting it.
 
@@ -239,22 +241,56 @@ Gen 5 example `0912 020100 020103 010001 090329 665544332211`. [open_oura-r5]
 
 ### 5.2 GetEvents response / summary (`0x11`)
 ```
-11 08 <status:1> <sub_status:1> <last_ring_timestamp:4 LE> <pad:2>
+11 08 <events_received:1> <progress:1> <bytes_left:4 LE> <pad:2>
 ```
-[open_ring]
-- `status` - `0x00` = empty/no more; `0xFF` = data follows (event records arrive as inner TLV stream, §2.3). [open_ring]
-- `last_ring_timestamp` - new cursor value to use next fetch.
+[open_oura `EventBatchSummary`]
+- `events_received` - COUNT of events in the batch (`0xFF` = 255, the legacy max). NOT a status byte.
+- `progress` - `sleepAnalysisProgress`, informational only (never a block).
+- `bytes_left` - the ring's remaining buffered bytes; the drain is done at `bytes_left == 0`.
+- The summary carries **no cursor**. An earlier revision read bytes 2–5 as `last_ring_timestamp` — that
+  value is `bytes_left`, and persisting it as a cursor caused the #91 full re-dump loop.
+- Observed on-device (2026-07-12): the `0x11` can arrive BEFORE its batch finishes streaming.
 
-### 5.3 Canonical fetch loop (NOOP)
-1. SyncTime (§5.4). 2. Send `0x10` with stored cursor, `max=255`. 3. Receive inner TLV records (§6). 4. ~100 ms later send ack-fetch (`max=0`, cursor = `last_ring_timestamp`) to advance. 5. Repeat until `status=0x00`. [open_ring]
-6. Optionally `28 01 00` to flush flash-buffered events first. [open_ring]
+### 5.3 Canonical fetch loop (NOOP, aligned with open_oura `drain_events`)
+1. SyncTime (§5.4). 2. Optionally `28 01 00` to flush flash-buffered events first. [open_ring]
+3. Send `0x10` with the stored cursor, `max=255`, flags `FF FF FF FF` (open_oura's `flags=-1`).
+4. Collect the batch until the stream goes QUIET (~1.5 s of no records — open_oura's `transact()`
+   window). The `0x11` summary is NOT an end-of-batch marker (§5.2); never re-request mid-stream.
+5. Next cursor = max envelope ring-time seen across ALL batch records + 1. If the batch had no records,
+   or the cursor did not advance past the previous request's, STOP (open_oura `!progressed`).
+6. Repeat from step 3 while the summary reports `bytes_left > 0`; done at `bytes_left == 0`.
 
-### 5.4 SyncTime (`0x12`)
+**SUPERSEDED (open_ring):** an earlier revision taught an ack-fetch (`max=0`, cursor =
+`last_ring_timestamp`) ~100 ms after the records. Re-sending `0x10` at a non-advancing cursor — and
+especially mid-stream — makes the ring RESTART serving from that cursor: observed on-device 2026-07-12
+as five identical ~955 KB re-serves of one window while the tail (`bytes_left` 409 KB) was never
+reached. open_oura has no ack-fetch; every request is the same `(cursor, max=255, flags=-1)` shape
+with the cursor advanced per batch.
+
+### 5.4 SyncTime (`0x12`) and its response (`0x13`)
 ```
-12 09 <token:1> <counter:3 LE> 00 00 00 00 f6
+12 09 <unix_seconds:8 LE> <tz:1>
 ```
-where `counter = floor(unix_seconds / 256)`, trailer `0xf6` fixed. [open_ring]
-Response: `13 05 <ack> <counter_echo:3 LE> 00`. [open_ring]
+`unix_seconds` = host UTC as uint64 seconds; `tz` = signed offset in HALF-HOURS from UTC.
+[ringverse BLE.md][open_oura `req_sync_time`] — validated on-device 2026-07-12 (this layout made the
+ring emit its first 0x42 and anchored history).
+
+Response:
+```
+13 05 <current_device_timestamp:4 LE> <status:1>
+```
+`current_device_timestamp` is the ring's OWN clock counter when it processed the SyncTime. [ringverse]
+**NOOP anchor use (2026-07-13):** paired with the host wall-clock at receipt this is a DETERMINISTIC
+ring-time→UTC anchor available at every connect. Needed because the `0x42` time_sync_ind record is
+only logged when the ring actually ADJUSTS its clock — an already-synced ring can serve an entire
+drain with no 0x42 (observed: a whole night parked unanchored). ringverse labels the field "seconds"
+while the record clock runs in 100 ms ticks; NOOP disambiguates raw-ticks vs seconds×10 against the
+persisted resume cursor (exactly one reading must land within cursor…cursor+7 days) and adopts
+nothing when ambiguous.
+
+**SUPERSEDED (open_ring):** `12 09 <token:1> <counter:3 LE> 00 00 00 00 f6` with
+`counter = floor(unix_seconds/256)` and response `13 05 <ack> <counter_echo:3 LE> 00` — that request
+layout never anchored on real hardware.
 
 ### 5.5 Ring-time → UTC anchoring
 - The ring clock is in **ticks**: default **100 ms/tick** (10 Hz); burst mode **1 ms/tick** (`factor_flag=1`). [open_ring]
@@ -299,13 +335,35 @@ All records share the §2.3 TLV header (`type`, `len`, 4-byte `ringTimestamp`). 
   — i.e. 1 LSB from an amplitude byte, 8 mid bits from `b[k]`, 2 high bits from the pack bytes. [oura-rs]
 - Each **amplitude** = `(b[6+k] >> 1) << shift` (7-bit mantissa `[7:1]` shifted by the exponent). [oura-rs]
 - Per-sample timestamp: walk backward from event UTC by each IBI duration. [ringverse]
-- **Validated (decode fix):** the earlier linear-MSB-first bitstream reading recovered only the FIRST IBI and
-  scrambled the rest (a real overnight capture → 82% non-physiological beat-to-beat jumps). The byte-scatter
-  layout above, cross-checked on the same capture, yields a coherent ~60 bpm train (10% jumps) that tracks the
-  night's sleep stages and day/night dip. Matches `open_oura`'s decompiled `parse_api_ibi_and_amplitude_event`.
+- **WARNING (2026-07-12, ringverse ingest):** ringverse's `p_ibi_and_amplitude` shows the byte order
+  is **SCRAMBLED** (each 11-bit IBI rebuilt from three non-adjacent pieces, exact indices in
+  parse.js), while NOOP's `decodeIBIAmplitude` reads the fields with a naive SEQUENTIAL BitReader —
+  the two do not agree, so our 0x60 IBI values are SUSPECT until cross-checked against concurrent
+  live-HR R-R (same method as the 0x71 fixture plan). Part of the parked history-IBI work.
 
 ### 6.2 Green-LED IBI+amp - `0x71` `green_ibi_and_amp_event` (18 B)
-- 5 IBI deltas + 6 amplitudes; shift from byte19 bits `[2:0]`; same 11-bit IBI / 7-bit amplitude structure. [ringverse]
+Full layout per ringverse `p_green_ibi_and_amp` (parse.js, firmware `@0x503960`); payload = 14 body
+bytes (indices below are payload offsets = spec offsets − 6). Strict length gate: wire len == 18.
+- `p13` (spec byte 19): bit `[3]` RESERVED — set means a firmware-layout mismatch, do not decode;
+  `s = p13 & 7`, `shift = (s == 7) ? 0 : s + 1`.
+- 5 IBIs, each an **11-bit** value from three scrambled pieces (bit 0 | bits 2:1 | bits 10:3):
+```
+ibi0 = (p10 & 1) | (p4 << 3) | ((p13 >> 5) & 6)
+ibi1 = (p9  & 1) | (p3 << 3) | ((p12 & 3) << 1)
+ibi2 = (p8  & 1) | (p2 << 3) | ((p12 >> 1) & 6)
+ibi3 = (p7  & 1) | (p1 << 3) | ((p12 >> 3) & 6)
+ibi4 = (p6  & 1) | (p0 << 3) | ((p12 >> 5) & 6)
+```
+- 5 amplitudes: `amp[i] = (p[6+i] >> 1) << shift` (7-bit mantissa in bits `[7:1]` of `p6..p10`).
+- Emission order: first entry is **amplitude-only** (`ibi = 0`, `amp[0]`), then 5 entries
+  `{ibi[i], amp[i]}`; per-sample timestamps walk BACKWARD from the event UTC by each IBI (same
+  model as 0x60). `p5`/`p11` unused. [ringverse]
+- NOOP: `OuraDecoders.decodeGreenIBIAmpCandidate` implements this verbatim as a **Tier-B CANDIDATE**
+  (#287) — used only in the 0x71 fixture-capture log, side by side with the raw bytes, until a real
+  capture cross-checked against concurrent live-HR R-R validates it.
+- CORRECTION: an earlier revision summarized this as "5 IBI deltas + 6 amplitudes" — the five values
+  are full 11-bit IBIs (0–2047 ms) used as backward TIME deltas, and only 5 amplitude bytes exist
+  (the first emitted entry reuses `amp[0]`).
 
 ### 6.3 SpO2 IBI+amp - `0x6E` `spo2_ibi_and_amplitude_event` (17 B)
 - Byte 6: bits `[7:6]` = flag(1)+shift(3); bits `[3:0]` = mode(4). [ringverse]
@@ -324,7 +382,31 @@ physiological (300–2000 ms). (Up to 7 samples per 14-byte record.) [oura-rs]
 **Validated (decode fix):** the earlier reading treated the pair as a little-endian u16 masked to bits 0–10,
 placing the high byte in the LOW bits — a bit-order error (real-capture within-record jitter 583 ms). The
 high-byte-first layout with the `quality == 1` gate yields a clean beat train (45 ms jitter) and keeps more
-good beats. Matches `open_oura`'s `parse_api_green_ibi_quality_event`.
+good beats. Matches `open_oura`'s `parse_api_green_ibi_quality_event`. (Same class of fix as `0x60`, §6.1.)
+
+**IBI → HR (NOOP research, Tier-B):** each accepted sample is a per-beat interval, so an instantaneous HR
+follows as `60000 / IBI_ms`. open_oura feeds this record's per-minute HR (`hr_bpm`) into its activity
+classifier (`oura-cli/src/activity_model.rs`, alongside `met`←`0x50`, motion←`0x47`, temp←`0x46`) — i.e. HR
+comes from THIS record, not from the `0x50` MET record. NOOP already decodes these IBIs for HRV; a diagnostic
+sidecar (`oura-ibihr-<id>.jsonl`, records tagged by source event `0x80`/`0x60`/`0x6E`/`0x44`) also
+reconstructs an HR history from the banked stream for offline study — NEVER scored. **Result (2026-07-16,
+first full overnight):** the earlier "sparse + ~15 % impossible-HR" daytime reading was largely the DECODE
+BUG above (wrong bit layout), not a ring limitation. With the corrected layout, one full night decoded to
+**94 % minute coverage, ~10 % beat-to-beat artifact, a clean ~56 bpm resting level with a real nocturnal dip
+that tracks the reconstructed hypnogram** — i.e. usable as an overnight HR/HRV source. Daytime/activity is
+sparser (~43 % coverage — wrist motion thins the banked beats) but the surviving beats are clean and HR
+tracks effort (rest ≈ 59 → moderate ≈ 100 bpm). Still Tier-B, never scored; promotion to
+`restingHr`/`avgHrv` is gated on multi-night validation against a reference. [open_oura-act]
+
+**Caveats (2026-07-20):** two things bound "usable overnight HR". (a) It is CONDITIONAL on the ring being
+worn — a night on the charger still banks a hypnogram + skin-temp but essentially no IBIs (the whole
+banked window sits inside a `"chg. detected"`→`"chg. stopped"` interval, §6.15), so overnight HR exists
+only on worn nights. (b) A banked IBI must be persisted at its OWN anchored ring-time
+(`unixSeconds(forRingTimestamp:)`), never the drain-arrival wall-clock: because a night is drained the next
+day, stamping the beat at arrival misfiles every overnight beat to the daytime sync moment — the deep-night
+hours (00–06 local) come out empty while the sync hour piles up an implausible density. So the `oura-ibihr`
+sidecar (anchored correctly) is right, but the datastore's `rrInterval` is not, until `.ibi` is anchored
+like its sibling banked streams (`.hrv`/`.temp`/`.spo2`/`.sleepPhase`) — the fix in PR #677 (pending merge).
 
 ### 6.5 SpO2 per-sample - `0x6F` `spo2_event` (5–18 B, 1 s spacing)
 - Byte 6: bits `[7:4]` = SpO2 base (<<7); bits `[3:0]` = status flag. [ringverse]
@@ -359,18 +441,79 @@ good beats. Matches `open_oura`'s `parse_api_green_ibi_quality_event`.
 - This is the primary UTC anchor (§5.5). [open_ring][ringverse]
 
 ### 6.12 Sleep architecture
-- **`0x4E` / `0x5A` `sleep_phase_details`** (≥19 B): byte6 = header; phase codes are **2-bit**, 4 per byte (bits `[7:6][5:4][3:2][1:0]`); codes **0=awake, 1=light, 2=deep, 3=REM**. [ringverse]
+- **`0x4B` / `0x4E` / `0x5A` `sleep_phase_details`** (≥19 B): byte6 = header; phase codes are **2-bit**, 4 per byte (bits `[7:6][5:4][3:2][1:0]`); codes **0=deep, 1=light, 2=rem, 3=awake** per open_oura's VALIDATED `decode_sleep_phases` (events.rs `PHASE = ["deep","light","rem","awake"]`). **CORRECTION:** an earlier revision of this line taught `0=awake, 1=light, 2=deep, 3=REM` from [ringverse] (unverified); live captures contradicted it (records decoded at wake carry code 3 = awake under open_oura's mapping), and both platform decoders inherited the bug from this exact text. [open_oura]
 - **`0x6A` `sleep_period_info`** (14 B): bytes6–9 four int8 metrics; bytes10–11 `uint8/8.0`; byte12 motion-seconds uint8; byte13 sleep-state int8; bytes14–15 `uint16 LE / 65536`. [ringverse]
 - **`0x72` `sleep_acm_period`** (16 B): values0–2 = `whole(8)+frac(8)/255`; values3–5 = `whole(4)+frac(12)/4095`. [ringverse]
-- **`0x49` `sleep_summary_1`**: start/end as uint16 LE minutes-before-event. [ringverse]
+- **`0x49` `sleep_summary_1`**: `start_offset_min` / `end_offset_min`, both uint16 LE **minutes
+  before the event time** — the ring's tracked sleep window is
+  `[event_utc − start_offset·60 s, event_utc − end_offset·60 s]`. [ringverse]
+  **VALIDATED against NOOP captures 2026-07-12**: the `600/10` sample on the 7/11→12 night decodes
+  to 23:30→09:20, matching the reconstructed 1196-code hypnogram (23:32→09:30 write-anchored) and
+  the reported sleep (23:35–09:00). Earlier samples fit the same shape (688/101, 584/108, 716/164).
+  Note the window END trails the SleepNet WRITE by `end_offset` minutes (10–43 min observed).
+  **NOOP anchors the hypnogram burst end at `event − end_offset`** when a same-finalization 0x49
+  (envelope ring-time within 10 min of the burst's) is present — the write-moment envelope shifted a
+  whole reconstructed night +43 min on 2026-07-13 before this refinement; the 0x49 window matched the
+  wearer's report within minutes (23:32→08:08 vs 23:34→08:03).
+  **NOOP also clamps the burst START at `event − start_offset`** (2026-07-23): the SleepNet burst can
+  write a few epochs BEFORE the 0x49 onset (7 min / 14 codes observed — reconstruct `22:48:58` vs the
+  0x49 onset `22:55:58`), so the pre-window codes are clipped, symmetric with the end anchor. A clamp
+  that would drop EVERY code (a mis-paired 0x49) is ignored, so it can never empty the night.
 - **`0x76` `bedtime_period`**: start/end as uint32 LE ringTimestamps → map to UTC (§5.5). [ringverse]
 - Tags `0x48,0x4A–0x4D,0x4F,0x57,0x58` are additional sleep summary/feature variants in the dictionary; layouts **(UNVERIFIED)** - decode only after fixtures. [ringverse]
+
+**NOOP hypnogram reconstruction & persist (implementation).** The whole-night SleepNet phase codes
+arrive as a BURST of `0x4E`/`0x5A` (and `0x4B`) records finalized after wake — all with near-identical
+envelope ring-times (the WRITE moment, seconds apart), so arrival order is the code sequence, not a
+sortable time. NOOP:
+1. **Groups** consecutive phase records into one burst (envelope-gap grouping).
+2. **Reconstructs the time axis** by laying the codes BACKWARD from the burst end at the 30 s SleepNet
+   epoch: code *j* of *N* gets `ts = end − (N − j)·30 s` (each ts marks the start of its 30 s interval,
+   the last interval ending exactly at the burst end).
+3. **Refines BOTH ends with the paired `0x49` window** (closest envelope ring-time within 10 min): the
+   END anchors to `event − end_offset·60 s` (the true sleep-end, ahead of the write moment) and the
+   START clamps to `event − start_offset·60 s` (the onset), clipping the few pre-window codes. Both use
+   only RING signals (the `0x49` window + the SleepNet codes); a clamp that would empty the night is
+   ignored. The clip lives in the pure `OuraHypnogramBurst.codesWithTimes(…, sleepStartUnixSeconds:)`
+   (unit-tested, both platforms).
+4. **Anchors to UTC** via the session's `0x42`/`0x13` time-sync (§5.5); an unanchored burst is HELD
+   until the anchor lands, never wall-clocked (the resume cursor only advances on an anchored persist).
+5. **Persists** the anchored codes as a `CachedSleepSession` (`[{start,end,stage}]` breakdown) under the
+   ring's OWN deviceId, so the imported-over-computed merge surfaces the ring's SleepNet staging as the
+   night; the UI labels it **"Oura" / "raw on-device stages"**.
+
+**FINDING — raw window vs the app's adjusted period.** The `0x49` window (hence NOOP's persisted window)
+is the ring's RAW sleep window: it includes the edge AWAKE epochs (settling-in before sleep, lying awake
+before rising). The Oura app / WHOOP display an ADJUSTED *sleep period* (first-asleep → last-asleep),
+which is narrower — e.g. 2026-07-23: NOOP raw `22:56 → 08:21` (post start-clamp) vs a perceived/app
+`~23:30 → 08:14`; the ~34 min onset gap is edge-awake the ring counts. This is the same raw-vs-adjusted
+difference the "raw on-device stages" UI caveat surfaces.
+
+**DESIGN DECISION — surface raw, do NOT NOOP-adjust.** NOOP persists the ring's window VERBATIM (only
+reconciling the ring's own `0x49` window with its own SleepNet codes, above). It deliberately does NOT
+trim the edge-awake to synthesize a "sleep period" — that would be NOOP post-processing the ring's
+hypnogram, contradicting the ring-PROVIDED provenance and the "raw" label. If an adjusted/cleaned sleep
+period is ever wanted, the consistent path is NOOP's OWN sleep staging from the raw signals (dense IBI
+`0x60`/`0x80` + skin temp + motion), surfaced separately as an "On-device" computed night — never an
+edit of the ring's tag.
 
 ### 6.13 Motion / activity
 - **`0x47` `motion_events`** (variable): byte6 bits`[7:5]`=field_a, `[4:0]`=field_b; bytes7–9 = three **int8 × 8** axis magnitudes; optional bytes10–11. [ringverse]
 - **`0x6B` `motion_period`** (19–31 B): 12-bit period `((b6<<8)|(b6>>6)) & 0xFFF`; byte6 bits`[5:4]`=leading-symbol count; then 2-bit codes, 4 per byte (MSB-first). MOTION_STATE enum: `0 NO_MOTION, 1 RESTLESS, 2 TOSSING, 3 ACTIVE`. [ringverse][open_ring]
 - **`0x50` activity_info / `0x51`,`0x52` activity_summary**: activity category + intensity (MET-class). Layout **(UNVERIFIED - partial)**; [ringverse] notes real_steps/activity_info have unresolved constants. Gate on fixtures. [ringverse]
   - **`0x50` decode formula (PR #960 investigation, live Gen 3, 2026-07-02) [oura-rs]:** byte0 = a `state` code (activity-category, meaning unconfirmed); every following byte = one MET sample, `met = byte × 0.1` for `byte < 0x80`, else `met = 12.8 + (byte − 128) × 0.2` (two-slope: 0.1-MET resolution to 12.7, 0.2 steps above). **Plausible against six real Gen 3 captures** across two sessions - a full day from steady resting (0.9–1.1 MET) through a vigorous-activity burst (7.4 MET), everything physiologically sane, nothing negative or absurd - but **NOT ground-truth-validated** against the Oura app's own MET/step numbers. Stays Tier B: NOOP decodes it (`OuraDecoders.decodeActivityInfo` → `OuraEvent.activityInfo`, both platforms) but gates it behind `allowTierB`, logs it for investigation only, and never folds it into `OuraStreamMapping`/scoring - and NEVER derives a step count from it. `0x51`/`0x52` activity_summary stay fully undecoded (raw Tier-B bytes only).
+  - **`0x50` MET cross-device validation (NOOP, 2026-07-15, live Gen 3):** the MET series TRACKS real activity
+    intensity - three separate walks read mean ≈ 3.4–4.1 MET (p50 ≈ 4.4) against a sleep floor of ≈ 0.9 MET,
+    and per-minute MET vs a Suunto `.fit` speed profile correlates **r = 0.89** (one walk, 13 min); the walk's
+    Suunto Energy 196 kJ ≈ 47 kcal matched the recorded workout. It UNDERREADS water (swims read near-rest -
+    optical/motion degraded). The stream is SPARSE with RING-SIDE cadence gaps (~86 % minute coverage on a
+    choppy day; ~6–19 min holes that recur DURING an unbroken drain, so they are the ring's own logging
+    cadence, not a decode drop) - so any daily active-minute total derived from it UNDERCOUNTS. This
+    corroborates the "plausible, tracks activity" read while keeping it Tier B: still not a step count, still
+    not ground-truth-validated against Oura's own numbers, still never scored. NOOP has no MET field in its
+    HR/strain data model, so `0x50` remains a diagnostic JSONL corpus (`oura-activity-<id>.jsonl`); the ring's
+    path into NOOP activity is HR (live push + banked IBI, §6.4), never MET. open_oura consumes this same
+    `0x50` `met` as one input to its activity classifier (`activity_model.rs`). [open_oura-act]
   - **Real Steps (feature `0x0B`) server gating [open_oura-feat]:** real_steps is behind the server flag `activity/real_steps` (default **false**; `FeatureDefinitions.ActivityRealSteps`, Gen 3+), the same server-flag-off pattern as SpO2 (§7.1). This explains `0x7E`/`0x7F` never once appearing across the PR #960 live sessions - the ring isn't sending them, it is not a NOOP decode gap. `0x50` itself is an always-on base stream (not feature-gated), matching it appearing in every session.
 - **`0x7E`/`0x7F` real_steps_features 1/2** (18 B each): bit-packed step features merged across the paired events. **(UNVERIFIED - partial)** [ringverse]
 
@@ -383,6 +526,8 @@ good beats. Matches `open_oura`'s `parse_api_green_ibi_quality_event`.
 - **`0x41` ring_start_ind** (18 B): bytes6–10 = 40-bit device id; bytes15–19 config; triggers anchor invalidation on rt regress. [ringverse][open_ring]
 - **`0x43` debug_event**: ASCII text (state strings). [open_ring][open_oura-r3]
 - **`0x45` state_change_ind / `0x53` wear_event**: byte6 = STATE_* enum; optional trailing UTF-8 string if payload>5. STATE enum: `0 unspecified,1 not_in_finger,2 finger_detection,3 user_active,4 user_in_rest,5 hr_user_active,6 hr_user_in_rest,7 out_of_power,8 charging,9 hibernate_low_power,20–22 production,30 hw_test`. [open_ring]
+  - **NOOP wear/charge signal (2026-07-19, both platforms):** the numeric enum is unreliable in captured data — the byte reuses a value across meanings (observed: code 5 as both `"hr enable"` and `"motion det"`; code 3 as `"fea off"` and `"motion det"`) — so NOOP keys on the optional trailing STRING. `"chg. detected"` / `"chg. stopped"` bracket an on-charger interval. Combined with the live-HR push (a beat streams only from a finger → WORN) and a live-HR silence watchdog (stream quiet past a grace window → REMOVED), this drives the On-wrist / Off-wrist indicator. There is NO dedicated "worn" event — see `0x86` below.
+- **`0x86` `aohr_event` (NOT observed in NOOP):** open_health's `unvalidated-events.md` documents a `0x86` aohr record that "appears when worn", but that decoder is confirmed by CODE (ported from `libringeventparser.so`), not data — it has **never appeared in a NOOP capture** (0 records across the corpus; the ring does not emit it in the NOOP-only, no-server-gated-daytime-HR configuration). Wear is inferred from the live-HR stream + the `0x45/0x53` charger strings above, never from `0x86`.
 - **`0x85` rtc_beacon_ind** (10 B): `unix_s:u32 LE`, reserved 4 B, trailer u16 LE ∈ {`0x01F6`,`0x01F8`}. [open_ring]
 
 ---
@@ -395,21 +540,30 @@ good beats. Matches `open_oura`'s `parse_api_green_ibi_quality_event`.
 | `0x00` | Background DFU | - |
 | `0x01` | Research Data (RData) | often server-blocked; returns idle status 3 [open_oura-r3] |
 | `0x02` | Daytime HR | Gen3+; **live-HR path (§5.6)** |
-| `0x03` | Exercise HR (AWHR) | Gen3+; cap version ≥ 2 |
-| `0x04` | SpO2 | Gen3+; server-gated. **Confirmed OFF on a real Gen 3 ring:** a `2f 02 20 04` feature-status read returns `04 00 00 00 00` (mode `0x00` = off, status `0x00` = off per §7.2) - SpO2 is switched off for that ring/account, not a NOOP decode issue. SpO2 also never arrives as a live push (unlike HR's feature `0x02`); it only ever arrives via history fetch (§5), same as skin temp. NOOP sends the diagnostic read only; it does NOT try to enable/subscribe SpO2 (a live enable produces nothing during the day regardless). |
+| `0x03` | Exercise HR (AWHR) | Gen3+; cap version ≥ 2; data arrives as `0x73` `ehr_trace_event` / `0x74` `ehr_acm_intensity_event` [ring4-ble] — never observed in a NOOP capture (server-gated, like SpO2/steps) |
+| `0x04` | SpO2 | Gen3+; server-gated. **Confirmed OFF on a real Gen 3 ring** (2026-07-20 capture): the read-only `2f 02 20 04` feature-status probe NOOP ships (`spo2_status`, §7.4) decoded to `mode=0 status=0 state=0 subscription=0` - all-zero, i.e. the cloud never enabled SpO2 for that ring/account; it is not a NOOP decode issue. SpO2 also never arrives as a live push (unlike HR's feature `0x02`); it only ever arrives via history fetch (§5), same as skin temp. NOOP sends the diagnostic READ only; it does NOT enable/subscribe SpO2 (a live enable produces nothing during the day regardless). |
 | `0x05` | Bundling | - |
 | `0x06` | Encrypted API | (Oura's encrypted channel - NOOP does NOT use) |
 | `0x07` | Tap-to-tag | - |
 | `0x08` | Resting HR | firmware-computed, no app toggle |
 | `0x09` | App auth | the §3 handshake feature |
 | `0x0A` | BLE mode | - |
-| `0x0B` | Real steps | Gen3+; server-flag-gated |
+| `0x0B` | Real steps | Gen3+; server-flag-gated (`activity/real_steps`, default false). **Confirmed OFF on a real Gen 3 ring** (2026-07-20 capture): the read-only `2f 02 20 0b` probe (`realsteps_status`, §7.4) decoded to `mode=0 status=0 state=0 subscription=0` - all-zero, matching SpO2, which is why `0x7E`/`0x7F` never appear (§6.13). |
 | `0x0C` | Experimental | server-flag-gated |
 | `0x0D` | CVA PPG sampler | Gen3+; server-flag-gated; feeds `0x81` |
-| `0x10` | Ambient light | capability-dependent |
+| `0x0E` | Charging control | [ring4-ble] |
+| `0x0F` | Ambient light | capability-dependent [ring4-ble] |
+| `0x10` | Special feature | [ring4-ble] |
+| `0x11` | Raw-data sampler | [ring4-ble] |
+| `0x12` | Atlas | [ring4-ble] |
+| `0x16` | Long events | [ring4-ble] |
 
-**Feature modes:** `0x00` off, `0x01` automatic, `0x02` requested, `0x03` requested-subscription. [ringverse]
-**Feature status values:** `0x00` off, `0x01` on, `0x02` searching, `0x03` no-PPG, `0x04` cold, `0x05` movement, `0x06` identifying. [ringverse]
+> **CORRECTION** [ring4-ble]: an earlier draft placed **Ambient light** at `0x10`; the APK enumerates `0x0F` = ambient_light and `0x10` = special_feature. The `0x0E`–`0x16` rows above are the APK's full feature list (22 features `0x00`–`0x12` + `0x16`).
+
+**Feature modes** (write byte of `2f 03 22 <id> <mode>`): `0x00` off, `0x01` automatic, `0x02` requested, `0x03` connected_live. [ring4-ble] — an earlier draft read `0x03` as "requested-subscription" [ringverse]; the APK's `connected_live` is authoritative (it is the mode NOOP writes to enable the live-HR push, §5.6).
+**Subscription modes** (write byte of `2f 03 26 <id> <sub>`): `0x00` off, `0x01` state, `0x02` latest, `0x04` feature_specific_data. [ring4-ble] — NOOP subscribes live HR with `0x02` = latest.
+**Feature request-status** (result code of a `setFeatureMode` command): `0x00` success, `0x01` not_supported, `0x02` not_available, `0x03` not_in_finger, `0x04` message_too_short, `0x05` low_battery. [ring4-ble]
+**Feature status/state values** (the `status`/`state` bytes of the `0x21` read reply, §7.4): `0x00` off, `0x01` on, `0x02` searching, `0x03` no-PPG, `0x04` cold, `0x05` movement, `0x06` identifying. [ringverse]
 **Master gate:** `setFeatureMode` requires ring generation **> 2** (Gen 3+); Gen ≤2 reject all feature-mode changes. [open_oura-feat]
 
 ### 7.2 Generation differences
@@ -434,6 +588,13 @@ good beats. Matches `open_oura`'s `parse_api_green_ibi_quality_event`.
 3. **Trust tiers in the decoder:** Tier A (verified, ship now) = TLV framing, auth, GetEvents cursor, live-HR `0x02`, `0x60`/`0x80` IBI, `0x46`/`0x69`/`0x75` temp, `0x6F`/`0x7B` SpO2, `0x42` time-sync, `0x0D` battery, `0x45`/`0x53` state, `0x6B` motion. Tier B (UNVERIFIED, fixture-gate before use) = `0x49/0x4C/0x4F/0x57/0x58` sleep summaries, `0x50/0x51/0x52` activity-MET, `0x7E/0x7F` steps, `0x70` smoothed SpO2, the protobuf `0x55/0x59` interpretation (do **not** ship). (`0x4B` was reclassified out of the summaries — it is a Tier-A phase hypnogram, see §4.)
 4. **HRV/sleep:** consume the ring's `0x5D` (HRV) and `0x4B/0x4E/0x5A` (2-bit phase codes; `0x4B/0x4E/0x5A => decode_sleep_phases` in open_oura) tags AND independently reconstruct from raw IBI/PPG for NOOP's own scoring. Never read Oura feature `0x06` (encrypted API).
 
+### 7.4 Feature-status probe (read-only diagnostic)
+NOOP ships a **read-only** probe that asks the ring to report a feature's own status, so an absent signal can be attributed to the server gate *from the ring's own mouth* rather than guessed. It sends the READ verb only — `2f 02 20 <id>` (sub-op `0x20`, the same verb as the live-HR `dhr_read` step, §5.6) — and **never** the `2f 03 22 <id> <mode>` set-mode/enable write. The `0x21` reply body decodes as five bytes: `feature, mode, status, state, subscription` (per §7.2 tables).
+
+- **Shipped probes:** `spo2_status` (`2f 02 20 04`) and `realsteps_status` (`2f 02 20 0b`), sent once after `get_battery` on each connect; logged once per feature, never stored or scored.
+- **All-zero = server-gated OFF.** A gated/unavailable feature reads back `mode=0 status=0 state=0 subscription=0`. Contrast the *streaming* daytime-HR (`0x02`), which reads `mode=1 status=0x11 state=2` — so **all-zero mode/status/state is the gated signature**, not `subscription==0` alone (daytime-HR is `subscription=0` yet active).
+- **2026-07-20 Gen 3 capture:** both SpO2 (`0x04`) and real_steps (`0x0b`) returned all-zero — confirming §7.1 on live hardware. No local `setFeatureMode` can flip these; the gate is the Oura cloud `ClientConfiguration`, not the ring or NOOP.
+
 ---
 
 ## 8. Open Implementation Items (for the team)
@@ -441,3 +602,35 @@ good beats. Matches `open_oura`'s `parse_api_green_ibi_quality_event`.
 - Resolve the `0x0D` battery percent-vs-voltage offset per generation via captured fixtures (§6.10).
 - Validate all Tier-B sleep/activity/step layouts against real captures before enabling in scoring.
 - Confirm live-HR `0x02` path on actual Gen-4/Gen-5 hardware (only Gen-3 is verified in the corpus).
+- `0x68` and `0x86` are NOT emitted in the NOOP capture (0 of ~131k records) — do not hunt for them; wear inference uses `0x45/0x53` + live-HR (§6.15) and the `0x86` aohr never appears (§6.15).
+
+---
+
+## 9. Observed-but-undecoded tags (raw examples, NOOP Gen-3 corpus, 2026-07)
+
+Tags that appear in the banked stream but NOOP does not decode. Payloads are the bytes AFTER the 6-byte
+`type/len/rt` header, recorded verbatim for future RE — these are OBSERVATIONS, not confirmed layouts.
+
+| tag | count | len (B) | example payload | shape hint (UNCONFIRMED) |
+|---|---|---|---|---|
+| `0x61` | 28760 | 3–8 | `1a18009c3700007c150000cb` | highest-rate tag; **NOT battery** — the `[open_oura-act]`-adjacent "`0x61` battery" label does not match here (non-percent, high-frequency) |
+| `0x4a` | 8416 | 10 | `00000000000000000000` | payload observed all-zero — likely a keepalive / placeholder |
+| `0x72` | 5723 | 12 | `120027000100150018000200` | six int16-LE small values — a vector (motion / accel?) |
+| `0x6a` | 5689 | 10 | `7e00230b90140001f8b0` | mixed; a `0001f8b0` / `0001feb8` trailer recurs |
+| `0x6d` | 3042 | 13 | `00c4ffffb5ffffd2ffffeaffff` | **`measurement_quality`** (24-bit signed) per [ring4-ble] — supersedes the earlier gravity/accel guess; our capture reads `00` + int16-LE-looking negatives |
+| `0x6c` | 1750 | 4 | `02020400` | `02 NN 04 00` — small state / counter |
+| `0x5b` | 416 | 10–13 | `030093dd10dbc7c00000` | variable, leading sub-type byte |
+| `0x79` | 100 | 4–14 | `02000000` | `02` + an incrementing index (`00, 01, 02…`) |
+| `0x76` | 8 | 8 | `4c876b00c0667000` | two u32-LE that look like ring-times — a window (start / end)? |
+| `0x5c` | 6 | 4 | `284b02b0` | **constant** across every occurrence — a fixed marker / config |
+| `0x56` | 1 | 1 | `01` | singleton |
+
+Full-notification hex including the `type/len/rt` header is in the capture. For the highest-rate tags,
+several full records are reproduced below (`type len rt(u32LE) | payload`) so a future RE pass sees the
+record framing and cross-sample variation directly — a single stripped example once hid a truncated
+prefix and tail fields. Note `0x61`'s payload length is **not fixed** (the `len` byte moves 0x10/0x11/0x12).
+
+- `0x61` (highest-rate): `6110 ff756600 | 1a18009c3700007c150000cb` · `6111 00766600 | 23230000090000fd02003a0000` · `6112 f9766600 | 095b914700e9e00000fe81010005`
+- `0x72` (`len` 0x10, 6×int16-LE): `7210 499b6b00 | 120027000100150018000200` · `7210 729c6b00 | 130029000100150018000200` · `7210 9c9d6b00 | 05000e000200160019000500`
+- `0x6d` (`len` 0x11, leading `00` + 4×int16-LE negatives): `6d11 ec856600 | 00c4ffffb5ffffd2ffffeaffff` · `6d11 98976600 | 00b2fffffaffffeeffffd9ffff` · `6d11 419d6600 | 00a1fffffaffffd9fffff5ffff`
+- `0x76`: `760c c2cf7100 | 4c876b00c0667000`

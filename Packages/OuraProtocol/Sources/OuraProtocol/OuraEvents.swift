@@ -73,12 +73,18 @@ public struct OuraBattery: Equatable, Sendable, Codable {
     }
 }
 
-/// Sleep phase code (OURA_PROTOCOL.md s6.12): 2-bit codes 0=awake, 1=light, 2=deep, 3=REM.
+/// The 2-bit sleep-phase code values, per open_oura's VALIDATED `decode_sleep_phases` mapping
+/// (events.rs `PHASE = ["deep", "light", "rem", "awake"]`): 0=deep, 1=light, 2=rem, 3=awake.
+///
+/// CORRECTION (2026-07-11): NOOP previously mapped 0=awake/2=deep/3=rem from the same unverified doc
+/// as the rest of s6.12. Two live captures contradict that: phase records decoded AT WAKE (wearer
+/// demonstrably awake) carry code 3 — awake under open_oura's mapping, "REM" under the old one. The
+/// raw code is what persists (`stage.rawValue`); only these LABELS changed, so stored rows are stable.
 public enum OuraSleepStage: Int, Sendable, Equatable, Codable {
-    case awake = 0
+    case deep  = 0
     case light = 1
-    case deep = 2
-    case rem = 3
+    case rem   = 2
+    case awake = 3
 }
 
 /// One decoded sleep-phase code in order within a 0x4E/0x5A record (OURA_PROTOCOL.md s6.12).
@@ -116,6 +122,22 @@ public struct OuraState: Equatable, Sendable, Codable {
     public let text: String?
     public init(ringTimestamp: UInt32, stateCode: Int, text: String? = nil) {
         self.ringTimestamp = ringTimestamp; self.stateCode = stateCode; self.text = text
+    }
+}
+
+/// A decoded feature-status read reply (the `0x2F` sub-op `0x21` response): the ring's own report of a
+/// feature's mode / status / state / subscription. Read-only diagnostic — used to confirm the server-flag
+/// gate on SpO2 (`0x04`) / real_steps (`0x0b`): a `subscription == 0` with no emitted records is the ring
+/// saying "the cloud has not enabled this", which NOOP cannot override offline. Never scored, never stored.
+public struct OuraFeatureStatus: Equatable, Sendable, Codable {
+    public let feature: Int
+    public let mode: Int
+    public let status: Int
+    public let state: Int
+    public let subscription: Int
+    public init(feature: Int, mode: Int, status: Int, state: Int, subscription: Int) {
+        self.feature = feature; self.mode = mode; self.status = status
+        self.state = state; self.subscription = subscription
     }
 }
 
@@ -202,6 +224,28 @@ public enum OuraEvent: Equatable, Sendable {
         switch self {
         case .tierB, .activityInfo: return true
         default: return false
+        }
+    }
+
+    /// The record's envelope ring-time, when it carries one (battery is a plain response, not a log
+    /// record). Feeds the history drain's in-session continuation cursor: open_oura's `drain_events`
+    /// advances `start` past the max timestamp of EVERY event in a batch, whatever its tag.
+    public var envelopeRingTimestamp: UInt32? {
+        switch self {
+        case .hr(let v): return v.ringTimestamp
+        case .ibi(let v): return v.ringTimestamp
+        case .hrv(let v): return v.ringTimestamp
+        case .spo2(let v): return v.ringTimestamp
+        case .temp(let v): return v.ringTimestamp
+        case .battery: return nil
+        case .sleepPhase(let v): return v.ringTimestamp
+        case .motion(let v): return v.ringTimestamp
+        case .state(let v): return v.ringTimestamp
+        case .timeSync(let v): return v.ringTimestamp
+        case .rtcBeacon(let v): return v.ringTimestamp
+        case .debugText(let rt, _): return rt
+        case .tierB(let v): return v.ringTimestamp
+        case .activityInfo(let v): return v.ringTimestamp
         }
     }
 }
