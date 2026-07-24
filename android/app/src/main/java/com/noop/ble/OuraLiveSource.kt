@@ -262,9 +262,11 @@ class OuraLiveSource(
     /** Feature ids whose status we have already logged this session (SpO2 0x04 / real_steps 0x0b), so the
      *  read-only feature-status diagnostic prints once per feature, not on every reconnect. */
     private val loggedFeatureStatuses = mutableSetOf<Int>()
-    /** Product-info reply ops already logged this session, so the #771/#772 serial/hardware capture prints
-     *  once per op, not on every notification. Twin of Swift's `loggedProductInfoOps`. Cleared on reset. */
-    private val loggedProductInfoOps = mutableSetOf<Int>()
+    /** Product-info replies already logged this session, keyed by op+body so the #771/#772 serial/hardware
+     *  capture prints each DISTINCT reply once — get_serial and get_hardware both answer under op 0x19, so a
+     *  per-op guard would swallow the second (observed on-device: only the serial reached the log). Twin of
+     *  Swift's `loggedProductInfo`. Cleared on reset. */
+    private val loggedProductInfo = mutableSetOf<String>()
 
     // MARK: - Auto-reconnect (#912)
 
@@ -575,7 +577,7 @@ class OuraLiveSource(
         loggedAnchor = false
         loggedTierBKinds.clear()
         loggedFeatureStatuses.clear()
-        loggedProductInfoOps.clear()
+        loggedProductInfo.clear()
         pendingAnchorEvents.clear()
         // Resume the GetEvents cursor from where the LAST connection to this ring left off (s5.1/5.3), so a
         // routine reconnect doesn't re-fetch the ring's entire banked history every time.
@@ -626,7 +628,7 @@ class OuraLiveSource(
         loggedAnchor = false
         loggedTierBKinds.clear()
         loggedFeatureStatuses.clear()
-        loggedProductInfoOps.clear()
+        loggedProductInfo.clear()
         reachedStreaming = false
         // A stop MID-install is an honest failure (no ack will come); a stop after streaming leaves the
         // completed Streaming outcome intact so the wizard's success transition is not undone.
@@ -758,7 +760,7 @@ class OuraLiveSource(
                     loggedAnchor = false
                     loggedTierBKinds.clear()
         loggedFeatureStatuses.clear()
-        loggedProductInfoOps.clear()
+        loggedProductInfo.clear()
                     reachedStreaming = false
                     // A disconnect MID-install is an honest failure (no 0x25 ack will arrive); a disconnect
                     // after streaming leaves the completed Streaming outcome intact. Drop any in-flight key
@@ -1040,17 +1042,20 @@ class OuraLiveSource(
         // and feed all other bytes to the TLV reassembler.
         val nonSecure = ArrayList<Int>()
         for (frame in OuraFraming.parseOuterFrames(bytes)) {
-            // #771/#772 capture: log the GetProductInfo reply (serial + hardware pages) raw, once per op per
-            // session. Peek only — like the 0x11 summary / 0x0D battery below, a product-info op is below the
-            // event-tag range (>= 0x41), so letting it fall through to the reassembler is a harmless
-            // unknown-tag no-op; nothing here decodes it into a stable id (#771) or a generation (#772) yet.
-            // Rendered as hex AND ASCII, since the serial / hardware id are strings (e.g. "BLB_03").
-            if (frame.op in PRODUCT_INFO_RESPONSE_OPS && loggedProductInfoOps.add(frame.op)) {
+            // #771/#772 capture: log each DISTINCT GetProductInfo reply (serial + hardware pages) raw, once
+            // per op+body per session. Peek only — like the 0x11 summary / 0x0D battery below, a product-info
+            // op is below the event-tag range (>= 0x41), so letting it fall through to the reassembler is a
+            // harmless unknown-tag no-op; nothing here decodes it into a stable id (#771) or a generation
+            // (#772) yet. get_serial and get_hardware both answer under op 0x19, so dedupe by content (not op)
+            // or the second is swallowed. Rendered hex AND ASCII, since both are strings (e.g. "BLB_03").
+            if (frame.op in PRODUCT_INFO_RESPONSE_OPS) {
                 val hex = frame.body.joinToString(" ") { "%02x".format(it) }
-                val ascii = String(CharArray(frame.body.size) { i ->
-                    val b = frame.body[i]; if (b in 0x20..0x7e) b.toChar() else '.'
-                })
-                log("Oura: product-info reply op=0x%02x (%dB) raw: %s | ascii: %s".format(frame.op, frame.body.size, hex, ascii))
+                if (loggedProductInfo.add("${frame.op}:$hex")) {
+                    val ascii = String(CharArray(frame.body.size) { i ->
+                        val b = frame.body[i]; if (b in 0x20..0x7e) b.toChar() else '.'
+                    })
+                    log("Oura: product-info reply op=0x%02x (%dB) raw: %s | ascii: %s".format(frame.op, frame.body.size, hex, ascii))
+                }
             }
             if (frame.op == OuraFraming.secureSessionOp) {
                 val secure = OuraFraming.parseSecureFrame(frame) ?: continue

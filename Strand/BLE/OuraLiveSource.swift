@@ -185,9 +185,11 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// Feature ids whose status we have already logged this session (SpO2 0x04 / real_steps 0x0b), so the
     /// read-only feature-status diagnostic prints once per feature, not on every reconnect.
     private var loggedFeatureStatuses: Set<Int> = []
-    /// Product-info reply ops already logged this session, so the #771/#772 serial/hardware capture prints
-    /// once per op, not on every notification. Reset on stop/disconnect.
-    private var loggedProductInfoOps: Set<UInt8> = []
+    /// Product-info replies already logged this session, keyed by op+body so the #771/#772 serial/hardware
+    /// capture prints each DISTINCT reply once — get_serial and get_hardware both answer under op 0x19, so a
+    /// per-op guard would swallow the second (observed on-device: only the serial reached the log). Distinct
+    /// bodies each log once; identical re-serves are suppressed. Reset on stop/disconnect.
+    private var loggedProductInfo: Set<String> = []
 
     // MARK: - Activity (0x50 MET) estimate accumulation — INVESTIGATION ONLY
     // Aggregate the decoded 0x50 MET stream into an honest, clearly-labeled per-day estimate
@@ -559,7 +561,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         loggedAnchor = false
         loggedTierBKinds.removeAll()
         loggedFeatureStatuses.removeAll()
-        loggedProductInfoOps.removeAll()
+        loggedProductInfo.removeAll()
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
@@ -1129,7 +1131,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedAnchor = false
         loggedTierBKinds.removeAll()
         loggedFeatureStatuses.removeAll()
-        loggedProductInfoOps.removeAll()
+        loggedProductInfo.removeAll()
         pendingAnchorEvents.removeAll()   // a fresh session must never replay a stale-anchor guess
         pendingInstallKey = nil
         adoptPhase = .idle
@@ -1192,7 +1194,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         loggedAnchor = false
         loggedTierBKinds.removeAll()
         loggedFeatureStatuses.removeAll()
-        loggedProductInfoOps.removeAll()
+        loggedProductInfo.removeAll()
         activityMETByDay.removeAll()
         activityCadenceObs.removeAll()
         lastActivityUtc = nil
@@ -1319,10 +1321,9 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
         // event-tag range (≥ 0x41) so it round-trips through the TLV decoder as a harmless unknown-tag no-op;
         // nothing here decodes it into a stable id (#771) or a generation (#772) yet — that waits on this
         // fixture. Rendered as hex AND ASCII, since the serial / hardware id are strings (e.g. "BLB_03").
-        for frame in frames where Self.productInfoResponseOps.contains(frame.op)
-                                  && !loggedProductInfoOps.contains(frame.op) {
-            loggedProductInfoOps.insert(frame.op)
+        for frame in frames where Self.productInfoResponseOps.contains(frame.op) {
             let hex = frame.body.map { String(format: "%02x", $0) }.joined(separator: " ")
+            guard loggedProductInfo.insert("\(frame.op):\(hex)").inserted else { continue }
             let ascii = String(bytes: frame.body.map { (0x20...0x7e).contains($0) ? $0 : 0x2e }, encoding: .ascii) ?? ""
             log("Oura: product-info reply op=0x\(String(format: "%02x", frame.op)) (\(frame.body.count)B) raw: \(hex) | ascii: \(ascii)")
         }
