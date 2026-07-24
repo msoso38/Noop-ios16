@@ -419,6 +419,7 @@ class SourceCoordinator(
             },
             log = straplog,           // Oura connect/auth/stream lifecycle → the SAME exported strap log (#421)
             onBattery = batterySink,  // ring battery → the same live state the WHOOP strap battery uses
+            onModel = { model -> scope.launch { runCatching { registry.setModel(id, model) } } },  // #772: correct a name-guessed gen
         )
         // CONSUME the one-shot adopt-intent the wizard armed after its irreversible-consent gate AND its
         // second "Take over" confirm (and ONLY then). True permits the DANGEROUS post-factory-reset key

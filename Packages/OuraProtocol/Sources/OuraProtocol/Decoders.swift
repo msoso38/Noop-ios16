@@ -33,6 +33,19 @@ public enum OuraDecoders {
         Int(b[i]) | (Int(b[i + 1]) << 8) | (Int(b[i + 2]) << 16) | (Int(b[i + 3]) << 24)
     }
 
+    // MARK: - GetProductInfo reply (serial / hardware pages; s4.1 / s7.3)
+
+    /// Decode a GetProductInfo reply body (the serial page `18 03 08 00 10` or the hardware page
+    /// `18 03 18 00 10`, both answered under outer op 0x19). On-device capture 2026-07-24 (Gen3): the body is
+    /// `byte0 = 0x00 status/OK, then a NUL-terminated ASCII string, NUL-padded` — e.g. serial "2H3B2405003655"
+    /// or hardware id "BLB_03". Returns the trimmed ASCII string, or nil for an empty/non-printable body.
+    public static func productInfoString(_ body: [UInt8]) -> String? {
+        guard body.count > 1 else { return nil }
+        let ascii = body.dropFirst().prefix(while: { $0 != 0x00 })
+        guard !ascii.isEmpty, ascii.allSatisfy({ (0x20...0x7e).contains($0) }) else { return nil }
+        return String(bytes: ascii, encoding: .ascii)
+    }
+
     // MARK: - Live-HR realtime push (0x2F sub-op 0x28; s5.6)
 
     /// Decode a live-HR push body (the bytes AFTER `2f 0f 28`). Per OURA_PROTOCOL.md s5.6 the wire

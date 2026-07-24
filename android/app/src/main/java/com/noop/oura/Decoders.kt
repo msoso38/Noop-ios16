@@ -19,6 +19,20 @@ package com.noop.oura
 
 object OuraDecoders {
 
+    /**
+     * Decode a GetProductInfo reply body (serial page `18 03 08 00 10` or hardware page `18 03 18 00 10`,
+     * both under outer op 0x19). On-device capture 2026-07-24 (Gen3): the body is `byte0 = 0x00 status, then
+     * a NUL-terminated ASCII string, NUL-padded` — e.g. serial "2H3B2405003655" or hardware id "BLB_03".
+     * Returns the trimmed ASCII string, or null for an empty/non-printable body. Twin of Swift's
+     * `OuraDecoders.productInfoString`.
+     */
+    fun productInfoString(body: IntArray): String? {
+        if (body.size <= 1) return null
+        val ascii = body.drop(1).takeWhile { it != 0x00 }
+        if (ascii.isEmpty() || ascii.any { it < 0x20 || it > 0x7e }) return null
+        return ascii.map { it.toChar() }.joinToString("")
+    }
+
     // MARK: - Little-endian helpers (body offset == spec offset - 6)
 
     private fun u16le(b: IntArray, i: Int): Int = b[i] or (b[i + 1] shl 8)

@@ -358,6 +358,7 @@ final class SourceCoordinator: ObservableObject {
             },
             log: straplog,
             onBattery: { [live] pct in live.setBattery(Double(pct)) },
+            onModel: { [registry] model in registry.setModel(id, model: model) },   // #772: correct a name-guessed gen
             adoptIntent: adoptIntent)
         if adoptIntent { straplog("Oura: adopt consent granted - this session may install NOOP's key") }
         ouraSource = source   // the published typed handle for the adopt mirror (same object as activeSource)

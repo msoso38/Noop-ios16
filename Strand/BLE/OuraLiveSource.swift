@@ -125,6 +125,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private let persist: (Streams) -> Void
     private let log: (String) -> Void
     private let onBattery: (Int) -> Void
+    /// Fired with the ring's TRUE model label ("Oura Ring 3/4/5") once the GetProductInfo hardware id resolves
+    /// a generation on connect, so the app can correct a registry row mis-stamped from the advertised name
+    /// (#772). Default no-op (the discovery-only scanner and unit paths don't correct anything).
+    private let onModel: (String) -> Void
     /// The ring generation (carried on `PairedDevice.model`, recovered via `OuraRingGen.from(model:)`).
     /// Selects the MTU clamp, which characteristics to discover, and the live-HR command set.
     private let ringGen: OuraRingGen
@@ -461,6 +465,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 persist: @escaping (Streams) -> Void = { _ in },
                 log: @escaping (String) -> Void = { _ in },
                 onBattery: @escaping (Int) -> Void = { _ in },
+                onModel: @escaping (String) -> Void = { _ in },
                 feedsLive: Bool = true,
                 adoptIntent: Bool = false) {
         self.live = live
@@ -470,6 +475,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         self.persist = persist
         self.log = log
         self.onBattery = onBattery
+        self.onModel = onModel
         self.feedsLive = feedsLive
         self.adoptIntent = adoptIntent
         // Tier-B MET research corpus: only on a live/persisting source, never the discovery-only scanner.
@@ -1326,6 +1332,14 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
             guard loggedProductInfo.insert("\(frame.op):\(hex)").inserted else { continue }
             let ascii = String(bytes: frame.body.map { (0x20...0x7e).contains($0) ? $0 : 0x2e }, encoding: .ascii) ?? ""
             log("Oura: product-info reply op=0x\(String(format: "%02x", frame.op)) (\(frame.body.count)B) raw: \(hex) | ascii: \(ascii)")
+            // #772: the hardware page resolves the AUTHORITATIVE generation (e.g. "BLB_03" → gen3). The serial
+            // page decodes to a string with no "_NN" gen marker, so `from(hardwareId:)` returns nil and only
+            // the hardware reply corrects the model — even though both arrive under op 0x19.
+            if let str = OuraDecoders.productInfoString(frame.body),
+               let gen = OuraRingGen.from(hardwareId: str), gen != ringGen {
+                log("Oura: generation from hardware id \(str) is \(gen.displayName) (was \(ringGen.displayName)) - correcting model")
+                onModel(gen.displayName)
+            }
         }
         if frames.contains(where: { $0.op == OuraFraming.secureSessionOp }) {
             for frame in frames where frame.op == OuraFraming.secureSessionOp {

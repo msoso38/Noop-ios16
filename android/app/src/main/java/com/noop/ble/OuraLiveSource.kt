@@ -100,6 +100,10 @@ class OuraLiveSource(
     private val log: (String) -> Unit = {},
     /** Fired with the ring's battery percent (0-100) when decoded. */
     private val onBattery: (Int) -> Unit = {},
+    /** Fired with the ring's TRUE model label ("Oura Ring 3/4/5") once the GetProductInfo hardware id
+     *  resolves a generation on connect, so the app can correct a registry row mis-stamped from the
+     *  advertised name (#772). Default no-op. Twin of Swift's `onModel`. */
+    private val onModel: (String) -> Unit = {},
     /**
      * Source of cryptographically-random bytes for a freshly-generated install key (adopt flow step 1).
      * Injected so a test can pin a deterministic key; production defaults to [java.security.SecureRandom]
@@ -1055,6 +1059,15 @@ class OuraLiveSource(
                         val b = frame.body[i]; if (b in 0x20..0x7e) b.toChar() else '.'
                     })
                     log("Oura: product-info reply op=0x%02x (%dB) raw: %s | ascii: %s".format(frame.op, frame.body.size, hex, ascii))
+                    // #772: the hardware page resolves the AUTHORITATIVE generation ("BLB_03" -> gen3). The
+                    // serial page has no "_NN" gen marker, so fromHardwareId returns null and only the
+                    // hardware reply corrects the model — even though both arrive under op 0x19.
+                    val str = OuraDecoders.productInfoString(frame.body)
+                    val gen = str?.let { OuraRingGen.fromHardwareId(it) }
+                    if (gen != null && gen != ringGen) {
+                        log("Oura: generation from hardware id $str is ${gen.displayName} (was ${ringGen.displayName}) - correcting model")
+                        onModel(gen.displayName)
+                    }
                 }
             }
             if (frame.op == OuraFraming.secureSessionOp) {
