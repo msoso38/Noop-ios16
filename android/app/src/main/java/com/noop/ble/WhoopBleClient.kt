@@ -3289,7 +3289,7 @@ class WhoopBleClient(
     /** Whether a command written right now would actually reach the strap — the same conditions [send]
      *  guards on. Lets a caller that REPORTS an outcome to the user check first, instead of logging
      *  success for a write that was dropped (#730). Twin of macOS `commandChannelReady`. */
-    val commandChannelReady: Boolean get() = gatt != null && cmdCharacteristic != null
+    private val commandChannelReady: Boolean get() = gatt != null && cmdCharacteristic != null
 
     /** Clear the strap's firmware alarm. Port of macOS `BLEManager.disableStrapAlarm`. */
     fun disableStrapAlarm() {
