@@ -732,6 +732,11 @@ public final class BLEManager: NSObject, ObservableObject {
     private var commandChannelReady: Bool {
         state.connected && peripheral?.state == .connected && cmdCharacteristic != nil
     }
+    /// #730: a DISABLE_ALARM that `send` dropped because the link wasn't up. The connect-settle hook
+    /// re-issues ONLY this case, so a user who turned the alarm off while disconnected still gets the
+    /// strap disarmed — without making every connect emit a DISABLE_ALARM for the majority who never
+    /// armed one. Cleared once a disarm actually reaches the strap.
+    private(set) var disarmPending = false
     private var cmdNotifyCharacteristic: CBCharacteristic?
     private var eventNotifyCharacteristic: CBCharacteristic?
     private var dataNotifyCharacteristic: CBCharacteristic?
@@ -2977,6 +2982,9 @@ public final class BLEManager: NSObject, ObservableObject {
         // command never reached the strap — so a strap that IS armed would still buzz. (`applySmartAlarm`
         // now re-runs on connectSettled, so a deferred disarm is re-issued once the link is really up.)
         let willReach = commandChannelReady
+        // Latch a dropped disarm so the connect-settle hook can re-issue exactly this case, WITHOUT
+        // making every connect send a DISABLE_ALARM for the many users who never armed one.
+        disarmPending = !willReach
         if selectedModel.deviceFamily == .whoop5 {
             // 5/MG DISABLE_ALARM is REVISION_2 [0x02, 0xFF]; the rev-1 [0x01] form below is WHOOP4.
             send(.disableAlarm, payload: AlarmPayload.disableRev2())
