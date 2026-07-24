@@ -3286,17 +3286,29 @@ class WhoopBleClient(
         }
     }
 
+    /** Whether a command written right now would actually reach the strap — the same conditions [send]
+     *  guards on. Lets a caller that REPORTS an outcome to the user check first, instead of logging
+     *  success for a write that was dropped (#730). Twin of macOS `commandChannelReady`. */
+    val commandChannelReady: Boolean get() = gatt != null && cmdCharacteristic != null
+
     /** Clear the strap's firmware alarm. Port of macOS `BLEManager.disableStrapAlarm`. */
     fun disableStrapAlarm() {
+        // #730: report the OUTCOME, not the intent. [send] drops the write when the link isn't up and logs
+        // "ignored — not connected", but this then logged "Alarm: disarmed" anyway — telling the user the
+        // firmware alarm was cleared when the command never reached the strap, so a strap that IS armed
+        // would still buzz. (reconcileStrapAlarm already re-runs on the bond edge, so a deferred disarm is
+        // re-issued once the link is up — Android never had the iOS gap where that re-apply was skipped.)
+        val willReach = commandChannelReady
+        val notSent = "Alarm: disarm NOT sent — not connected; will retry on connect (strap may still be armed)"
         if (connectedFamily == DeviceFamily.WHOOP5) {
             // 5/MG DISABLE_ALARM is REVISION_2 [0x02, 0xFF]. Sent unconditionally (clearing is safe
             // even if arming was gated off — a no-op on a strap with no alarm set). (PR #85)
             send(CommandNumber.DISABLE_ALARM, AlarmPayload.disableRev2())
-            log("Alarm: disarmed (5/MG rev2)")
+            log(if (willReach) "Alarm: disarmed (5/MG rev2)" else notSent)
             return
         }
         send(CommandNumber.DISABLE_ALARM, byteArrayOf(0x01))
-        log("Alarm: disarmed")
+        log(if (willReach) "Alarm: disarmed" else notSent)
     }
 
     // ====================================================================================
