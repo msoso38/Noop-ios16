@@ -12,6 +12,20 @@ final class LiquidBatteryDisplayTests: XCTestCase {
 
     private typealias Display = LiquidTodayView.StrapBatteryDisplay
 
+    // MARK: - Syncing owns the fixed battery-ring position
+
+    func testSyncingReplacesBatteryDisplayWithoutDependingOnBatterySignals() {
+        XCTAssertEqual(
+            Display.resolve(connected: true, batteryPct: 87, charging: true, syncing: true),
+            .syncing
+        )
+        XCTAssertEqual(
+            Display.resolve(connected: false, batteryPct: nil, charging: nil, syncing: true),
+            .syncing,
+            "a running refresh must keep its in-place feedback while the battery reading is unavailable"
+        )
+    }
+
     // MARK: - A3: "charging" must not be hostage to "charge %"
 
     /// THE regression. `charging` rides the strap's BATTERY_LEVEL event (~every 8 min); the % rides a

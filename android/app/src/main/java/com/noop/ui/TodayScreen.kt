@@ -30,6 +30,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsRun
@@ -38,7 +43,6 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Air
-import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.automirrored.filled.BatteryUnknown
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Check
@@ -100,6 +104,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -1221,8 +1226,8 @@ fun TodayScreen(
         // the Updates inbox (restorable from there). Only anchored to today (offset 0).
         if (displayMetric?.recovery == null) {
             item {
-            // While the strap is mid-offload, say so, empty tiles read as final otherwise (#77).
-            if (liveSnap.backfilling) SyncingHistoryNote(chunks = liveSnap.syncChunksThisSession)
+            // Active sync feedback stays in the fixed battery-ring position above, so this content never
+            // gains an extra status row and shifts downward while the app remains fully usable.
             // Explained score state (COMPONENT 2): when there's no own number to show, say WHY and WHAT to
             // do. "Calibrating" (N more nights, no fake number), "Last night · <date>" (#802 carry-over)
             // or "Needs the strap" (no data overnight). The carried Charge now draws a dimmed filled ring on
@@ -2008,6 +2013,17 @@ private fun LiquidTodayHeader(
     modifier: Modifier = Modifier,
 ) {
     var showPicker by remember { mutableStateOf(false) }
+    // A history drain briefly reports false between chunks. Hold the visual state through that gap so both
+    // the battery spinner and the idle status chip switch once per logical sync, never once per chunk.
+    var syncing by remember { mutableStateOf(backfilling) }
+    LaunchedEffect(backfilling) {
+        if (backfilling) {
+            syncing = true
+        } else {
+            delay(3_000)
+            syncing = false
+        }
+    }
     if (showPicker) {
         val context = LocalContext.current
         DisposableEffect(selectedDay) {
@@ -2079,16 +2095,16 @@ private fun LiquidTodayHeader(
             )
         }
 
-        // RIGHT: the controls, in order — [sync chip] · avatar · + · battery ring. Each ~34dp, 8dp apart.
+        // RIGHT: idle sync age · avatar · + · battery/sync ring. Each ~34dp, 8dp apart. During an active
+        // sync, the battery ring itself becomes the spinner and the status chip yields its space.
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // #245: compact sync-status chip, shown for EVERY user — syncing / last-synced / experimental,
-            // so the absence of active syncing reads as caught-up (the full SyncingHistoryNote is gated on
-            // recovery == null). Twin of iOS SyncStatusChip.
+            // Keep the useful idle "last synced" state from #245, but active progress belongs in the fixed
+            // battery position below so the header never grows a separate syncing bubble.
             SyncStatusChip(
-                backfilling = backfilling, chunks = syncChunksThisSession,
+                syncing = syncing,
                 lastSyncAt = lastSyncAt, historySyncExperimental = historySyncExperimental,
             )
             // (a) Profile avatar (the photo set in Settings, or the NOOP loop mark) → Settings. Mirrors iOS.
@@ -2109,29 +2125,28 @@ private fun LiquidTodayHeader(
             // (b) Quick-add (+), the accented primary. Mirrors iOS's LiquidAddButton (a glyph on a translucent
             // disc → the quick-actions menu). Sized 34dp to match the rest of the liquid cluster.
             QuickActionDisc(onClick = onQuickActions)
-            // (c) Strap battery ring showing the % (iOS LiquidBatteryButton). Tap → Devices.
-            LiquidBatteryRing(batteryPct = batteryPct, onClick = onOpenDevices)
+            // (c) Strap battery ring showing the %, transformed in place while syncing. Tap → Devices.
+            LiquidBatteryRing(
+                batteryPct = batteryPct,
+                syncing = syncing,
+                chunks = syncChunksThisSession,
+                onClick = onOpenDevices,
+            )
         }
     }
 }
 
-/** #245: compact sync-status chip for the Today top bar, shown to EVERY user. The full-width
- *  SyncingHistoryNote is gated on `recovery == null`, so an established user (and especially a WHOOP 5/MG
- *  owner, whose history offloads are rare) saw no sync feedback on Today. THREE states so the ABSENCE of
- *  active syncing reads as "caught up", not "missing indicator" (the real #245 confusion): actively
- *  offloading → ⟳ N; idle with a known last-sync → ✓ Xm; a 5/MG whose history sync is experimental
- *  (live-connected, no completed offload yet) → ✓ live. Nothing shows only on a true cold start (the
- *  building-scores note owns that). Twin of iOS SyncStatusChip. DRAFT (#245): final styling/wording TBD. */
+/** #245's compact idle status for the Today top bar. During an active sync this yields its space to the
+ *  in-place battery spinner; otherwise it still answers when the last sync completed, or whether history
+ *  sync is experimental on this connected strap. */
 @Composable
 private fun SyncStatusChip(
-    backfilling: Boolean,
-    chunks: Int,
+    syncing: Boolean,
     lastSyncAt: Long?,
     historySyncExperimental: Boolean,
 ) {
     when {
-        backfilling -> ChipCapsule(
-            Icons.Filled.Autorenew, "$chunks", Palette.accent, "Syncing strap history, $chunks chunks")
+        syncing -> Unit
         lastSyncAt != null -> ChipCapsule(
             Icons.Filled.Check, shortSyncAgo(lastSyncAt), Palette.textSecondary,
             "Strap history synced ${shortSyncAgo(lastSyncAt)} ago")
@@ -2170,13 +2185,23 @@ private fun shortSyncAgo(unixSec: Long): String {
     }
 }
 
-/** The liquid header strap-battery ring: when connected + a reading exists it draws a trimmed ring in
- *  the charge/warning/critical hue plus the % inside, else a
- *  bolt-slash glyph. Tap → Devices. Mirrors the iOS liquid header battery ring. */
+/** The liquid header strap-battery ring. An active history sync transforms the same 34dp control into a
+ *  rotating stroked circle, so the Today content never shifts for a non-blocking background operation.
+ *  Otherwise a connected reading draws its charge arc + %, and no reading draws the unknown glyph. */
 @Composable
-private fun LiquidBatteryRing(batteryPct: Double?, onClick: () -> Unit) {
+private fun LiquidBatteryRing(
+    batteryPct: Double?,
+    syncing: Boolean,
+    chunks: Int,
+    onClick: () -> Unit,
+) {
     val interaction = remember { MutableInteractionSource() }
-    val label = batteryPct?.let { "Strap battery ${it.roundToInt()} percent" } ?: "Strap battery"
+    val label = when {
+        syncing && chunks > 0 -> "Syncing strap history, $chunks chunks"
+        syncing -> "Syncing strap history"
+        batteryPct != null -> "Strap battery ${batteryPct.roundToInt()} percent"
+        else -> "Strap battery"
+    }
     Box(
         modifier = Modifier
             .size(34.dp)
@@ -2193,7 +2218,51 @@ private fun LiquidBatteryRing(batteryPct: Double?, onClick: () -> Unit) {
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
-        if (batteryPct != null) {
+        if (syncing) {
+            val transition = rememberInfiniteTransition(label = "Today sync spinner")
+            val spinnerRotation by transition.animateFloat(
+                initialValue = 0f,
+                targetValue = 360f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 850, easing = LinearEasing),
+                    repeatMode = RepeatMode.Restart,
+                ),
+                label = "Today sync rotation",
+            )
+            Canvas(modifier = Modifier.size(34.dp).padding(3.dp)) {
+                val strokePx = 3.dp.toPx()
+                val d = size.minDimension - strokePx
+                val topLeft = Offset((size.width - d) / 2f, (size.height - d) / 2f)
+                drawArc(
+                    color = Color.White.copy(alpha = 0.10f),
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = Size(d, d),
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                )
+            }
+            Canvas(
+                modifier = Modifier
+                    .size(34.dp)
+                    .padding(3.dp)
+                    .graphicsLayer { rotationZ = spinnerRotation },
+            ) {
+                val strokePx = 3.dp.toPx()
+                val d = size.minDimension - strokePx
+                val topLeft = Offset((size.width - d) / 2f, (size.height - d) / 2f)
+                drawArc(
+                    color = Palette.accent,
+                    startAngle = -68f,
+                    sweepAngle = 238f,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = Size(d, d),
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                )
+            }
+        } else if (batteryPct != null) {
             val pct = batteryPct.coerceIn(0.0, 100.0)
             val ringColor = when {
                 pct < 15 -> Palette.statusCritical
