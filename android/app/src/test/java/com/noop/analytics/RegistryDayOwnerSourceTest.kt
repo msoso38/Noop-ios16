@@ -40,6 +40,9 @@ class RegistryDayOwnerSourceTest {
         override suspend fun archiveDevice(id: String) {
             devices[id]?.let { devices[id] = it.copy(status = DeviceStatus.archived.name) }
         }
+        override suspend fun setModel(id: String, model: String) {
+            devices[id]?.let { devices[id] = it.copy(model = model) }
+        }
         override suspend fun renameDevice(id: String, nickname: String?) {}
         override suspend fun setPeripheralId(id: String, peripheralId: String?) {
             devices[id]?.let { devices[id] = it.copy(peripheralId = peripheralId) }
@@ -57,6 +60,7 @@ class RegistryDayOwnerSourceTest {
         override suspend fun deleteStepsFor(deviceId: String) {}
         override suspend fun deletePpgHrFor(deviceId: String) {}
         override suspend fun deletePpgWaveformFor(deviceId: String) {}
+        override suspend fun deleteRawImuFor(deviceId: String) {}
         override suspend fun deleteEventsFor(deviceId: String) {}
         override suspend fun deleteBatteryFor(deviceId: String) {}
         override suspend fun deleteDailyMetricsFor(deviceId: String) {}
@@ -66,6 +70,7 @@ class RegistryDayOwnerSourceTest {
         override suspend fun deleteAppleDailyFor(deviceId: String) {}
         override suspend fun deleteMetricSeriesFor(deviceId: String) {}
         override suspend fun deleteDayOwnershipFor(deviceId: String) {}
+        override suspend fun deleteScoreInputProvenanceFor(deviceId: String) {}
         override suspend fun deleteSleepStatesFor(deviceId: String) {}
         override suspend fun deleteLabMarkersFor(deviceId: String) {}
         override suspend fun deleteLiveSessionsFor(deviceId: String) {}

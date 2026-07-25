@@ -53,6 +53,10 @@ class DeviceRegistryTest {
             devices[id]?.let { devices[id] = it.copy(status = DeviceStatus.archived.name) }
         }
 
+        override suspend fun setModel(id: String, model: String) {
+            devices[id]?.let { devices[id] = it.copy(model = model) }
+        }
+
         override suspend fun renameDevice(id: String, nickname: String?) {
             devices[id]?.let { devices[id] = it.copy(nickname = nickname) }
         }
@@ -85,6 +89,7 @@ class DeviceRegistryTest {
         override suspend fun deleteStepsFor(deviceId: String) { deletedTables += "stepSample" to deviceId }
         override suspend fun deletePpgHrFor(deviceId: String) { deletedTables += "ppgHrSample" to deviceId }
         override suspend fun deletePpgWaveformFor(deviceId: String) { deletedTables += "ppgWaveformSample" to deviceId }
+        override suspend fun deleteRawImuFor(deviceId: String) { deletedTables += "rawImuSample" to deviceId }
         override suspend fun deleteEventsFor(deviceId: String) { deletedTables += "event" to deviceId }
         override suspend fun deleteBatteryFor(deviceId: String) { deletedTables += "battery" to deviceId }
         override suspend fun deleteDailyMetricsFor(deviceId: String) { deletedTables += "dailyMetric" to deviceId }
@@ -96,6 +101,9 @@ class DeviceRegistryTest {
         override suspend fun deleteDayOwnershipFor(deviceId: String) {
             deletedTables += "dayOwnership" to deviceId
             owners.entries.removeIf { it.value.deviceId == deviceId }
+        }
+        override suspend fun deleteScoreInputProvenanceFor(deviceId: String) {
+            deletedTables += "scoreInputProvenance" to deviceId
         }
         override suspend fun deleteSleepStatesFor(deviceId: String) { deletedTables += "sleepStateSample" to deviceId }
         override suspend fun deleteLabMarkersFor(deviceId: String) { deletedTables += "labMarker" to deviceId }
@@ -234,8 +242,9 @@ class DeviceRegistryTest {
         // were missing, leaving raw sleep-state, lab markers, live sessions and dismissed markers behind.
         val expectedTables = setOf(
             "hrSample", "rrInterval", "spo2Sample", "skinTempSample", "respSample", "gravitySample",
-            "stepSample", "ppgHrSample", "ppgWaveformSample", "event", "battery", "dailyMetric", "sleepSession",
+            "stepSample", "ppgHrSample", "ppgWaveformSample", "rawImuSample", "event", "battery", "dailyMetric", "sleepSession",
             "journal", "workout", "appleDaily", "metricSeries", "dayOwnership",
+            "scoreInputProvenance",
             "sleepStateSample", "labMarker", "liveSession", "dismissedWorkout", "dismissedSleep",
         )
         assertEquals(expectedTables, dao.deletedTables.map { it.first }.toSet())

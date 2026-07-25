@@ -2,6 +2,7 @@ package com.noop.analytics
 
 import com.noop.data.DailyMetric
 import com.noop.data.MetricSeriesRow
+import com.noop.data.ScoreInputProvenanceRow
 import com.noop.data.SleepSession
 import com.noop.data.WhoopRepository
 import com.noop.data.WorkoutRow
@@ -374,6 +375,7 @@ object IntelligenceEngine {
         // builds for daySourceToken, so there is no extra read). Only populated when the universal sink is
         // on. Keyed by the local day.
         val readOwnerByDay = LinkedHashMap<String, OwnerRead>()
+        val resolvedScoreOwnerByDay = LinkedHashMap<String, String>()
         // HRV baseline honours the manual "Recalibrate baseline" epoch (noop.hrvBaselineEpoch): pass the
         // per-value "yyyy-MM-dd" day keys (parallel to the values) so foldHistory drops every night before
         // the epoch. baselineEpoch is threaded down from the Context-aware caller (0.0 = no recalibration).
@@ -463,7 +465,10 @@ object IntelligenceEngine {
             // scored-days loop, NOT here). Only when the universal sink is on. A day skipped below for too
             // few rows is never scored, so it emits no line, byte-identical to the iOS behaviour.
             if (universalSink != null) readOwnerByDay[day] = OwnerRead(owner, hr.size)
-            if (hr.size < MIN_HR_SAMPLES) continue // need real raw data, not a stray sample
+            if (hr.size < MIN_HR_SAMPLES) {
+                diag("sleep day=$day SKIPPED hrSamples=${hr.size} (need ≥$MIN_HR_SAMPLES)")
+                continue
+            }
             val rr = repo.rrIntervals(owner, from, to, STREAM_LIMIT)
             val resp = repo.respSamples(owner, from, to, STREAM_LIMIT)
             val grav = repo.gravitySamples(owner, from, to, STREAM_LIMIT)
@@ -657,6 +662,7 @@ object IntelligenceEngine {
                 diag(rhrFloorMeanLogLine(day, rhrFloor, inBedBpms))
             }
             scoredNights.add(res)
+            resolvedScoreOwnerByDay[res.daily.day] = owner
         }
 
         // ── Seed the baseline from the UNION of imported nightly history + the nightly
@@ -904,9 +910,23 @@ object IntelligenceEngine {
                 // though their sports differ , the #975 "two workouts, one vanished" seam. Name the collider.
                 val collider = realWorkouts.firstOrNull { w -> s.start < w.endTs && w.startTs < s.end }
                 if (collider != null) {
+                    // #510: the detected bout's own avgHR/calories/maxHR/strain come from the SAME
+                    // motion+HR trace the detector used to find this activity's actual boundaries —
+                    // often a tighter match than the colliding row's own [startTs,endTs] (e.g. a manual
+                    // entry typed in afterward, whose guessed boundaries can clip most of the real
+                    // HR-rich period and leave WhoopRepository.fillWorkoutHrFromStrap's raw window read
+                    // too thin, silently showing no HR/calories). Same natural key (deviceId, startTs,
+                    // sport), so the upsert below updates the existing row in place rather than
+                    // duplicating it.
+                    val backfilled = backfillWorkoutFromDetectedBout(
+                        collider, avgBpm = avgBpm, peakHR = s.peakHR, caloriesKcal = s.caloriesKcal, strain = s.strain,
+                    )
+                    val didBackfill = backfilled != collider
+                    if (didBackfill) workoutRows.add(backfilled)
                     workoutsTraceSink?.invoke(
                         WorkoutsTrace.detectedBoutLine(
-                            verdict = "droppedOverlap", durMin = durMin, avgBpm = avgBpm,
+                            verdict = if (didBackfill) "droppedOverlapBackfilled" else "droppedOverlap",
+                            durMin = durMin, avgBpm = avgBpm,
                             overlapSource = colliderSourceLabel(collider.source),
                         ),
                     )
@@ -959,6 +979,11 @@ object IntelligenceEngine {
         // ("my-whoop"), so importedDeviceId is included; a row already carrying its OWN recovery is left
         // alone. Mirrors the Swift fold.
         val importScoredDays = HashSet<String>().apply { addAll(dailies.map { it.day }) }
+        val healthConnectDays = repo.appleDaily(
+            WhoopRepository.HEALTH_CONNECT_SOURCE,
+            oldestDay,
+            newestDay,
+        ).mapTo(HashSet()) { it.day }
         val importSourceIds = buildList {
             add(importedDeviceId) // Health Connect imports its DailyMetric rows under the strap source.
             add(WhoopRepository.APPLE_HEALTH_SOURCE)
@@ -977,6 +1002,15 @@ object IntelligenceEngine {
                 val scored = row.copy(deviceId = computedId, recovery = recovery)
                 dailies.add(scored)
                 importScoredDays.add(w.day)
+                // Health Connect's compatibility DailyMetric row lives under `my-whoop`, while its
+                // AppleDaily row retains the real source. Preserve that provider fact without changing
+                // ingestion or score precedence.
+                resolvedScoreOwnerByDay[w.day] =
+                    if (source == importedDeviceId && w.day in healthConnectDays) {
+                        WhoopRepository.HEALTH_CONNECT_SOURCE
+                    } else {
+                        source
+                    }
                 RestScorer.restFromDaily(scored)?.let { rest ->
                     restRows.add(MetricSeriesRow(deviceId = computedId, day = w.day, key = "sleep_performance", value = rest))
                 }
@@ -992,7 +1026,6 @@ object IntelligenceEngine {
                 )
             }
         }
-
         // Snapshot the persisted/merged daily history BEFORE the delete+re-upsert below rewrites the
         // computed window. This is the accumulated view the readiness card + dashboard read ("N of 7
         // nights"); captured here so the Fitness Age gate (further down) can't be undercut by this pass's
@@ -1001,14 +1034,37 @@ object IntelligenceEngine {
         // it stays bounded (daysMerged is full-history) and can't drag in stale nights older than the window.
         val faPriorDaily = repo.daysMerged(importedDeviceId).filter { it.day in oldestDay..newestDay }
 
-        repo.deleteComputedDailyInRange(computedId, oldestDay, newestDay)
-
         // Persist the computed scores under the dedicated "-noop" source so the WHOLE
         // dashboard (Today / Recovery / Strain / Sleep / Trends) reads them. The repository
         // merges these UNDER any imported "my-whoop" rows, so a real WHOOP import always wins;
         // this only fills the days the strap collected but no import covered.
-        if (dailies.isNotEmpty()) repo.upsertDailyMetrics(dailies)
-        if (restRows.isNotEmpty()) repo.upsertMetricSeries(restRows)
+        // Persist metric-level input provenance in the SAME Room transaction. dayOwnership remains
+        // exclusively a resolver override, and a failed write can never relabel an older score.
+        val provenanceByCell = LinkedHashMap<Pair<String, String>, ScoreInputProvenanceRow>()
+        for (daily in dailies) {
+            val source = resolvedScoreOwnerByDay[daily.day] ?: continue
+            if (daily.recovery != null) {
+                provenanceByCell[daily.day to "recovery"] =
+                    ScoreInputProvenanceRow(computedId, daily.day, "recovery", source)
+            }
+            if (daily.strain != null) {
+                provenanceByCell[daily.day to "strain"] =
+                    ScoreInputProvenanceRow(computedId, daily.day, "strain", source)
+            }
+        }
+        for (point in restRows) {
+            val source = resolvedScoreOwnerByDay[point.day] ?: continue
+            provenanceByCell[point.day to point.key] =
+                ScoreInputProvenanceRow(computedId, point.day, point.key, source)
+        }
+        repo.replaceComputedScoreWindow(
+            deviceId = computedId,
+            from = oldestDay,
+            to = newestDay,
+            dailyMetrics = dailies,
+            metricPoints = restRows,
+            provenance = provenanceByCell.values.toList(),
+        )
 
         // ── Fitness Age (Phase 2) , weekly, keyed to the week's Saturday ──
         val fa7 = dailies.sortedBy { it.day }.takeLast(7)
@@ -1235,6 +1291,25 @@ object IntelligenceEngine {
             else -> "apple"
         }
     }
+
+    /**
+     * #510: backfill ONLY the avgHr/maxHr/energyKcal/strain fields [real] doesn't already have, from a
+     * detected bout's own computed values — never touching a field that's already present, whether
+     * typed by the user, imported, or filled by an earlier pass. Returns [real] unchanged (`==`) when it
+     * already had everything, so the caller can tell whether a write is actually needed.
+     */
+    internal fun backfillWorkoutFromDetectedBout(
+        real: WorkoutRow,
+        avgBpm: Int,
+        peakHR: Int,
+        caloriesKcal: Double?,
+        strain: Double?,
+    ): WorkoutRow = real.copy(
+        avgHr = real.avgHr ?: avgBpm,
+        maxHr = real.maxHr ?: peakHR,
+        energyKcal = real.energyKcal ?: caloriesKcal,
+        strain = real.strain ?: strain,
+    )
 
     /**
      * #137: re-score under-sampled manual workouts. Conservative + idempotent: only `manual` rows that

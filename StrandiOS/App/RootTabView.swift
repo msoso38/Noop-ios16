@@ -66,6 +66,28 @@ struct RootTabView: View {
         UITabBar.appearance().scrollEdgeAppearance = appearance
     }
 
+    /// The anywhere-swipe tab-switch drag (2026-07-02). Held as a property so the attachment site can
+    /// enable or disable it through a `GestureMask` instead of attaching it conditionally: a conditional
+    /// attachment changes view identity, and this condition toggles on every push and pop, which would
+    /// rebuild the tab roots underneath it. The same class of rebuild is what #197 caused with an
+    /// `.id()` reset and #198 had to undo — it lost scroll position and re-ran `.task`.
+    ///
+    /// Only a decisive horizontal flick switches tabs, and Today is carved out because it uses
+    /// horizontal swipe to change DAYS. Both thresholds are unchanged from the original gesture.
+    private var tabSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { v in
+                // Today (tab 0) uses horizontal swipe to change DAYS, so tab-swipe is off there.
+                guard selectedTab != 0 else { return }
+                let dx = v.translation.width, dy = v.translation.height
+                guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
+                let next = min(tabPaths.count - 1, max(0, selectedTab + (dx < 0 ? 1 : -1)))
+                if next != selectedTab {
+                    withAnimation(StrandMotion.calm(reduced: reduceMotion)) { selectedTab = next }
+                }
+            }
+    }
+
     var body: some View {
         // The native TabView keeps the three primary roots and their navigation state; the custom
         // floating bar and quick-launch panel replace only its visual tab-bar chrome.
@@ -80,18 +102,27 @@ struct RootTabView: View {
             .toolbar(.hidden, for: .tabBar)
             // Design-system calm crossfade, suppressed under Reduce Motion.
             .animation(StrandMotion.calm(reduced: reduceMotion), value: selectedTab)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 24)
-                    .onEnded { v in
-                        guard selectedTab != 0 else { return }
-                        let dx = v.translation.width, dy = v.translation.height
-                        guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
-                        let next = min(2, max(0, selectedTab + (dx < 0 ? 1 : -1)))
-                        if next != selectedTab {
-                            withAnimation(StrandMotion.calm(reduced: reduceMotion)) { selectedTab = next }
-                        }
-                    }
-            )
+            // Swipe left/right anywhere to move between tabs (2026-07-02), but ONLY while the current
+            // tab is at its root. Attaching this ancestor drag gesture unconditionally defeated the
+            // edge-restriction of a pushed NavigationStack screen's native interactive-pop gesture —
+            // a pushed screen became draggable/rubber-banding from anywhere, not just the left edge
+            // (#519). Disabling the recognizer once a push is active, rather than just gating the
+            // onEnded action, is what stops the interference: the action never runs early enough,
+            // because the recognizer competes during recognition.
+            //
+            // The mask does that WITHOUT changing view identity. #519 attached the gesture through a
+            // conditional ViewModifier, which put the two states in separate _ConditionalContent
+            // branches — and since this condition toggles on every push and pop, each navigation
+            // rebuilt the whole TabView subtree and could reset @State inside the tab roots (scroll
+            // offsets and chart ranges). `including:` keeps one view type in both states, so nothing
+            // is torn down.
+            //
+            // The mask MUST be `.subviews`, not `.none`. `.subviews` means "enable the subview
+            // hierarchy's gestures, disable the added one" — exactly this requirement. `.none` disables
+            // the subview hierarchy TOO, which on a pushed screen would take out scrolling, taps and the
+            // interactive-pop itself: far worse than the bug being fixed.
+            .simultaneousGesture(tabSwipeGesture,
+                                 including: tabPaths[selectedTab].isEmpty ? .all : .subviews)
             // The panel is modal while visible: the dedicated backdrop below owns outside taps, and
             // disabling this layer guarantees a tap cannot also activate a control behind it.
             .allowsHitTesting(!launchPanelOpen)

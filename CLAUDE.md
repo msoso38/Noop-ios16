@@ -71,6 +71,25 @@ Swift. So:
 
 **This is the part people get wrong.** Know exactly what covers your change before you claim it works.
 
+### Prerequisites (toolchain & packages)
+Versions are pinned by the repo — install these before the loops below:
+- **JDK 17** — Android + Gradle (`sourceCompatibility`/`jvmTarget` are 17 in `android/app/build.gradle.kts`).
+  Gradle **8.7** is provisioned by `android/gradlew`; don't install a system Gradle.
+- **Android SDK** — `platform-tools`, `platforms;android-34`, `build-tools;34.0.0` (match `compileSdk` /
+  build-tools in `android/app/build.gradle.kts`). Point Gradle at it via `android/local.properties`
+  (`sdk.dir=…`, gitignored) or `$ANDROID_HOME`.
+- **Swift toolchain ≥ 5.9** — the pure packages declare `swift-tools-version: 5.9`; a 6.x toolchain builds
+  them. On **macOS** this ships with Xcode (also required for the app targets); on **Linux** use a
+  swift.org toolchain.
+- **Linux system packages** (a swift.org toolchain tarball does not bundle its build/runtime deps):
+  `build-essential libc6-dev` — the C runtime / crt objects the linker needs; without them `swift build`
+  fails at link with `cannot find Scrt1.o … -lc`. Plus `libncurses-dev libxml2 libcurl4 zlib1g-dev
+  libedit2 pkg-config unzip`.
+- **Android build-tools on non-x86-64 Linux (e.g. arm64):** Google ships `aapt2` / `d8` as **x86-64 only**,
+  so resource processing dies with `aapt2 … Syntax error` / `Exec format error` on an arm64 host unless x86
+  emulation is present — install `qemu-user-static binfmt-support` and the kernel runs them transparently.
+  macOS and x86-64 Linux are unaffected.
+
 ### Fast local loops
 ```bash
 # Swift packages (fastest; no Xcode, no strap):
@@ -154,6 +173,23 @@ Swift, you MUST build the app yourself: `xcodebuild … build` locally, or run `
   `android/app/build.gradle.kts` together; build numbers increment independently. The parts are
   counters, not decimals (`2.0.10` follows `2.0.9`).
 - **Voice:** docs/comments are neutral, third-person, project-voice. Keep upstream credits intact.
+- **Release-note credits use GitHub handles (#736).** In a release's contributor section, credit
+  **third-party** work by `@handle`, not by display name — a plain name is invisible to GitHub, so it
+  neither notifies the contributor nor links to their profile. A display name may accompany the handle,
+  but the handle is what makes the credit real: `Thanks to @tigercraft4 (Sleep/Health refactors),
+  @digitalerdude (workout backfill), …`.
+  - Credit both **merged PR authors** and the **issue reporters** whose reports drove a fix — a good bug
+    report with a strap log is often the harder half.
+  - **Only third-party contributors.** The maintainer's own handles (`@ryanbr` / `@Fanboynz`) are left
+    out: self-credit adds noise and self-mentions notify nobody.
+  - Collect the handles with **`Tools/release-contributors.sh <since-date|since-tag>`**, which lists every
+    third-party merged PR and every issue *closed as completed* in the range, plus a ready credit line,
+    with the maintainer's own handles and bot accounts filtered out. A tag argument is bounded at that
+    tag's exact instant, so the previous release's work is not re-credited. Writing *what* each person
+    contributed is still by hand — that's the judgement part; hunting logins is not. Its output is a work
+    list to prune, not a finished line: a reporter whose issue is not worth calling out in the notes can
+    be left to the closing "everyone who filed the reports behind these fixes". `Tools/release.sh` warns
+    when the notes it is about to publish credit no `@handle`.
 
 When in doubt, open an issue to coordinate first, and prefer the smallest change that's correct and
 covered by a test that runs without a strap.
