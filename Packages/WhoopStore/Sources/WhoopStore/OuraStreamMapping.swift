@@ -109,11 +109,16 @@ public enum OuraStreamMapping {
                     charging: v.charging))
 
             case .motionEvent:
-                // 0x47 averaged accel vector (Tier-A, WHOOP-4.0-gravity-shaped). Decoded and available,
-                // but NOT yet folded into a `gravitySample`: the LSB→g scale that the sleep stager's
-                // 0.01 g stillness threshold needs is an unresolved calibration (issue #804). Mapping it
-                // to gravity with a guessed scale would feed staging a wrong signal, so it is held here
-                // until the scale is pinned from a real capture. Dropped, not faked.
+                // 0x47 averaged accel vector (Tier-A). Decoded and available, but NOT written to any
+                // durable stream. This is NOT merely a "pending LSB→g scale" hold — the open question is
+                // whether `gravitySample` is the right destination AT ALL. 0x47 is MOVEMENT-GATED (the
+                // ring emits it only while moving, validated on-device #804), so it yields NO still
+                // samples; `SleepStager` instead needs a CONTINUOUS gravity stream (≥70% of a rolling
+                // 15-min window with per-sample delta < 0.01 g, and a >20-min gap breaks the run). Missing
+                // samples are not still samples, so feeding 0x47 into gravity is a SHAPE MISMATCH, not an
+                // unscaled one, and synthesising still samples to fill the gaps would be inventing data.
+                // The usable signal is `motion_seconds` / intensity as an ACTIVITY input on a separate path
+                // (#804 option B). Held here until that path lands. Dropped, not faked.
                 continue
 
             case .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB, .activityInfo:
