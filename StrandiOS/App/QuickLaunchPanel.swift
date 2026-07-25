@@ -4,7 +4,7 @@ import StrandDesign
 
 // MARK: - Quick Launch Panel
 //
-// A liquid-glass rectangle that rises above the split tab bar when the "+" circle is tapped.
+// A liquid-glass rectangle that expands above the split tab bar when the "+" circle is tapped.
 // Five horizontal pages (Favourites · Insights · Body · Data · App), each a 3×3 grid of
 // icon circles + labels. Swiping left/right flips pages; dots below track the current one.
 // Long-pressing the Favourites page enters edit mode (iOS home-screen jiggle parity): every

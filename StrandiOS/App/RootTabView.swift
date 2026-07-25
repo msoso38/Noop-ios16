@@ -88,6 +88,21 @@ struct RootTabView: View {
             }
     }
 
+    /// Quick Launch is opened by the bottom-trailing circle, so its transition starts near that
+    /// control instead of travelling its full height up from below the screen like an unrelated sheet.
+    /// On iOS 26 the glass itself materializes natively; older releases add a restrained opacity fade
+    /// to the same short anchored expansion.
+    private var launchPanelTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        let anchoredExpansion = AnyTransition
+            .scale(scale: 0.90, anchor: .bottomTrailing)
+            .combined(with: .offset(x: 0, y: NoopMetrics.space3))
+        if #available(iOS 26.0, *) {
+            return anchoredExpansion
+        }
+        return anchoredExpansion.combined(with: .opacity)
+    }
+
     var body: some View {
         // The native TabView keeps the three primary roots and their navigation state; the custom
         // floating bar and quick-launch panel replace only its visual tab-bar chrome.
@@ -158,11 +173,11 @@ struct RootTabView: View {
                             }
                         }
                     )
-                    // Same transition both directions — slides up + fades in on appear, slides back
-                    // DOWN + fades out on dismiss (an `.asymmetric` removal of plain `.opacity`, the
-                    // earlier attempt, looked wrong: it opened by sliding but closed by just fading).
-                    // Under Reduce Motion the slide is dropped for a plain opacity fade.
-                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    // Materialize from the control that opened it instead of crossing the entire
+                    // panel height from below the screen. This makes the panel read as the plus
+                    // circle expanding into its contents, not as a separate sheet presentation.
+                    .quickLaunchMaterialization()
+                    .transition(launchPanelTransition)
                 }
                 FloatingTabBar(
                     selection: $selectedTab,
@@ -181,6 +196,7 @@ struct RootTabView: View {
                 // bar lets its taps fall through to the full-screen backdrop instead of switching tabs.
                 .allowsHitTesting(!launchPanelOpen)
             }
+            .quickLaunchGlassContainer()
             .padding(.horizontal, NoopMetrics.LaunchChrome.shellInset)
             .padding(.bottom, NoopMetrics.space1)
             // No ambient `.animation(value:)` here — the toggle sites (FloatingTabBar's +/× button and
@@ -583,6 +599,7 @@ private struct FloatingTabBar: View {
     var onReselect: (Int) -> Void = { _ in }
     var onCoach: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var coachShortcutFeedback = false
 
     private struct Item: Identifiable { let title: LocalizedStringKey; let icon: String; let tag: Int; var id: Int { tag } }
     private let nav = [Item(title: "Today",  icon: "square.grid.2x2",          tag: 0),
@@ -611,10 +628,16 @@ private struct FloatingTabBar: View {
                 // in both states, because it's the same drawing. (The earlier "weird rotation" bug was
                 // rotating "xmark" — which is already diagonal, so +45° turns an X into a +. Rotating
                 // "plus" instead has no such inversion: a + turned 45° is exactly an ×.)
-                Image(systemName: "plus")
+                Image(systemName: coachShortcutFeedback ? "sparkles" : "plus")
                     .font(StrandFont.symbol(NoopMetrics.LaunchChrome.actionIcon, weight: .semibold))
-                    .foregroundStyle(panelOpen ? StrandPalette.textSecondary : StrandPalette.accent)
-                    .rotationEffect(.degrees(panelOpen ? 45 : 0))
+                    .foregroundStyle(
+                        coachShortcutFeedback
+                            ? StrandPalette.accent
+                            : panelOpen ? StrandPalette.textSecondary : StrandPalette.accent
+                    )
+                    .rotationEffect(.degrees(panelOpen && !coachShortcutFeedback ? 45 : 0))
+                    .contentTransition(.symbolEffect(.replace))
+                    .animation(reduceMotion ? nil : StrandMotion.calmQuick, value: coachShortcutFeedback)
                     .frame(
                         width: NoopMetrics.LaunchChrome.toggleDiameter,
                         height: NoopMetrics.LaunchChrome.toggleDiameter
@@ -622,22 +645,7 @@ private struct FloatingTabBar: View {
                     .contentShape(Circle())
             }
             // The exclusive gesture guarantees a completed hold cannot also fire the normal tap.
-            .gesture(
-                LongPressGesture(minimumDuration: 0.5, maximumDistance: NoopMetrics.space3)
-                    .exclusively(before: TapGesture())
-                    .onEnded { result in
-                        switch result {
-                        case .first:
-                            StrandHaptic.commit.play()
-                            onCoach()
-                        case .second:
-                            // Opening and closing use the same spring as an interactive pull-down finish.
-                            withAnimation(StrandMotion.panel(reduced: reduceMotion)) {
-                                panelOpen.toggle()
-                            }
-                        }
-                    }
-            )
+            .gesture(launcherGesture)
             .noopLiquidGlassSurface(in: Circle())
             .accessibilityLabel(panelOpen ? "Close menu" : "Open menu")
             .accessibilityAddTraits(.isButton)
@@ -647,9 +655,43 @@ private struct FloatingTabBar: View {
                 }
             }
             .accessibilityAction(named: Text("Coach")) {
-                StrandHaptic.commit.play()
-                onCoach()
+                commitCoachShortcut()
             }
+        }
+    }
+
+    private var launcherGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.5, maximumDistance: NoopMetrics.space3)
+            .exclusively(before: TapGesture())
+            .onEnded { result in
+                switch result {
+                case .first:
+                    commitCoachShortcut()
+                case .second:
+                    withAnimation(StrandMotion.panel(reduced: reduceMotion)) {
+                        panelOpen.toggle()
+                    }
+                }
+            }
+    }
+
+    /// Confirm the hidden Coach shortcut before routing: the plus becomes the same sparkle glyph used
+    /// by Coach, the commit haptic lands with that visual change, then the destination opens.
+    private func commitCoachShortcut() {
+        guard !coachShortcutFeedback else { return }
+        StrandHaptic.commit.play()
+        guard !reduceMotion else {
+            onCoach()
+            return
+        }
+        withAnimation(StrandMotion.calmQuick) {
+            coachShortcutFeedback = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + StrandMotion.durationFast) {
+            withAnimation(StrandMotion.calmQuick) {
+                coachShortcutFeedback = false
+            }
+            onCoach()
         }
     }
 
@@ -679,6 +721,42 @@ private struct FloatingTabBar: View {
         .buttonStyle(.plain)
         .accessibilityLabel(item.title)
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+/// Native Liquid Glass groups and materialization are iOS 26-only. The modifiers keep the call site
+/// stable across the iOS 17 deployment range so the fallback remains the existing material surface.
+private struct QuickLaunchGlassContainerModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 0) {
+                content
+            }
+        } else {
+            content
+        }
+    }
+}
+
+private struct QuickLaunchMaterializationModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffectTransition(.materialize)
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func quickLaunchGlassContainer() -> some View {
+        modifier(QuickLaunchGlassContainerModifier())
+    }
+
+    func quickLaunchMaterialization() -> some View {
+        modifier(QuickLaunchMaterializationModifier())
     }
 }
 

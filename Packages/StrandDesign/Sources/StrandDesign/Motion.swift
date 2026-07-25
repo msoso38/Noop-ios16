@@ -80,8 +80,10 @@ public enum StrandMotion {
     public static func calmQuick(reduced: Bool) -> Animation? { reduced ? nil : calmQuick }
 
     /// Quick-launch panel open/close — also the interactive pull-down finish, so opening,
-    /// button-dismiss, and pull-to-dismiss all share one spring character.
-    public static let panel = Animation.spring(response: 0.32, dampingFraction: 0.86)
+    /// button-dismiss, and pull-to-dismiss all share one spring character. Slightly slower and
+    /// more damped than the original full-height slide so the anchored expansion feels deliberate
+    /// without a rubbery overshoot on a physical device.
+    public static let panel = Animation.spring(response: 0.38, dampingFraction: 0.90)
 
     /// `panel`, suppressed under Reduce Motion.
     public static func panel(reduced: Bool) -> Animation? { reduced ? nil : panel }
