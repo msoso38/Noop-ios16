@@ -69,6 +69,25 @@ taxonomy also names a separate `PUFFIN` service family at
 `11500001-6215-11ee-8c99-0242ac120002`; NOOP names that metadata `puffin1150` to avoid confusing it
 with the implemented fd4b path.
 
+### WHOOP 5.0 vs MG (GOOSE / MAVERICK) identity
+
+The official app treats **WHOOP 5.0** and **WHOOP MG** as two product labels that share the same
+`fd4b…` GATT family and the same puffin frame envelope. The generation is distinguished by a
+**model id** returned in the hello / identity path (not by a different service UUID):
+
+| Model-id range (hello) | Internal generation | Public label |
+|-----------------------:|---------------------|--------------|
+| `0 … 37` | MAVERICK | WHOOP MG |
+| `48 … 85` | GOOSE | WHOOP 5.0 |
+
+NOOP's `DeviceFamily.whoop5` covers **both** labels: framing, CRC, offload, and historical decode
+are shared. Hardware capability differences (if any) are orthogonal to the wire family — see
+`Whoop5Variant` for any capability gates that must not be inferred from UUIDs alone.
+
+OTA / firmware package names on the official backend often use a **MAVERICK** hardware key even
+when the worn device is a 5.0 (GOOSE). That naming is a cloud/firmware packaging detail; it does
+not change the BLE service UUID NOOP connects to.
+
 ### Diagnostic-only WHOOP service families
 
 The official app also models additional WHOOP service families with the same `0001` service plus
@@ -602,6 +621,68 @@ reads. Key entries by packet type:
 `Schema.resolveVersion(_:_:)`, which follows a `ref` chain (e.g. V12 → V24) so newer versions
 inherit a base layout and override only what changed. The streamed decode that feeds SQLite is in
 `Streams.swift` / `HistoricalStreams.swift` (`extractStreams`, `extractHistoricalStreams`).
+
+### 8.1 WHOOP 5.0 / MG type-47 v18 field map (summary)
+
+On 5/MG the dominant historical layout is **v18** (version byte at frame offset 9). Offsets below
+are absolute frame positions as decoded by `decodeWhoop5Historical` in `Interpreter.swift`. Every
+offset listed as **verified** has been cross-checked on real captures; fields marked
+**instrumentation** must not feed shipped metrics until multi-device ground truth clears the bar
+(see [`WHOOP5_DEEP_DATA.md`](WHOOP5_DEEP_DATA.md)).
+
+| Frame offset | Field (NOOP name) | Type | Notes |
+|-------------:|-------------------|------|-------|
+| 9 | `hist_version` | u8 | `18` selects this layout; `20`/`21`/`26` have separate decoders |
+| 11 | `record_index` | u32 LE | per-record counter |
+| 15 | `unix` | u32 LE | real unix seconds |
+| 22 | `heart_rate` | u8 | bpm |
+| 23 | `rr_count` | u8 | number of following R-R intervals (≤4) |
+| 24… | `rr[i]` | u16 LE | ms |
+| 36 | `hr_fixed_8_8` | u16 LE | higher-precision HR; bpm ≈ value/256 |
+| 45 / 49 / 53 | `gravity_x/y/z` | f32 | g |
+| 57 | `step_motion_counter` | u16 LE | cumulative motion counter (wrap-aware deltas) |
+| 63 | `activity_class` | u8 | `0` still / `1` walk / `2` run (only those codes stored) |
+| 73 | `skin_temp_raw` | u16 LE | **wire °C = raw/100** (see skin-temp note below) |
+| 81 | `sleep_state` | u8 high nibble | band sleep flag — **not** Light/SWS/REM |
+| 82 | `spo2_candidate_82` | u8 | in-band 70–100 only; **instrumentation**, not `spo2Pct` |
+| 106… | optical tail | mixed | raw; not named SpO₂ / perfusion without ground truth |
+
+#### Band sleep flag (`sleep_state` @81)
+
+Byte 81 packs a coarse **on-device sleep state machine** (high nibble bits 4–5) that matches the
+firmware's four-way sleep flag (often described in community RE as SLEEPFLAG):
+
+| High nibble | Name | Meaning |
+|------------:|------|---------|
+| 0 | wake | awake / active |
+| 1 | still | on-wrist still (not yet scored as sleep) |
+| 2 | asleep | scored night / sleep window |
+| 3 | up | post-sleep up |
+
+This is **not** a hypnogram. Official Light / SWS / REM staging is produced off-band (cloud /
+post-process). NOOP stores the band flag as `SleepStateSample` for duration/detection research;
+the on-device sleep stager still approximates stages from cardiorespiratory + motion features.
+Low-nibble sub-flags (`onwrist`, `wake_quality`) are carried raw — see the decoder notes.
+
+#### Skin temperature scale (`skin_temp_raw` @73)
+
+- **On the wire (v18):** NOOP treats the u16 as **°C = raw / 100**. That scale yields physiological
+  worn skin temperatures (roughly ~30–35 °C on-wrist across real fixtures) and rejects the
+  alternative `/128` reading (~non-physiological worn values on the same frames).
+- **Sensor hardware context:** the strap's skin-temperature path is a digital skin-temp IC
+  (commonly the AMS AS6221 class). The **chip datasheet** often documents a register LSB of
+  1/128 °C — that is an **internal sensor scale**, not automatically the scale of the u16 banked
+  into the historical record. Do not "correct" the wire field to `/128` from datasheet alone.
+- Gate: only values whose `/100` conversion falls in ~5–45 °C are stored, so a wrong offset on an
+  unmapped firmware layout writes nothing rather than garbage.
+
+#### SpO₂ on the 5.0 wire (honest summary)
+
+There is **no** live BLE command such as `GET_SPO2`. A 5/MG strap can still compute SpO₂
+**on-device during sleep** and bank a scalar into history; that candidate lives at **@82** and is
+decoded only as `spo2_candidate_82` until multi-device correlation against the official app /
+CSV export resolves open contradictions. Full rationale, validation checklist, and "import-only
+until proven" policy: [`WHOOP5_DEEP_DATA.md`](WHOOP5_DEEP_DATA.md#why-spo₂-and-the-raw-respiration-track-arent-available-on-50).
 
 ---
 
