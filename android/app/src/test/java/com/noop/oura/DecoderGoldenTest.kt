@@ -183,6 +183,38 @@ class DecoderGoldenTest {
         )
     }
 
+    // MARK: - 0x47 motion events (averaged accel vector)
+
+    @Test
+    fun testMotionEvents0x47() {
+        // open_oura decode_motion vector: body [0x6f,0x0c,0x1d,0x07,0x0c,0x07] →
+        // orientation 3, avg x/y/z = 12/29/7 signed ×8, high_intensity 7.
+        val rec = OuraRecord(type = 0x47, ringTimestamp = rt,
+            payload = intArrayOf(0x6f, 0x0c, 0x1d, 0x07, 0x0c, 0x07))
+        assertEquals(
+            OuraMotionEvent(ringTimestamp = rt, orientation = 3,
+                avgX = 96, avgY = 232, avgZ = 56, highIntensity = 7),
+            OuraDecoders.decodeMotionEvents(rec),
+        )
+    }
+
+    @Test
+    fun testMotionEvents0x47SignedAxes() {
+        // Negative axis bytes prove the ×8 sign extension: 0xF4 = -12 → -96, 0x80 = -128 → -1024.
+        val rec = OuraRecord(type = 0x47, ringTimestamp = rt,
+            payload = intArrayOf(0x00, 0xF4, 0x00, 0x80, 0x00, 0x00))
+        val m = OuraDecoders.decodeMotionEvents(rec)
+        assertEquals(-96, m?.avgX)
+        assertEquals(-1024, m?.avgZ)
+        assertEquals(0, m?.orientation)
+    }
+
+    @Test
+    fun testMotionEvents0x47ShortBodyIsNull() {
+        assertNull(OuraDecoders.decodeMotionEvents(
+            OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x6f, 0x0c))))
+    }
+
     // MARK: - 0x85 RTC beacon (unix_s u32 LE)
 
     @Test

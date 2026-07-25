@@ -407,9 +407,11 @@ class OuraDriver(
             OuraEventTag.MOTION_PERIOD ->
                 (OuraDecoders.decodeMotionPeriod(record) ?: emptyList()).map { OuraEvent.MotionEvent(it) }
             OuraEventTag.MOTION ->
-                // 0x47 motion_events: surfaced as state-free motion is out of v1 scope; decode to nothing
-                // rather than guess the partial layout. Per OURA_PROTOCOL.md s6.13.
-                emptyList()
+                // 0x47 motion_events: the ring's averaged accel vector (orientation + avg x/y/z ×8 +
+                // high_intensity), the same shape as a WHOOP 4.0 gravity sample. open_oura decode_motion,
+                // OURA_PROTOCOL.md s6.13. Tier-A. Byte-identical twin of Swift.
+                OuraDecoders.decodeMotionEvents(record)?.let { listOf(OuraEvent.MotionVectorEvent(it)) }
+                    ?: emptyList()
 
             // --- Tier A: Sleep phase (2-bit codes are verified; 0x4B is the same layout, s6.12) ---
             OuraEventTag.SLEEP_PHASE_B, OuraEventTag.SLEEP_PHASE, OuraEventTag.SLEEP_PHASE_ALT ->

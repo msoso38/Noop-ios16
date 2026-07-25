@@ -508,6 +508,34 @@ object OuraDecoders {
         return if (out.isEmpty()) null else out
     }
 
+    // MARK: - Motion events, averaged accel vector (0x47; s6.13)
+
+    /**
+     * Decode a 0x47 motion_events record: the ring's averaged accelerometer vector for the period.
+     * Layout (open_oura decode_motion, clean-room fact citation; OURA_PROTOCOL.md s6.13):
+     *   byte0 low 2 bits = orientation (0..3)
+     *   byte1 = avg X, signed int8 × 8
+     *   byte2 = avg Y, signed int8 × 8
+     *   byte3 = avg Z, signed int8 × 8
+     *   byte5 = high_intensity count
+     * byte4 is not yet identified (present, not surfaced). Returns null on a short body rather than
+     * guessing a partial layout. Same averaged-vector shape as a WHOOP 4.0 gravity sample, so a consumer
+     * can map (avgX, avgY, avgZ) into the shared motion pipeline (the LSB→g scaling for the sleep stager
+     * is a downstream calibration, kept out of this pure decode). Byte-identical twin of Swift.
+     */
+    fun decodeMotionEvents(rec: OuraRecord): OuraMotionEvent? {
+        val b = rec.payload
+        if (b.size < 6) return null
+        return OuraMotionEvent(
+            ringTimestamp = rec.ringTimestamp,
+            orientation = b[0] and 0x03,
+            avgX = i8(b[1]) * 8,
+            avgY = i8(b[2]) * 8,
+            avgZ = i8(b[3]) * 8,
+            highIntensity = b[5],
+        )
+    }
+
     // MARK: - Activity info (0x50; s6.13) - Tier B, third-party formula
 
     /**

@@ -108,6 +108,14 @@ public enum OuraStreamMapping {
                     mv: v.voltageMv,
                     charging: v.charging))
 
+            case .motionEvent:
+                // 0x47 averaged accel vector (Tier-A, WHOOP-4.0-gravity-shaped). Decoded and available,
+                // but NOT yet folded into a `gravitySample`: the LSB→g scale that the sleep stager's
+                // 0.01 g stillness threshold needs is an unresolved calibration (issue #804). Mapping it
+                // to gravity with a guessed scale would feed staging a wrong signal, so it is held here
+                // until the scale is pinned from a real capture. Dropped, not faked.
+                continue
+
             case .motion, .state, .timeSync, .rtcBeacon, .debugText, .tierB, .activityInfo:
                 // Not a durable per-device stream row (timeSync/rtcBeacon anchor the transport's clock;
                 // motion/state/debug are diagnostics; Tier-B / .activityInfo are UNVERIFIED and must

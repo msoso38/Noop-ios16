@@ -457,6 +457,31 @@ public enum OuraDecoders {
         return out.isEmpty ? nil : out
     }
 
+    // MARK: - Motion events, averaged accel vector (0x47; s6.13)
+
+    /// Decode a 0x47 `motion_events` record: the ring's averaged accelerometer vector for the period.
+    /// Layout (open_oura `decode_motion`, clean-room fact citation; OURA_PROTOCOL.md s6.13):
+    ///   byte0 low 2 bits = orientation (0…3)
+    ///   byte1 = avg X, signed int8 × 8
+    ///   byte2 = avg Y, signed int8 × 8
+    ///   byte3 = avg Z, signed int8 × 8
+    ///   byte5 = high_intensity count
+    /// byte4 is not yet identified (present in the record, not surfaced). Returns nil on a short body
+    /// rather than guessing a partial layout. This is the SAME averaged-vector shape as a WHOOP 4.0
+    /// gravity sample, so a consumer can map `(avgX, avgY, avgZ)` into the shared motion pipeline (the
+    /// LSB→g scaling for the sleep stager is a downstream calibration, kept out of this pure decode).
+    public static func decodeMotionEvents(_ rec: OuraRecord) -> OuraMotionEvent? {
+        let b = rec.payload
+        guard b.count >= 6 else { return nil }
+        return OuraMotionEvent(
+            ringTimestamp: rec.ringTimestamp,
+            orientation: Int(b[0] & 0x03),
+            avgX: Int(Int8(bitPattern: b[1])) * 8,
+            avgY: Int(Int8(bitPattern: b[2])) * 8,
+            avgZ: Int(Int8(bitPattern: b[3])) * 8,
+            highIntensity: Int(b[5]))
+    }
+
     // MARK: - Activity info (0x50; s6.13) - Tier B, third-party formula
 
     /// Decode the 0x50 activity_info record: byte0 = a `state` code (activity-category; meaning

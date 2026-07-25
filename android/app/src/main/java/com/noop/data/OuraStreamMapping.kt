@@ -120,6 +120,13 @@ object OuraStreamMapping {
                     // as a tied-to-ts row here. Leave the batch's battery list empty (honest: no faked ts).
                 }
 
+                // 0x47 averaged accel vector (Tier-A, WHOOP-4.0-gravity-shaped): decoded and available,
+                // but NOT yet folded into a gravitySample. The LSB→g scale the sleep stager's 0.01 g
+                // stillness threshold needs is an unresolved calibration (issue #804); mapping it with a
+                // guessed scale would feed staging a wrong signal, so it is held here until pinned from a
+                // real capture. Dropped, not faked. Mirrors the Swift twin.
+                is OuraEvent.MotionVectorEvent -> Unit
+
                 // Motion / state / time-sync / rtc / debug / TierB / ActivityInfo never map onto a
                 // scored stream. In particular the 0x50 activity/MET decode (PR #960) NEVER mints a
                 // `steps` row: the formula is third-party and unvalidated (Tier B, OURA_PROTOCOL.md
