@@ -86,7 +86,8 @@ the Python capture side does not require Swift.
 | `whoop_probe.py` | **Read-only status probe.** Reports the strap RTC + whether a historical store is present (`GET_CLOCK` / `GET_DATA_RANGE`) without writing anything. |
 | `whoop_frame.py` | CRC8 / CRC16-Modbus / CRC32, frame builders (`build_command_frame`, `build_puffin_command`, `build_whoop5_buzz` / `build_whoop4_buzz`), the family-aware `Reassembler`, and the standard-HR parser. Stdlib only. |
 | `hci_extract.py` | **Turn a phone HCI capture into `capture.json`.** Parses a btsnoop (`btsnoop_hci.log`) or Apple PacketLogger (`.pklg`) log, reassembles L2CAP/ATT, and extracts the CRC-valid WHOOP frames — so a capture of the **official app** (issue [#103](https://github.com/ryanbr/noop/issues/103)) feeds the same decode pipeline. Only WHOOP streams reach the output. Stdlib only. See [From a phone HCI capture](#from-a-phone-hci-capture-hci_extractpy). |
-| `correlate_ground_truth.py` | **Locate un-decoded record fields using your WHOOP CSV export as known-plaintext.** Cross-references capture frames against the official per-night values (HRV, resting HR, skin temp, SpO₂, respiratory rate) to find each biometric's byte offset + encoding. Reuses the Swift importer's localized header aliases. Reports offsets only — your health values never leave the machine. Stdlib only. See [Ground-truth correlation](#ground-truth-correlation-correlate_ground_truthpy). |
+| `correlate_ground_truth.py` | **Locate un-decoded record fields using your WHOOP CSV export as known-plaintext.** Cross-references capture frames against the official per-night values (HRV, resting HR, skin temp, SpO₂, respiratory rate) to find each biometric's byte offset + encoding. Reuses the Swift importer's localized header aliases (English + DE/ES). Reports offsets only — your health values never leave the machine. Stdlib only. See [Ground-truth correlation](#ground-truth-correlation-correlate_ground_truthpy). |
+| `validate_spo2_candidate.py` | **Multi-device validation of the v18 SpO₂ candidate at frame @82** (`spo2_candidate_82`). Nightly mean of in-band (70–100) samples during `sleep_state=asleep` vs CSV `blood_oxygen_pct`; reports r / MAE / bias / offset-specificity and a promote checklist. Batch mode for several straps. Postable summary has **no raw SpO₂ values** (safe for [#103](https://github.com/ryanbr/noop/issues/103)). Stdlib only. See [SpO₂ candidate validation](#spo₂-candidate-validation-validate_spo2_candidatepy). |
 | `pair_probe.py` | One-shot WHOOP 5 bonding probe: scan → connect → `pair()` → test `fd4b` access. `python3 pair_probe.py <MAC>`. |
 | `analyze_v26_waveform.py` | Characterise the WHOOP 5 **v26** type-47 buffer as PPG @24 Hz using its own co-timestamped HR as ground truth. |
 | `analyze_v25_waveform.py` | **WHOOP 4.0 v25 PPG → HR span-pinning harness ([#194](https://github.com/ryanbr/noop/issues/194)).** Sweeps the unpinned PPG span (start + sample-count) across a corpus of captures at *known* HRs and reports the span where recovered HR **tracks** ground truth instead of the `1440/N` autocorrelation artifact — or, on resting-only data, exactly what capture is still needed. `--selftest` proves it on synthetic pulses; no args runs the bundled-frames demo. Stdlib only. |
@@ -94,6 +95,7 @@ the Python capture side does not require Swift.
 | `test_whoop_frame.py` | Unit tests for framing / reassembly / HR parsing / buzz frames (no `bleak` needed). |
 | `test_hci_extract.py` | Unit tests for the btsnoop/pklg parsers, L2CAP/ATT reassembly, and WHOOP-frame extraction (synthetic fixtures; stdlib only). |
 | `test_correlate_ground_truth.py` | Unit tests for the CSV/alias loading and the known-plaintext field search (planted-value recovery + false-positive rejection; stdlib only). |
+| `test_validate_spo2_candidate.py` | Unit tests for multi-device SpO₂ @82 validation (planted perfect correlation, incomplete nights, awake gating, offset specificity, privacy of postable output; stdlib only). |
 | `test_whoop_spot_hrv.py` | Unit tests for the spot-HRV DSP (synthetic-signal HR/RMSSD recovery, ectopic rejection, grid reconstruction; stdlib only). |
 | `requirements.txt` | `bleak` (runtime dep for capture only). |
 
@@ -575,6 +577,50 @@ type; widen `--tolerance` if a field is stored pre-rounded.
 values — so its output is safe to post on #103 while the CSV export and the capture stay on your
 machine. That's the intended way for other 5/MG owners to contribute field mappings without sharing
 personal data.
+
+## SpO₂ candidate validation (`validate_spo2_candidate.py`)
+
+Once a capture has v18 historical records, this tool tests whether **byte @82** is a trustworthy
+strap-computed SpO₂ scalar (the `spo2_candidate_82` decode already in Swift/Kotlin) by comparing
+**nightly means** against your WHOOP CSV export — the multi-device bar described in
+[`docs/WHOOP5_DEEP_DATA.md`](../../docs/WHOOP5_DEEP_DATA.md).
+
+```bash
+# One strap (summary stays aggregate-only unless you pass --show-nights):
+python3 validate_spo2_candidate.py capture.json my_whoop_data/ --device strap-a --postable
+
+# Several straps at once:
+python3 validate_spo2_candidate.py --batch devices.json --postable
+```
+
+`devices.json`:
+
+```json
+[
+  {"device": "strap-a", "capture": "a.json", "export": "export_a/"},
+  {"device": "strap-b", "capture": "b.json", "export": "export_b.zip"}
+]
+```
+
+What it checks (per device):
+
+| Check | Default gate |
+|-------|----------------|
+| Paired nights with export SpO₂ **and** in-band @82 during sleep | ≥ 5 |
+| Export SpO₂ has real night-to-night spread | range ≥ 1.0 % |
+| Pearson **r** (nightly mean @82 vs export) | ≥ 0.7 |
+| Mean absolute error | ≤ 1.0 % |
+| Offset specificity scan @74–92 | best \|r\| is **@82** |
+
+**Overall PASS** only if every gate clears. NOOP still will not promote `spo2_candidate_82` →
+`spo2Pct` from a single device: need **≥ 2 devices** that each PASS (postable summary prints
+`multi_device_eligible` / `all_pass`).
+
+**Privacy:** default output and `--postable` print only aggregates (r, MAE, bias, offsets, pass/fail).
+`--show-nights` prints per-night values for **local** debugging — do not paste that on GitHub.
+
+Capture sources: `hci_extract.py` on an official-app overnight sync, or `whoop_capture.py` after a
+bonded 5/MG history offload. Synthetic/absolute v18 buffers (test fixtures) are also accepted.
 
 ## Contributing captures back
 

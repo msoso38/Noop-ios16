@@ -38,11 +38,24 @@ def test_decode_v18_roundtrips_fields():
     d = wa.decode_v18(make_v18(unix=1700000000, hr=58, motion=4000, wear=1, sleep_state=2))
     assert d == {"record_index": 0, "unix": 1700000000, "hr": 58,
                  "onwrist": 0, "wake_quality": 0, "sleep_state": 2, "aux_byte_82": 0,
+                 "spo2_candidate_82": None,  # 0 is out-of-band (not 70–100)
                  "motion_count": 4000, "step_cadence": 0, "motion_wear_quality": 1,
                  "hr_fixed_8_8": 0, "rr_packed": 0, "cardiac_flags": 0, "cardiac_status": 0,
                  "temp_aux_1_raw": 0, "temp_aux_2_raw": 0,
                  "status_word": 0, "status_word_1": 0, "status_word_2": 0,
                  "unknown_f32_113": 0.0}
+
+
+def test_decode_v18_spo2_candidate_82_tri_mode():
+    # Mirrors Swift testHistoricalV18Spo2Candidate82TriMode: in-band 70–100 only.
+    assert wa.decode_v18(make_v18(aux_byte_82=0))["spo2_candidate_82"] is None
+    assert wa.decode_v18(make_v18(aux_byte_82=90))["spo2_candidate_82"] == 90
+    assert wa.decode_v18(make_v18(aux_byte_82=70))["spo2_candidate_82"] == 70
+    assert wa.decode_v18(make_v18(aux_byte_82=100))["spo2_candidate_82"] == 100
+    for raw in (0x80, 0xA0, 0x20, 69, 101):
+        d = wa.decode_v18(make_v18(aux_byte_82=raw))
+        assert d["spo2_candidate_82"] is None
+        assert d["aux_byte_82"] == raw
 
 
 def test_decode_v18_higher_precision_hr():
