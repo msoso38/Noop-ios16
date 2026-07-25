@@ -97,44 +97,83 @@ so the reasoning in one place:
 
 **It is not an encryption problem.** NOOP decodes the entire 5.0 (v18) record in plaintext — HR, R-R,
 sleep, and the whole optical tail. Nothing on the wire is hidden behind a cipher NOOP would need a key
-for. The barrier is that the SpO₂ data simply isn't *in* the stream in a usable form:
+for. The barrier is that a **shippable, calibrated SpO₂ %** is not yet confirmed in the stream NOOP
+reads — not that the bytes are locked.
 
-- **No *confirmed* SpO₂ field on the 5.0 wire — but there is now a candidate.** The raw optical tail
-  (`@106` baseline, `@108/@109` amplitude pair, `@113` float) was checked against WHOOP-app SpO₂ across
-  18,602 real records — it does not match; those channels track HR/motion, and there is no identifiable
-  red/IR pair. Pulse oximetry fundamentally needs two wavelengths; the 5.0's decodable stream doesn't
-  expose them (the v26 PPG waveform is single-channel, HR only). However, a decompile-sourced decode
+### What the strap actually does (protocol facts)
+
+Independent firmware / app reverse-engineering (community + official-app behaviour) agrees on several
+facts that shape how NOOP treats SpO₂ on 5.0 / MG:
+
+| Fact | Implication for NOOP |
+|------|----------------------|
+| There is **no** BLE command such as `GET_SPO2` / `GET_BLOOD_OXYGEN` | Live SpO₂ is not a pollable gauge; looking for a missing opcode is a dead end |
+| SpO₂ is computed **on-device during sleep** (optical / signal-processing path, sleep-gated) | Expect values only in overnight / sleep windows — not continuous 24/7 samples |
+| Integer on-device samples are later **aggregated** for the official app / CSV export (`blood_oxygen_pct`, often one value per recovery cycle) | Nightly export % can differ slightly from a simple mean of raw wire candidates (rounding, quality gates, incomplete nights) |
+| Incomplete nights / naps often have **no** SpO₂ in the export | Missing SpO₂ is a real data gap, not a NOOP bug |
+
+So the research target is: **find the banked on-device sample (or its aggregate) in historical
+type-47 records**, not invent a red/IR ratio or reverse a proprietary calibration curve.
+
+### Wire status today
+
+- **No *confirmed* SpO₂ field on the 5.0 wire for shipped metrics — but there is a candidate.** The
+  raw optical tail (`@106` baseline, `@108/@109` amplitude pair, `@113` float) was checked against
+  WHOOP-app SpO₂ across 18,602 real records — it does not match; those channels track HR/motion, and
+  there is no identifiable red/IR pair. Pulse oximetry fundamentally needs two wavelengths; the
+  5.0's decodable stream doesn't expose them for a third-party ratio (the v26 PPG waveform is
+  single-channel, HR only). However, a decompile-sourced decode
   ([#103](https://github.com/ryanbr/noop/issues/103)) reads v18 byte `@82` as a **strap-computed SpO₂ %
   scalar** (tri-mode: 70–100 = real %, bit-7 = saturation sentinel, other sub-70 = diagnostic code;
-  sleep-only). The evidence is currently **split**: an 8-night independent validation with real spread
-  (corr +0.99, ~0.4 %/night) clears the cross-night bar, but the two nights checked on the original #103
-  capture device moved *opposite* to the app value — unresolved device/firmware variance or an extraction
-  error on one side. NOOP therefore decodes `@82` as `spo2_candidate_82` (deep-timeline instrumentation
-  only, in-band values only) so more devices can correlate it against the app's nightly SpO₂; it does
-  **not** populate `spo2Pct` or any card/score until the contradiction is resolved.
-- **A calibrated % needs WHOOP's proprietary curve.** Even where raw optical exists, turning a red/IR
-  ratio into a real SpO₂ % requires a device-specific calibration NOOP does not have — and NOOP will not
-  fabricate one from unvalidated optical (the withdrawn #194 PPG→HR estimate is the cautionary
-  precedent). `spo2Pct` is therefore nulled for *every* WHOOP; only an import writes it.
+  populated when the band sleep flag is asleep). The evidence is currently **split**: an 8-night
+  independent validation with real spread (corr +0.99, ~0.4 %/night) clears the cross-night bar, but
+  the two nights checked on the original #103 capture device moved *opposite* to the app value —
+  unresolved device/firmware variance or an extraction error on one side. NOOP therefore decodes
+  `@82` as `spo2_candidate_82` (deep-timeline instrumentation only, in-band values only) so more
+  devices can correlate it against the app's nightly SpO₂; it does **not** populate `spo2Pct` or any
+  card/score until the contradiction is resolved.
+- **A calibrated % needs WHOOP's proprietary curve if only raw optical were available.** Even where
+  raw optical exists, turning a red/IR ratio into a real SpO₂ % requires a device-specific
+  calibration NOOP does not have — and NOOP will not fabricate one from unvalidated optical (the
+  withdrawn #194 PPG→HR estimate is the cautionary precedent). Prefer a **strap-computed scalar**
+  already on the wire over inventing a curve. `spo2Pct` is therefore nulled for *every* WHOOP live
+  path; only an import (or a future multi-device-validated `@82` promote) writes it.
 
 **WHOOP 4.0 differs.** The 4.0 **v24** historical layout *does* bank raw SpO₂ channels (`spo2_red@68` /
 `spo2_ir@70`), so NOOP decodes the raw red/IR there (still not a calibrated %). The 5.0's v18 layout
-dropped those channels — most likely SpO₂ moved to a value computed on-device / in WHOOP's cloud rather
-than banked in the offload NOOP reads. NOOP reverse-engineers what the strap actually sends; if a
-decodable SpO₂ isn't sent, there is nothing to decode, plaintext or not.
+dropped those dual-wavelength channels — SpO₂ moved to an **on-device computed product** (and the
+official app's cycle export) rather than banking red/IR for the third-party client. NOOP
+reverse-engineers what the strap actually sends; if a decodable SpO₂ isn't confirmed, there is
+nothing safe to ship as a percentage.
 
 **Respiration is a partial exception.** The 5.0 sends no raw respiration ADC stream either (also
 4.0-v24-only), so the deep-timeline *track* is empty — but respiration is still estimated on-device from
 the R-R interval stream (RSA) and shown on the Health screen when enough overnight R-R is captured.
 
-**To see SpO₂ in NOOP on a 5.0:** import it. A WHOOP data export carries `blood_oxygen_pct`, and Health
-Connect import works too — both populate the Blood Oxygen card with WHOOP's own computed values.
+**To see SpO₂ in NOOP on a 5.0 today:** import it. A WHOOP data export carries `blood_oxygen_pct`, and
+Health Connect import works too — both populate the Blood Oxygen card with WHOOP's own computed
+values.
 
-**Could it ever change?** Only via research, not decryption — and the `@82` candidate above is exactly
-that research in progress. What would flip it to a real reading: the `spo2_candidate_82` nightly values
-tracking the WHOOP app's own SpO₂ across many nights on **multiple devices** (a varying signal, not one
-coincidental match), including on the device where the two checked nights currently move opposite.
-Until that clears the bar, SpO₂ stays import-only on the 5.0.
+### `@82` validation checklist (what would promote the candidate)
+
+Only research — never a silent UI flip. A promote of `spo2_candidate_82` → `spo2Pct` needs:
+
+1. **Multiple devices / firmwares** (not one lucky strap): nightly mean of in-band (70–100) `@82`
+   samples during `sleep_state = asleep` tracks the official app or CSV `blood_oxygen_pct` with
+   real night-to-night spread (not a flat 98 %).
+2. **Offset specificity:** nearby bytes (e.g. 74–92 scan) must *not* track better than `@82`.
+3. **Incomplete nights:** when the export omits SpO₂, the wire candidate should be empty or
+   out-of-band — not invent a number.
+4. **Resolution of the #103 contradiction** on the original capture device (or a documented
+   extraction error).
+5. **No recovery/illness gating** on the candidate until (1)–(4) clear — same rule as other
+   derived biosignals.
+
+Until that bar is met, SpO₂ stays **import-only** on the 5.0, with `@82` available as
+instrumentation for owners who opt into deep-timeline / experimental logging.
+
+Related capability / UX roadmap: [#761](https://github.com/ryanbr/noop/issues/761) (honest labels
+when SpO₂ / skin temp / stages are unavailable vs experimental).
 
 ## Mapping the layout — ground-truth correlation
 
@@ -170,6 +209,17 @@ lands in `parseFrameWhoop5` / `whoop_protocol.json`.
    or Android **Developer Options → Bluetooth HCI snoop log** → `btsnoop_hci.log`, opened in Wireshark — the
    same iOS-HCI approach the [judes.club write-up](https://judes.club/writing/cracking-the-whoop-5-bluetooth-protocol/)
    used. Filter to just the WHOOP peripheral and attach it to [#103](https://github.com/ryanbr/noop/issues/103).
+5. **SpO₂ / skin-temp field mapping without sharing health data:** run
+   `Tools/linux-capture/correlate_ground_truth.py` locally against your own export + capture, then post
+   only the winning `(offset, encoding, scale, corr)` lines on [#103](https://github.com/ryanbr/noop/issues/103).
+   Especially useful: nightly mean of in-band `spo2_candidate_82` vs CSV `blood_oxygen_pct` across
+   several nights (see the checklist above).
+
+### Band sleep flag vs hypnogram (quick reference)
+
+The v18 byte `@81` high nibble is the strap's **coarse sleep flag** (wake / still / asleep / up). It
+is useful for sleep *detection* and for gating sleep-only products (including SpO₂ candidates). It is
+**not** Light / SWS / REM. Full field table: [`PROTOCOL.md` §8.1](PROTOCOL.md#81-whoop-50--mg-type-47-v18-field-map-summary).
 
 Credit to **judes.club**, **Asherlc/dofek**, and **b-nnett/goose** for the public protocol work this
 builds on.
