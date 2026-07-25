@@ -1384,7 +1384,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 // ring-time inside the writer).
                 if let utc = driver.unixSeconds(forRingTimestamp: m.ringTimestamp) {
                     motionDump?.record(ringTs: m.ringTimestamp, utc: utc, orientation: m.orientation,
-                                       x: m.avgX, y: m.avgY, z: m.avgZ, highIntensity: m.highIntensity)
+                                       motionSeconds: m.motionSeconds, x: m.avgX, y: m.avgY, z: m.avgZ,
+                                       lowIntensity: m.lowIntensity, highIntensity: m.highIntensity)
                 }
 
             default:

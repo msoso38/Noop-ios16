@@ -511,28 +511,40 @@ object OuraDecoders {
     // MARK: - Motion events, averaged accel vector (0x47; s6.13)
 
     /**
-     * Decode a 0x47 motion_events record: the ring's averaged accelerometer vector for the period.
-     * Layout (open_oura decode_motion, clean-room fact citation; OURA_PROTOCOL.md s6.13):
-     *   byte0 low 2 bits = orientation (0..3)
-     *   byte1 = avg X, signed int8 × 8
-     *   byte2 = avg Y, signed int8 × 8
-     *   byte3 = avg Z, signed int8 × 8
-     *   byte5 = high_intensity count
-     * byte4 is not yet identified (present, not surfaced). Returns null on a short body rather than
-     * guessing a partial layout. Same averaged-vector shape as a WHOOP 4.0 gravity sample, so a consumer
-     * can map (avgX, avgY, avgZ) into the shared motion pipeline (the LSB→g scaling for the sleep stager
-     * is a downstream calibration, kept out of this pure decode). Byte-identical twin of Swift.
+     * Decode a 0x47 motion_events record: a compact per-window motion summary. Byte-for-byte port of
+     * open_oura's decode_motion / parse_api_motion_events (clean-room fact citation; OURA_PROTOCOL.md
+     * s6.13):
+     *   byte0 >> 5   = orientation (0..7)
+     *   byte0 & 0x1f = motion_seconds (0..31)
+     *   byte1/2/3    = avg X/Y/Z, signed int8 × 8
+     *   byte4 (opt)  = low_intensity: bit 0x40 set ⇒ INVALID (record → null); else & 0x3f
+     *   byte5 (opt)  = high_intensity: bit 0x40 set ⇒ INVALID (record → null); else & 0x3f
+     * Needs ≥ 4 bytes; low/high optional. 0x47 is MOVEMENT-GATED (validated #804): emitted only while
+     * moving, so there is no still/1 g sample — motion_seconds / intensity are the activity signal, not a
+     * gravity magnitude. Byte-identical twin of Swift.
      */
     fun decodeMotionEvents(rec: OuraRecord): OuraMotionEvent? {
         val b = rec.payload
-        if (b.size < 6) return null
+        if (b.size < 4) return null
+        var low: Int? = null
+        if (b.size >= 5) {
+            if (b[4] and 0x40 != 0) return null
+            low = b[4] and 0x3f
+        }
+        var high: Int? = null
+        if (b.size >= 6) {
+            if (b[5] and 0x40 != 0) return null
+            high = b[5] and 0x3f
+        }
         return OuraMotionEvent(
             ringTimestamp = rec.ringTimestamp,
-            orientation = b[0] and 0x03,
+            orientation = b[0] shr 5,
+            motionSeconds = b[0] and 0x1f,
             avgX = i8(b[1]) * 8,
             avgY = i8(b[2]) * 8,
             avgZ = i8(b[3]) * 8,
-            highIntensity = b[5],
+            lowIntensity = low,
+            highIntensity = high,
         )
     }
 

@@ -90,11 +90,13 @@ data class OuraMotion(val ringTimestamp: Long, val index: Int, val state: OuraMo
  */
 data class OuraMotionEvent(
     val ringTimestamp: Long,
-    val orientation: Int,
+    val orientation: Int,     // byte0 >> 5 (0..7)
+    val motionSeconds: Int,   // byte0 & 0x1f (0..31): seconds of motion in the window
     val avgX: Int,
     val avgY: Int,
     val avgZ: Int,
-    val highIntensity: Int,
+    val lowIntensity: Int?,   // byte4 & 0x3f, or null when the record is short
+    val highIntensity: Int?,  // byte5 & 0x3f, or null when the record is short
 )
 
 /** Device lifecycle state (OURA_PROTOCOL.md s6.15) decoded from a 0x45/0x53 record. */

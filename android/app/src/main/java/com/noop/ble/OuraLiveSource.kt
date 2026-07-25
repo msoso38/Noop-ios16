@@ -1731,7 +1731,8 @@ class OuraLiveSource(
                 d.unixSeconds(forRingTimestamp = e.value.ringTimestamp)?.let { utc ->
                     motionDump?.record(
                         ringTs = e.value.ringTimestamp, utc = utc, orientation = e.value.orientation,
-                        x = e.value.avgX, y = e.value.avgY, z = e.value.avgZ,
+                        motionSeconds = e.value.motionSeconds, x = e.value.avgX, y = e.value.avgY,
+                        z = e.value.avgZ, lowIntensity = e.value.lowIntensity,
                         highIntensity = e.value.highIntensity,
                     )
                 }

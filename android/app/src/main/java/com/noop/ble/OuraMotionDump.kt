@@ -38,7 +38,10 @@ class OuraMotionDump(
      * the corpus stays deduped. Best-effort: any file error is logged once and never disrupts the BLE path.
      * Call ONLY with an anchored [utc].
      */
-    fun record(ringTs: Long, utc: Long, orientation: Int, x: Int, y: Int, z: Int, highIntensity: Int) {
+    fun record(
+        ringTs: Long, utc: Long, orientation: Int, motionSeconds: Int, x: Int, y: Int, z: Int,
+        lowIntensity: Int?, highIntensity: Int?,
+    ) {
         if (ringTs <= highWater) return
         var f = resolveFile() ?: return
         // Bound the corpus so it can't grow unbounded (always-on for every paired ring). At the cap, rotate
@@ -56,7 +59,8 @@ class OuraMotionDump(
         val line = OuraMotionDumpLine.encode(
             deviceId = deviceId, ringTs = ringTs, utc = utc,
             iso = Instant.ofEpochSecond(utc).toString(),
-            orientation = orientation, x = x, y = y, z = z, highIntensity = highIntensity,
+            orientation = orientation, motionSeconds = motionSeconds, x = x, y = y, z = z,
+            lowIntensity = lowIntensity, highIntensity = highIntensity,
         )
         try {
             f.appendText(line + "\n")

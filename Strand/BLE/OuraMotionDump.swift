@@ -44,7 +44,8 @@ final class OuraMotionDump {
     /// the corpus stays deduped. Best-effort: any file error is logged once and never disrupts the BLE path.
     /// Call ONLY with an anchored `utc` (an un-anchored record has no real time axis and re-arrives anchored
     /// on the next drain).
-    func record(ringTs: UInt32, utc: Int, orientation: Int, x: Int, y: Int, z: Int, highIntensity: Int) {
+    func record(ringTs: UInt32, utc: Int, orientation: Int, motionSeconds: Int, x: Int, y: Int, z: Int,
+                lowIntensity: Int?, highIntensity: Int?) {
         guard ringTs > highWater else { return }
         guard var url = resolveURL() else { return }
         // Bound the corpus (rotate to a single ".1", dropping the prior one) so an always-on research sidecar
@@ -63,7 +64,8 @@ final class OuraMotionDump {
         let line = OuraMotionDumpLine.encode(
             deviceId: deviceId, ringTs: ringTs, utc: utc,
             iso: Self.iso.string(from: Date(timeIntervalSince1970: TimeInterval(utc))),
-            orientation: orientation, x: x, y: y, z: z, highIntensity: highIntensity)
+            orientation: orientation, motionSeconds: motionSeconds, x: x, y: y, z: z,
+            lowIntensity: lowIntensity, highIntensity: highIntensity)
 
         guard let data = (line + "\n").data(using: .utf8) else { return }
         do {

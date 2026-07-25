@@ -123,18 +123,25 @@ public struct OuraMotion: Equatable, Sendable, Codable {
 /// a downstream calibration, so this struct carries the ring's raw ×8 integers, unscaled and honest.
 public struct OuraMotionEvent: Equatable, Sendable, Codable {
     public let ringTimestamp: UInt32
-    /// Orientation code 0…3 (record byte0, low 2 bits).
+    /// Orientation code 0…7 (record byte0, TOP 3 bits: `b0 >> 5`).
     public let orientation: Int
+    /// Seconds of motion in the window (record byte0, low 5 bits: `b0 & 0x1f`, 0…31). A direct
+    /// motion-intensity measure — arguably the cleanest activity signal for sleep staging.
+    public let motionSeconds: Int
     /// Averaged X/Y/Z, signed record byte × 8 (open_oura `decode_motion`).
     public let avgX: Int
     public let avgY: Int
     public let avgZ: Int
-    /// High-intensity count for the period (record byte5).
-    public let highIntensity: Int
-    public init(ringTimestamp: UInt32, orientation: Int, avgX: Int, avgY: Int, avgZ: Int,
-                highIntensity: Int) {
+    /// Low/high-intensity counts (record byte4/byte5, `& 0x3f`, 0…63). nil when the record is short
+    /// (< 5 / < 6 bytes) — both are optional in the wire format.
+    public let lowIntensity: Int?
+    public let highIntensity: Int?
+    public init(ringTimestamp: UInt32, orientation: Int, motionSeconds: Int, avgX: Int, avgY: Int,
+                avgZ: Int, lowIntensity: Int?, highIntensity: Int?) {
         self.ringTimestamp = ringTimestamp; self.orientation = orientation
-        self.avgX = avgX; self.avgY = avgY; self.avgZ = avgZ; self.highIntensity = highIntensity
+        self.motionSeconds = motionSeconds
+        self.avgX = avgX; self.avgY = avgY; self.avgZ = avgZ
+        self.lowIntensity = lowIntensity; self.highIntensity = highIntensity
     }
 }
 
