@@ -320,7 +320,8 @@ public enum HRVAnalyzer {
                                     stepSec: Int = 0,
                                     minBeatsPerWindow: Int = 8) -> [RollingRmssdPoint] {
         guard windowSec > 0, rr.count >= minBeatsPerWindow else { return [] }
-        let sorted = rr.sorted { $0.ts < $1.ts }
+        // Stable: preserves the store's #823 emission order for same-second beats, which RMSSD needs.
+        let sorted = rr.sortedByTsStable()
         var out: [RollingRmssdPoint] = []
         var lastEmitTs: Int? = nil
         var left = 0   // index of the oldest interval still inside the trailing window
