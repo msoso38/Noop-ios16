@@ -1589,17 +1589,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return runCatching { repository.hrBuckets(deviceId, from, to, bucket) }.getOrDefault(emptyList())
     }
 
-    /** Per-zone MINUTES for a workout window, binning the strap's raw HR samples into the age-derived
-     *  (Tanaka) %HRmax zones — the same display zone model the Workouts screen uses for imported zone
-     *  percentages, but from the strap's own samples so a session WITHOUT imported zones still gets a
-     *  real time-in-zone split. null when the window carries no HR. age <= 0 falls back to 30 y.
+    /** Per-zone MINUTES for a workout window, binning the strap's raw HR samples into the profile's
+     *  effective default-or-personalized zones — the same display zone model used by live HR and
+     *  imported zone percentages. A session WITHOUT imported zones still gets a real split. null
+     *  when the window carries no HR.
      *  Mirrors macOS Repository.workoutZoneMinutes. */
     suspend fun workoutZoneMinutes(from: Long, to: Long): List<Double>? {
         if (to <= from) return null
         val samples = runCatching { repository.hrSamples(deviceId, from, to) }.getOrDefault(emptyList())
         if (samples.isEmpty()) return null
-        val age = profileStore.age.toDouble().takeIf { it > 0 } ?: 30.0
-        val zoneSet = com.noop.analytics.HrZones.zones(age = age)
+        val zoneSet = profileStore.hrZoneSet
         val tiz = com.noop.analytics.HrZones.timeInZone(samples, zoneSet)
         val minutes = tiz.seconds.map { it / 60.0 }
         return if (minutes.any { it > 0.0 }) minutes else null
@@ -2337,9 +2336,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!_zoneCoaching.value || !state.bonded || !state.worn) return
         val hr = _bpm.value ?: return
         if (hr < 30) return
-        val maxHR = profileStore.hrMax.toDouble()
-        if (maxHR <= 0) return
-        val zone = HrZones.zones(maxHR = maxHR).zoneNumber(hr.toDouble())
+        if (profileStore.hrMax <= 0) return
+        val zone = profileStore.hrZoneSet.zoneNumber(hr.toDouble())
         val previous = lastZone
         lastZone = zone
         val loops = zoneCoachBuzzLoops(previous, zone, _zoneCoachRecovery.value)

@@ -123,7 +123,8 @@ struct WorkoutDetailView: View {
             }
         }
         if minutes == nil {
-            minutes = await repo.workoutZoneMinutes(from: row.startTs, to: row.endTs, age: profile.age)
+            minutes = await repo.workoutZoneMinutes(from: row.startTs, to: row.endTs,
+                                                    zoneSet: profile.hrZoneSet)
         }
 
         let hrr = await repo.workoutHeartRateRecovery(
@@ -428,7 +429,7 @@ struct WorkoutDetailView: View {
                         }
                         Text(zonesFromImport
                              ? "WHOOP's imported per-zone split for this session."
-                             : "Time in each %HRmax zone, derived from the strap's heart rate over this window (approximate).")
+                             : "Time in each heart-rate zone, derived from the strap's heart rate over this window (approximate).")
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textTertiary)
                     }

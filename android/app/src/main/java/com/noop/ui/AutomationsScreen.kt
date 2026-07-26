@@ -83,9 +83,9 @@ fun AutomationsScreen(viewModel: AppViewModel) {
     val profile = remember { ProfileStore.from(ctx.applicationContext) }
     val zoneCoaching by viewModel.zoneCoaching.collectAsStateWithLifecycle()
     val zoneCoachRecovery by viewModel.zoneCoachRecovery.collectAsStateWithLifecycle()
-    // The Zone 5 entry threshold (≥ 90% of HR-max), from the same HrZones model used everywhere.
-    val zone5Bpm = remember(profile.hrMax) {
-        HrZones.zones(maxHR = profile.hrMax.toDouble()).zones.firstOrNull { it.number == 5 }?.lower?.roundToInt() ?: 0
+    // The effective Zone 5 entry threshold (default or personalized), from the shared model.
+    val zone5Bpm = remember(profile.hrMax, profile.hrZoneThresholds) {
+        profile.hrZoneSet.zones.firstOrNull { it.number == 5 }?.lower?.roundToInt() ?: 0
     }
 
     // Inactivity reminder (#419) — real + persisted via InactivityPrefs (opt-in, default OFF). Seeded
@@ -159,7 +159,7 @@ fun AutomationsScreen(viewModel: AppViewModel) {
         ) {
             ToggleRow(
                 label = uiString(R.string.l10n_automations_screen_hr_zone_coaching_9306e6e1),
-                help = "A triple-buzz when you climb into your top zone (Zone 5, ≥ $zone5Bpm bpm), a cue to ease off. Max HR comes from Settings.",
+                help = uiString(R.string.personalized_hr_zone_coaching_help, zone5Bpm),
                 checked = zoneCoaching,
                 onChange = { viewModel.setZoneCoaching(it) },
             )

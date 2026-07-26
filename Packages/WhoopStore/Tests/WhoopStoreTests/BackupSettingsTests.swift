@@ -17,6 +17,7 @@ final class BackupSettingsTests: XCTestCase {
             "profile.heightCm": 168.0,
             "profile.waistCm": 71.0,
             "profile.hrMax": 191,
+            "profile.hrZoneThresholds": "95,118,142,168,184",
             "units.system": "imperial",
             "units.temperature": "celsius",
             "effort.scale": "whoop",
@@ -30,6 +31,7 @@ final class BackupSettingsTests: XCTestCase {
         XCTAssertEqual(back["profile.heightCm"] as? Double, 168.0)
         XCTAssertEqual(back["profile.waistCm"] as? Double, 71.0)
         XCTAssertEqual(back["profile.hrMax"] as? Int, 191)
+        XCTAssertEqual(back["profile.hrZoneThresholds"] as? String, "95,118,142,168,184")
         XCTAssertEqual(back["units.system"] as? String, "imperial")
         XCTAssertEqual(back["units.temperature"] as? String, "celsius")
         XCTAssertEqual(back["effort.scale"] as? String, "whoop")
@@ -105,12 +107,14 @@ final class BackupSettingsTests: XCTestCase {
         defaults.set(29, forKey: "profile.age")
         defaults.set(82.5, forKey: "profile.weightKg")
         defaults.set(198, forKey: "profile.hrMaxOverride") // storage key, not the canonical name
+        defaults.set("95,118,142,168,184", forKey: "profile.hrZoneThresholds")
         defaults.set("imperial", forKey: "units.system")
 
         let snap = BackupSettings.snapshot(from: defaults)
         XCTAssertEqual(snap["profile.age"] as? Int, 29)
         XCTAssertEqual(snap["profile.weightKg"] as? Double, 82.5)
         XCTAssertEqual(snap["profile.hrMax"] as? Int, 198, "hrMaxOverride surfaces under the canonical key")
+        XCTAssertEqual(snap["profile.hrZoneThresholds"] as? String, "95,118,142,168,184")
         XCTAssertEqual(snap["units.system"] as? String, "imperial")
         XCTAssertNil(snap["profile.heightCm"], "Never-set keys are omitted, not defaulted")
         XCTAssertNil(snap["profile.sex"])
@@ -123,12 +127,14 @@ final class BackupSettingsTests: XCTestCase {
         BackupSettings.apply([
             "profile.age": 41,
             "profile.hrMax": 187,
+            "profile.hrZoneThresholds": "90,115,140,165,185",
             "units.temperature": "fahrenheit",
         ], to: defaults)
 
         XCTAssertEqual(defaults.object(forKey: "profile.age") as? Int, 41)
         XCTAssertEqual(defaults.object(forKey: "profile.hrMaxOverride") as? Int, 187,
                        "Canonical profile.hrMax lands on the profile.hrMaxOverride storage key")
+        XCTAssertEqual(defaults.string(forKey: "profile.hrZoneThresholds"), "90,115,140,165,185")
         XCTAssertEqual(defaults.string(forKey: "units.temperature"), "fahrenheit")
         XCTAssertEqual(defaults.object(forKey: "profile.heightCm") as? Double, 175.0,
                        "Keys absent from the payload keep the target's value")

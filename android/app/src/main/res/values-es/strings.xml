@@ -1655,6 +1655,12 @@
     <string name="explore_description_charge">Qué tan recuperado estás, según tu VFC frente a tu línea base personal.</string>
     <string name="explore_description_effort">Carga cardiovascular del día, en una escala de 0–100 (antes 0–21).</string>
     <string name="explore_description_rest">Qué tan reparador fue tu sueño: duración, eficiencia, sueño profundo y REM, y horario.</string>
+    <string name="personalized_hr_zones">Zonas de FC personalizadas</string>
+    <string name="personalized_hr_zones_help">Define las ppm a las que comienza cada zona. Desactiva la opción para restaurar las zonas predeterminadas por porcentaje de frecuencia máxima.</string>
+    <string name="personalized_hr_zone_starts">La zona %1$d comienza</string>
+    <string name="personalized_hr_zone_starts_at_bpm">La zona %1$d comienza a %2$d bpm</string>
+    <string name="personalized_hr_zone_coaching_help">Tres vibraciones al entrar en tu zona más alta (zona 5, ≥ %1$d bpm), como señal para bajar el ritmo. Los límites de zona se configuran en Ajustes.</string>
+    <string name="personalized_hr_zone_time_help">Tiempo en cada zona de frecuencia cardíaca, calculado a partir de la frecuencia del sensor durante este intervalo (aproximado).</string>
     <string name="l10n_workouts_screen_heart_rate_recovery_516">Recuperación de la frecuencia cardíaca</string>
     <string name="l10n_workouts_screen_after_high_intensity_effort_516">Después de un esfuerzo de alta intensidad</string>
     <string name="l10n_workouts_screen_peak_hr_bpm_516">Pico de %1$d lpm</string>

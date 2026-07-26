@@ -407,6 +407,29 @@ struct SettingsView: View {
                     }
                 }
                 rowDivider
+                FormRow(label: "Custom HR zones") {
+                    Toggle("", isOn: Binding(
+                        get: { profile.hasCustomHRZones },
+                        set: { profile.setCustomHRZonesEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .tint(StrandPalette.accent)
+                    .accessibilityLabel("Custom HR zones")
+                }
+                Text("Set the BPM where each zone begins. Turn off to restore the default percentage-of-max zones.")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if profile.hasCustomHRZones {
+                    ForEach(0..<5, id: \.self) { index in
+                        rowDivider
+                        FormRow(label: "Zone \(index + 1) starts") {
+                            hrZoneThresholdField(index: index)
+                        }
+                    }
+                }
+                rowDivider
                 // Step calibration (#139/#132): daily steps = @57 counter ticks ÷ this divisor.
                 // 1.0 = raw pass-through until the true 5/MG tick rate is known. The divisor goes
                 // up to 30 because a 5/MG motion counter can overcount by ~24×; the stepper uses a
@@ -606,6 +629,29 @@ struct SettingsView: View {
                     value: $profile.hrMaxOverride, in: 0...230, step: 1)
                 .labelsHidden()
                 .accessibilityLabel("Max heart rate override, \(profile.hrMaxOverride == 0 ? "automatic" : "\(profile.hrMaxOverride) bpm")")
+        }
+    }
+
+    /// One personalized inclusive lower boundary. The store owns neighbour-aware clamping so every
+    /// tap persists a valid, strictly increasing five-zone model.
+    private func hrZoneThresholdField(index: Int) -> some View {
+        let value = profile.hrZoneThresholds.indices.contains(index)
+            ? profile.hrZoneThresholds[index] : 0
+        return HStack(spacing: 10) {
+            Text("\(value)")
+                .font(StrandFont.bodyNumber)
+                .foregroundStyle(StrandPalette.textPrimary)
+                .frame(minWidth: 44, alignment: .trailing)
+            Text("bpm")
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textTertiary)
+            Stepper("Zone \(index + 1) starts at \(value) bpm") {
+                profile.stepHRZoneThreshold(at: index, up: true)
+            } onDecrement: {
+                profile.stepHRZoneThreshold(at: index, up: false)
+            }
+            .labelsHidden()
+            .accessibilityLabel("Zone \(index + 1) starts at \(value) bpm")
         }
     }
 

@@ -1421,7 +1421,7 @@ private fun WorkoutDetailSheet(vm: AppViewModel, row: WorkoutRow, onDismiss: () 
                     }
                     Text(
                         if (zonesFromImport) "WHOOP's imported per-zone split for this session."
-                        else "Time in each %HRmax zone, derived from the strap's heart rate over this window (approximate).",
+                        else uiString(R.string.personalized_hr_zone_time_help),
                         style = NoopType.footnote,
                         color = Palette.textTertiary,
                     )

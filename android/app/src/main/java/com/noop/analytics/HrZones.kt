@@ -40,7 +40,7 @@ data class HrZone(
 )
 
 /**
- * Five HR zones derived from a max HR, plus the max HR itself and its source.
+ * Five HR zones derived from a max HR or personalized BPM boundaries, plus max HR and its source.
  * Mirrors Swift `HRZoneSet`.
  */
 data class HrZoneSet(
@@ -48,7 +48,7 @@ data class HrZoneSet(
     val zones: List<HrZone>,
     /** Max HR (bpm) the zones were built from. */
     val maxHR: Double,
-    /** "tanaka" (age formula) or "manual" (caller override). */
+    /** "tanaka" (age formula), "manual" (caller override), or "custom" (personalized boundaries). */
     val source: String,
 ) {
     /** Return the zone number (1..5) for a bpm value, or 0 when below Zone 1. */
@@ -90,6 +90,9 @@ object HrZones {
     /** %HRmax band edges for zones 1..5: [0.50, 0.60, 0.70, 0.80, 0.90, 1.00]. */
     val zoneEdges: List<Double> = listOf(0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
 
+    /** Practical editable BPM range used by both platform UIs. */
+    val customBPMRange: IntRange = 30..250
+
     /** Tanaka (2001) age-predicted max HR: 208 − 0.7 × age (gender-independent). */
     fun tanakaMaxHR(age: Double): Double = 208.0 - 0.7 * age
 
@@ -99,7 +102,11 @@ object HrZones {
      * @param age age in years (used only when [maxHROverride] is null).
      * @param maxHROverride explicit HRmax (bpm); when provided, `source == "manual"`.
      */
-    fun zones(age: Double, maxHROverride: Double? = null): HrZoneSet {
+    fun zones(
+        age: Double,
+        maxHROverride: Double? = null,
+        customLowerBounds: List<Double>? = null,
+    ): HrZoneSet {
         val maxHR: Double
         val source: String
         if (maxHROverride != null) {
@@ -109,26 +116,48 @@ object HrZones {
             maxHR = tanakaMaxHR(age)
             source = "tanaka"
         }
-        return zones(maxHR, source)
+        return zones(maxHR, source, customLowerBounds)
     }
 
-    /** Build the 5-zone set directly from a known max HR. */
-    fun zones(maxHR: Double, source: String = "manual"): HrZoneSet {
+    /**
+     * Build the 5-zone set directly from a known max HR, optionally replacing the conventional
+     * percentage edges with five personalized inclusive lower bounds in BPM. Invalid custom input
+     * falls back to the conventional model, so malformed restored preferences cannot create gaps.
+     */
+    fun zones(
+        maxHR: Double,
+        source: String = "manual",
+        customLowerBounds: List<Double>? = null,
+    ): HrZoneSet {
+        val custom = customLowerBounds?.let(::validCustomLowerBounds)
         val built = ArrayList<HrZone>(5)
         for (i in 0 until 5) {
-            val loPct = zoneEdges[i]
-            val hiPct = zoneEdges[i + 1]
+            val lower = custom?.get(i) ?: (zoneEdges[i] * maxHR)
+            val upper = custom?.let { if (i < 4) it[i + 1] else maxOf(maxHR, it[i]) }
+                ?: (zoneEdges[i + 1] * maxHR)
+            val loPct = if (maxHR > 0) lower / maxHR else 0.0
+            val hiPct = if (maxHR > 0) upper / maxHR else 0.0
             built.add(
                 HrZone(
                     number = i + 1,
-                    lower = loPct * maxHR,
-                    upper = hiPct * maxHR,
+                    lower = lower,
+                    upper = upper,
                     lowerPct = loPct,
                     upperPct = hiPct,
                 )
             )
         }
-        return HrZoneSet(zones = built, maxHR = maxHR, source = source)
+        return HrZoneSet(zones = built, maxHR = maxHR, source = if (custom == null) source else "custom")
+    }
+
+    /** Conventional inclusive lower bounds, rounded up for a whole-BPM editor. */
+    fun defaultLowerBounds(maxHR: Double): List<Int> = zoneEdges.take(5).map { kotlin.math.ceil(it * maxHR).toInt() }
+
+    /** Validate the shared five-boundary invariant used by analytics and persistence. */
+    fun validCustomLowerBounds(values: List<Double>): List<Double>? {
+        if (values.size != 5 || values.any { !it.isFinite() || it <= 0.0 }) return null
+        if ((1 until values.size).any { values[it] <= values[it - 1] }) return null
+        return values
     }
 
     /**

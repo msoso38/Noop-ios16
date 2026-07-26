@@ -176,7 +176,7 @@ struct AutomationsView: View {
                  active: behavior.zoneCoaching || behavior.stressCheckIn) {
             VStack(spacing: 0) {
                 ToggleRow(label: String(localized: "HR-zone coaching"),
-                          help: String(localized: "Buzz when you hit your top zone (ease off) and again when you recover. Uses your max HR from Settings."),
+                          help: String(localized: "Buzz when you hit your top zone (ease off) and again when you recover. Uses your zone thresholds from Settings."),
                           isOn: $behavior.zoneCoaching)
                 rowDivider
                 // v5 L3 closed-loop check-in (master + sub toggles). Default OFF, manual-first. The keys

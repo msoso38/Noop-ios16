@@ -1670,6 +1670,12 @@
     <string name="explore_description_charge">Wie erholt du bist, angeführt von der HRV gegenüber deiner persönlichen Basislinie.</string>
     <string name="explore_description_effort">Herz-Kreislauf-Belastung für den Tag auf einer Skala von 0–100 (zuvor 0–21).</string>
     <string name="explore_description_rest">Wie erholsam dein Schlaf war: Dauer, Effizienz, Tief- und REM-Schlaf sowie Timing.</string>
+    <string name="personalized_hr_zones">Benutzerdefinierte Herzfrequenzzonen</string>
+    <string name="personalized_hr_zones_help">Lege den BPM-Wert fest, bei dem jede Zone beginnt. Deaktiviere die Option, um die standardmäßigen Prozent-vom-Maximalpuls-Zonen wiederherzustellen.</string>
+    <string name="personalized_hr_zone_starts">Zone %1$d beginnt</string>
+    <string name="personalized_hr_zone_starts_at_bpm">Zone %1$d beginnt bei %2$d bpm</string>
+    <string name="personalized_hr_zone_coaching_help">Dreifaches Vibrieren beim Erreichen deiner höchsten Zone (Zone 5, ≥ %1$d bpm) als Hinweis, das Tempo zu reduzieren. Die Zonengrenzen kommen aus den Einstellungen.</string>
+    <string name="personalized_hr_zone_time_help">Zeit in jeder Herzfrequenzzone, abgeleitet aus der Herzfrequenz des Bands in diesem Zeitraum (Näherungswert).</string>
     <string name="l10n_workouts_screen_heart_rate_recovery_516">Herzfrequenzerholung</string>
     <string name="l10n_workouts_screen_after_high_intensity_effort_516">Nach hochintensiver Belastung</string>
     <string name="l10n_workouts_screen_peak_hr_bpm_516">Spitze %1$d bpm</string>

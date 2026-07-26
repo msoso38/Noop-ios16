@@ -1679,6 +1679,12 @@
     <string name="explore_description_charge">How recovered you are, led by HRV versus your personal baseline.</string>
     <string name="explore_description_effort">Cardiovascular load for the day, on a 0-100 scale (was 0-21).</string>
     <string name="explore_description_rest">How restorative your sleep was: duration, efficiency, deep+REM, timing.</string>
+    <string name="personalized_hr_zones">Custom HR zones</string>
+    <string name="personalized_hr_zones_help">Set the BPM where each zone begins. Turn off to restore the default percentage-of-max zones.</string>
+    <string name="personalized_hr_zone_starts">Zone %1$d starts</string>
+    <string name="personalized_hr_zone_starts_at_bpm">Zone %1$d starts at %2$d bpm</string>
+    <string name="personalized_hr_zone_coaching_help">A triple-buzz when you climb into your top zone (Zone 5, ≥ %1$d bpm), a cue to ease off. Zone thresholds come from Settings.</string>
+    <string name="personalized_hr_zone_time_help">Time in each heart-rate zone, derived from the strap\'s heart rate over this window (approximate).</string>
     <string name="l10n_workouts_screen_heart_rate_recovery_516">Heart Rate Recovery</string>
     <string name="l10n_workouts_screen_after_high_intensity_effort_516">After high-intensity effort</string>
     <string name="l10n_workouts_screen_peak_hr_bpm_516">Peak %1$d bpm</string>

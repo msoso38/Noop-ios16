@@ -2561,17 +2561,15 @@ final class Repository: ObservableObject {
         return await hrBuckets(from: from, to: to, bucketSeconds: bucket)
     }
 
-    /// Raw HR samples binned into per-zone MINUTES for a workout window, using the age-derived
-    /// (Tanaka) %HRmax zones , the same display zone model `WorkoutsView` already uses for imported
+    /// Raw HR samples binned into per-zone MINUTES for a workout window, using the caller's effective
+    /// default-or-personalized zones , the same display zone model `WorkoutsView` uses for imported
     /// zone percentages, but computed here from the strap's own samples so a session WITHOUT imported
     /// `zonesJSON` still gets a real time-in-zone split. Returns nil when the window carries no HR (so
-    /// the view shows nothing rather than five empty bars). `age <= 0` falls back to a 30 y default ,
-    /// the zones are approximate either way and clearly labelled as such in the UI.
-    func workoutZoneMinutes(from: Int, to: Int, age: Int) async -> [Double]? {
+    /// the view shows nothing rather than five empty bars).
+    func workoutZoneMinutes(from: Int, to: Int, zoneSet: HRZoneSet) async -> [Double]? {
         guard to > from else { return nil }
         let samples = await hrSamples(from: from, to: to)
         guard !samples.isEmpty else { return nil }
-        let zoneSet = HRZones.zones(age: age > 0 ? Double(age) : 30)
         let tiz = HRZones.timeInZone(samples, zoneSet: zoneSet)
         let minutes = tiz.seconds.map { $0 / 60.0 }
         return minutes.contains(where: { $0 > 0 }) ? minutes : nil

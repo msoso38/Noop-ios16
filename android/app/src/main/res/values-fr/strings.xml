@@ -1655,6 +1655,12 @@
     <string name="explore_description_charge">Votre niveau de récupération, mesuré par la VFC par rapport à votre référence personnelle.</string>
     <string name="explore_description_effort">Charge cardiovasculaire de la journée, sur une échelle de 0 à 100 (auparavant 0 à 21).</string>
     <string name="explore_description_rest">À quel point votre sommeil a été réparateur : durée, efficacité, sommeil profond et paradoxal, et horaires.</string>
+    <string name="personalized_hr_zones">Zones FC personnalisées</string>
+    <string name="personalized_hr_zones_help">Définissez la fréquence à laquelle chaque zone commence. Désactivez l’option pour restaurer les zones par défaut en pourcentage de la fréquence maximale.</string>
+    <string name="personalized_hr_zone_starts">Début de la zone %1$d</string>
+    <string name="personalized_hr_zone_starts_at_bpm">La zone %1$d commence à %2$d bpm</string>
+    <string name="personalized_hr_zone_coaching_help">Trois vibrations lorsque vous entrez dans votre zone la plus élevée (zone 5, ≥ %1$d bpm), pour vous inviter à ralentir. Les seuils de zone viennent des Réglages.</string>
+    <string name="personalized_hr_zone_time_help">Temps passé dans chaque zone de fréquence cardiaque, calculé à partir de la fréquence du bracelet sur cet intervalle (approximatif).</string>
     <string name="l10n_workouts_screen_heart_rate_recovery_516">Récupération de la fréquence cardiaque</string>
     <string name="l10n_workouts_screen_after_high_intensity_effort_516">Après un effort intense</string>
     <string name="l10n_workouts_screen_peak_hr_bpm_516">Pic à %1$d bpm</string>
