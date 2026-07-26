@@ -9,7 +9,11 @@ House style across the catalog has no em-dash (U+2014); the table below follows
 that, using a comma where English pauses.
 """
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from xcstrings_format import write_catalog
 
 CATALOG = Path("Strand/Resources/Localizable.xcstrings")
 
@@ -504,8 +508,7 @@ def main() -> int:
         locs = entry.setdefault("localizations", {})
         locs["it"] = {"stringUnit": {"state": "translated", "value": value}}
 
-    CATALOG.write_text(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n",
-                       encoding="utf-8")
+    write_catalog(CATALOG, catalog)
 
     translated = sum(
         1 for k, v in strings.items()

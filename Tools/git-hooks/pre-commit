@@ -1,0 +1,26 @@
+#!/bin/sh
+# Canonicalizes any staged .xcstrings String Catalog before it's committed.
+#
+# Xcode rewrites these files (reformats + reorders keys) on essentially every
+# local build — see Tools/xcstrings_format.py for why. Left alone, that means
+# every commit touching a catalog carries whatever order Xcode's build
+# happened to leave it in, so PR diffs are full-file noise instead of just
+# the real string additions/changes. Running the catalog through the stable
+# canonical writer right before commit keeps history diff-friendly.
+#
+# Enable with: git config core.hooksPath Tools/git-hooks
+
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.xcstrings')
+
+if [ -z "$staged" ]; then
+    exit 0
+fi
+
+echo "$staged" | while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    python3 "$repo_root/Tools/xcstrings_format.py" "$repo_root/$file"
+    git add "$repo_root/$file"
+done
