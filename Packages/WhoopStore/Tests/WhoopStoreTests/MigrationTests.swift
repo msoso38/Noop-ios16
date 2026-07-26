@@ -91,7 +91,8 @@ final class MigrationTests: XCTestCase {
         let read = try await store.rrIntervals(deviceId: "dev1", from: 0, to: 1_000, limit: 100)
         XCTAssertEqual(read.map(\.rrMs), emission,
                        "beats must read back in emission order, not magnitude order")
-        XCTAssertEqual(try await store.rrOrdValuesForTest(deviceId: "dev1", ts: 100), [0, 1, 2, 3, 4])
+        let ords = try await store.rrOrdValuesForTest(deviceId: "dev1", ts: 100)
+        XCTAssertEqual(ords, [0, 1, 2, 3, 4])
 
         // The measurable consequence, on the issue's own example: magnitude order reads 12.72 ms,
         // emission order 34.85 ms. A one-directional −22 ms bias in a headline metric.
@@ -117,8 +118,8 @@ final class MigrationTests: XCTestCase {
         let read = try await store.rrIntervals(deviceId: "dev1", from: 0, to: 1_000, limit: 100)
         XCTAssertEqual(read.map(\.rrMs), [795, 801, 812, 833, 840],
                        "pre-v30 rows must keep the old (rrMs, seq) order, unchanged and deterministic")
-        XCTAssertEqual(try await store.rrOrdValuesForTest(deviceId: "dev1", ts: 200),
-                       [nil, nil, nil, nil, nil])
+        let ords = try await store.rrOrdValuesForTest(deviceId: "dev1", ts: 200)
+        XCTAssertEqual(ords, [nil, nil, nil, nil, nil])
     }
 
     /// A second holding both legacy and post-v30 rows (possible via import/merge) must still be
