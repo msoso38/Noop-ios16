@@ -978,6 +978,7 @@ struct LiquidTodayView: View {
                         }
                         LiquidStrapBatteryRow()
                         LiquidSyncStatusRow()
+                        LiquidBackfillProgressRow()
                     }
                 }
             }
@@ -1665,7 +1666,9 @@ private struct LiquidBatteryButton: View {
     @EnvironmentObject var live: LiveState
     @EnvironmentObject var router: NavRouter
     private var display: LiquidTodayView.StrapBatteryDisplay {
-        .resolve(connected: live.connected, batteryPct: live.batteryPct, charging: live.charging)
+        // `chargingEffective`, not the raw flag — the 5.0 charge bit is unverified and was observed reading
+        // 0 on a charging strap; a rising SoC is the witness that can't lie. See StrapChargeInference.
+        .resolve(connected: live.connected, batteryPct: live.batteryPct, charging: live.chargingEffective)
     }
     var body: some View {
         Button { router.openDevices() } label: {
@@ -1738,9 +1741,9 @@ private struct LiquidBatteryButton: View {
 /// dropped the "~X days left" runtime estimate from the row directly above this one.
 ///
 /// Deliberately scoped to what LiveState can honestly answer: THAT a drain is running, how many chunks
-/// it has pulled, and when one last completed. It does NOT yet say "~15h behind" — that needs the
-/// persisted data frontier (max HR ts) compared against `strapRange.newestUnix`, and the frontier is a
-/// Repository read that LiveState does not carry. That remains open in B1.
+/// it has pulled, and when one last completed. The remaining half of B1 — "~15h behind", which needs the
+/// persisted data frontier (max HR ts) compared against `strapRange.newestUnix` — is answered by
+/// `LiquidBackfillProgressRow` directly below, which BLEManager now feeds via `LiveState.setDataFrontier`.
 private struct LiquidSyncStatusRow: View {
     @EnvironmentObject var live: LiveState
     var body: some View {
@@ -1771,6 +1774,45 @@ private struct LiquidSyncStatusRow: View {
     }
 }
 
+/// Strap-history recovery, inside the Data Sources card. Owns LiveState; display-only.
+///
+/// The gap this closes: the app already said "Syncing strap history…" WHILE a session ran, but said nothing
+/// about how far behind the strap was — and nothing at all between sessions, so an idle app looked finished
+/// when it was actually 18 hours behind and waiting out a 15-minute floor. A user reasonably read that
+/// silence as "my data is gone". Both states are now stated outright, and the numbers come from the pure
+/// `BackfillProgress` so this row can never disagree with the drain's own idea of "behind".
+private struct LiquidBackfillProgressRow: View {
+    @EnvironmentObject var live: LiveState
+    var body: some View {
+        let progress = live.backfillProgress
+        if let behind = progress.behindLabel, let frontier = progress.frontierUnix {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isRecovering(progress) ? "Recovering strap history" : "Strap history pending")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                    // The anchor that answers "is my data lost?" — we HAVE your data up to this instant.
+                    Text("Have it through \(recoveredThrough(frontier))")
+                        .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                }
+                Spacer()
+                // Same shape as the Devices card's pill: the pure resolver hands over a plain label, the
+                // view localizes it. Pulsing IS the active/idle indicator — draining vs merely behind.
+                StatePill(LocalizedStringKey(behind), tone: .accent, pulsing: isRecovering(progress))
+            }
+        }
+    }
+    private func isRecovering(_ p: BackfillProgress) -> Bool {
+        if case .recovering = p { return true }
+        return false
+    }
+    /// "July 14, 14:31" — a wall-clock instant the user can place against their own day.
+    private func recoveredThrough(_ unix: Int) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d, HH:mm"
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(unix)))
+    }
+}
+
 /// The strap-battery readout inside the Data Sources card. Owns LiveState; display-only.
 private struct LiquidStrapBatteryRow: View {
     @EnvironmentObject var live: LiveState
@@ -1790,7 +1832,10 @@ private struct LiquidStrapBatteryRow: View {
     /// Mac / Android pill and the classic Today badge.
     private func batteryText(pct: Double) -> String {
         let base = "\(Int(pct.rounded()))%"
-        if live.charging == true { return "\(base) · Charging" }
+        // `chargingEffective`, not the raw flag: the 5.0 charge bit is unverified and has been seen reading
+        // 0 on a strap that was demonstrably on its puck, which left this row showing a DISCHARGE estimate
+        // ("31% · ~2 days left") to a user who was watching it charge. A rising SoC overrides the bit.
+        if live.chargingEffective == true { return "\(base) · Charging" }
         if let est = estimateText { return "\(base) · \(est)" }
         return base
     }
@@ -1799,7 +1844,7 @@ private struct LiquidStrapBatteryRow: View {
     /// Reproduced verbatim from `TodayView.estimateText`: under 48 h show hours, at two days or more round to
     /// days; nil (no banked discharge yet, or charging) hides it, so the row only ever shows an estimate we trust.
     private var estimateText: String? {
-        guard live.charging != true, let est = live.batteryEstimate else { return nil }
+        guard live.chargingEffective != true, let est = live.batteryEstimate else { return nil }
         let hours = est.hoursRemaining
         guard hours.isFinite, hours > 0 else { return nil }
         if hours < 48 {

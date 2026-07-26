@@ -1915,6 +1915,9 @@ public final class BLEManager: NSObject, ObservableObject {
             let frontier = await collector?.latestHRSampleTs() ?? nil
             let wallNow = Int(Date().timeIntervalSince1970)   // #928: real wall clock, at decision time
             let stillConnected = state.connected && state.bonded
+            // Publish the frontier for the backfill-progress readout (#364 UI): this is the only place the
+            // frontier is read, and it's already read once per session end — exactly the cadence the UI wants.
+            state.setDataFrontier(frontier)
             guard BackfillContinuation.shouldAutoContinue(
                 stillConnected: stillConnected,
                 strapNewestTs: newest,
@@ -1939,7 +1942,7 @@ public final class BLEManager: NSObject, ObservableObject {
                 // of re-kicks. Reset here — NOT unconditionally on every HISTORY_COMPLETE — so a strap that
                 // slices one offload into many completions can't keep resetting the cap and spin forever.
                 // EXCEPTION: if we stopped because the per-connection CAP is hit, leave the streak at/over
-                // the cap so it STAYS engaged for the rest of this connection (the 15-min floor takes over);
+                // it so it STAYS engaged for the rest of this connection (the 15-min floor takes over);
                 // zeroing it here would immediately re-arm the cap and let a runaway strap spin again.
                 if count < BackfillContinuation.defaultMaxAutoContinues {
                     consecutiveAutoContinues = 0
@@ -1951,7 +1954,12 @@ public final class BLEManager: NSObject, ObservableObject {
             // log/counter churn if so.
             guard !backfilling else { return }
             consecutiveAutoContinues += 1
-            log("Backfill: auto-continuing (#364/#451) — the trim advanced and the strap is still handing over real records (frontier \(frontier.map(String.init) ?? "?"), strap-reported newest \(newest.map(String.init) ?? "?")); re-kicking offload \(consecutiveAutoContinues)/\(BackfillContinuation.defaultMaxAutoContinues) without waiting the 15-min floor.")
+            let ceiling = BackfillContinuation.defaultMaxAutoContinues
+            // Name the DEPTH in the log, not just the counter. "offload 3/6, ~15h behind" is what makes a
+            // strap-log export answer "is my data lost or merely pending?" — the question a user spent hours
+            // unable to answer while this chain silently throttled itself to the 15-minute floor.
+            let behind = (newest.map { n in frontier.map { n - $0 } } ?? nil).map { " ~\($0 / 3600)h behind" } ?? ""
+            log("Backfill: auto-continuing (#364/#451) — the trim advanced and the strap is still handing over real records (frontier \(frontier.map(String.init) ?? "?"), strap-reported newest \(newest.map(String.init) ?? "?")\(behind)); re-kicking offload \(consecutiveAutoContinues)/\(ceiling) without waiting the 15-min floor.")
             // .autoContinue bypasses the BackfillPolicy floor (the whole point — don't wait 15 min);
             // requestSync still re-checks connected/bonded/not-backfilling before kicking, and the
             // consecutive-cap above is the runaway guard.
