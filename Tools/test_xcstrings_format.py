@@ -1,9 +1,11 @@
-"""Tests that Tools.xcstrings_format matches Xcode's own canonical
-serialization of `.xcstrings` catalogs byte-for-byte, so writing a catalog
-with this tool doesn't cause every subsequent Xcode build to show a
-100%-line no-op diff.
+"""Tests for Tools.xcstrings_format's stable canonical serialization of
+`.xcstrings` catalogs — sorted keys, Xcode's `" : "` spacing and
+no-trailing-newline convention, and its non-collapsing empty-object
+formatting. (Xcode's own key ordering is not reproducible — see the module
+docstring — so this checks our deterministic form, not a byte-for-byte match
+against Xcode's output.)
 
-Run: python3 -m unittest Tools.test_xcstrings_format -v   (from repo root)
+Run: cd Tools && python3 -m unittest test_xcstrings_format -v
 """
 import unittest
 
