@@ -1776,6 +1776,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearBodyLocationProbe() = ble.clearBodyLocationProbe()
 
+    /** #827: read-only GET_CLOCK(11) probe. User-initiated, Test-Centre-gated in DevicesScreen. GET_CLOCK
+     *  is already sent on every connect; this just re-requests it on demand so the raw bytes are readable
+     *  without a full log export. Never writes to the strap. */
+    fun probeGetClock() = ble.probeGetClock()
+
+    /** #827 probe result text (null until a reply lands; waiting sentinel while in flight). */
+    val clockProbe = ble.clockProbe
+
+    fun clearClockProbe() = ble.clearClockProbe()
+
     /**
      * Flip the "keep connected in the background" preference (driven by Settings). Turning it on
      * while a strap is live promotes to the foreground immediately; turning it off drops the
