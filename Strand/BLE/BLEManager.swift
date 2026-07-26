@@ -4216,6 +4216,10 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         // revision ever shifts these fields again, the rejection must be visible rather than silent.
         if let pages = DataRange.pagesBehind(from: frame, cmdOff: cmdOff) {
             log("Strap backlog pages behind: \(pages) (#689 — GET_DATA_RANGE ring backlog, diagnostic only)")
+            // #815: confirmed on both WHOOP 4.0 and 5.0/MG, so bank it unconditionally (unlike newest/oldest,
+            // which stay feedsSync-gated to WHOOP4 until a 5/MG capture confirms them too) — the sync chip's
+            // "N pages behind" detail reads this while `backfilling` is true.
+            state.setPagesBehindAtConnect(pages)
         } else {
             log("Strap backlog pages behind: not decodable from this frame (#689 — offsets may have moved; "
                 + "the raw frame above is the input). Diagnostic only, sync is unaffected.")

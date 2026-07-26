@@ -1949,9 +1949,10 @@ private struct LiquidSyncChip: View {
 
     var body: some View {
         switch SyncChipState.resolve(live: live) {
-        case .syncing(let chunks):
+        case .syncing(let chunks, let pagesBehind):
             pill(system: "arrow.triangle.2.circlepath", text: "\(chunks)",
-                 a11y: String(localized: "Syncing strap history, \(chunks) chunks"))
+                 detail: SyncChipState.pagesBehindDetail(pagesBehind),
+                 a11y: SyncChipState.syncingAccessibilityLabel(chunks: chunks, pagesBehind: pagesBehind))
         case .synced(let agoText):
             pill(system: "checkmark", text: agoText,
                  a11y: String(localized: "Strap history synced \(agoText) ago"))
@@ -1963,10 +1964,14 @@ private struct LiquidSyncChip: View {
         }
     }
 
-    private func pill(system: String, text: String, a11y: String) -> some View {
+    private func pill(system: String, text: String, detail: String? = nil, a11y: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: system).font(.system(size: 11, weight: .bold))
             Text(text).font(.system(size: 12, weight: .bold))
+            // #689/#815: the pages-behind detail, when known — see `SyncChipState.pagesBehindDetail`.
+            if let detail {
+                Text(detail).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.7))
+            }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 10)

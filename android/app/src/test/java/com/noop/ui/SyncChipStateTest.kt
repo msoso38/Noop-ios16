@@ -16,7 +16,18 @@ class SyncChipStateTest {
         val state = SyncChipState.resolve(
             backfilling = true, chunks = 7, lastSyncAtSec = null, historySyncExperimental = false,
         )
-        assertEquals(SyncChipState.Syncing(7), state)
+        assertEquals(SyncChipState.Syncing(7, null), state)
+    }
+
+    /** #689/#815 follow-up: when a GET_DATA_RANGE sample has landed this session, it rides along on the
+     *  syncing state so the chip can append the "N pages behind" detail. */
+    @Test
+    fun backfilling_withPagesBehindSample_carriesItOnSyncingState() {
+        val state = SyncChipState.resolve(
+            backfilling = true, chunks = 7, lastSyncAtSec = null, historySyncExperimental = false,
+            pagesBehind = 494,
+        )
+        assertEquals(SyncChipState.Syncing(7, 494), state)
     }
 
     @Test

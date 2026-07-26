@@ -381,7 +381,11 @@ internal fun recordingStateFor(
  *  [Hidden] only on a true cold start (the building-scores note owns that case). Previously this
  *  priority order lived inline inside the `@Composable`, where it could not be unit-tested. */
 sealed class SyncChipState {
-    data class Syncing(val chunks: Int) : SyncChipState()
+    /** #689/#815 follow-up: [pagesBehind] is the strap's GET_DATA_RANGE ring backlog sampled once at
+     *  connect (`LiveState.pagesBehindAtConnect`) — null until a reply has landed this session, or on a
+     *  device/frame where it didn't decode. Purely additive: null renders identically to before this
+     *  field existed, so it defaults to the chunk-count-only chip. Mirrors Swift `SyncChipState.syncing`. */
+    data class Syncing(val chunks: Int, val pagesBehind: Int? = null) : SyncChipState()
     data class Synced(val agoText: String) : SyncChipState()
     object ExperimentalLive : SyncChipState()
     object Hidden : SyncChipState()
@@ -394,8 +398,9 @@ sealed class SyncChipState {
             chunks: Int,
             lastSyncAtSec: Long?,
             historySyncExperimental: Boolean,
+            pagesBehind: Int? = null,
         ): SyncChipState = when {
-            backfilling -> Syncing(chunks)
+            backfilling -> Syncing(chunks, pagesBehind)
             lastSyncAtSec != null -> Synced(shortSyncAgo(lastSyncAtSec))
             historySyncExperimental -> ExperimentalLive
             else -> Hidden
@@ -415,6 +420,21 @@ internal fun shortSyncAgo(unixSec: Long): String {
         else -> "${secs / 86_400}d"
     }
 }
+
+/** #689/#815 follow-up: the small trailing fragment the syncing chip appends beside the chunk count when
+ *  a pages-behind sample is known — "494 pages behind". null (no fragment) when the sample hasn't landed
+ *  yet, which is exactly today's chunk-count-only rendering. Mirrors iOS `SyncChipState.pagesBehindDetail`. */
+internal fun pagesBehindDetail(pagesBehind: Int?): String? =
+    pagesBehind?.let { uiString(R.string.l10n_today_screen_sync_chip_pages_behind_29b5c548, it) }
+
+/** Accessibility/content-description label for the syncing state. Extends the existing chunk-count
+ *  sentence with the pages-behind figure when known. Mirrors iOS `SyncChipState.syncingAccessibilityLabel`. */
+internal fun syncingAccessibilityLabel(chunks: Int, pagesBehind: Int?): String =
+    if (pagesBehind != null) {
+        uiString(R.string.l10n_today_screen_sync_chip_syncing_pages_desc_6c2a5ea9, chunks, pagesBehind)
+    } else {
+        uiString(R.string.l10n_today_screen_sync_chip_syncing_desc_bfc290e7, chunks)
+    }
 
 /** Whether this night's sleep staging is low-confidence, using the core [ScoreConfidence] rule. */
 internal fun restStageLowConfidence(d: DailyMetric?): Boolean {

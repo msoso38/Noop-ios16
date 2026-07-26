@@ -208,6 +208,14 @@ data class LiveState(
      *  once empty offloads are SUSTAINED; cleared on connect or once the strap banks real records. Twin of
      *  macOS LiveState.historySyncExperimental. */
     val historySyncExperimental: Boolean = false,
+    /** #689/#815: the strap's ring-buffer page backlog, sampled ONCE from the connect-time GET_DATA_RANGE
+     *  reply — never re-polled mid-offload (the link is already firmware-paced, ~10 records/s). A static
+     *  "pages behind" figure, not a live percentage: the strap never reveals a total record count, only
+     *  this bounded ring-buffer measure (write pointer − read pointer against a 131072-page ring),
+     *  confirmed against real captures on both WHOOP 4.0 and 5.0/MG. The Today sync chip appends it to
+     *  the chunk count while [backfilling] is true. null before the first reply this session, or if the
+     *  frame didn't decode. Twin of macOS LiveState.pagesBehindAtConnect. */
+    val pagesBehindAtConnect: Int? = null,
 ) {
     /** Set the fresh-packet [rr] AND append the valid intervals onto the bounded [rrRecent] rolling
      *  buffer (oldest fall off first). Non-positive sentinels are dropped from the rolling buffer.
@@ -973,6 +981,8 @@ class WhoopBleClient(
                 // #580: the 5/MG "history experimental" note is per-link — a fresh connect re-derives it
                 // from the next offload, so it must not outlive the dropped link.
                 historySyncExperimental = false,
+                // A stale pages-behind sample must not outlive the dropped link either (#689/#815).
+                pagesBehindAtConnect = null,
             )
 
         /**
@@ -4484,6 +4494,9 @@ class WhoopBleClient(
                         val pagesBehind = com.noop.protocol.DataRange.pagesBehind(frame, cmdOff)
                         if (pagesBehind != null) {
                             log("Strap backlog pages behind: $pagesBehind (#689 — GET_DATA_RANGE ring backlog, diagnostic only)")
+                            // #815: confirmed on both WHOOP 4.0 and 5.0/MG, so bank it unconditionally — the
+                            // Today sync chip's "N pages behind" detail reads this while backfilling is true.
+                            _state.update { it.copy(pagesBehindAtConnect = pagesBehind.toInt()) }
                         } else {
                             log(
                                 "Strap backlog pages behind: not decodable from this frame (#689 — offsets may " +

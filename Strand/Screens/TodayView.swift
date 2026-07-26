@@ -4467,14 +4467,20 @@ struct TodayDayScopedCache {
 /// yet) → `✓ live`. `.hidden` only on a true cold start (the building-scores note owns that case). Twin
 /// of Android `SyncStatusChip`.
 enum SyncChipState: Equatable {
-    case syncing(chunks: Int)
+    /// #689/#815 follow-up: `pagesBehind` is the strap's GET_DATA_RANGE ring backlog sampled once at
+    /// connect (`LiveState.pagesBehindAtConnect`) — nil until a reply has landed this session, or on a
+    /// device/frame where it didn't decode. Purely additive: nil renders identically to before this field
+    /// existed, so it defaults to the chunk-count-only chip.
+    case syncing(chunks: Int, pagesBehind: Int? = nil)
     case synced(agoText: String)
     case experimentalLive
     case hidden
 
     @MainActor
     static func resolve(live: LiveState) -> SyncChipState {
-        if live.backfilling { return .syncing(chunks: live.syncChunksThisSession) }
+        if live.backfilling {
+            return .syncing(chunks: live.syncChunksThisSession, pagesBehind: live.pagesBehindAtConnect)
+        }
         if let ts = live.lastSyncedAt { return .synced(agoText: shortAgo(ts)) }
         if live.historySyncExperimental { return .experimentalLive }
         return .hidden
@@ -4492,6 +4498,24 @@ enum SyncChipState: Equatable {
         if hrs < 24 { return "\(hrs)h" }
         return "\(hrs / 24)d"
     }
+
+    /// The small trailing fragment the syncing chip appends beside the chunk count when a pages-behind
+    /// sample is known — "494 pages behind". nil (no fragment) when the sample hasn't landed yet, which
+    /// is exactly today's chunk-count-only rendering. Shared by `SyncStatusChip` and `LiquidSyncChip` so
+    /// the two headers can't word this differently.
+    static func pagesBehindDetail(_ pagesBehind: Int?) -> String? {
+        pagesBehind.map { String(localized: "\($0) pages behind") }
+    }
+
+    /// VoiceOver label for the syncing state. Extends the existing chunk-count sentence with the
+    /// pages-behind figure when known, so the detail reaches accessibility users the same way it reaches
+    /// sighted ones via `pagesBehindDetail`, rather than being a sighted-only visual fragment.
+    static func syncingAccessibilityLabel(chunks: Int, pagesBehind: Int?) -> String {
+        if let pagesBehind {
+            return String(localized: "Syncing strap history, \(chunks) chunks, \(pagesBehind) pages behind")
+        }
+        return String(localized: "Syncing strap history, \(chunks) chunks")
+    }
 }
 
 /// #245: a compact sync-status chip for the Today top bar, shown to EVERY user. The full-width
@@ -4504,9 +4528,10 @@ struct SyncStatusChip: View {
 
     var body: some View {
         switch SyncChipState.resolve(live: live) {
-        case .syncing(let chunks):
-            chip(system: "arrow.triangle.2.circlepath", text: "\(chunks)", tint: StrandPalette.accent,
-                 a11y: String(localized: "Syncing strap history, \(chunks) chunks"))
+        case .syncing(let chunks, let pagesBehind):
+            chip(system: "arrow.triangle.2.circlepath", text: "\(chunks)",
+                 detail: SyncChipState.pagesBehindDetail(pagesBehind), tint: StrandPalette.accent,
+                 a11y: SyncChipState.syncingAccessibilityLabel(chunks: chunks, pagesBehind: pagesBehind))
         case .synced(let agoText):
             chip(system: "checkmark", text: agoText, tint: StrandPalette.textSecondary,
                  a11y: String(localized: "Strap history synced \(agoText) ago"))
@@ -4519,10 +4544,15 @@ struct SyncStatusChip: View {
         }
     }
 
-    private func chip(system: String, text: String, tint: Color, a11y: String) -> some View {
+    private func chip(system: String, text: String, detail: String? = nil, tint: Color, a11y: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: system).font(.system(size: 11, weight: .semibold))
             Text(text).font(StrandFont.captionNumber)
+            // #689/#815: the pages-behind detail, when known. A trailing fragment rather than a redesign
+            // of this DRAFT chip — see `SyncChipState.pagesBehindDetail`.
+            if let detail {
+                Text(detail).font(StrandFont.caption).foregroundStyle(tint.opacity(0.7))
+            }
         }
         .foregroundStyle(tint)
         .padding(.horizontal, 8)

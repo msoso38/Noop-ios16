@@ -204,6 +204,20 @@ public final class LiveState: ObservableObject {
     /// window can't outlive the link.
     public func clearStrapRange() { strapRange = nil }
 
+    /// #689/#815: the strap's ring-buffer page backlog, sampled ONCE from the connect-time GET_DATA_RANGE
+    /// reply — never re-polled mid-offload (the link is already firmware-paced, ~10 records/s, #377). A
+    /// static "this many pages behind" figure, not a live percentage: the strap never reveals a total
+    /// pending-record count, only this bounded ring-buffer measure (write pointer − read pointer against a
+    /// 131072-page ring), confirmed against real captures on both WHOOP 4.0 and 5.0/MG. The sync chip
+    /// appends it to the chunk count while `backfilling` is true. nil before the first reply this session,
+    /// or if the frame didn't decode. Cleared on disconnect so a stale figure can't outlive the link.
+    @Published public private(set) var pagesBehindAtConnect: Int?
+
+    /// Bank the connect-time GET_DATA_RANGE pages-behind sample (see `pagesBehindAtConnect`).
+    public func setPagesBehindAtConnect(_ pages: Int) {
+        pagesBehindAtConnect = pages
+    }
+
     @Published public var lastFrameType: String? = nil
     @Published public var lastEvent: String? = nil
     /// #987: unix of the most recent strap frame FrameRouter routed. Deliberately NOT @Published - the
@@ -492,6 +506,7 @@ public final class LiveState: ObservableObject {
         recentHrSamples.removeAll()       // Sleep readout buffers must not outlive the link (Group E)
         recentGravitySamples.removeAll()
         clearStrapRange()                 // a stale clock-drift window must not outlive the link either
+        pagesBehindAtConnect = nil        // a stale pages-behind sample must not outlive the link either
         lastFrameAtUnix = nil             // #987: a stale "last frame" freshness must not outlive it either
         ouraWearState = nil               // a stale worn/charging badge must not outlive the link either
         // Perf: flush the durable log tail on disconnect (mirroring is batched in `append`), so a completed

@@ -12,7 +12,17 @@ final class SyncChipStateTests: XCTestCase {
         let live = LiveState()
         live.backfilling = true
         live.syncChunksThisSession = 7
-        XCTAssertEqual(SyncChipState.resolve(live: live), .syncing(chunks: 7))
+        XCTAssertEqual(SyncChipState.resolve(live: live), .syncing(chunks: 7, pagesBehind: nil))
+    }
+
+    /// #689/#815 follow-up: when a GET_DATA_RANGE sample has landed this session, it rides along on the
+    /// syncing state so the chip can append the "N pages behind" detail.
+    func testBackfilling_withPagesBehindSample_carriesItOnSyncingState() {
+        let live = LiveState()
+        live.backfilling = true
+        live.syncChunksThisSession = 7
+        live.setPagesBehindAtConnect(494)
+        XCTAssertEqual(SyncChipState.resolve(live: live), .syncing(chunks: 7, pagesBehind: 494))
     }
 
     func testLastSyncedAt_isSyncedWithAgeText() {

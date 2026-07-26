@@ -1608,6 +1608,8 @@
     <string name="l10n_today_screen_sync_chip_now_c9bc849a">now</string>
     <string name="l10n_today_screen_sync_chip_live_98aadb37">live</string>
     <string name="l10n_today_screen_sync_chip_syncing_desc_bfc290e7">Syncing strap history, %1$d chunks</string>
+    <string name="l10n_today_screen_sync_chip_pages_behind_29b5c548">%1$d pages behind</string>
+    <string name="l10n_today_screen_sync_chip_syncing_pages_desc_6c2a5ea9">Syncing strap history, %1$d chunks, %2$d pages behind</string>
     <string name="l10n_today_screen_sync_chip_synced_desc_4d255944">Strap history synced %1$s ago</string>
     <string name="l10n_today_screen_sync_chip_experimental_desc_3de06a70">Connected; strap history sync is experimental on this strap</string>
     <string name="l10n_today_screen_recovery_roundtoint_charge_92fbaa5e">%1$s%% Charge</string>

@@ -236,6 +236,9 @@ private data class TodayLiveSnapshot(
     val whoop5: Boolean,
     /** Charging hides the runtime estimate (no "X left" while topping up). Rare flips, snapshot-safe. */
     val charging: Boolean?,
+    /** #689/#815 follow-up: the connect-time GET_DATA_RANGE pages-behind sample, when known. Set once per
+     *  connection, so it doesn't reintroduce per-tick churn either. */
+    val pagesBehindAtConnect: Int?,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -302,6 +305,7 @@ fun TodayScreen(
                 batteryPct = s.batteryPct,
                 whoop5 = s.whoop5Detected,
                 charging = s.charging,
+                pagesBehindAtConnect = s.pagesBehindAtConnect,
             )
         }
     }
@@ -1169,6 +1173,7 @@ fun TodayScreen(
                 syncChunksThisSession = liveSnap.syncChunksThisSession,
                 lastSyncAt = liveSnap.lastSyncAt,
                 historySyncExperimental = liveSnap.historySyncExperimental,
+                pagesBehindAtConnect = liveSnap.pagesBehindAtConnect,
                 onPickDay = { offset -> selectedDayOffset = offset },
                 onQuickActions = onQuickActions,
                 onOpenSettings = onOpenSettings,
@@ -2004,6 +2009,8 @@ private fun LiquidTodayHeader(
     syncChunksThisSession: Int = 0,
     lastSyncAt: Long? = null,
     historySyncExperimental: Boolean = false,
+    // #689/#815 follow-up: the connect-time GET_DATA_RANGE pages-behind sample, when known.
+    pagesBehindAtConnect: Int? = null,
     onPickDay: (Int) -> Unit,
     onQuickActions: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -2093,6 +2100,7 @@ private fun LiquidTodayHeader(
             SyncStatusChip(
                 backfilling = backfilling, chunks = syncChunksThisSession,
                 lastSyncAt = lastSyncAt, historySyncExperimental = historySyncExperimental,
+                pagesBehind = pagesBehindAtConnect,
             )
             // (a) Profile avatar (the photo set in Settings, or the NOOP loop mark) → Settings. Mirrors iOS.
             Box(
@@ -2131,11 +2139,13 @@ private fun SyncStatusChip(
     chunks: Int,
     lastSyncAt: Long?,
     historySyncExperimental: Boolean,
+    pagesBehind: Int? = null,
 ) {
-    when (val state = SyncChipState.resolve(backfilling, chunks, lastSyncAt, historySyncExperimental)) {
+    when (val state = SyncChipState.resolve(backfilling, chunks, lastSyncAt, historySyncExperimental, pagesBehind)) {
         is SyncChipState.Syncing -> ChipCapsule(
             Icons.Filled.Autorenew, "${state.chunks}", Palette.accent,
-            uiString(R.string.l10n_today_screen_sync_chip_syncing_desc_bfc290e7, state.chunks))
+            syncingAccessibilityLabel(state.chunks, state.pagesBehind),
+            detail = pagesBehindDetail(state.pagesBehind))
         is SyncChipState.Synced -> ChipCapsule(
             Icons.Filled.Check, state.agoText, Palette.textSecondary,
             uiString(R.string.l10n_today_screen_sync_chip_synced_desc_4d255944, state.agoText))
@@ -2147,9 +2157,11 @@ private fun SyncStatusChip(
     }
 }
 
-/** The shared sync-chip capsule (icon + terse label). Twin of the iOS `SyncStatusChip.chip`. */
+/** The shared sync-chip capsule (icon + terse label). Twin of the iOS `SyncStatusChip.chip`.
+ *  #689/#815: [detail] is the pages-behind fragment appended beside [text], when known —
+ *  see [pagesBehindDetail]. */
 @Composable
-private fun ChipCapsule(icon: ImageVector, text: String, tint: Color, desc: String) {
+private fun ChipCapsule(icon: ImageVector, text: String, tint: Color, desc: String, detail: String? = null) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -2160,6 +2172,9 @@ private fun ChipCapsule(icon: ImageVector, text: String, tint: Color, desc: Stri
     ) {
         Icon(icon, contentDescription = desc, tint = tint, modifier = Modifier.size(14.dp))
         Text(text, style = NoopType.caption, color = tint)
+        if (detail != null) {
+            Text(detail, style = NoopType.caption, color = tint.copy(alpha = 0.7f))
+        }
     }
 }
 

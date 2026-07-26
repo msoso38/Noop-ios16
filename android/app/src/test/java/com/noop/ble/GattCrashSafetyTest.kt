@@ -82,6 +82,7 @@ class GattCrashSafetyTest {
             historyLayoutVersion = 25,
             backfilling = true,
             syncChunksThisSession = 12,
+            pagesBehindAtConnect = 494,
         )
 
         val after = WhoopBleClient.disconnectedLiveState(live)
@@ -100,6 +101,8 @@ class GattCrashSafetyTest {
         // A stale charging flag must not outlive the link.
         assertNull(after.charging)
         assertNull(after.strapFirmware)
+        // A stale pages-behind sample must not outlive the dropped link either (#689/#815).
+        assertNull(after.pagesBehindAtConnect)
         assertNull(after.historyLayoutVersion)
     }
 
