@@ -342,12 +342,6 @@ object HealthConnectImporter {
                 bucket(dayOf(r.startTime)).exerciseCount += 1
             }
 
-            // Fill per-workout HR (#77): an ExerciseSessionRecord carries no summary HR, so avg/max
-            // were stored null and every imported workout showed "–". Intersect each session's window
-            // with its HeartRateRecord samples — a targeted per-session read, bounded by workout count
-            // (the day-aggregate HeartRateRecord pass above streams the full range and must not be
-            // buffered). readAll swallows a per-session failure, so one bad session can't fail the
-            // import. ≥60 samples (~1 min) required so a few strays can't fabricate an average.
             // --- #835: upgrade each workout's calories now the day aggregate exists ---
             // Runs here, not at construction, because the Total-derived estimate needs the day's BASAL
             // burn (total − active), which is only known once every record has been read. Purely a
@@ -371,6 +365,12 @@ object HealthConnectImporter {
                 if (better != null) workouts[i] = w.copy(energyKcal = round1(better))
             }
 
+            // Fill per-workout HR (#77): an ExerciseSessionRecord carries no summary HR, so avg/max
+            // were stored null and every imported workout showed "–". Intersect each session's window
+            // with its HeartRateRecord samples — a targeted per-session read, bounded by workout count
+            // (the day-aggregate HeartRateRecord pass above streams the full range and must not be
+            // buffered). readAll swallows a per-session failure, so one bad session can't fail the
+            // import. ≥60 samples (~1 min) required so a few strays can't fabricate an average.
             for (i in workouts.indices) {
                 val w = workouts[i]
                 if (w.endTs <= w.startTs) continue
