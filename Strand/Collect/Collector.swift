@@ -63,7 +63,8 @@ final class Collector {
     var clockRef: ClockRef?
     /// Strap family for the LIVE decode path. WHOOP 4.0 (default) parses the 4.0 envelope; 5/MG
     /// parses the puffin envelope (records sit at +4 offsets). Set by BLEManager.configureCollector‐
-    /// Family alongside an identity clockRef — 5/MG live timestamps are already real-unix seconds.
+    /// Family. #827 cleanup: clockRef is the same GET_CLOCK correlation on both families now (nil
+    /// until a reply lands) — no more 5/MG-only forced identity ref here.
     var family: DeviceFamily = .whoop4
     /// On-demand bounded raw-capture window. ORs into the raw-persist gate so a "capture
     /// activity sample" action can persist raw even when `enableRawCapture` is off. The window's
