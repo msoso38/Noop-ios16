@@ -1414,7 +1414,7 @@ final class Repository: ObservableObject {
     /// A metric the Deep Timeline can plot. HR is the always-present hero (adaptively downsampled);
     /// the rest are lower-frequency raw-sample streams shown where the strap offloaded them.
     enum TimelineMetric: String, CaseIterable, Identifiable, Sendable {
-        case hr, hrv, spo2, skinTemp, respiration, motion, bandSleepState
+        case hr, hrv, spo2, skinTemp, respiration, motion, bandSleepState, ouraMovement
         var id: String { rawValue }
 
         /// User-facing pill label.
@@ -1434,6 +1434,11 @@ final class Repository: ObservableObject {
             // NOT a stage NOOP trusts as truth — the pill names it "Band Sleep State" so it can't be
             // mistaken for the derived stages.
             case .bandSleepState: return String(localized: "Band Sleep State")
+            // The Oura ring's OWN per-window motion: seconds of movement in each ~30 s window (0x47,
+            // OURA_MOTION events). An honest ACTIVITY signal — NOT gravity magnitude (the ring sends no
+            // continuous gravity) and NEVER a step count. Empty for a WHOOP strap. Labelled "Movement" so
+            // it can't be mistaken for the derived stages or for steps.
+            case .ouraMovement: return String(localized: "Movement")
             }
         }
     }
@@ -1636,6 +1641,18 @@ final class Repository: ObservableObject {
             let s = (try? await store.sleepStateSamples(deviceId: source, from: from, to: to)) ?? []
             return await Task.detached(priority: .utility) {
                 s.map { Self.timelinePoint($0.ts, Double($0.state)) }
+            }.value
+        case .ouraMovement:
+            // The ring's OWN per-window motion from OURA_MOTION events (0x47, movement-gated): plot
+            // `motion_seconds` (0 when still, up to 31 s of movement in the ~30 s window). An honest
+            // activity track, NEVER scored and NEVER a step count; empty for a WHOOP strap (no such events).
+            let evs = (try? await store.events(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
+            return await Task.detached(priority: .utility) {
+                evs.compactMap { e -> TrendPoint? in
+                    guard e.kind == OuraStreamMapping.motionEventKind,
+                          let ms = e.payload["motion_seconds"]?.intValue else { return nil }
+                    return Self.timelinePoint(e.ts, Double(ms))
+                }
             }.value
         }
     }

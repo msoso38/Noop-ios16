@@ -1648,6 +1648,7 @@
     <string name="timeline_metric_respiration">Atmung</string>
     <string name="timeline_metric_motion">Bewegung</string>
     <string name="timeline_metric_band_sleep_state">Schlafstatus des Bands</string>
+    <string name="timeline_metric_movement">Bewegung</string>
     <string name="explore_category_charge">Ladung</string>
     <string name="explore_category_effort">Anstrengung</string>
     <string name="explore_category_rest">Ruhe</string>

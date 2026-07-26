@@ -1633,6 +1633,7 @@
     <string name="timeline_metric_respiration">Respiración</string>
     <string name="timeline_metric_motion">Movimiento</string>
     <string name="timeline_metric_band_sleep_state">Estado de sueño de la pulsera</string>
+    <string name="timeline_metric_movement">Movimiento</string>
     <string name="explore_category_charge">Carga</string>
     <string name="explore_category_effort">Esfuerzo</string>
     <string name="explore_category_rest">Descanso</string>

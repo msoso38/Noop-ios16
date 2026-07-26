@@ -1627,6 +1627,7 @@
     <string name="timeline_metric_respiration">Respiração</string>
     <string name="timeline_metric_motion">Movimento</string>
     <string name="timeline_metric_band_sleep_state">Estado de suspensão da banda</string>
+    <string name="timeline_metric_movement">Movimento</string>
     <string name="explore_category_charge">Carga</string>
     <string name="explore_category_effort">Esforço</string>
     <string name="explore_category_rest">Descanso</string>

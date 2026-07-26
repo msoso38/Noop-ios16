@@ -1633,6 +1633,7 @@
     <string name="timeline_metric_respiration">Respiration</string>
     <string name="timeline_metric_motion">Mouvement</string>
     <string name="timeline_metric_band_sleep_state">État de sommeil du bracelet</string>
+    <string name="timeline_metric_movement">Mouvement</string>
     <string name="explore_category_charge">Charge</string>
     <string name="explore_category_effort">Effort</string>
     <string name="explore_category_rest">Repos</string>
