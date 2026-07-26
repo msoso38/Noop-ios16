@@ -1898,19 +1898,8 @@ private struct LiquidBatteryButton: View {
         )
     }
 
-    private var display: LiquidTodayView.StrapBatteryDisplay {
-        .resolve(
-            connected: live.connected,
-            batteryPct: live.batteryPct,
-            charging: live.charging,
-            syncing: syncing
-        )
-    }
-
     private var indicatorState: ChargeSyncIndicator.BatteryState {
         switch batteryDisplay {
-        case .syncing:
-            return .offline
         case .offline:
             return .offline
         case .pending(let charging):
@@ -1952,12 +1941,14 @@ private struct LiquidBatteryButton: View {
 
     /// Never "Strap battery" alone for a no-reading state — that was indistinguishable from a real one.
     private var batteryAccessibility: String {
-        switch display {
-        case .syncing:
+        if syncing {
             let n = live.syncChunksThisSession
             return n > 0
                 ? String(localized: "Syncing strap history, chunk \(n)")
                 : String(localized: "Syncing strap history")
+        }
+
+        switch batteryDisplay {
         case .offline:
             return String(localized: "Strap battery, strap not connected")
         case .pending(let charging):
