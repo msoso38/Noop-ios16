@@ -51,7 +51,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PpgWaveformSampleEntity::class,
         RawImuSampleEntity::class,
     ],
-    version = 23,
+    version = 24,
     exportSchema = false,
 )
 abstract class WhoopDatabase : RoomDatabase() {
@@ -598,6 +598,32 @@ abstract class WhoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * #823: record each R-R beat's EMISSION order within its second so reads can stop returning
+         * them in magnitude order (which biases RMSSD down — see the RrInterval doc).
+         *
+         * Additive and nullable, the MIGRATION_3_4 form: no table rebuild, no row touched, and
+         * critically NOT part of the primary key, which must stay (deviceId, ts, rrMs, seq) — an
+         * insertion counter in the key would collide distinct beats across insert batches, the
+         * data-loss regression assignRrSeq's doc warns about.
+         *
+         * Existing rows stay NULL. The order was never recorded, so it cannot be backfilled and a
+         * guess would be worse than an admission; NULL sorts first in SQLite ASC, so a pre-v24
+         * second ties on `ord` and falls through to the old (rrMs, seq) order unchanged.
+         *
+         * Exposed as [RR_ORD_MIGRATION_SQL] so a plain-JVM unit test can assert its shape without an
+         * emulator, like the migrations above.
+         */
+        internal val RR_ORD_MIGRATION_SQL: List<String> = listOf(
+            "ALTER TABLE `rrInterval` ADD COLUMN `ord` INTEGER",
+        )
+
+        internal val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in RR_ORD_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
         private fun build(appContext: Context): WhoopDatabase =
             Room.databaseBuilder(appContext, WhoopDatabase::class.java, DB_NAME)
                 // #1014: replace ONLY the corruption handling of the default open-helper. The
@@ -614,7 +640,7 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18,
                     MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22,
-                    MIGRATION_22_23,
+                    MIGRATION_22_23, MIGRATION_23_24,
                 )
                 // #1037: a FRESH install builds the schema straight at the current version and runs NO
                 // migrations, so the MIGRATION_7_8 "my-whoop" registry seed never fires and the WHOOP,

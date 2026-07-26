@@ -120,6 +120,18 @@ object OuraStreamMapping {
                     // as a tied-to-ts row here. Leave the batch's battery list empty (honest: no faked ts).
                 }
 
+                // 0x47 averaged accel vector (Tier-A): decoded and available, but NOT written to any
+                // durable stream. This is NOT merely a "pending LSB→g scale" hold — the open question is
+                // whether gravitySample is the right destination AT ALL. 0x47 is MOVEMENT-GATED (emitted
+                // only while moving, validated on-device #804), so it yields NO still samples; SleepStager
+                // instead needs a CONTINUOUS gravity stream (≥70% of a rolling 15-min window with
+                // per-sample delta < 0.01 g, a >20-min gap breaks the run). Missing samples are not still
+                // samples, so feeding 0x47 into gravity is a SHAPE MISMATCH, not an unscaled one, and
+                // synthesising still samples to fill the gaps would be inventing data. The usable signal is
+                // motion_seconds / intensity as an ACTIVITY input on a separate path (#804 option B). Held
+                // here until that path lands. Dropped, not faked. Mirrors the Swift twin.
+                is OuraEvent.MotionVectorEvent -> Unit
+
                 // Motion / state / time-sync / rtc / debug / TierB / ActivityInfo never map onto a
                 // scored stream. In particular the 0x50 activity/MET decode (PR #960) NEVER mints a
                 // `steps` row: the formula is third-party and unvalidated (Tier B, OURA_PROTOCOL.md

@@ -309,6 +309,47 @@ object HrvAnalyzer {
             nInput = nInput, nClean = clean.size)
     }
 
+    /**
+     * What a night's R-R coverage pair says about the capture (#550).
+     *
+     * [rrCoverage] above 1.0 is physically impossible, and [collapsedCoverage] previews what a
+     * same-second de-dup would leave. Reading the two together is what tells you WHICH over-count you
+     * have — a rule that until now lived only in a comment, so anyone triaging an "HRV reads ~2x high"
+     * report had to know it. Encoding it means the log states the conclusion instead of the evidence.
+     * Byte-parity twin of Swift `HRVAnalyzer.RrCoverageVerdict`.
+     */
+    enum class RrCoverageVerdict(val raw: String) {
+        /** At or near 1.0 — the beat-time fits the wall clock. Nothing to explain. */
+        PLAUSIBLE("plausible"),
+        /** Over-covered, but collapsing same-second duplicates brings it back in range: the extra beats
+         *  share a timestamp, so a de-dup at that granularity would fix it. */
+        SAME_SECOND_OVER_COUNT("sameSecondOverCount"),
+        /** Over-covered AND still over-covered after the same-second collapse: the duplicates straddle
+         *  second boundaries, so a same-second de-dup would NOT be enough. */
+        CROSS_SECOND_OVER_COUNT("crossSecondOverCount"),
+        /** No usable coverage figure — [rrCoverage] returns 0.0 for < 2 beats or a zero span. Absence of
+         *  evidence, NOT a clean night: reporting those as plausible would claim the capture was fine when
+         *  nothing was measurable, which is the opposite of what this verdict exists to do. */
+        UNMEASURABLE("unmeasurable"),
+    }
+
+    /** Tolerance above 1.0 treated as "fits". R-R timestamps are whole seconds while beats are not, so a
+     *  clean night can round fractionally over. This is a ROUNDING allowance, deliberately not a tuned
+     *  threshold — where the real boundary sits needs coverage figures from several wearers, which is the
+     *  point of logging the verdict in the first place. Twin of Swift `coveragePlausibleCeiling`. */
+    const val COVERAGE_PLAUSIBLE_CEILING: Double = 1.10
+
+    /** Classify a night from its coverage pair. Pure. Byte-parity twin of Swift `classifyCoverage`. */
+    /** Both platforms use the NEGATED `>` form rather than `<=` so a non-finite input lands identically:
+     *  every IEEE-754 comparison with NaN is false, so `<=` and `>` are not each other's inverse there and
+     *  the twins would otherwise disagree. NaN falls to UNMEASURABLE on both. */
+    fun classifyCoverage(coverage: Double, collapsed: Double): RrCoverageVerdict {
+        if (!(coverage > 0.0)) return RrCoverageVerdict.UNMEASURABLE
+        if (!(coverage > COVERAGE_PLAUSIBLE_CEILING)) return RrCoverageVerdict.PLAUSIBLE
+        return if (collapsed > COVERAGE_PLAUSIBLE_CEILING) RrCoverageVerdict.CROSS_SECOND_OVER_COUNT
+        else RrCoverageVerdict.SAME_SECOND_OVER_COUNT
+    }
+
     /** #257: total heartbeat-time (sum of NN intervals, ms) ÷ wall-clock span of the R-R window (ms).
      *  A value > ~1.0 is physically impossible — you can't record more beat-time than elapsed time — so
      *  it directly flags DOUBLE-COUNTED / overlapping R-R (e.g. a live + historical merge storing the same

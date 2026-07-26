@@ -183,6 +183,57 @@ class DecoderGoldenTest {
         )
     }
 
+    // MARK: - 0x47 motion events (averaged accel vector)
+
+    @Test
+    fun testMotionEvents0x47() {
+        // open_oura decode_motion vector [0x6f,0x0c,0x1d,0x07,0x0c,0x07]: orientation 0x6f>>5=3,
+        // motion_seconds 0x6f&0x1f=15, avg 96/232/56, low 12, high 7.
+        val rec = OuraRecord(type = 0x47, ringTimestamp = rt,
+            payload = intArrayOf(0x6f, 0x0c, 0x1d, 0x07, 0x0c, 0x07))
+        assertEquals(
+            OuraMotionEvent(ringTimestamp = rt, orientation = 3, motionSeconds = 15,
+                avgX = 96, avgY = 232, avgZ = 56, lowIntensity = 12, highIntensity = 7),
+            OuraDecoders.decodeMotionEvents(rec),
+        )
+    }
+
+    @Test
+    fun testMotionEvents0x47DiscriminatesOrientationFromMotionSeconds() {
+        // byte0 0xB5 = 1011_0101: orientation 0xB5>>5=5 (NOT &0x03=1), motion_seconds 0x15=21.
+        // Negative axes prove ×8 sign; byte4 0x2A → low 42; byte5 0x3F → high 63 (max valid).
+        val rec = OuraRecord(type = 0x47, ringTimestamp = rt,
+            payload = intArrayOf(0xB5, 0xF4, 0x00, 0x80, 0x2A, 0x3F))
+        assertEquals(
+            OuraMotionEvent(ringTimestamp = rt, orientation = 5, motionSeconds = 21,
+                avgX = -96, avgY = 0, avgZ = -1024, lowIntensity = 42, highIntensity = 63),
+            OuraDecoders.decodeMotionEvents(rec),
+        )
+    }
+
+    @Test
+    fun testMotionEvents0x47IntensityValidityBitRejectsRecord() {
+        // A set 0x40 bit in an intensity byte means INVALID per open_oura → whole record decodes null.
+        assertNull(OuraDecoders.decodeMotionEvents(
+            OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x00, 0, 0, 0, 0x00, 0x47))))
+        assertNull(OuraDecoders.decodeMotionEvents(
+            OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x00, 0, 0, 0, 0x40, 0x00))))
+    }
+
+    @Test
+    fun testMotionEvents0x47OptionalIntensityAndShortBody() {
+        // A 4-byte record is valid; intensities null.
+        assertEquals(
+            OuraMotionEvent(ringTimestamp = rt, orientation = 1, motionSeconds = 0,
+                avgX = 80, avgY = 0, avgZ = 0, lowIntensity = null, highIntensity = null),
+            OuraDecoders.decodeMotionEvents(
+                OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x20, 0x0a, 0x00, 0x00))),
+        )
+        // A 3-byte body is too short → null.
+        assertNull(OuraDecoders.decodeMotionEvents(
+            OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x6f, 0x0c, 0x1d))))
+    }
+
     // MARK: - 0x85 RTC beacon (unix_s u32 LE)
 
     @Test

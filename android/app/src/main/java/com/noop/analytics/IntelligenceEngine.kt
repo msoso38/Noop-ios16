@@ -609,13 +609,24 @@ object IntelligenceEngine {
                 // R-R) + exact-duplicate beat count, so a "reads ~2x too high" report is self-diagnosing
                 // from the always-on log instead of hand-computing beat density.
                 val ts = sleepRrRows.map { it.ts }
-                val cov = String.format(java.util.Locale.US, "%.2f", HrvAnalyzer.rrCoverage(ts, sleepRr))
+                // Computed ONCE and reused for both the formatted field and the verdict below:
+                // collapsedCoverage sorts and de-dups the whole night's R-R (tens of thousands of rows on a
+                // dense capture), and this runs per day across a full re-score.
+                val covVal = HrvAnalyzer.rrCoverage(ts, sleepRr)
+                val cov = String.format(java.util.Locale.US, "%.2f", covVal)
                 // #550: collapsedCov previews a same-second R-R de-dup — well below `coverage` ⇒ the
                 // over-count is same-second (a dedup fix would work); still high ⇒ cross-second overlap.
-                val colCov = String.format(java.util.Locale.US, "%.2f", HrvAnalyzer.collapsedCoverage(ts, sleepRr))
+                val colCovVal = HrvAnalyzer.collapsedCoverage(ts, sleepRr)
+                val colCov = String.format(java.util.Locale.US, "%.2f", colCovVal)
                 val dup = HrvAnalyzer.duplicateBeatCount(ts, sleepRr)
+                // #550: state the CONCLUSION, not just the evidence. Reading coverage against collapsedCov
+                // is what distinguishes a same-second over-count (a de-dup would fix it) from a cross-second
+                // one (it would not) — a rule that lived only in the comments above, so triaging an
+                // "HRV reads ~2x high" report required knowing it. Now the line says which.
+                val verdict = HrvAnalyzer.classifyCoverage(covVal, colCovVal)
                 diag("hrv diag day=${res.daily.day} rmssd=${ms(h.rmssd)}ms sdnn=${ms(h.sdnn)}ms meanNN=${ms(h.meanNN)}ms " +
-                    "rr=${h.nInput}/${h.nClean} rejected=$rej% coverage=$cov collapsedCov=$colCov dupBeats=$dup")
+                    "rr=${h.nInput}/${h.nClean} rejected=$rej% coverage=$cov collapsedCov=$colCov dupBeats=$dup " +
+                    "rrIntegrity=${verdict.raw}")
             }
 
             // Steps test mode: emit the 5/MG raw-counter trace for this day (cumulative @57 series +

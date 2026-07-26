@@ -95,9 +95,29 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(KEY_MOTION_AWARE_WAKE, false)
         set(v) = prefs.edit().putBoolean(KEY_MOTION_AWARE_WAKE, v).apply()
 
+    /**
+     * Turn OFF every 5/MG-only experimental probe: protocol probes ([isEnabled]), raw capture
+     * ([isCaptureEnabled]), the R22 deep-data strap write ([isDeepDataEnabled]) and broadcast-HR
+     * ([broadcastHr]). Called on a strap FAMILY switch (WHOOP 4.0 ↔ 5/MG) so a 5/MG-only option can
+     * never linger enabled and get applied to a strap it doesn't belong to. One atomic edit.
+     *
+     * The line is "does it SEND something to the strap": these four arm probes, raw-capture writes, the
+     * R22 deep-data write and the broadcast-HR write, all of which target hardware that may not support
+     * them. Pure analysis flags are deliberately left alone even when they only do anything on one
+     * family — [ppgHrSubLagInterp] only affects v26 optical records, which a 4.0 never sends, so it is
+     * inert rather than misapplied. [experimentalSleepV2], [hrvReadiness] and [motionAwareWake] are
+     * model-agnostic (the last self-gates on observed sample density, never on family, per #345).
+     */
+    fun resetFiveMGGatedProbes() {
+        val editor = prefs.edit()
+        FIVE_MG_GATED_KEYS.forEach { editor.putBoolean(it, false) }
+        editor.apply()
+    }
+
     companion object {
         /** Persisted preferences file. */
-        private const val PREFS = "noop_experiments"
+        /** Persisted preferences file. Internal so a UI screen can observe external writes to it. */
+        internal const val PREFS = "noop_experiments"
 
         /** Shared key name with the macOS build (`PuffinExperiment.defaultsKey`). */
         const val KEY = "noopPuffinExperiments"
@@ -110,6 +130,10 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
 
         /** "Broadcast heart rate" opt-in (mirrors macOS `PuffinExperiment.broadcastHrKey`). */
         const val KEY_BROADCAST_HR = "noopBroadcastHr"
+
+        /** The 5/MG-only probe keys, in ONE place: [resetFiveMGGatedProbes] clears exactly these, and
+         *  SettingsScreen watches exactly these for external writes. Two lists would drift. */
+        internal val FIVE_MG_GATED_KEYS = listOf(KEY, KEY_CAPTURE, KEY_DEEP_DATA, KEY_BROADCAST_HR)
 
         /** "Experimental sleep staging (V2)" opt-in (mirrors macOS `PuffinExperiment.experimentalSleepV2Key`). */
         const val KEY_EXPERIMENTAL_SLEEP_V2 = "noopExperimentalSleepV2"

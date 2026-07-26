@@ -94,9 +94,22 @@ data class HrWindowStats(
  * ever dropped — including across separate insert batches or the live/historical merge (rrMs stays in the
  * key). Re-syncing identical records reproduces the same (ts, rrMs, seq), so the insert stays idempotent.
  *
- * PARITY NOTE: this intentionally diverges from the Swift `rrInterval` key, which is still
- * (deviceId, ts, rrMs); the identical value-key drop exists in `WhoopStore` (Database.swift / StreamStore /
- * Reads) and should get the same widening in a follow-up. See the PR description.
+ * `ord` (Room v24, #823) is the beat's EMISSION order within its (deviceId, ts) group — the position the
+ * strap sent it in, recorded at decode time. It is deliberately NOT in the key: the key must stay
+ * (deviceId, ts, rrMs, seq) for the dedup/idempotency reasons above, and an insertion counter in the key
+ * would collide distinct beats across batches. `ord` exists purely so reads can restore emission order.
+ * Reads MUST order by it — see WhoopDao.rrIntervals. Without it, reads came back in MAGNITUDE order
+ * (`ORDER BY ts, rrMs`), which sorts successive beats to be similar by construction and biases RMSSD
+ * DOWN, since RMSSD is built entirely from successive differences.
+ *
+ * NULL means "emission order unknown": every row written before v24, and any row from a source that
+ * cannot supply it. That is honest rather than a guess, and it sorts correctly for free — SQLite orders
+ * NULL first in ASC, so a pre-v24 second (all NULL) ties on `ord` and falls through to the old
+ * `rrMs, seq` order exactly. Not backfillable: the order was never recorded.
+ *
+ * PARITY: the Swift `rrInterval` key was widened to match in WhoopStore `v24-rr-seq`, and `ord` lands
+ * there as `v30-rr-ord`. (An earlier revision of this note said the Swift widening was still pending;
+ * it had already shipped.)
  */
 @Entity(tableName = "rrInterval", primaryKeys = ["deviceId", "ts", "rrMs", "seq"])
 data class RrInterval(
@@ -105,6 +118,7 @@ data class RrInterval(
     val rrMs: Int,
     val seq: Int = 0,
     val synced: Int = 0,
+    val ord: Int? = null,
 )
 
 /**

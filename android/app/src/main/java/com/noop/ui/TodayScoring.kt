@@ -6,6 +6,7 @@ import com.noop.analytics.ChargeDriver
 import com.noop.analytics.RecoveryDrivers
 import com.noop.analytics.RestScorer
 import com.noop.analytics.ScoreConfidence
+import com.noop.R
 import com.noop.data.DailyMetric
 import java.time.LocalDate
 import java.time.Instant
@@ -370,6 +371,49 @@ internal fun recordingStateFor(
         RecordingState.LastSynced((secs + 59L) / 60L)
     }
     else -> RecordingState.NotRecording
+}
+
+/** #245: the sync-status state the Today top bar's `SyncStatusChip` composable renders. Mirrors Swift
+ *  `SyncChipState` 1:1 (same four cases, same priority order) so the twin can't drift on WHEN to show
+ *  what. THREE non-hidden states so the ABSENCE of active syncing reads as "caught up", not "missing
+ *  indicator": actively offloading -> [Syncing]; idle with a known last-sync -> [Synced]; a 5/MG whose
+ *  history sync is experimental (live-connected, no completed offload yet) -> [ExperimentalLive].
+ *  [Hidden] only on a true cold start (the building-scores note owns that case). Previously this
+ *  priority order lived inline inside the `@Composable`, where it could not be unit-tested. */
+sealed class SyncChipState {
+    data class Syncing(val chunks: Int) : SyncChipState()
+    data class Synced(val agoText: String) : SyncChipState()
+    object ExperimentalLive : SyncChipState()
+    object Hidden : SyncChipState()
+
+    companion object {
+        /** Pure + unit-tested. Mirrors Swift `SyncChipState.resolve` exactly: backfilling wins over a
+         *  known last-sync, which wins over the 5/MG experimental fallback. */
+        fun resolve(
+            backfilling: Boolean,
+            chunks: Int,
+            lastSyncAtSec: Long?,
+            historySyncExperimental: Boolean,
+        ): SyncChipState = when {
+            backfilling -> Syncing(chunks)
+            lastSyncAtSec != null -> Synced(shortSyncAgo(lastSyncAtSec))
+            historySyncExperimental -> ExperimentalLive
+            else -> Hidden
+        }
+    }
+}
+
+/** Compact relative age for the header chip ("now" / "Nm" / "Nh" / "Nd") from a unix-SECONDS timestamp —
+ *  deliberately terse. "now" is the only word in here (the rest is digits + a unit letter), so it's the
+ *  only piece that needs a catalog entry to translate. Mirrors the iOS `SyncChipState.shortAgo`. */
+internal fun shortSyncAgo(unixSec: Long): String {
+    val secs = (System.currentTimeMillis() / 1000L - unixSec).coerceAtLeast(0)
+    return when {
+        secs < 60 -> uiString(R.string.l10n_today_screen_sync_chip_now_c9bc849a)
+        secs < 3600 -> "${secs / 60}m"
+        secs < 86_400 -> "${secs / 3600}h"
+        else -> "${secs / 86_400}d"
+    }
 }
 
 /** Whether this night's sleep staging is low-confidence, using the core [ScoreConfidence] rule. */

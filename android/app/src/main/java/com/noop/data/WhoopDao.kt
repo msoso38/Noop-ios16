@@ -298,9 +298,15 @@ interface WhoopDao : DeviceRegistryDao {
     suspend fun hrWindowStats(deviceId: String, from: Long, to: Long): HrWindowStats
 
     @Query(
-        // ts, rrMs matches Swift Reads.swift; seq only tiebreaks the rare EQUAL same-second beats (v18).
+        // #823: `ord` FIRST, so same-second beats come back in EMISSION order. Ordering by rrMs made
+        // successive beats similar by construction and biased RMSSD (all successive differences) down.
+        // Pre-v24 rows have ord NULL and SQLite sorts NULL first in ASC, so an all-NULL second ties here
+        // and falls through to the old (rrMs, seq) order — unchanged for existing data, and deterministic.
+        // Byte-parity twin of Swift Reads.swift rrIntervals; both are SQLite, so NULL ordering matches.
+        // Note this no longer matches the PK index (ts, rrMs, seq), so SQLite sorts; see the PR for why
+        // that is acceptable at this query's size rather than adding a covering index.
         "SELECT * FROM rrInterval WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
-            "ORDER BY ts ASC, rrMs ASC, seq ASC LIMIT :limit"
+            "ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC LIMIT :limit"
     )
     suspend fun rrIntervals(deviceId: String, from: Long, to: Long, limit: Int): List<RrInterval>
 

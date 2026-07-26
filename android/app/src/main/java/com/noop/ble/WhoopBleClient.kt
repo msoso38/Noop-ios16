@@ -32,6 +32,7 @@ import com.noop.data.StreamPersistence
 import com.noop.protocol.Whoop5RawImu
 import com.noop.data.WhoopRepository
 import com.noop.protocol.AlarmPayload
+import com.noop.protocol.DYN_ACCEL_STILL_THRESHOLD_G
 import com.noop.protocol.BackfillCaptureJsonl
 import com.noop.protocol.BackfillCaptureRecord
 import com.noop.protocol.BackfillCaptureSummary
@@ -3425,13 +3426,42 @@ class WhoopBleClient(
     // ====================================================================================
 
     /** Persist the WHOOP family that actually advertised so a later launch/scan starts on the right
-     *  service — what makes a one-time fallback rotation stick. Mirrors macOS
+     *  service — what makes a one-time fallback rotation stick, and drives the Settings 5/MG-controls
+     *  gate off the ACTUALLY-CONNECTED strap (not a stale device-list default). Mirrors macOS
      *  `UserDefaults.set(rawValue, forKey: "selectedWhoopModel")`. Self-contained in the shared
-     *  noop_prefs store; failures are non-fatal (the rotation still worked this session). (PR#195) */
+     *  noop_prefs store; failures are non-fatal (the rotation still worked this session). (PR#195)
+     *
+     *  On a genuine FAMILY switch (4.0 ↔ 5/MG) it also clears the 5/MG-only experimental toggles via
+     *  [PuffinExperiment.resetFiveMGGatedProbes], so a 5/MG-only probe (raw capture, R22 deep-data
+     *  write, broadcast-HR write) can't stay enabled across a switch and get applied to the wrong,
+     *  unsupported strap. Same-family reconnects don't reset (the previous == new guard). */
     private fun persistSelectedModel(model: WhoopModel) {
         try {
-            context.getSharedPreferences("noop_prefs", Context.MODE_PRIVATE)
-                .edit().putString("noop.selectedWhoopModel", model.name).apply()
+            val prefs = context.getSharedPreferences("noop_prefs", Context.MODE_PRIVATE)
+            val previous = prefs.getString("noop.selectedWhoopModel", null)
+            prefs.edit().putString("noop.selectedWhoopModel", model.name).apply()
+            // Compare the GATT SERVICE, not the enum name — the service UUID is what actually
+            // distinguishes the two families. Identical today (WhoopModel is exactly WHOOP4 and
+            // WHOOP5_MG), but Whoop5Variant already tells MG from plain 5.0 at the hardware level; if
+            // that ever becomes a third WhoopModel it would share WHOOP5_SERVICE, and a name compare
+            // would then reset the probes on a 5.0 <-> MG switch — same family, must not reset.
+            // runCatching: an unrecognised persisted string is a stale pref, not a family change.
+            val previousService = previous?.let { runCatching { WhoopModel.valueOf(it).service }.getOrNull() }
+            if (previousService != null && previousService != model.service) {
+                // Family actually changed — untick the family-gated probes so nothing carries over.
+                // Its own runCatching: the persist above has ALREADY succeeded by this point, so letting
+                // a failure here fall into the outer catch would log "couldn't persist" about a write
+                // that worked, and hide which half actually broke.
+                runCatching { PuffinExperiment.from(context).resetFiveMGGatedProbes() }
+                    .onSuccess {
+                        log("Strap family switched ($previous → ${model.name}) — reset 5/MG-only " +
+                            "experimental toggles (protocol probes, raw capture, deep-data, broadcast HR) to off.")
+                    }
+                    .onFailure {
+                        log("Strap family switched ($previous → ${model.name}) but couldn't reset the " +
+                            "5/MG-only toggles: ${it.message} — they may still be on for the wrong family.")
+                    }
+            }
         } catch (t: Throwable) {
             log("Couldn't persist selected model: ${t.message}")
         }
@@ -4122,6 +4152,11 @@ class WhoopBleClient(
                 // notifications ever enable, so HR/battery/events stay empty (issue #12). The bond write
                 // is deferred to startSession(), which runs once every notification is on.
                 connectedFamily = DeviceFamily.WHOOP4
+                // Record the family on connect, not only in the scan path (persistSelectedModel is
+                // otherwise called only from onScanResult). A strap reached via the co-resident
+                // easy-connect route (getConnectedDevices / bondedDevices adopt, no scan) would never
+                // persist its model, leaving model-gated UI stale for a genuinely-connected strap.
+                persistSelectedModel(WhoopModel.WHOOP4)
                 cmdCharacteristic = whoop4.getCharacteristic(CMD_WRITE_CHAR)
                 whoop4.getCharacteristic(CMD_NOTIFY_CHAR)?.let { cccdQueue.add(it) }
                 whoop4.getCharacteristic(EVENT_NOTIFY_CHAR)?.let { cccdQueue.add(it) }
@@ -4130,6 +4165,11 @@ class WhoopBleClient(
                 // EXPERIMENTAL WHOOP 5.0/MG: opens with CLIENT_HELLO (sent in startSession, after the
                 // standard HR/battery notifications are enabled), not the WHOOP4 confirmed-write bond.
                 connectedFamily = DeviceFamily.WHOOP5
+                // Persist on connect too (see the WHOOP4 branch): otherwise an easy-connect 5/MG never
+                // records WHOOP5_MG, so the 5/MG-only controls (raw capture, broadcast HR, deep data)
+                // gated on noop.selectedWhoopModel stay hidden until the strap is live-detected that
+                // session — even when it is the active paired device. This makes the choice stick.
+                persistSelectedModel(WhoopModel.WHOOP5_MG)
                 log("WHOOP 5/MG detected — will send CLIENT_HELLO after subscribing (experimental).")
                 _state.update { it.copy(
                     whoop5Detected = true,
@@ -4435,10 +4475,20 @@ class WhoopBleClient(
                         // dataRangeNewestUnix straight from a normal strap-log export. Mirrors the Swift line.
                         val hex = frame.joinToString("") { "%02x".format(it) }
                         log("Get Data Range raw frame (#451 — for offset analysis): $hex")
-                        // #689: ring-buffer page backlog, DIAGNOSTIC ONLY (RE'd, unconfirmed — never gates
-                        // sync/backfill). Logged only when it decodes plausibly; a short/garbage frame → null.
-                        com.noop.protocol.DataRange.pagesBehind(frame, cmdOff)?.let {
-                            log("Strap backlog pages behind: $it (#689 — GET_DATA_RANGE ring backlog, diagnostic only)")
+                        // #689: ring-buffer page backlog, DIAGNOSTIC ONLY — never gates sync/backfill.
+                        // BOTH branches log, deliberately. Until #818 the offsets were two bytes early, so
+                        // ring capacity always read 0, the `t > 0` guard rejected every real frame, and this
+                        // logged NOTHING — a strap log was indistinguishable from one where the strap never
+                        // answered, which is why a broken decode survived unnoticed. The raw-frame dump above
+                        // is unconditional for the same reason. Twin of the Swift branch.
+                        val pagesBehind = com.noop.protocol.DataRange.pagesBehind(frame, cmdOff)
+                        if (pagesBehind != null) {
+                            log("Strap backlog pages behind: $pagesBehind (#689 — GET_DATA_RANGE ring backlog, diagnostic only)")
+                        } else {
+                            log(
+                                "Strap backlog pages behind: not decodable from this frame (#689 — offsets may " +
+                                    "have moved; the raw frame above is the input). Diagnostic only, sync is unaffected.",
+                            )
                         }
                         dataRangeNewestUnix(frame)?.let {
                             strapNewestTs = it
@@ -6029,6 +6079,11 @@ class WhoopBleClient(
             // itself - not gated on the Connection test mode. Twin of the macOS LiveState sink hook.
             testCentre.noteDrainedRows(backfiller.sessionRowsPersisted)
         }
+
+        // #520: the motion-magnitude diagnostic for this session. Emitted independently of the summary
+        // above (a caught-up session banks no rows but can still have decoded records), and silent when
+        // nothing carried the field — a WHOOP 4.0 never does. Twin of the macOS exitBackfilling hook.
+        backfiller.sessionDynAccel.logLine(DYN_ACCEL_STILL_THRESHOLD_G)?.let { log(it) }
 
         // Connection test mode: the offload OUTCOME the readout's lastOffloadResult id binds. Gated
         // zero-cost (the CONNECTION bool is read before any string is built). Diagnostic only - it reads

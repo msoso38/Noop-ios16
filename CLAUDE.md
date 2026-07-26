@@ -17,7 +17,10 @@ These are hard constraints, not preferences. A PR is out of scope if it:
 - adds a server, account, cloud sync, or sends any data off-device;
 - adds analytics/telemetry/crash-reporting that phones home;
 - adds WHOOP firmware, decompiled app code, logos/assets, or any DRM circumvention. NOOP is
-  **clean-room interoperability** with hardware the user owns — keep it that way.
+  **clean-room interoperability** with hardware the user owns — keep it that way. (That bars
+  *implementations* and literals, not every fact learned from one: a protocol offset may be
+  re-derived with attribution as an unvalidated candidate — see the "facts vs code" bullet in
+  [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) before telling a contributor no.)
 
 Licensing: by opening a PR you agree your contribution is under the repo's
 [PolyForm Noncommercial 1.0.0](LICENSE) license.

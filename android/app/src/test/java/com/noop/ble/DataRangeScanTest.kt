@@ -95,23 +95,20 @@ class DataRangeScanTest {
         assertEquals(1_750_000_000L, WhoopBleClient.dataRangeOldestUnix(frame))
     }
 
-    // #689 pagesBehind (ring backlog): byte-parity twin of the Swift DataRangeTests cases.
+    // #689/#815 pagesBehind (ring backlog): byte-parity twin of the Swift DataRangeTests cases.
 
     private fun pagesFrame(cmdOff: Int, w: Long, u: Long, t: Long, size: Int = 40): ByteArray {
         val b = ByteArray(size)
         fun put(off: Int, v: Long) { for (k in 0..3) b[off + k] = ((v shr (8 * k)) and 0xFF).toByte() }
-        put(cmdOff + 10, w); put(cmdOff + 14, u); put(cmdOff + 22, t)
+        put(cmdOff + 12, w); put(cmdOff + 16, u); put(cmdOff + 24, t)
         return b
     }
 
     @Test fun `pagesBehind normal no wrap`() =
         assertEquals(300L, DataRange.pagesBehind(pagesFrame(6, 500, 200, 1024), 6))
 
-    @Test fun `pagesBehind wraparound`() =
+    @Test fun `pagesBehind wraparound`() =    // synthetic — no real capture has crossed the wrap yet
         assertEquals(300L, DataRange.pagesBehind(pagesFrame(6, 100, 800, 1000), 6))
-
-    @Test fun `pagesBehind whoop5 cmdOff 10`() =
-        assertEquals(300L, DataRange.pagesBehind(pagesFrame(10, 500, 200, 1024), 10))
 
     @Test fun `pagesBehind too short is null`() =
         assertNull(DataRange.pagesBehind(ByteArray(20), 6))
@@ -120,5 +117,43 @@ class DataRangeScanTest {
         assertNull(DataRange.pagesBehind(pagesFrame(6, 1, 1, 0), 6))                // capacity 0
         assertNull(DataRange.pagesBehind(pagesFrame(6, 1, 1, 1_783_785_625L), 6))  // T is a timestamp
         assertNull(DataRange.pagesBehind(pagesFrame(6, 5, 2000, 1000), 6))         // U >= T
+    }
+
+    /**
+     * Real captures (#791 WHOOP4, #815 WHOOP 5.0/MG) — confirms the offset fix against hardware, not just
+     * synthetic math. All four are the non-wrapped case (W > U); ring capacity T is 131072 in every one.
+     */
+    @Test fun `pagesBehind real captures`() {
+        val cases = listOf(
+            // WHOOP4, cmdOff 6 (Galaxy S24 Ultra capture, #791)
+            Triple(
+                "aa4c00a7247e220a01010000000050070100a307010050070100000000000000020035030000" +
+                    "c2fc13008046394b00000000bbe1636aa02d0000bbe1636aa02d0000c6e4636ac07c000000000447ea04",
+                6, 83L,
+            ),
+            // WHOOP 5.0/MG, cmdOff 10 (#815)
+            Triple(
+                "aa014c00010032d124cc22040101c0890100b4890100b6890100b4890100110000000000020012000000" +
+                    "e2ff1d00785ac169707d0000edeb626a5c0f0000edeb626a5c0f0000feeb626a5c0f00000000a7c3ec16",
+                10, 2L,
+            ),
+            Triple(
+                "aa014c00010032d1241e22050101008a0100dd890100e5890100dd890100110000000000020" +
+                    "05d00000088ff1d00da5dc169b87e000002ee626a0000000002ee626a000000005dee626a140e000000009f8dfab4",
+                10, 8L,
+            ),
+            Triple(
+                "aa014c00010032d124982207010180b901005ab7010048b901005ab7010010000000000002" +
+                    "00da1b00000ee31d00b0e1ff69d7430000a3ab266a3d4a0000a3ab266a3d4a00007cc7266a5c4f00000000623977f5",
+                10, 494L,
+            ),
+        )
+        for ((h, cmdOff, expected) in cases) {
+            assertEquals(
+                "pagesBehind for $h at cmdOff $cmdOff should be $expected",
+                expected,
+                DataRange.pagesBehind(hex(h), cmdOff),
+            )
+        }
     }
 }

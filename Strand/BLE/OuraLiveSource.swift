@@ -266,6 +266,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// SQLite). Created only on a live/persisting source (nil for the discovery-only scanner). Deduped by
     /// ring-time so re-served records don't duplicate; logs its file path once when the first record lands.
     private let activityDump: OuraActivityDump?
+    /// Append-only JSONL sidecar for the 0x47 motion vectors (Tier-A), for offline LSB→g calibration (#804).
+    private let motionDump: OuraMotionDump?
     /// Cached local-day formatter (the 0x50 stream is high-volume; avoid building one per record).
     private static let activityDayFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f   // local time zone by default
@@ -772,6 +774,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         self.adoptIntent = adoptIntent
         // Tier-B MET research corpus: only on a live/persisting source, never the discovery-only scanner.
         self.activityDump = feedsLive && !deviceId.isEmpty ? OuraActivityDump(deviceId: deviceId, log: log) : nil
+        // 0x47 motion calibration corpus: same gate as the activity dump (live/persisting source only).
+        self.motionDump = feedsLive && !deviceId.isEmpty ? OuraMotionDump(deviceId: deviceId, log: log) : nil
         super.init()
         // Dedicated queue-less central -> callbacks arrive on the main queue, matching @MainActor.
         self.central = CBCentralManager(delegate: self, queue: nil)
@@ -1372,8 +1376,20 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                     publishWearState()
                 }
 
+            case .motionEvent(let m):
+                // 0x47 averaged accel vector (Tier-A). Diagnostic sidecar ONLY for now: decode + store + log
+                // the vector beside the incumbent so the LSB→g scale + cadence can be pinned offline from a
+                // still capture (issue #804). Never persisted to SQLite, never scored — OuraStreamMapping
+                // drops .motionEvent until the scale is calibrated. Anchored records only (deduped by
+                // ring-time inside the writer).
+                if let utc = driver.unixSeconds(forRingTimestamp: m.ringTimestamp) {
+                    motionDump?.record(ringTs: m.ringTimestamp, utc: utc, orientation: m.orientation,
+                                       motionSeconds: m.motionSeconds, x: m.avgX, y: m.avgY, z: m.avgZ,
+                                       lowIntensity: m.lowIntensity, highIntensity: m.highIntensity)
+                }
+
             default:
-                break   // motion / debugText / etc: not a durable Streams row (see OuraStreamMapping)
+                break   // state / debugText / etc: not a durable Streams row (see OuraStreamMapping)
             }
         }
     }

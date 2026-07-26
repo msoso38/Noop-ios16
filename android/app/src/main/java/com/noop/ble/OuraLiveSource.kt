@@ -244,6 +244,11 @@ class OuraLiveSource(
      *  row). Null when there is no device id. The Kotlin twin of the Swift `OuraActivityDump`. */
     private val activityDump: OuraActivityDump? =
         if (deviceId.isNotEmpty()) OuraActivityDump(appContext, deviceId, log) else null
+
+    /** 0x47 motion calibration corpus (Tier-A), for offline LSB→g scale + cadence work (#804). Kotlin twin
+     *  of the Swift `OuraMotionDump`. Null when there is no device id. */
+    private val motionDump: OuraMotionDump? =
+        if (deviceId.isNotEmpty()) OuraMotionDump(appContext, deviceId, log) else null
     private val scanner: BluetoothLeScanner? get() = adapter?.bluetoothLeScanner
 
     private var gatt: BluetoothGatt? = null
@@ -1717,8 +1722,23 @@ class OuraLiveSource(
                     )
                 }
             }
-            // Motion / debugText / etc: not a durable Streams row (see OuraStreamMapping). StateEvent is
-            // handled above (wear badge only, also not a Streams row).
+            is OuraEvent.MotionVectorEvent -> {
+                // 0x47 averaged accel vector (Tier-A). Diagnostic sidecar ONLY for now: decode + store + log
+                // the vector beside the incumbent so the LSB→g scale + cadence can be pinned offline from a
+                // still capture (issue #804). Never persisted to the DB, never scored — OuraStreamMapping
+                // drops MotionVectorEvent until the scale is calibrated. Anchored records only (deduped by
+                // ring-time in the writer). Twin of the Swift hook.
+                d.unixSeconds(forRingTimestamp = e.value.ringTimestamp)?.let { utc ->
+                    motionDump?.record(
+                        ringTs = e.value.ringTimestamp, utc = utc, orientation = e.value.orientation,
+                        motionSeconds = e.value.motionSeconds, x = e.value.avgX, y = e.value.avgY,
+                        z = e.value.avgZ, lowIntensity = e.value.lowIntensity,
+                        highIntensity = e.value.highIntensity,
+                    )
+                }
+            }
+            // Motion (0x6b) / debugText / etc: not a durable Streams row (see OuraStreamMapping). StateEvent
+            // is handled above (wear badge only, also not a Streams row).
             else -> Unit
         }
     }

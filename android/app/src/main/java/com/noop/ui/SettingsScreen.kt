@@ -396,6 +396,25 @@ fun SettingsScreen(
     var rev by remember { mutableStateOf(0) }
     fun mutate(block: () -> Unit) { block(); rev++ }
 
+    // #820 made a BLE callback a writer of `noop_experiments`: a strap FAMILY switch clears the
+    // 5/MG-only probes. Without this the toggles below would keep showing their old state until you
+    // navigated away and back, because an unkeyed remember{} reads once per composition. macOS gets
+    // this free — @AppStorage republishes on any UserDefaults write — and Compose needs it spelled
+    // out. Bumping `rev` is the whole mechanism; the four reads are keyed on it.
+    DisposableEffect(Unit) {
+        val expPrefs = context.getSharedPreferences(PuffinExperiment.PREFS, Context.MODE_PRIVATE)
+        // Strong local for the effect's lifetime: Android holds these listeners WEAKLY, so one that is
+        // only referenced by the register call gets collected and silently stops firing.
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            // `key` is @Nullable on modern SDKs — it arrives null when the whole file is cleared — so
+            // the null check is required to compile, not just defensive. A clear() is not something
+            // this app does, but treating it as "everything changed" is the correct reading anyway.
+            if (key == null || key in PuffinExperiment.FIVE_MG_GATED_KEYS) rev++
+        }
+        expPrefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { expPrefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
     var backupBusy by remember { mutableStateOf(false) }
 
     // Re-scan must request the runtime Bluetooth permission before scanning — without this the
@@ -443,10 +462,10 @@ fun SettingsScreen(
     // EXPERIMENTAL WHOOP 5/MG protocol probes (off by default). Mirrors the macOS @AppStorage toggle;
     // SharedPreferences isn't reactive, so the Switch drives a local mutableState that the store reads.
     val puffinExperiment = remember { PuffinExperiment.from(context) }
-    var puffinExperiments by remember { mutableStateOf(puffinExperiment.isEnabled) }
-    var puffinCapture by remember { mutableStateOf(puffinExperiment.isCaptureEnabled) }
-    var deepData by remember { mutableStateOf(puffinExperiment.isDeepDataEnabled) }
-    var broadcastHr by remember { mutableStateOf(puffinExperiment.broadcastHr) }
+    var puffinExperiments by remember(rev) { mutableStateOf(puffinExperiment.isEnabled) }
+    var puffinCapture by remember(rev) { mutableStateOf(puffinExperiment.isCaptureEnabled) }
+    var deepData by remember(rev) { mutableStateOf(puffinExperiment.isDeepDataEnabled) }
+    var broadcastHr by remember(rev) { mutableStateOf(puffinExperiment.broadcastHr) }
     // "Sleep staging (V2)" — V2 is the DEFAULT for every strap (WHOOP 4 and 5/MG); turn it OFF to fall back
     // to V1. Model-agnostic, so it lives outside the 5/MG-only card. 4.0 is unvalidated either way (#319/#347).
     var experimentalSleepV2 by remember { mutableStateOf(puffinExperiment.experimentalSleepV2) }
