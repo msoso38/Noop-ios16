@@ -125,7 +125,9 @@ internal fun displaySmoothed(
     return ivs
 }
 
-/** Canonical stage key: trims, lowercases, and folds the "wake"/"awake" alias (stageColorFor parity). */
+/** Canonical stage key: trims, lowercases, and folds the "wake"/"awake" alias. The single definition of
+ *  a stage key in the UI layer — [stageColorFor] keys off this rather than repeating the rule, so adding
+ *  an alias here is all that is needed. */
 internal fun canonicalStage(name: String): String {
     val n = name.trim().lowercase()
     return if (n == "wake") "awake" else n
