@@ -115,7 +115,6 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
     }
 
     companion object {
-        /** Persisted preferences file. */
         /** Persisted preferences file. Internal so a UI screen can observe external writes to it. */
         internal const val PREFS = "noop_experiments"
 

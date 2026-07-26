@@ -819,7 +819,6 @@ object HealthConnectImporter {
      */
     internal fun maxSourceLong(bySource: Map<String, Long>): Long = bySource.values.maxOrNull() ?: 0L
 
-    /** #589 de-overlap for a per-source calorie map (Double twin of [maxSourceLong]); empty -> 0.0. */
     /** One Health Connect energy record's window + value, tagged with the writing app so the
      *  per-workout credit can de-overlap across sources the way the day totals do (#589, #835). */
     internal data class KcalRecord(
@@ -829,6 +828,7 @@ object HealthConnectImporter {
         val source: String,
     )
 
+    /** #589 de-overlap for a per-source calorie map (Double twin of [maxSourceLong]); empty -> 0.0. */
     internal fun maxSourceDouble(bySource: Map<String, Double>): Double = bySource.values.maxOrNull() ?: 0.0
 
     /**
