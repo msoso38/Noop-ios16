@@ -225,9 +225,10 @@ internal fun ClockLabelRow(onsetTs: Long, wakeTs: Long) {
     }
 }
 
-/** Map a stage name to its design-system sleep tone (case-insensitive). */
-/** Stage tint. Keys off [canonicalStage] rather than repeating the trim/lowercase/"wake"-fold, so a
- *  new stage alias added there is picked up here automatically instead of needing a matching edit. */
+/** Map a stage name to its design-system sleep tone (case-insensitive). Keys off [canonicalStage]
+ *  rather than repeating the trim/lowercase/"wake"-fold, so a new alias added there is picked up
+ *  here automatically instead of needing a matching edit. Unknown stages fall back to the Light
+ *  tone, as they did before. */
 private fun stageColorFor(name: String): Color = when (canonicalStage(name)) {
     "deep" -> Palette.sleepDeep
     "rem" -> Palette.sleepREM
