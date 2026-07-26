@@ -735,6 +735,16 @@ private func decodeWhoop5CommandResponse(_ frame: [UInt8], fb: FieldBuilder, sch
     if name.hasPrefix("GET_BATTERY_LEVEL"), pay.count >= 3 {
         // Direct percent at pay[2] (47% confirmed against the app) — the 4.0 deci-percent ÷10 is gone.
         fb.add(11 + 2, 1, "battery_pct", "battery", value: .double(Double(pay[2])), note: "%")
+    } else if name.hasPrefix("GET_CLOCK"), pay.count >= 6 {
+        // #827 CONFIRMED on real WHOOP 5.0 hardware: pay[2..6), u32 LE, unix seconds — the same
+        // payload-relative offset as WHOOP4 (`PostHooks.swift`'s "command_response" hook), carried over on
+        // the "+4 rule" (both families' payload arrays start immediately after their own command byte, so
+        // an unchanged field's payload-relative offset carries over — see other confirmed +4-rule fields,
+        // e.g. extended-battery soc/mv/charge in docs/BLE_REVERSE_ENGINEERING.md). Verified 2026-07-26 with
+        // two Devices-probe captures 62s apart (1785050961 → 1785051023): the decoded clock advanced by
+        // exactly the wall-clock gap between captures, not just a plausible-looking single value.
+        let v = UInt32(pay[2]) | (UInt32(pay[3]) << 8) | (UInt32(pay[4]) << 16) | (UInt32(pay[5]) << 24)
+        fb.add(11 + 2, 4, "clock", "clock", value: .int(Int(v)))
     } else if name.hasPrefix("GET_DATA_RANGE"), pay.count >= 7 {
         // The long response carries record cursors + real-unix timestamps as 4-byte-aligned u32s from
         // pay[3]; the history window is their min/max. (A short ack response also exists — no

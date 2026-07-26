@@ -818,6 +818,10 @@ final class AppModel: ObservableObject {
     func probeBodyLocationAndStatus() { ble.probeBodyLocationAndStatus() }
     func clearBodyLocationProbe() { ble.clearBodyLocationProbe() }
 
+    // #827: read-only GET_CLOCK probe (11). User-initiated, Test-Centre-gated in DevicesView.
+    func probeGetClock() { ble.probeGetClock() }
+    func clearClockProbe() { ble.clearClockProbe() }
+
     /// Drop the current strap and clear bond state so a newly-picked strap model connects fresh
     /// (lets a user with both a WHOOP 4 and a 5/MG switch between them).
     func prepareStrapSwitch() { ble.prepareForModelSwitch() }

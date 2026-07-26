@@ -92,6 +92,12 @@ public final class FrameRouter {
             if let mv = parsed.parsed["battery_mV"]?.intValue {
                 state.batteryMv = mv
             }
+            // #827: GET_CLOCK responses on either family — the decode is confirmed on both (see
+            // Interpreter.swift). Feeds the "Clock latched" readout a real 5/MG signal instead of the
+            // dead GET_DATA_RANGE fallback (GET_DATA_RANGE is never sent to a 5/MG strap).
+            if let clock = parsed.parsed["clock"]?.intValue {
+                state.strapClockUnix = clock
+            }
             // Firmware version from the connect handshake: WHOOP 4.0 decodes `fw_harvard`
             // (REPORT_VERSION_INFO), WHOOP 5/MG decodes `fw_version` (GET_HELLO). Take whichever the
             // decoder produced; one branch covers both families. It's stable for the connection, so

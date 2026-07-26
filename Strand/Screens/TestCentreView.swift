@@ -553,7 +553,8 @@ private struct ConnectionReadoutPanel: View {
         // #987: clock latch + frame liveness. The correlated device clock is parsed from the same log the
         // export ships (pure ConnectionReadout parsers), the last-frame stamp off the non-published
         // LiveState field FrameRouter writes.
-        let deviceClock = ConnectionReadout.clockCorrelatedDevice(logLines: live.log)
+        // #827: fall back to the FrameRouter-set signal when the log scrape misses (WHOOP 5/MG).
+        let deviceClock = ConnectionReadout.clockCorrelatedDevice(logLines: live.log) ?? live.strapClockUnix
         let rtcWarning = ConnectionReadout.rtcWarning(deviceClockUnix: deviceClock,
                                                       strapNewestUnix: live.strapRange?.newestUnix)
         VStack(alignment: .leading, spacing: 4) {

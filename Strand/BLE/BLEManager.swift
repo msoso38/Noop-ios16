@@ -2464,6 +2464,11 @@ public final class BLEManager: NSObject, ObservableObject {
     private static let bodyLocationProbeTimeout: TimeInterval = 8
     private static let bodyLocationPrevPayloadKey = "noop.690.prevPayload"
 
+    // #827 GET_CLOCK probe (twins of the #592 constants above).
+    public static let clockProbeWaiting = "__waiting__"
+    private static let clockProbeTimeout: TimeInterval = 8
+    private static let clockPrevPayloadKey = "noop.827.prevPayload"
+
     /// #592 opcode probe: send the read-only GET_EXTENDED_BATTERY_INFO(98) and surface the strap's reply
     /// (raw hex + payload triage + capture diff) on `LiveState.extendedBatteryProbe` for the Devices dialog.
     /// The number is disputed (an APK decompile reads 87); a battery-shaped payload confirms 98 on this
@@ -2527,6 +2532,45 @@ public final class BLEManager: NSObject, ObservableObject {
 
     /// Clear the #690 probe result (Devices dialog dismissed). Twin of Android clearBodyLocationProbe().
     public func clearBodyLocationProbe() { state.bodyLocationProbe = nil }
+
+    /// #827 opcode probe: send GET_CLOCK(11, read-only) and surface the strap's reply (raw hex + decoded
+    /// clock + capture diff) on `LiveState.clockProbe` for the Devices dialog. GET_CLOCK is already sent
+    /// unconditionally on every connect (both families); this just lets a developer re-request it on
+    /// demand and see the raw bytes, rather than digging through the log. Works on both families.
+    /// User-initiated only.
+    public func probeGetClock() {
+        guard state.connected else {
+            log("GET_CLOCK probe (#827) ignored — not connected")
+            return
+        }
+        state.clockProbe = BLEManager.clockProbeWaiting
+        log("GET_CLOCK probe (#827): sending GET_CLOCK(11, read-only) on family=\(selectedModel.deviceFamily); the raw COMMAND_RESPONSE is surfaced when it lands")
+        send(.getClock)
+        DispatchQueue.main.asyncAfter(deadline: .now() + BLEManager.clockProbeTimeout) { [weak self] in
+            guard let self, self.state.clockProbe == BLEManager.clockProbeWaiting else { return }
+            let secs = Int(BLEManager.clockProbeTimeout)
+            let msg = "GET_CLOCK probe (#827): no COMMAND_RESPONSE for opcode 11 within \(secs)s — the strap served no reply. (If a sync/offload was mid-flight the response can be delayed — retry idle.)"
+            self.log(msg)
+            self.state.clockProbe = msg
+        }
+    }
+
+    /// Clear the #827 probe result (Devices dialog dismissed). Twin of Android clearClockProbe() (once added).
+    public func clearClockProbe() { state.clockProbe = nil }
+
+    /// #827: format a GET_CLOCK COMMAND_RESPONSE and publish it, diffing against the persisted previous
+    /// payload. Called from the inbound frame handler for both families. Guarded on a probe being
+    /// IN-FLIGHT (parity with the #690 guard): GET_CLOCK is also sent unconditionally by the normal
+    /// connect handshake, so an unguarded match would surface a probe "result" the user never requested.
+    private func handleClockProbeResponse(_ frame: [UInt8], isWhoop5: Bool) {
+        guard state.clockProbe == BLEManager.clockProbeWaiting else { return }
+        let prev = UserDefaults.standard.string(forKey: BLEManager.clockPrevPayloadKey)
+        let (text, payHex) = ClockProbe.format(
+            frame: frame, cmdOff: isWhoop5 ? 10 : 6, isWhoop5: isWhoop5, prevPayloadHex: prev)
+        log("GET_CLOCK probe (#827):\n\(text)")
+        state.clockProbe = text
+        if let payHex { UserDefaults.standard.set(payHex, forKey: BLEManager.clockPrevPayloadKey) }
+    }
 
     /// #690: format a GET_BODY_LOCATION_AND_STATUS COMMAND_RESPONSE and publish it, diffing against the
     /// persisted previous payload. Called from the inbound frame handler for both families. Guarded on a
@@ -3522,6 +3566,8 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         state.strapFirmware = nil     // a stale firmware version must not outlive the link
         state.extendedBatteryProbe = nil  // #592: drop a stale probe result on disconnect
         state.bodyLocationProbe = nil     // #690: drop a stale probe result on disconnect
+        state.clockProbe = nil            // #827: drop a stale probe result on disconnect
+        state.strapClockUnix = nil        // #827: a stale strap-clock signal must not outlive the link
         state.clearBiometrics()       // and a stale HR / R-R must not outlive the link either
         state.liveFeedActive = false  // a drop while Live is open must not leave a stale "Stop live feed"
         didBond = false
@@ -4332,6 +4378,11 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 if frame.count > 6, frame[6] == WhoopCommand.getBodyLocationAndStatus.rawValue {
                     handleBodyLocationProbeResponse(frame, isWhoop5: false)
                 }
+                // #827: the read-only GET_CLOCK probe's COMMAND_RESPONSE (in-flight-guarded inside — GET_CLOCK
+                // is also sent unconditionally by the connect handshake, not only by the probe).
+                if frame.count > 6, frame[6] == WhoopCommand.getClock.rawValue {
+                    handleClockProbeResponse(frame, isWhoop5: false)
+                }
                 // #695: WHOOP4 data-range reply — cmd byte @6. The 5/MG reply (puffin envelope, cmd @10) is
                 // handled in the 5/MG case below; both call handleDataRangeResponse so 5/MG now gets the same
                 // newest/oldest window (strapNewestTs / #547 backfill gate) + diagnostics it previously missed.
@@ -4406,6 +4457,12 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // #690: a 5/MG body-location probe COMMAND_RESPONSE (puffin envelope: type @8, cmd @10).
                     if frame.count > 10, frame[8] == 0x24, frame[10] == WhoopCommand.getBodyLocationAndStatus.rawValue {
                         handleBodyLocationProbeResponse(frame, isWhoop5: true)
+                    }
+                    // #827: a 5/MG GET_CLOCK probe COMMAND_RESPONSE (puffin envelope: type @8, cmd @10).
+                    // In-flight-guarded inside — GET_CLOCK is also sent unconditionally by the connect
+                    // handshake (#78), not only by the probe.
+                    if frame.count > 10, frame[8] == 0x24, frame[10] == WhoopCommand.getClock.rawValue {
+                        handleClockProbeResponse(frame, isWhoop5: true)
                     }
                     // #695: a 5/MG GET_DATA_RANGE COMMAND_RESPONSE (puffin envelope: type @8, cmd @10). Feeds
                     // the SAME newest/oldest window + backfill gate + diagnostics as the 4.0 path above — this

@@ -63,6 +63,8 @@ private struct DevicesContent: View {
     @State private var batteryProbeTarget: PairedDevice?
     /// #690 body-location probe (Test Centre → Connection) — the device whose confirm dialog is open.
     @State private var bodyLocationProbeTarget: PairedDevice?
+    /// #827 GET_CLOCK probe (Test Centre → Connection) — the device whose confirm dialog is open.
+    @State private var clockProbeTarget: PairedDevice?
     /// After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     @State private var pickNewActive = false
 
@@ -80,7 +82,9 @@ private struct DevicesContent: View {
     /// both the line and the warning (the log scan is the cost worth paying once, not twice).
     private var strapClockState: (line: String, warning: String?)? {
         guard live.connected else { return nil }
-        let deviceClock = ConnectionReadout.clockCorrelatedDevice(logLines: live.log)
+        // #827: the log-scraped WHOOP4 correlation, falling back to the FrameRouter-set signal (the only
+        // non-log-scraped clock signal on WHOOP 5/MG, where the GET_DATA_RANGE fallback never fires).
+        let deviceClock = ConnectionReadout.clockCorrelatedDevice(logLines: live.log) ?? live.strapClockUnix
         guard deviceClock != nil || live.strapRange != nil || live.lastFrameAtUnix != nil else { return nil }
         let latched = ConnectionReadout.clockLatchedLabel(deviceClockUnix: deviceClock,
                                                           strapNewestUnix: live.strapRange?.newestUnix)
@@ -184,7 +188,9 @@ private struct DevicesContent: View {
                     // Same Test Centre → Connection gate as the reboot probe, minus the 4.0-only clause.
                     onExtendedBatteryProbe: probeGate ? { batteryProbeTarget = device } : nil,
                     // #690 body-location probe: read-only, both families. Same Test Centre → Connection gate.
-                    onBodyLocationProbe: probeGate ? { bodyLocationProbeTarget = device } : nil)
+                    onBodyLocationProbe: probeGate ? { bodyLocationProbeTarget = device } : nil,
+                    // #827 GET_CLOCK probe: read-only, both families. Same Test Centre → Connection gate.
+                    onClockProbe: probeGate ? { clockProbeTarget = device } : nil)
                     .staggeredAppear(index: idx)
             }
 
@@ -287,6 +293,9 @@ private struct DevicesContent: View {
         // iOS Swift type-checker's budget, and inlining a 6th/7th modifier here tips it over ("unable to
         // type-check in reasonable time"). macOS tolerates the inline form; iOS's type-inference is stricter.
         .modifier(BodyLocationProbeSheets(target: $bodyLocationProbeTarget))
+        // #827 GET_CLOCK probe (confirm + result), isolated for the same type-checker-budget reason as
+        // BodyLocationProbeSheets above.
+        .modifier(ClockProbeSheets(target: $clockProbeTarget))
         // Second, strongly-worded delete-data confirm (reached from the Remove card's secondary control)
         .alert("Delete all of this device's data?",
                isPresented: Binding(get: { deleteDataTarget != nil },
@@ -473,6 +482,8 @@ private struct DeviceCard: View {
     /// #592 extended-battery opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
     var onExtendedBatteryProbe: (() -> Void)? = nil
     var onBodyLocationProbe: (() -> Void)? = nil
+    /// #827 GET_CLOCK opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
+    var onClockProbe: (() -> Void)? = nil
     /// Removed-section affordances (re-add as active / delete its data).
     var onReAdd: (() -> Void)? = nil
     var onDeleteData: (() -> Void)? = nil
@@ -723,6 +734,10 @@ private struct DeviceCard: View {
                 // #690 body-location opcode probe (RE): read-only, both families. Test Centre → Connection.
                 if let onBodyLocationProbe {
                     Button { onBodyLocationProbe() } label: { Label("Body-location probe (#690 RE)…", systemImage: "ladybug") }
+                }
+                // #827 GET_CLOCK opcode probe (RE): read-only, both families. Test Centre → Connection.
+                if let onClockProbe {
+                    Button { onClockProbe() } label: { Label("Clock probe (#827 RE)…", systemImage: "ladybug") }
                 }
                 if let onRemove {
                     Divider()
@@ -1034,6 +1049,75 @@ private struct BodyLocationProbeResultView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Body-location probe result (#690)")
+                .font(StrandFont.title2)
+                .foregroundStyle(StrandPalette.textPrimary)
+            if waiting {
+                Text("Waiting for the strap's reply…")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            } else {
+                ScrollView {
+                    Text(text)
+                        .font(StrandFont.mono)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                if !waiting {
+                    Button("Copy") { PlatformPasteboard.copy(text) }
+                }
+                Spacer()
+                Button("Close") { onClose() }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 340, minHeight: 260)
+        .background(StrandPalette.surfaceOverlay)
+    }
+}
+
+/// #827: the GET_CLOCK probe's confirm + result dialogs as one ViewModifier, isolated for the same
+/// type-checker-budget reason as `BodyLocationProbeSheets`. `model`/`live` auto-inject from the parent's
+/// environment.
+private struct ClockProbeSheets: ViewModifier {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var live: LiveState
+    @Binding var target: PairedDevice?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Clock probe (#827 RE)",
+                                isPresented: Binding(get: { target != nil },
+                                                     set: { if !$0 { target = nil } }),
+                                titleVisibility: .visible,
+                                presenting: target) { _ in
+                Button("Send probe (read-only)") { model.probeGetClock(); target = nil }
+                Button("Cancel", role: .cancel) { target = nil }
+            } message: { _ in
+                Text("Sends the read-only GET_CLOCK (11) and shows the strap's full raw reply, decoding a clock value. GET_CLOCK is already sent on every connect; this just re-requests it on demand so you can see the raw bytes and confirm the \"Clock latched\" readout. Nothing is written to the strap.")
+            }
+            .sheet(isPresented: Binding(get: { live.clockProbe != nil },
+                                        set: { if !$0 { model.clearClockProbe() } })) {
+                ClockProbeResultView(
+                    text: live.clockProbe ?? "",
+                    onClose: { model.clearClockProbe() })
+            }
+    }
+}
+
+/// The #827 GET_CLOCK probe reply (raw hex + decoded clock + capture diff), or a "waiting…" state while
+/// in flight. Read-only; selectable text + a Copy button. Structurally identical to
+/// ExtendedBatteryProbeResultView/BodyLocationProbeResultView.
+private struct ClockProbeResultView: View {
+    let text: String
+    let onClose: () -> Void
+    private var waiting: Bool { text == BLEManager.clockProbeWaiting }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Clock probe result (#827)")
                 .font(StrandFont.title2)
                 .foregroundStyle(StrandPalette.textPrimary)
             if waiting {
