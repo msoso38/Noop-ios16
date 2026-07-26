@@ -325,7 +325,11 @@ object HealthConnectImporter {
                         sport = exerciseName(r),
                         source = HC_WORKOUT_SOURCE,
                         durationS = (endS - startS).toDouble().coerceAtLeast(0.0),
-                        energyKcal = sumActiveKcalInWindow(activeKcalRecords, startS, endS),
+                        // Filled by the #835 post-pass below, which needs the day aggregate (basal = total −
+                        // active) and so cannot run until every record has been read. Computing an Active-only
+                        // value here too would just be a third full scan of the record lists per workout,
+                        // thrown away — the post-pass result always supersedes it.
+                        energyKcal = null,
                         avgHr = null,
                         maxHr = null,
                         strain = null,
@@ -350,6 +354,12 @@ object HealthConnectImporter {
             // read-side improvement of an imported value: nothing else about the row changes, and a
             // session that already had a good Active credit keeps it (the estimate is a max, not a
             // replacement).
+            //
+            // Cost: two record-list scans per workout, O(workouts × kcal records). That shape is
+            // pre-existing — the old construction-time call scanned the Active list the same way. This
+            // adds the Total list and drops the now-redundant construction scan, so it is 2 scans where
+            // it was 1, not 3. Fine at realistic sizes; if a multi-year import ever makes it hurt, sort
+            // both lists by start and range-scan rather than filtering the whole list each time.
             for (i in workouts.indices) {
                 val w = workouts[i]
                 if (w.endTs <= w.startTs) continue
@@ -855,7 +865,7 @@ object HealthConnectImporter {
      * grossly over-credits. Returns null when nothing overlaps, so an energy-less session stays blank
      * rather than showing 0. (#117)
      */
-    internal fun sumActiveKcalInWindow(
+    internal fun sumKcalInWindow(
         records: List<KcalRecord>,
         startS: Long,
         endS: Long,
@@ -903,8 +913,8 @@ object HealthConnectImporter {
         endS: Long,
     ): Double? {
         if (endS <= startS) return null
-        val fromActive = sumActiveKcalInWindow(activeRecords, startS, endS)
-        val totalInWindow = sumActiveKcalInWindow(totalRecords, startS, endS)
+        val fromActive = sumKcalInWindow(activeRecords, startS, endS)
+        val totalInWindow = sumKcalInWindow(totalRecords, startS, endS)
         val fromTotal = if (totalInWindow != null && dayBasalKcal != null) {
             val basalShare = dayBasalKcal * ((endS - startS).toDouble() / 86_400.0)
             (totalInWindow - basalShare).takeIf { it > 0.0 }

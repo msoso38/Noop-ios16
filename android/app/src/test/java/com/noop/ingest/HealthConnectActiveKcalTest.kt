@@ -17,27 +17,27 @@ class HealthConnectActiveKcalTest {
         HealthConnectImporter.KcalRecord(start, end, kcal, source)
 
     @Test fun noRecordsGivesNull() {
-        assertNull(HealthConnectImporter.sumActiveKcalInWindow(emptyList(), 100, 200))
+        assertNull(HealthConnectImporter.sumKcalInWindow(emptyList(), 100, 200))
     }
 
     @Test fun aRecordFullyInsideCountsInFull() {
         val recs = listOf(rec(120, 180, 300.0))
-        assertEquals(300.0, HealthConnectImporter.sumActiveKcalInWindow(recs, 100, 200)!!, 0.001)
+        assertEquals(300.0, HealthConnectImporter.sumKcalInWindow(recs, 100, 200)!!, 0.001)
     }
 
     @Test fun aRecordExactlyMatchingTheSessionCountsInFull() {
         val recs = listOf(rec(100, 200, 250.0))
-        assertEquals(250.0, HealthConnectImporter.sumActiveKcalInWindow(recs, 100, 200)!!, 0.001)
+        assertEquals(250.0, HealthConnectImporter.sumKcalInWindow(recs, 100, 200)!!, 0.001)
     }
 
     @Test fun aNonOverlappingRecordIsIgnored() {
         val recs = listOf(rec(300, 400, 500.0))
-        assertNull(HealthConnectImporter.sumActiveKcalInWindow(recs, 100, 200))
+        assertNull(HealthConnectImporter.sumKcalInWindow(recs, 100, 200))
     }
 
     @Test fun multiplePerMinuteRecordsInsideAreSummed() {
         val recs = listOf(rec(100, 160, 60.0), rec(160, 200, 40.0))
-        assertEquals(100.0, HealthConnectImporter.sumActiveKcalInWindow(recs, 100, 200)!!, 0.001)
+        assertEquals(100.0, HealthConnectImporter.sumKcalInWindow(recs, 100, 200)!!, 0.001)
     }
 
     @Test fun aDaySpanningRecordOnlyContributesTheSessionsFraction() {
@@ -45,14 +45,14 @@ class HealthConnectActiveKcalTest {
         val dayStart = 0L
         val dayEnd = 86_400L
         val recs = listOf(rec(dayStart, dayEnd, 1440.0))
-        val sessionKcal = HealthConnectImporter.sumActiveKcalInWindow(recs, 10_000, 13_600)!! // 3600 s = 60 min
+        val sessionKcal = HealthConnectImporter.sumKcalInWindow(recs, 10_000, 13_600)!! // 3600 s = 60 min
         assertEquals(1440.0 * (3600.0 / 86_400.0), sessionKcal, 0.001) // = 60.0
     }
 
     @Test fun partialOverlapIsProRated() {
         // Record [150,250] of 100 kcal; session [100,200] overlaps [150,200] = 50 of the 100 s span.
         val recs = listOf(rec(150, 250, 100.0))
-        assertEquals(50.0, HealthConnectImporter.sumActiveKcalInWindow(recs, 100, 200)!!, 0.001)
+        assertEquals(50.0, HealthConnectImporter.sumKcalInWindow(recs, 100, 200)!!, 0.001)
     }
 
     // --- #835: cross-source double-count ---
@@ -61,7 +61,7 @@ class HealthConnectActiveKcalTest {
      *  did not, so a phone + watch pair roughly doubled a session. Max across sources, sum within one. */
     @Test fun twoSourcesOverTheSameSessionAreNotAdded() {
         val recs = listOf(rec(100, 200, 300.0, "phone"), rec(100, 200, 290.0, "watch"))
-        assertEquals(300.0, HealthConnectImporter.sumActiveKcalInWindow(recs, 100, 200)!!, 0.001)
+        assertEquals(300.0, HealthConnectImporter.sumKcalInWindow(recs, 100, 200)!!, 0.001)
     }
 
     @Test fun recordsWithinOneSourceStillSum_acrossSourcesStillMax() {
@@ -69,7 +69,7 @@ class HealthConnectActiveKcalTest {
             rec(100, 150, 50.0, "phone"), rec(150, 200, 60.0, "phone"),  // one source → 110
             rec(100, 200, 90.0, "watch"),                                 // other source → 90
         )
-        assertEquals(110.0, HealthConnectImporter.sumActiveKcalInWindow(recs, 100, 200)!!, 0.001)
+        assertEquals(110.0, HealthConnectImporter.sumKcalInWindow(recs, 100, 200)!!, 0.001)
     }
 
     // --- #835: sessions whose source writes only TotalCaloriesBurned ---
