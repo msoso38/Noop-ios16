@@ -677,9 +677,6 @@
         }
       }
     },
-    "NOOP" : {
-
-    },
     "NOOP Charge" : {
       "localizations" : {
         "de" : {

@@ -1,22 +1,6 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "" : {
-
-    },
-    "%@" : {
-
-    },
-    "%@ · recovery %lld" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$@ · recovery %2$lld"
-          }
-        }
-      }
-    },
     "%lld" : {
       "localizations" : {
         "de" : {
@@ -442,7 +426,6 @@
       }
     },
     "0xAA 41 00 1c crc32=f3a1  mono 13" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -609,7 +592,6 @@
       }
     },
     "51 bpm" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -638,7 +620,6 @@
       }
     },
     "7h 42m asleep · 92% efficiency" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -667,7 +648,6 @@
       }
     },
     "87% · streaming" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -736,7 +716,6 @@
       }
     },
     "Add" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -771,7 +750,6 @@
       }
     },
     "Adopted via NoopButtonStyle" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -857,11 +835,7 @@
         }
       }
     },
-    "BPM" : {
-
-    },
     "Bar only" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -890,7 +864,6 @@
       }
     },
     "Body / Regular 15 — the thread of you, read in full." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -918,11 +891,7 @@
         }
       }
     },
-    "Building" : {
-
-    },
     "COUNT-UP SCORE" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -950,11 +919,7 @@
         }
       }
     },
-    "Calibrating" : {
-
-    },
     "Calm night" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -983,7 +948,6 @@
       }
     },
     "Caption 12" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1012,7 +976,6 @@
       }
     },
     "Card %lld" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1166,9 +1129,6 @@
         }
       }
     },
-    "Date" : {
-
-    },
     "Deep" : {
       "localizations" : {
         "de" : {
@@ -1319,11 +1279,7 @@
         }
       }
     },
-    "Effort" : {
-
-    },
     "Footnote 11" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1410,7 +1366,6 @@
       }
     },
     "HRV (ms) — 30 days" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1439,7 +1394,6 @@
       }
     },
     "Headline / Semibold 17" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1496,7 +1450,6 @@
       }
     },
     "Hover a band: stage name, clock start–end and duration." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1525,7 +1478,6 @@
       }
     },
     "Hover a cell: ring + date, score and recovery-state tooltip." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1554,7 +1506,6 @@
       }
     },
     "Hover a gauge for a strain + load-word tooltip." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1583,7 +1534,6 @@
       }
     },
     "Hover a ring for a recovery + state-word tooltip." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1612,7 +1562,6 @@
       }
     },
     "Hover any sparkline to read the exact sample under the cursor." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1641,7 +1590,6 @@
       }
     },
     "Hover the cards to see the lift." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1670,7 +1618,6 @@
       }
     },
     "Hover the line: crosshair + dot + date/value tooltip." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1699,7 +1646,6 @@
       }
     },
     "Hover to read each day's HRV in ms." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1728,7 +1674,6 @@
       }
     },
     "In a card" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1855,7 +1800,6 @@
       }
     },
     "Last night" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -1941,9 +1885,6 @@
         }
       }
     },
-    "Live" : {
-
-    },
     "MODERATE" : {
       "localizations" : {
         "de" : {
@@ -2011,12 +1952,6 @@
           }
         }
       }
-    },
-    "NOOP" : {
-
-    },
-    "Next day" : {
-
     },
     "No data" : {
       "localizations" : {
@@ -2117,7 +2052,6 @@
       }
     },
     "Overline" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2146,7 +2080,6 @@
       }
     },
     "Overview HR" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2272,14 +2205,7 @@
         }
       }
     },
-    "Pick a date" : {
-
-    },
-    "Previous day" : {
-
-    },
     "RECOVERY GRADIENT" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2306,9 +2232,6 @@
           }
         }
       }
-    },
-    "Recovery" : {
-
     },
     "Recovery calendar, %lld days, average %lld, low %lld, high %lld" : {
       "localizations" : {
@@ -2391,7 +2314,6 @@
       }
     },
     "Recovery — 30 days" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2420,7 +2342,6 @@
       }
     },
     "Recovery — past year" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2449,7 +2370,6 @@
       }
     },
     "Reduce Motion renders static at the final frame." : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2478,7 +2398,6 @@
       }
     },
     "Remove" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2513,7 +2432,6 @@
       }
     },
     "Replay reveal" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2542,7 +2460,6 @@
       }
     },
     "Resting HR" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2577,7 +2494,6 @@
       }
     },
     "Restless night" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2606,7 +2522,6 @@
       }
     },
     "Roll the number" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2635,7 +2550,6 @@
       }
     },
     "SOFT CARD TRANSITION" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2664,7 +2578,6 @@
       }
     },
     "STAGGERED APPEAR" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2693,7 +2606,6 @@
       }
     },
     "STRAIN RAMP" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2762,7 +2674,6 @@
       }
     },
     "Save" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2797,7 +2708,6 @@
       }
     },
     "Segment counts & heights" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2825,11 +2735,7 @@
         }
       }
     },
-    "Sleep end" : {
-
-    },
     "Sleep performance" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2858,7 +2764,6 @@
       }
     },
     "Sleep stages" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -2966,14 +2871,7 @@
         }
       }
     },
-    "Sleep start" : {
-
-    },
-    "Solid" : {
-
-    },
     "Subhead 13" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -3041,11 +2939,7 @@
         }
       }
     },
-    "Time" : {
-
-    },
     "Title 1 / Bold 28" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -3074,7 +2968,6 @@
       }
     },
     "Title 2 / Semibold 22" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -3161,7 +3054,6 @@
       }
     },
     "Toggle gentle spring" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -3229,11 +3121,7 @@
         }
       }
     },
-    "Value" : {
-
-    },
     "Values" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -3261,11 +3149,7 @@
         }
       }
     },
-    "Wake" : {
-
-    },
     "Whoop 4.0" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -3432,7 +3316,6 @@
       }
     },
     "hour %lld" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
