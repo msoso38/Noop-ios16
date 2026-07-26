@@ -157,14 +157,14 @@ object SleepStager {
      *  this conservative. Mirrors Swift `morningReonsetBandAsleepFrac`. (H8 consume) */
     const val morningReonsetBandAsleepFrac: Double = 0.6
 
-    /** Default-ON gate for the H9 @73 band-state WAKE-veto. Flip to false to fall back to the byte-identical
+    /** Default-ON gate for the H9 band-state WAKE-veto. Flip to false to fall back to the byte-identical
      *  pre-veto hypnogram. [bandStateAsleep] is WHOOP's OWN banked verdict (not a signal we re-derive), which
      *  is why vetoing false-wakes with it is well-founded; it stays a single flip-point + fully tested. An
      *  absent band stream (WHOOP 4.0 / unbanded window) makes the veto a no-op regardless of this flag.
      *  Mirrors Swift `bandStateWakeVetoEnabled`. (H9) */
     const val bandStateWakeVetoEnabled: Boolean = true
 
-    /** The sleep stage a band-vetoed false-wake epoch is reclassified to. [bandStateAsleep] (@73 == 2) means
+    /** The sleep stage a band-vetoed false-wake epoch is reclassified to. [bandStateAsleep] (band sleep_state == 2) means
      *  only "asleep" — the band carries NO light/deep/REM resolution — so the veto maps it to the generic,
      *  most-common sleep stage rather than inventing deep/REM detail the strap never asserted (deep/REM
      *  minutes feed the recovery gate; the veto must not inflate them). "light" is the honest projection of a
@@ -802,7 +802,7 @@ object SleepStager {
         return asleep.toDouble() / inBlock.size.toDouble() >= morningReonsetBandAsleepFrac
     }
 
-    // ── H9 @73 band-state WAKE-veto (recover strap-disputed false wakes) ──────────
+    // ── H9 band-state WAKE-veto (recover strap-disputed false wakes) ──────────
     //
     // NOOP's cardiorespiratory stager is known to OVER-CALL wake: an EEG-free stager reads a still, low-HR
     // but not-quite-asleep epoch as wake far more often than the wearer was actually awake. WHOOP's OWN
@@ -815,7 +815,7 @@ object SleepStager {
     // re-onset session), this operates per EPOCH on the final hypnogram and only ever turns wake INTO sleep.
 
     /**
-     * H9 @73 band-state WAKE-veto. Given a staged hypnogram [stages] (StageSegments tiling `[start, end]`)
+     * H9 band-state WAKE-veto. Given a staged hypnogram [stages] (StageSegments tiling `[start, end]`)
      * and the strap's OWN per-timestamp band sleep_state, reclassify INTERIOR wake epochs the strap itself
      * scored "asleep" ([bandStateAsleep]) to [bandVetoRecoverStage]. Conservative by construction:
      *   - ONLY [bandStateAsleep] (2) vetoes — a "still" (1) / "up" (3) / "wake" (0) band reading is LEFT as
@@ -837,7 +837,7 @@ object SleepStager {
         if (!bandStateWakeVetoEnabled || bandSleepState.isEmpty() || stages.isEmpty() || end <= start) {
             return stages
         }
-        // Per-epoch @73 band on the 30 s stagesJSON grid — byte-identical to the persisted sleepStateJSON.
+        // Per-epoch band on the 30 s stagesJSON grid — byte-identical to the persisted sleepStateJSON.
         val states = sessionEpochSleepState(start, end, bandSleepState)
         if (states.isEmpty()) return stages
         val n = states.size
@@ -1219,7 +1219,7 @@ object SleepStager {
                 stageSession(start = p.start, end = p.end, grav = grav,
                     hr = hrS, rr = rrS, resp = respS)
             }
-            // H9 @73 band-state WAKE-veto: recover INTERIOR false-wake epochs the strap's OWN band
+            // H9 band-state WAKE-veto: recover INTERIOR false-wake epochs the strap's OWN band
             // ([bandSleepState]) scored "asleep". No-op when the band is absent (WHOOP 4.0) or the flag is
             // off; stager-agnostic (corrects whichever hypnogram V1/V2 produced). Efficiency below is then
             // computed on the corrected stages, so a night NOOP over-called wake on reports true efficiency.

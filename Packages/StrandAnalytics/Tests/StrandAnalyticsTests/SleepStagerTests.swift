@@ -1054,7 +1054,7 @@ final class SleepStagerTests: XCTestCase {
             "the persisted+re-expanded band grid drives the H7 confirm end to end")
     }
 
-    // MARK: - H9 @73 band-state WAKE-veto (recover strap-disputed false wakes)
+    // MARK: - H9 band-state WAKE-veto (recover strap-disputed false wakes)
 
     /// A hypnogram tiling [0, 960] (32 epochs of 30 s): a leading onset-latency wake block, an INTERIOR
     /// WASO wake block (epochs 10–15 = [300, 480)), and a trailing final-morning wake block — the exact
@@ -1085,7 +1085,7 @@ final class SleepStagerTests: XCTestCase {
             StageSegment(start: 0,   end: 60,  stage: "wake"),
             StageSegment(start: 60,  end: 900, stage: "light"),
             StageSegment(start: 900, end: 960, stage: "wake"),
-        ], "interior @73-asleep wake → light (merged); onset-latency + final-wake blocks stay wake")
+        ], "interior @81-asleep wake → light (merged); onset-latency + final-wake blocks stay wake")
     }
 
     func testBandStateWakeVetoOnlyAsleepStateVetoes() {
@@ -1144,7 +1144,7 @@ final class SleepStagerTests: XCTestCase {
 
     func testBandStateWakeVetoRaisesEfficiencyEndToEnd() {
         // WIRING PROOF through detectSleep: a still overnight night with a mid-sleep motion+HR burst that
-        // NOOP scores as INTERIOR wake. With an all-"asleep" @73 band threaded, that interior wake is
+        // NOOP scores as INTERIOR wake. With an all-"asleep" band threaded, that interior wake is
         // recovered end to end — efficiency rises and no interior wake survives (only onset/final blocks).
         let start = nightStart(2)                 // 02:00 overnight (skips the daytime nap guard)
         let dur = 6 * 3600
@@ -1160,14 +1160,14 @@ final class SleepStagerTests: XCTestCase {
                                                bandSleepState: bandAllAsleep(start: start, end: start + dur))
         XCTAssertEqual(withBand.count, 1)
         let wake: (SleepSession) -> Int = { $0.stages.filter { $0.stage == "wake" }.reduce(0) { $0 + ($1.end - $1.start) } }
-        XCTAssertLessThanOrEqual(wake(withBand[0]), wake(noBand[0]), "the @73 veto can only reduce wake")
+        XCTAssertLessThanOrEqual(wake(withBand[0]), wake(noBand[0]), "the @81 veto can only reduce wake")
         XCTAssertGreaterThanOrEqual(withBand[0].efficiency, noBand[0].efficiency,
                                     "recovering strap-disputed false wake raises efficiency")
         // With an all-asleep band, every recovered epoch is interior, so any surviving wake is an EDGE block.
         let segs = withBand[0].stages
         for (i, s) in segs.enumerated() where s.stage == "wake" {
             XCTAssertTrue(i == 0 || i == segs.count - 1,
-                          "an all-asleep @73 band leaves no INTERIOR wake — only onset/final-wake blocks")
+                          "an all-asleep band leaves no INTERIOR wake — only onset/final-wake blocks")
         }
     }
 

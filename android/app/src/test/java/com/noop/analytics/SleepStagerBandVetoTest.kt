@@ -1,22 +1,40 @@
 package com.noop.analytics
 
+import com.noop.data.GravitySample
+import com.noop.data.HrSample
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.ceil
 
 /**
- * Pins the H9 @73 band-state WAKE-veto ([SleepStager.applyBandStateWakeVeto]).
+ * Pins the H9 band-state WAKE-veto ([SleepStager.applyBandStateWakeVeto]).
  *
  * NOOP's EEG-free cardiorespiratory stager over-calls WAKE. WHOOP's OWN per-second sleep-state band (#175)
  * is an independent scored signal; letting its explicit "asleep" ([SleepStager.bandStateAsleep]) verdict
  * VETO an INTERIOR wake epoch recovers most of that spurious wake with near-zero downside. These tests pin
  * the contract: only asleep(2) vetoes (still/up/wake never do), the leading onset-latency and trailing
  * final-wake blocks are never touched, recovery is per-EPOCH, an absent band is a no-op, the output keeps
- * tiling [start,end], and the veto only ever turns wake into sleep. Android twin of the Swift H9
- * band-state wake-veto tests in `SleepStagerTests`.
+ * tiling [start,end], and the veto only ever turns wake into sleep. [raisesEfficiencyEndToEnd] additionally
+ * drives the whole [SleepStager.detectSleep] path so the Android WIRING (rawStages -> veto -> efficiency),
+ * not just the pure function, is covered. Android twin of the Swift H9 band-state wake-veto tests in
+ * `SleepStagerTests`.
  */
 class SleepStagerBandVetoTest {
+
+    private val dev = "test"
+
+    /** 2025-06-10 00:00:00 UTC — an arbitrary fixed midnight (ref % 86400 == 0). */
+    private val refMidnight = 1_749_513_600L
+
+    /** Unix start at `hourUTC:00:00` on the reference day. tzOffset 0 → local hour == UTC hour. */
+    private fun startAtHour(hourUTC: Int): Long = refMidnight + hourUTC * 3_600L
+
+    private fun stillGravity(start: Long, durationS: Int): List<GravitySample> =
+        (0 until durationS).map { GravitySample(deviceId = dev, ts = start + it, x = 0.0, y = 0.0, z = 1.0) }
+
+    private fun hrStream(start: Long, durationS: Int, bpm: Int): List<HrSample> =
+        (0 until durationS).map { HrSample(deviceId = dev, ts = start + it, bpm = bpm) }
 
     /**
      * A hypnogram tiling [0, 960] (32 epochs of 30 s): a leading onset-latency wake block, an INTERIOR
@@ -50,7 +68,7 @@ class SleepStagerBandVetoTest {
             bandSleepState = bandAllAsleep(start = 0, end = 960),
         )
         assertEquals(
-            "interior @73-asleep wake -> light (merged); onset-latency + final-wake blocks stay wake",
+            "interior @81-asleep wake -> light (merged); onset-latency + final-wake blocks stay wake",
             listOf(
                 StageSegment(start = 0, end = 60, stage = "wake"),
                 StageSegment(start = 60, end = 900, stage = "light"),
@@ -134,5 +152,38 @@ class SleepStagerBandVetoTest {
         }
         val wake = { segs: List<StageSegment> -> segs.filter { it.stage == "wake" }.sumOf { it.end - it.start } }
         assertTrue("the veto only ever turns wake into sleep", wake(out) < wake(stages))
+    }
+
+    @Test
+    fun raisesEfficiencyEndToEnd() {
+        // WIRING PROOF through detectSleep: a still overnight night with a mid-sleep motion+HR burst that
+        // NOOP scores as INTERIOR wake. With an all-"asleep" band threaded, that interior wake is
+        // recovered end to end — efficiency rises and no interior wake survives (only onset/final blocks).
+        val start = startAtHour(2)                // 02:00 overnight (skips the daytime nap guard)
+        val dur = 6 * 3600
+        val grav = stillGravity(start, dur).toMutableList()
+        val hr = hrStream(start, dur, 50).toMutableList()
+        for (i in (3 * 3600) until (3 * 3600 + 5 * 60)) {  // 5-min burst at +3h: high motion + elevated HR
+            grav[i] = GravitySample(deviceId = dev, ts = start + i, x = (i % 2) * 0.5, y = 0.0, z = 1.0)
+            hr[i] = HrSample(deviceId = dev, ts = start + i, bpm = 95)
+        }
+        val noBand = SleepStager.detectSleep(hr = hr, gravity = grav)
+        assertEquals(1, noBand.size)
+        val withBand = SleepStager.detectSleep(
+            hr = hr, gravity = grav,
+            bandSleepState = bandAllAsleep(start = start, end = start + dur),
+        )
+        assertEquals(1, withBand.size)
+        val wake = { s: DetectedSleep -> s.stages.filter { it.stage == "wake" }.sumOf { it.end - it.start } }
+        assertTrue("the band-state veto can only reduce wake", wake(withBand[0]) <= wake(noBand[0]))
+        assertTrue("recovering strap-disputed false wake raises efficiency",
+            withBand[0].efficiency >= noBand[0].efficiency)
+        // With an all-asleep band, every recovered epoch is interior, so any surviving wake is an EDGE block.
+        val segs = withBand[0].stages
+        for ((i, s) in segs.withIndex()) {
+            if (s.stage != "wake") continue
+            assertTrue("an all-asleep band leaves no INTERIOR wake — only onset/final-wake blocks",
+                i == 0 || i == segs.size - 1)
+        }
     }
 }
