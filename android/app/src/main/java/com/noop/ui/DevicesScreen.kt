@@ -803,7 +803,7 @@ private fun DeviceActionsMenu(
                 // #827: read-only GET_CLOCK opcode probe — re-requests the clock the connect handshake
                 // already asks for, so the raw reply is readable without a full log export.
                 if (onClockProbe != null) {
-                    MenuItem("Clock probe (#827 RE)…", Icons.Filled.BugReport) { onOpenChange(false); onClockProbe() }
+                    MenuItem(uiString(R.string.l10n_devices_screen_clock_probe_827_re_81f36a9b), Icons.Filled.BugReport) { onOpenChange(false); onClockProbe() }
                 }
                 if (onRemove != null) {
                     HorizontalDivider(color = Palette.hairline)
@@ -1030,13 +1030,10 @@ private fun ClockProbeDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.surfaceOverlay,
-        title = { Text("Clock probe (#827 RE)", style = NoopType.title2, color = Palette.textPrimary) },
+        title = { Text(uiString(R.string.l10n_devices_screen_clock_probe_827_re_81f36a9b), style = NoopType.title2, color = Palette.textPrimary) },
         text = {
             Text(
-                "Sends the read-only GET_CLOCK (11) and shows the strap's full raw reply, decoding a clock " +
-                    "value. GET_CLOCK is already sent on every connect; this just re-requests it on demand " +
-                    "so you can see the raw bytes and confirm the \"Clock latched\" readout. Nothing is " +
-                    "written to the strap.",
+                uiString(R.string.l10n_devices_screen_clock_probe_explainer_a0bca2bf),
                 style = NoopType.subhead,
                 color = Palette.textSecondary,
             )
@@ -1067,7 +1064,7 @@ private fun ClockProbeResultDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.surfaceOverlay,
-        title = { Text("Clock probe result (#827)", style = NoopType.title2, color = Palette.textPrimary) },
+        title = { Text(uiString(R.string.l10n_devices_screen_clock_probe_result_827_e6daef3d), style = NoopType.title2, color = Palette.textPrimary) },
         text = {
             Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
                 SelectionContainer {

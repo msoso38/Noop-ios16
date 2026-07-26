@@ -400,6 +400,9 @@
     <string name="l10n_devices_screen_body_location_probe_result_690_60c5ee79">Body-location probe result (#690)</string>
     <string name="l10n_devices_screen_body_location_probe_explainer_a9363239">Sends the read-only body-location command (0x54) and dumps the strap\'s full raw reply to the strap log, decoding the record (revision / location / confidence / status) on WHOOP 4.0. Nothing is written to the strap, and it never changes wear detection or scoring.</string>
     <string name="l10n_devices_screen_battery_probe_explainer_2858bb6a">Two independent protocol tables disagree on the extended-battery opcode (98 vs 87). This sends the curated read-only 98 and dumps the strap\'s full raw reply to the strap log. A battery-style payload confirms 98 on your firmware; a short stub means it stays ambiguous. Nothing is written to the strap. Please export and share the strap log afterwards.</string>
+    <string name="l10n_devices_screen_clock_probe_827_re_81f36a9b">Clock probe (#827 RE)…</string>
+    <string name="l10n_devices_screen_clock_probe_result_827_e6daef3d">Clock probe result (#827)</string>
+    <string name="l10n_devices_screen_clock_probe_explainer_a0bca2bf">Sends the read-only GET_CLOCK (11) and shows the strap\'s full raw reply, decoding a clock value. GET_CLOCK is already sent on every connect; this just re-requests it on demand so you can see the raw bytes and confirm the \"Clock latched\" readout. Nothing is written to the strap.</string>
     <string name="l10n_devices_screen_cancel_77dfd213">Cancel</string>
     <string name="l10n_devices_screen_clamped_1f39cebb">%1$s%%</string>
     <string name="l10n_devices_screen_close_bbfa773e">Close</string>

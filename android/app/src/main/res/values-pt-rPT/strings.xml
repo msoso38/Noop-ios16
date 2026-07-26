@@ -374,6 +374,9 @@
     <string name="l10n_devices_screen_body_location_probe_result_690_60c5ee79">Resultado da sonda de localização corporal (#690)</string>
     <string name="l10n_devices_screen_body_location_probe_explainer_a9363239">Envia o comando body-location de leitura apenas (0x54) e regista a resposta bruta completa do bracelete no registo da bracelete, descodificando o registo (revisão/localização/confiança/estado) no WHOOP 4.0. Nada é escrito na bracelete e nunca altera a deteção ou pontuação de desgaste.</string>
     <string name="l10n_devices_screen_battery_probe_explainer_2858bb6a">Duas tabelas de protocolo independentes discordam quanto ao opcode de bateria alargada (98 vs 87). Isto envia o 98 de leitura, validado e regista a resposta bruta completa do bracelete no registo da bracelete. Uma carga útil tipo bateria confirma 98 no teu firmware; um esboço curto significa que permanece ambíguo. Nada é escrito na bracelete. Exporte e partilhe o registo da bracelete posteriormente.</string>
+    <string name="l10n_devices_screen_clock_probe_827_re_81f36a9b">Sonda de relógio (#827 RE)…</string>
+    <string name="l10n_devices_screen_clock_probe_result_827_e6daef3d">Resultado da sonda de relógio (#827)</string>
+    <string name="l10n_devices_screen_clock_probe_explainer_a0bca2bf">Envia o GET_CLOCK (11) de leitura apenas e mostra a resposta bruta completa do bracelete, descodificando um valor de relógio. O GET_CLOCK já é enviado em cada ligação; isto apenas volta a pedi-lo por pedido para poderes ver os bytes brutos e confirmar o indicador \"Clock latched\". Nada é escrito na bracelete.</string>
     <string name="l10n_devices_screen_cancel_77dfd213">Cancelar</string>
     <string name="l10n_devices_screen_clamped_1f39cebb">%1$s%%</string>
     <string name="l10n_devices_screen_close_bbfa773e">Fechar</string>

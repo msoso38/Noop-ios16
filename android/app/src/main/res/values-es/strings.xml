@@ -231,6 +231,9 @@
     <string name="l10n_devices_screen_body_location_probe_result_690_60c5ee79">Resultado de la sonda de posición corporal (#690)</string>
     <string name="l10n_devices_screen_body_location_probe_explainer_a9363239">Envía el comando de posición corporal de solo lectura (0x54) y vuelca la respuesta cruda completa de la banda al registro, decodificando el registro (revisión / posición / confianza / estado) en la WHOOP 4.0. No se escribe nada en la banda y nunca cambia la detección de uso ni la puntuación.</string>
     <string name="l10n_devices_screen_battery_probe_explainer_2858bb6a">Dos tablas de protocolo independientes discrepan sobre el opcode de batería extendida (98 vs 87). Esto envía el 98 curado y de solo lectura y vuelca la respuesta cruda completa de la banda al registro. Una carga tipo batería confirma 98 en tu firmware; un stub corto lo deja ambiguo. No se escribe nada en la banda. Exporta y comparte el registro después.</string>
+    <string name="l10n_devices_screen_clock_probe_827_re_81f36a9b">Sonda de reloj (#827 RE)…</string>
+    <string name="l10n_devices_screen_clock_probe_result_827_e6daef3d">Resultado de la sonda de reloj (#827)</string>
+    <string name="l10n_devices_screen_clock_probe_explainer_a0bca2bf">Envía el comando de solo lectura GET_CLOCK (11) y muestra la respuesta cruda completa de la banda, decodificando un valor de reloj. GET_CLOCK ya se envía en cada conexión; esto simplemente lo vuelve a solicitar bajo demanda para que puedas ver los bytes crudos y confirmar el indicador \"Clock latched\". No se escribe nada en la banda.</string>
     <string name="l10n_devices_screen_cancel_77dfd213">Cancelar</string>
     <string name="l10n_devices_screen_clamped_1f39cebb">%1$s%%</string>
     <string name="l10n_devices_screen_close_bbfa773e">Cerrar</string>
