@@ -244,7 +244,9 @@ final class Whoop5HistoricalTests: XCTestCase {
         // (0 is a real wake reading, NOT "absent"), stamped at the record's own unix (1780916150).
         let f = parseFrame(bytes(historicalHex), family: .whoop5)
         let s = extractHistoricalStreams([f], deviceClockRef: 1780916150, wallClockRef: 1780916150)
-        XCTAssertEqual(s.sleepState, [SleepStateSample(ts: 1780916150, state: 0)],
+        // v31 additionally carries the WHOLE @81 byte alongside `state`; on this fixture the byte is 0,
+        // so both the interpreted nibble and the raw byte read 0.
+        XCTAssertEqual(s.sleepState, [SleepStateSample(ts: 1780916150, state: 0, rawByte: 0)],
                        "the real worn fixture's band wake state (0) must reach the stream")
     }
 
@@ -274,7 +276,8 @@ final class Whoop5HistoricalTests: XCTestCase {
             let f = parseFrame(mutatingCRCValid(81, to: UInt8(raw)), family: .whoop5)
             XCTAssertEqual(f.crcOK, true, "the re-stamped frame must pass CRC (raw 0x\(String(raw, radix: 16)))")
             let s = extractHistoricalStreams([f], deviceClockRef: 1780916150, wallClockRef: 1780916150)
-            XCTAssertEqual(s.sleepState, [SleepStateSample(ts: 1780916150, state: expected)],
+            // v31 carries the whole byte too; `state` must still be exactly its high nibble.
+            XCTAssertEqual(s.sleepState, [SleepStateSample(ts: 1780916150, state: expected, rawByte: raw)],
                            "band code \(expected) must reach the stream (raw 0x\(String(raw, radix: 16)))")
         }
     }

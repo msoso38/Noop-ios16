@@ -91,6 +91,14 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertRawImu(rows: List<RawImuSampleEntity>): List<Long>
 
+    /**
+     * The remaining 5/MG v18 per-second fields, one compact blob per strap-second. Idempotent by
+     * (deviceId, ts) — IGNORE keeps the FIRST-seen row, matching every other per-second stream, so a
+     * re-sync cannot duplicate or overwrite. Instrumentation only.
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertV18Aux(rows: List<V18AuxSampleEntity>): List<Long>
+
     /** Bound the raw-IMU table to the newest [keep] rows for [deviceId] (rolling retention, #423). */
     @Query(
         "DELETE FROM rawImuSample WHERE deviceId = :deviceId AND ts < " +
@@ -288,6 +296,18 @@ interface WhoopDao : DeviceRegistryDao {
     )
     suspend fun ppgWaveformSamples(deviceId: String, from: Long, to: Long, limit: Int):
         List<PpgWaveformSampleEntity>
+
+    /**
+     * The banked 5/MG v18 auxiliary-field rows in [from, to] (ascending). Empty on a WHOOP 4.0 and for
+     * any window offloaded before the columns existed. INSTRUMENTATION: no analytic calls this — it
+     * exists so the banked bytes are reachable for a census, and so the write path has a round-trip test.
+     */
+    @Query(
+        "SELECT * FROM v18AuxSample WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
+            "ORDER BY ts ASC LIMIT :limit"
+    )
+    suspend fun v18AuxSamples(deviceId: String, from: Long, to: Long, limit: Int):
+        List<V18AuxSampleEntity>
 
     /** Aggregate HR over a window (one indexed (deviceId,ts) range scan — no row materialisation,
      *  no [hrSamples] LIMIT truncation). Backs the imported-workout HR fallback (#77).

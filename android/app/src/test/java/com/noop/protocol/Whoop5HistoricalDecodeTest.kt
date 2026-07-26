@@ -191,7 +191,8 @@ class Whoop5HistoricalDecodeTest {
     @Test
     fun sleepStateReachesStreamOnRealFixture() {
         val st = extractHistoricalStreams(listOf(bytes(wornV18)), 1780916150, 1780916150, DeviceFamily.WHOOP5)
-        assertEquals(listOf(com.noop.data.SleepStateRow(1780916150L, 0)), st.sleepState)
+        // The whole @81 byte now rides alongside `state`; on this fixture the byte is 0, so both read 0.
+        assertEquals(listOf(com.noop.data.SleepStateRow(1780916150L, 0, rawByte = 0)), st.sleepState)
     }
 
     // The non-zero codes come only from an in-memory byte override (we hold NO real sleeping-night capture),
@@ -202,7 +203,8 @@ class Whoop5HistoricalDecodeTest {
         for ((raw, expected) in listOf(0x10 to 1, 0x20 to 2, 0x30 to 3)) {
             val frame = mutateAndReCrc(81, raw)
             val st = extractHistoricalStreams(listOf(frame), 1780916150, 1780916150, DeviceFamily.WHOOP5)
-            assertEquals(listOf(com.noop.data.SleepStateRow(1780916150L, expected)), st.sleepState)
+            // `state` must still be exactly the high nibble of the carried raw byte.
+            assertEquals(listOf(com.noop.data.SleepStateRow(1780916150L, expected, rawByte = raw)), st.sleepState)
         }
     }
 

@@ -11,6 +11,7 @@ import com.noop.data.RespRow
 import com.noop.data.RrRow
 import com.noop.data.SkinTempRow
 import com.noop.data.SleepStateRow
+import com.noop.data.V18AuxRow
 import com.noop.data.Spo2Row
 import com.noop.data.StepRow
 import com.noop.data.StreamBatch
@@ -347,6 +348,12 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
         out["sleep_state"] = (it shr 4) and 3
         out["wake_quality"] = (it shr 2) and 3
         out["onwrist"] = it and 3
+        // The WHOLE byte, unmasked. The three fields above are the nibbles this project has interpreted;
+        // this key is the strap's own byte VERBATIM so all 8 bits survive to storage — including b6-7,
+        // which read 0 across every capture held here and therefore have no interpretation at all yet. A
+        // per-nibble store would make those bits permanently unrecoverable, because the strap trims its
+        // banked history the moment an offload is acked. Instrumentation only: nothing scores this.
+        out["sleep_state_byte"] = it
     }
     // @82 a single raw byte adjacent to the flag byte; nonzero only while sleep_state = asleep.
     // #103 SpO2 candidate: a decompile-sourced decode (gen5.rs `spo2_pct`, reimplemented here as a
@@ -632,6 +639,8 @@ fun extractHistoricalStreams(
     // follow-up) — the same (ts, samples) the estimator above consumes, but grouped per second so it
     // persists as its own `ppgWaveformSample` stream rather than being flattened into the HR buffer.
     val ppgWaveform = ArrayList<PpgWaveformRow>()
+    // Every remaining v18 per-second field the decoder produces and this funnel used to discard.
+    val v18Aux = ArrayList<V18AuxRow>()
 
     for (frame in rawFrames) {
         // Packet type byte: WHOOP 5/MG's longer puffin envelope puts it at frame[8]; WHOOP 4 at frame[4].
@@ -678,7 +687,22 @@ fun extractHistoricalStreams(
                 p.intOrNull("spo2_red")?.let { red ->
                     spo2.add(Spo2Row(ts, red = red, ir = p.intOrNull("spo2_ir") ?: 0))
                 }
-                p.intOrNull("skin_temp_raw")?.let { raw -> skinTemp.add(SkinTempRow(ts, raw)) }
+                // The two AUXILIARY thermal channels (`temp_aux_1_raw@69` / `temp_aux_2_raw@71`, i16,
+                // °C = value/10) ride the primary skin-temp row for the same second. Both were decoded
+                // and dropped here until now. They are carried ONLY when the primary channel decoded,
+                // because that is the row's key — a record whose @73 failed the decoder's 5-45 °C gate
+                // banks no skinTemp row at all, and inventing one to hold an aux value would put a
+                // fabricated primary reading in the store. null for a WHOOP 4.0.
+                p.intOrNull("skin_temp_raw")?.let { raw ->
+                    skinTemp.add(
+                        SkinTempRow(
+                            ts,
+                            raw,
+                            aux1Raw = p.intOrNull("temp_aux_1_raw"),
+                            aux2Raw = p.intOrNull("temp_aux_2_raw"),
+                        ),
+                    )
+                }
                 // step_motion_counter@57 is the WHOOP5 CUMULATIVE u16 counter (decoded but, until now,
                 // dropped). Stored raw; AnalyticsEngine derives the daily step total from counter deltas.
                 // APPROXIMATE — @57 semantics unverified vs the official app (see decodeWhoop5Historical). (#78)
@@ -691,8 +715,19 @@ fun extractHistoricalStreams(
                 // re-onset confirm guard → Deep Timeline track) had no source. Carried VERBATIM including 0
                 // (a real wake reading, not "absent"): only 5/MG v18 records emit the key, so a WHOOP 4.0
                 // simply adds nothing.
-                p.intOrNull("sleep_state")?.let { st -> sleepState.add(SleepStateRow(ts, st)) }
+                // `rawByte` carries the WHOLE @81 byte beside the high-nibble `state` this row already
+                // stored, so the bits the mask throws away survive: b0-1 `onwrist` and b2-3
+                // `wake_quality` are both decoded and were discarded right here, and b6-7 have no
+                // interpretation at all yet. `state` is unchanged, so #175 / the H7 guard / the Deep
+                // Timeline track are bit-identical.
+                p.intOrNull("sleep_state")?.let { st ->
+                    sleepState.add(SleepStateRow(ts, st, rawByte = p.intOrNull("sleep_state_byte")))
+                }
                 p.intOrNull("resp_rate_raw")?.let { raw -> resp.add(RespRow(ts, raw)) }
+                // `dynAccel` is the strap's OWN gravity-removed motion magnitude
+                // (`dynamic_acceleration@41`) for this same second, riding the gravity row it belongs
+                // beside. It was decoded and dropped here until now, so every second of it was lost once
+                // the offload was acked. null for a WHOOP 4.0 or a record whose f32 failed the [0, 8] g gate.
                 p.doubleOrNull("gravity_x")?.let { gx ->
                     gravity.add(
                         GravityRow(
@@ -700,6 +735,7 @@ fun extractHistoricalStreams(
                             x = gx,
                             y = p.doubleOrNull("gravity_y") ?: 0.0,
                             z = p.doubleOrNull("gravity_z") ?: 0.0,
+                            dynAccel = p.doubleOrNull("dynamic_acceleration"),
                         ),
                     )
                 }
@@ -708,6 +744,41 @@ fun extractHistoricalStreams(
                 // per-sample delta, this is an absolute magnitude — related, not the same measurement);
                 // passed as a literal because the protocol layer must not depend on analytics.
                 p.doubleOrNull("dynamic_acceleration")?.let { dynAccel.add(it, DYN_ACCEL_STILL_THRESHOLD_G) }
+                // Everything ELSE the v18 decoder produced for this second. Each of these was computed
+                // and then dropped one line later; the strap trims its banked history the moment the
+                // offload is acked, so an unbanked field is unrecoverable and can never be censused.
+                // Carried verbatim under the decoder's own names, no scaling and no interpretation.
+                //
+                // Gated on `hist_version == 18` — the exact layout these offsets were read off. Every
+                // other layout adds NOTHING: a WHOOP 4.0 v24/v25 record and a 5/MG v20/v21/v26 record are
+                // untouched. The gate is explicit rather than implied by which keys happen to be present,
+                // because `rr_count` IS shared with the 4.0 schema and a presence-based test would start
+                // banking a near-empty row for every WHOOP 4.0 second.
+                if (p.intOrNull("hist_version") == 18) {
+                    val aux = V18AuxRow(
+                        ts = ts,
+                        recordIndex = p.intOrNull("record_index"),
+                        rrCount = p.intOrNull("rr_count"),
+                        cardiacFlags = p.intOrNull("cardiac_flags"),
+                        hrFixed88 = p.intOrNull("hr_fixed_8_8"),
+                        rrPacked = p.intOrNull("rr_packed"),
+                        cardiacStatus = p.intOrNull("cardiac_status"),
+                        stepCadence = p.intOrNull("step_cadence"),
+                        statusWord = p.intOrNull("status_word"),
+                        statusWord1 = p.intOrNull("status_word_1"),
+                        statusWord2 = p.intOrNull("status_word_2"),
+                        auxByte82 = p.intOrNull("aux_byte_82"),
+                        opticalBaseline106 = p.intOrNull("optical_baseline_106"),
+                        opticalAmpA = p.intOrNull("optical_amp_a"),
+                        opticalAmpB = p.intOrNull("optical_amp_b"),
+                        // Banked as the float's raw 32-bit pattern, not a decoded value — the decoder
+                        // gates this field to finite floats, which round-trip Double->Float exactly.
+                        unknownF32Bits = p.doubleOrNull("unknown_f32_113")
+                            ?.let { f -> f.toFloat().toRawBits() },
+                    )
+                    // A record that decoded none of the slots banks no row at all — absence stays absence.
+                    if (!aux.isEmpty) v18Aux.add(aux)
+                }
             }
 
             PacketType.REALTIME_RAW_DATA.rawValue -> {
@@ -777,6 +848,7 @@ fun extractHistoricalStreams(
         sleepState = sleepState,
         ppgHr = ppgHr,
         ppgWaveform = ppgWaveform,
+        v18Aux = v18Aux,
         droppedImplausibleTs = droppedImplausible,
         droppedImplausibleOldestTs = droppedOldest,   // #324 poisoned-range epoch span (diag only)
         droppedImplausibleNewestTs = droppedNewest,

@@ -71,12 +71,28 @@ public struct SpO2Sample: Equatable, Codable {
     }
 }
 
+/// A skin-temperature reading, plus the two AUXILIARY thermal channels that ride the same 5/MG v18
+/// record (`temp_aux_1_raw@69`, `temp_aux_2_raw@71`).
+///
+/// `raw` is the primary channel (`skin_temp_raw@73`) and is unchanged. `aux1Raw` / `aux2Raw` are signed
+/// i16 registers on their OWN scale — °C = value/10, not the primary's /100 — decoded since the v18
+/// layout was mapped and dropped at this boundary until now. They track the primary closely (corr ~0.92
+/// and ~0.97 over the captured corpus) with the same diurnal curve, so they are plausibly a second and
+/// third thermistor rather than a copy; nothing here asserts what they measure, and no analytic reads
+/// them. Both optional: nil on WHOOP 4.0, on any record whose byte failed the decoder's thermal gate,
+/// and on every row banked before the channels were persisted. Mirrors Android `SkinTempRow`.
 public struct SkinTempSample: Equatable, Codable {
     public let ts: Int
     public let raw: Int
     public let unit: String     // "raw_adc"
-    public init(ts: Int, raw: Int, unit: String = "raw_adc") {
+    /// `temp_aux_1_raw@69`, signed i16; °C = value/10. nil when absent/out of gate.
+    public let aux1Raw: Int?
+    /// `temp_aux_2_raw@71`, signed i16; °C = value/10. nil when absent/out of gate.
+    public let aux2Raw: Int?
+    public init(ts: Int, raw: Int, unit: String = "raw_adc",
+                aux1Raw: Int? = nil, aux2Raw: Int? = nil) {
         self.ts = ts; self.raw = raw; self.unit = unit
+        self.aux1Raw = aux1Raw; self.aux2Raw = aux2Raw
     }
 }
 
@@ -184,14 +200,33 @@ public struct RespSample: Equatable, Codable {
     }
 }
 
+/// The 1 Hz gravity vector, plus the strap's OWN gravity-removed motion magnitude from the same record
+/// (`dynamic_acceleration@41`, f32 g).
+///
+/// The two are different measurements of the same second and belong together. NOOP's motion spine
+/// derives its stillness signal from `gravityDeltas` — the L2 distance between CONSECUTIVE 1 Hz gravity
+/// vectors — which is a proxy: it only sees motion that survives the strap's own 1 Hz downsample, and it
+/// measures orientation CHANGE, not acceleration. `dynAccel` is the strap's absolute gravity-removed
+/// magnitude at one instant, computed on-device from the full-rate IMU. Persisting it BESIDE the proxy
+/// (never instead of it) is what makes a later comparison on real nights possible at all; before this,
+/// the field was computed and discarded one line after decode, and the strap trims its banked history
+/// as soon as an offload is acked, so every second of it was lost permanently.
+///
+/// Optional: nil on WHOOP 4.0 (whose v24/v25 layouts have no such field), on any record whose f32 fell
+/// outside the decoder's `[0, 8] g` gate, and on every row banked before this column existed. Nothing
+/// scores it — see the #520 `DynAccelDiag` summary for the observability half. Mirrors Android `GravityRow`.
 public struct GravitySample: Equatable, Codable {
     public let ts: Int
     public let x: Double
     public let y: Double
     public let z: Double
     public let unit: String     // "g"
-    public init(ts: Int, x: Double, y: Double, z: Double, unit: String = "g") {
+    /// `dynamic_acceleration@41` in g — gravity-removed motion magnitude. nil when absent/out of gate.
+    public let dynAccel: Double?
+    public init(ts: Int, x: Double, y: Double, z: Double, unit: String = "g",
+                dynAccel: Double? = nil) {
         self.ts = ts; self.x = x; self.y = y; self.z = z; self.unit = unit
+        self.dynAccel = dynAccel
     }
 }
 
@@ -219,10 +254,21 @@ public struct StepSample: Equatable, Codable {
 /// surfaced/persisted as the strap's reported state, NOT trusted to override the derived hypnogram. It
 /// feeds the existing, already-verified H7 morning-stillness re-onset CONFIRM guard (KEEP-biased, never
 /// overrides) and a Deep Timeline display track. Mirrors Android `SleepStateRow`.
+///
+/// `rawByte` carries the WHOLE @81 byte alongside the interpreted `state`, so the bits `state` masks off
+/// are not thrown away: b0-1 `onwrist` and b2-3 `wake_quality` are both decoded by the Interpreter and
+/// were discarded at this boundary, and b6-7 have no interpretation at all (0 across every capture held
+/// here). `state` stays exactly `(rawByte >> 4) & 3` and is untouched, so every existing consumer is
+/// bit-identical; `rawByte` is nil on WHOOP 4.0, on any record without the byte, and on every row banked
+/// before the column existed. Instrumentation only — nothing reads the extra bits yet.
 public struct SleepStateSample: Equatable, Codable {
     public let ts: Int
     public let state: Int       // 0 wake / 1 still / 2 asleep / 3 up (band's own high-nibble code)
-    public init(ts: Int, state: Int) { self.ts = ts; self.state = state }
+    /// The RAW @81 flag byte, all 8 bits, verbatim. nil when the record carried no @81 byte.
+    public let rawByte: Int?
+    public init(ts: Int, state: Int, rawByte: Int? = nil) {
+        self.ts = ts; self.state = state; self.rawByte = rawByte
+    }
 }
 
 /// The WHOOP 5.0 v26 optical PPG buffer's RAW waveform, one record per second (issue #156 follow-up).
@@ -237,6 +283,153 @@ public struct PpgWaveformSample: Equatable, Codable, Sendable {
     public let ts: Int          // wall-clock unix seconds (one record per second)
     public let samples: [Int]   // raw i16 ADC counts @24 Hz, verbatim from `ppg_waveform` (usually 24)
     public init(ts: Int, samples: [Int]) { self.ts = ts; self.samples = samples }
+}
+
+/// One wire slot in the 5/MG v18 auxiliary-field record. The `rawValue` is the slot's bit position in
+/// the persisted presence bitmap, so it is a STORAGE CONTRACT: never reorder, renumber, or reuse a case.
+/// Appending a new case at the end is the only safe evolution (an old reader ignores a bit it has no case
+/// for; a new reader sees the bit absent on old rows).
+///
+/// Every slot is carried as an UNSIGNED integer of `width` bytes, little-endian, exactly as it sits on the
+/// wire — including `unknownF32At113`, which is banked as its raw 32-bit pattern rather than a decoded
+/// float. One uniform integer path is what makes the Swift and Kotlin codecs verifiably byte-identical,
+/// and banking the bit pattern means a future reader can re-interpret those 4 bytes as something other
+/// than a float if the census says so.
+///
+/// Names are the DECODER's own names, verbatim (`decoderKey`). Several are frankly unpinned bytes —
+/// `cardiac_flags`/`cardiac_status` are outside-report names for bytes that sit near the HR fields and do
+/// not decode consistently across firmwares, and `optical_amp_a`/`_b` are optical channel amplitudes, not
+/// a named physiological quantity. Nothing here is renamed to imply a meaning it has not earned.
+public enum V18AuxSlot: Int, CaseIterable, Sendable {
+    case recordIndex = 0        // @11  u32 — per-record counter, +1 per record, advances across gaps
+    case rrCount                // @23  u8  — the strap's OWN R-R count (the stream itself caps at 4)
+    case cardiacFlags           // @33  u8  — raw byte near the HR fields; meaning not pinned
+    case hrFixed88              // @36  u16 — higher-precision HR: bpm = value/256
+    case rrPacked               // @38  u16 — raw u16 near the R-R fields; meaning not pinned
+    case cardiacStatus          // @40  u8  — raw status-like byte near the HR fields
+    case stepCadence            // @59  u8  — cadence-like byte (never 0; lower when moving faster)
+    case statusWord             // @75  u16 — packed status word; NOT a deep-sleep marker
+    case statusWord1            // @77  u16 — near-static sibling of @75 (low nibble 1)
+    case statusWord2            // @79  u16 — sibling of @75 (low nibble 2)
+    case auxByte82              // @82  u8  — RAW byte; `spo2_candidate_82` is the gated 70-100 view of it
+    case opticalBaseline106     // @106 u16 — analog optical/ADC baseline; reads 0 only off-wrist
+    case opticalAmpA            // @108 u8  — paired amplitude/quality-like channel; 128 = invalid sentinel
+    case opticalAmpB            // @109 u8  — the other half of the @108/@109 pair
+    case unknownF32At113        // @113 f32 — carried as its raw u32 bit pattern; purpose unknown
+
+    /// Wire width in bytes. Fixed per slot — part of the storage contract.
+    public var width: Int {
+        switch self {
+        case .recordIndex, .unknownF32At113: return 4
+        case .hrFixed88, .rrPacked, .statusWord, .statusWord1, .statusWord2, .opticalBaseline106:
+            return 2
+        case .rrCount, .cardiacFlags, .cardiacStatus, .stepCadence, .auxByte82,
+             .opticalAmpA, .opticalAmpB:
+            return 1
+        }
+    }
+
+    /// The Interpreter's own key for this slot, verbatim.
+    public var decoderKey: String {
+        switch self {
+        case .recordIndex: return "record_index"
+        case .rrCount: return "rr_count"
+        case .cardiacFlags: return "cardiac_flags"
+        case .hrFixed88: return "hr_fixed_8_8"
+        case .rrPacked: return "rr_packed"
+        case .cardiacStatus: return "cardiac_status"
+        case .stepCadence: return "step_cadence"
+        case .statusWord: return "status_word"
+        case .statusWord1: return "status_word_1"
+        case .statusWord2: return "status_word_2"
+        case .auxByte82: return "aux_byte_82"
+        case .opticalBaseline106: return "optical_baseline_106"
+        case .opticalAmpA: return "optical_amp_a"
+        case .opticalAmpB: return "optical_amp_b"
+        case .unknownF32At113: return "unknown_f32_113"
+        }
+    }
+}
+
+/// Every remaining 5/MG v18 per-second field the decoder produces and the storage funnel used to DROP.
+///
+/// `extractHistoricalStreams` names a dozen fields and silently discards the rest; the strap trims its
+/// banked history as soon as NOOP acks the offload, so a field not banked here is gone permanently and
+/// can never be censused, correlated, or validated. These fifteen bytes-worth of slots are what was left
+/// on the floor. They are carried VERBATIM under the decoder's own names — no scaling, no renaming, no
+/// physiological claim — precisely so a later census decides what they are rather than this commit
+/// pre-judging it.
+///
+/// Fields that already have a durable home are deliberately NOT duplicated here: `heart_rate`,
+/// `rr_intervals`, `gravity_*`, `skin_temp_raw`, `step_motion_counter`, `activity_class`, `sleep_state`,
+/// and `unix` all have their own columns. `motion_wear_quality@63` is the same byte as `activity_class`
+/// under a second name and the same 0-2 gate, so banking it again would store one byte twice.
+/// `spo2_candidate_82` is a gated 70-100 view of `auxByte82` and is recoverable from the raw byte.
+///
+/// INSTRUMENTATION ONLY: nothing reads this stream. Every slot is optional, so an absent field stays
+/// absent and never becomes a fabricated 0.
+public struct V18AuxSample: Equatable, Codable, Sendable {
+    public let ts: Int
+    public let recordIndex: Int?
+    public let rrCount: Int?
+    public let cardiacFlags: Int?
+    public let hrFixed88: Int?
+    public let rrPacked: Int?
+    public let cardiacStatus: Int?
+    public let stepCadence: Int?
+    public let statusWord: Int?
+    public let statusWord1: Int?
+    public let statusWord2: Int?
+    public let auxByte82: Int?
+    public let opticalBaseline106: Int?
+    public let opticalAmpA: Int?
+    public let opticalAmpB: Int?
+    /// The raw 32-bit pattern of `unknown_f32_113`, NOT a decoded float. See `unknownF32At113`.
+    public let unknownF32Bits: Int?
+
+    public init(ts: Int, recordIndex: Int? = nil, rrCount: Int? = nil, cardiacFlags: Int? = nil,
+                hrFixed88: Int? = nil, rrPacked: Int? = nil, cardiacStatus: Int? = nil,
+                stepCadence: Int? = nil, statusWord: Int? = nil, statusWord1: Int? = nil,
+                statusWord2: Int? = nil, auxByte82: Int? = nil, opticalBaseline106: Int? = nil,
+                opticalAmpA: Int? = nil, opticalAmpB: Int? = nil, unknownF32Bits: Int? = nil) {
+        self.ts = ts; self.recordIndex = recordIndex; self.rrCount = rrCount
+        self.cardiacFlags = cardiacFlags; self.hrFixed88 = hrFixed88; self.rrPacked = rrPacked
+        self.cardiacStatus = cardiacStatus; self.stepCadence = stepCadence
+        self.statusWord = statusWord; self.statusWord1 = statusWord1; self.statusWord2 = statusWord2
+        self.auxByte82 = auxByte82; self.opticalBaseline106 = opticalBaseline106
+        self.opticalAmpA = opticalAmpA; self.opticalAmpB = opticalAmpB
+        self.unknownF32Bits = unknownF32Bits
+    }
+
+    /// Rebuild from the codec's slot array. `values` is indexed by `V18AuxSlot.rawValue`; a short array
+    /// (a blob written by an older build) leaves the missing tail nil rather than throwing.
+    public init(ts: Int, slotValues values: [Int?]) {
+        func v(_ s: V18AuxSlot) -> Int? { s.rawValue < values.count ? values[s.rawValue] : nil }
+        self.init(ts: ts, recordIndex: v(.recordIndex), rrCount: v(.rrCount),
+                  cardiacFlags: v(.cardiacFlags), hrFixed88: v(.hrFixed88), rrPacked: v(.rrPacked),
+                  cardiacStatus: v(.cardiacStatus), stepCadence: v(.stepCadence),
+                  statusWord: v(.statusWord), statusWord1: v(.statusWord1),
+                  statusWord2: v(.statusWord2), auxByte82: v(.auxByte82),
+                  opticalBaseline106: v(.opticalBaseline106), opticalAmpA: v(.opticalAmpA),
+                  opticalAmpB: v(.opticalAmpB), unknownF32Bits: v(.unknownF32At113))
+    }
+
+    /// The slot values in wire order — index == `V18AuxSlot.rawValue`. The storage codec's only view of
+    /// this struct, so the field order lives in exactly one place on each platform.
+    public var slotValues: [Int?] {
+        [recordIndex, rrCount, cardiacFlags, hrFixed88, rrPacked, cardiacStatus, stepCadence,
+         statusWord, statusWord1, statusWord2, auxByte82, opticalBaseline106, opticalAmpA,
+         opticalAmpB, unknownF32Bits]
+    }
+
+    /// `unknown_f32_113` re-read as the float the decoder saw. The BITS are what is stored; this is a
+    /// convenience view, and it is the only place the four bytes are interpreted as a number at all.
+    public var unknownF32At113: Double? {
+        unknownF32Bits.map { Double(Float(bitPattern: UInt32(truncatingIfNeeded: $0))) }
+    }
+
+    /// True when the record carried none of the slots — such a sample is never banked (no empty rows).
+    public var isEmpty: Bool { slotValues.allSatisfy { $0 == nil } }
 }
 
 public struct Streams: Equatable, Codable {
@@ -258,6 +451,9 @@ public struct Streams: Equatable, Codable {
     /// samples `ppgHr` is derived FROM. Kept separate so a consumer that only wants the HR estimate
     /// never pays for the 24x-larger raw stream, and so the two can be persisted/pruned independently.
     public var ppgWaveform: [PpgWaveformSample]
+    /// Every remaining 5/MG v18 per-second field the decoder produces and this funnel used to discard —
+    /// carried verbatim for a later census. Empty on WHOOP 4.0 and on the live path. Nothing reads it.
+    public var v18Aux: [V18AuxSample]
     public var events: [WhoopEvent]
     public var battery: [BatterySample]
     /// #547 diagnostic: how many historical records `extractHistoricalStreams` DROPPED this chunk for an
@@ -357,11 +553,13 @@ public struct Streams: Equatable, Codable {
                 resp: [RespSample] = [], gravity: [GravitySample] = [],
                 steps: [StepSample] = [], sleepState: [SleepStateSample] = [],
                 ppgHr: [PpgHrSample] = [], ppgWaveform: [PpgWaveformSample] = [],
+                v18Aux: [V18AuxSample] = [],
                 events: [WhoopEvent] = [], battery: [BatterySample] = []) {
         self.hr = hr; self.rr = rr
         self.spo2 = spo2; self.skinTemp = skinTemp; self.resp = resp; self.gravity = gravity
         self.steps = steps; self.sleepState = sleepState; self.ppgHr = ppgHr
         self.ppgWaveform = ppgWaveform
+        self.v18Aux = v18Aux
         self.events = events; self.battery = battery
     }
 
@@ -371,7 +569,7 @@ public struct Streams: Equatable, Codable {
     public var isEmpty: Bool {
         hr.isEmpty && rr.isEmpty && spo2.isEmpty && skinTemp.isEmpty && resp.isEmpty
             && gravity.isEmpty && steps.isEmpty && sleepState.isEmpty && ppgHr.isEmpty
-            && ppgWaveform.isEmpty && events.isEmpty && battery.isEmpty
+            && ppgWaveform.isEmpty && v18Aux.isEmpty && events.isEmpty && battery.isEmpty
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -379,6 +577,7 @@ public struct Streams: Equatable, Codable {
         case sleepState = "sleep_state"
         case ppgHr = "ppg_hr"
         case ppgWaveform = "ppg_waveform"
+        case v18Aux = "v18_aux"
         case events, battery
     }
 
@@ -396,6 +595,7 @@ public struct Streams: Equatable, Codable {
         sleepState = try c.decodeIfPresent([SleepStateSample].self, forKey: .sleepState) ?? []
         ppgHr = try c.decodeIfPresent([PpgHrSample].self, forKey: .ppgHr) ?? []
         ppgWaveform = try c.decodeIfPresent([PpgWaveformSample].self, forKey: .ppgWaveform) ?? []
+        v18Aux = try c.decodeIfPresent([V18AuxSample].self, forKey: .v18Aux) ?? []
         events = try c.decodeIfPresent([WhoopEvent].self, forKey: .events) ?? []
         battery = try c.decodeIfPresent([BatterySample].self, forKey: .battery) ?? []
     }

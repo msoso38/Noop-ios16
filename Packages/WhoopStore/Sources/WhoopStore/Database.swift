@@ -602,6 +602,80 @@ extension WhoopStore {
                 t.add(column: "ord", .integer)
             }
         }
+
+        // v31: stop DISCARDING four per-second channels the 5/MG v18 decoder already produces.
+        //
+        // `extractHistoricalStreams` is a narrow funnel — a field the Interpreter decodes but the funnel
+        // does not name is computed and dropped one line later. That drop is PERMANENT: the strap trims
+        // its banked history as soon as NOOP acks the offload, so the seconds are not re-fetchable. The
+        // four channels below have been decoded (and pinned by the cross-platform decoder oracle) since
+        // the v18 layout was mapped, and stored nowhere.
+        //
+        //   gravitySample.dynAccel    `dynamic_acceleration@41` (f32 g) — the strap's OWN gravity-removed
+        //                             motion magnitude, computed on-device from the full-rate IMU. NOOP's
+        //                             motion spine instead derives stillness from `gravityDeltas`, the L2
+        //                             distance between consecutive 1 Hz gravity vectors. That proxy sees
+        //                             orientation CHANGE at 1 Hz, not acceleration, so the two are not the
+        //                             same measurement; this column puts the strap's own number BESIDE the
+        //                             incumbent, which is the only way a later comparison on real nights
+        //                             becomes possible.
+        //   sleepStateSample.rawByte  the WHOLE @81 flag byte. v21 stored only `(byte >> 4) & 3` as
+        //                             `state`; b0-1 `onwrist` and b2-3 `wake_quality` are decoded and were
+        //                             dropped, and b6-7 have no interpretation at all (0 across every
+        //                             capture held here). `state` is untouched, so #175 behavior is
+        //                             bit-identical.
+        //   skinTempSample.aux1Raw    `temp_aux_1_raw@69` / `temp_aux_2_raw@71` (i16, °C = value/10, a
+        //   skinTempSample.aux2Raw    DIFFERENT scale from the primary's /100). Two further thermal
+        //                             channels that track the primary closely (corr ~0.92 / ~0.97) with
+        //                             the same diurnal curve.
+        //
+        // Additive nullable ALTERs only: no table rebuild, no row touched, no key changed. Every existing
+        // row reads back NULL and an old reader that does not SELECT the columns is unaffected. NULL is
+        // load-bearing here and no column carries a DEFAULT — a WHOOP 4.0 never emits any of these, and
+        // history banked before this migration cannot be backfilled (the strap already trimmed it), so an
+        // absent channel must stay absent rather than become a fabricated 0.
+        //
+        // INSTRUMENTATION ONLY. Nothing reads these columns: no analytic, no score, no gate, no UI. That
+        // is deliberate — see the "validate against the artifact, not one match" rule in CLAUDE.md. The
+        // point of this migration is that the data starts accruing NOW so a validated consumer is possible
+        // LATER; landing a consumer at the same time would be scoring on evidence that does not exist yet.
+        //
+        // The remaining fifteen v18 slots go to their OWN narrow table rather than fifteen more columns
+        // (see `V18AuxCodec` for the wire format and the column-vs-blob tradeoff). Three reasons this is
+        // a table and not another column on an existing row:
+        //   1. No existing per-second table is guaranteed present. `gravitySample` needs `gravity_x` to
+        //      decode, `skinTempSample` needs @73 to clear its thermal gate, `hrSample` skips bpm=0. A v18
+        //      record can carry aux fields while every one of those gated out, so hanging the blob off any
+        //      of them would silently drop records.
+        //   2. It keeps fifteen unpinned bytes out of the tables analytics actually read.
+        //   3. It can be dropped or re-shaped later without touching a scored table.
+        // `fields` is NOT NULL because a row is only written when at least one slot is present — absence is
+        // encoded as "no row", and within a row as a clear bitmap bit, never as a fabricated 0.
+        //
+        // Retention: none, matching every other durable decoded per-second table (`ppgWaveformSample`,
+        // `hrSample`, …). `PrunePolicy`'s ~50 MB cap governs only `rawBatch`. Growth is ~30 bytes of blob
+        // plus row overhead per v18 strap-second — the same order as the ppgWaveform table already banked
+        // beside it — and is surfaced in the storage-stats diagnostic so it is visible rather than silent.
+        //
+        // Twin of Room MIGRATION_24_25.
+        migrator.registerMigration("v31-deep-capture-channels") { db in
+            try db.alter(table: "gravitySample") { t in
+                t.add(column: "dynAccel", .double)
+            }
+            try db.alter(table: "sleepStateSample") { t in
+                t.add(column: "rawByte", .integer)
+            }
+            try db.alter(table: "skinTempSample") { t in
+                t.add(column: "aux1Raw", .integer)
+                t.add(column: "aux2Raw", .integer)
+            }
+            try db.create(table: "v18AuxSample") { t in
+                t.column("deviceId", .text).notNull()
+                t.column("ts", .integer).notNull()
+                t.column("fields", .blob).notNull()
+                t.primaryKey(["deviceId", "ts"])
+            }
+        }
         return migrator
     }
 }

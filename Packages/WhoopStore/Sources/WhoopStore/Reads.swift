@@ -204,11 +204,15 @@ extension WhoopStore {
     public func skinTempSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [SkinTempSample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, raw FROM skinTempSample
+                SELECT ts, raw, aux1Raw, aux2Raw FROM skinTempSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts ASC LIMIT ?
                 """, arguments: [deviceId, from, to, limit])
-                .map { SkinTempSample(ts: $0["ts"], raw: $0["raw"]) }
+                // aux1Raw/aux2Raw (v31) read back nil for any pre-v31 row and for any WHOOP 4.0 record,
+                // whose layout has no such channels. No caller reads them; they are hydrated so the
+                // carrier is a faithful view of the row rather than a lossy one.
+                .map { SkinTempSample(ts: $0["ts"], raw: $0["raw"],
+                                      aux1Raw: $0["aux1Raw"], aux2Raw: $0["aux2Raw"]) }
         }
     }
 
@@ -239,11 +243,14 @@ extension WhoopStore {
     public func gravitySamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [GravitySample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, x, y, z FROM gravitySample
+                SELECT ts, x, y, z, dynAccel FROM gravitySample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts ASC LIMIT ?
                 """, arguments: [deviceId, from, to, limit])
-                .map { GravitySample(ts: $0["ts"], x: $0["x"], y: $0["y"], z: $0["z"]) }
+                // dynAccel (v31) reads back nil for any pre-v31 row and for any WHOOP 4.0 record. The
+                // sleep stager reads x/y/z only — this column is carried, never scored.
+                .map { GravitySample(ts: $0["ts"], x: $0["x"], y: $0["y"], z: $0["z"],
+                                     dynAccel: $0["dynAccel"]) }
         }
     }
 

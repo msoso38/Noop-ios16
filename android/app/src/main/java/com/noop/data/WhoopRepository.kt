@@ -39,6 +39,11 @@ data class StreamBatch(
      */
     val ppgWaveform: List<PpgWaveformRow> = emptyList(),
     /**
+     * Every remaining 5/MG v18 per-second field the decoder produces and the extractor used to discard —
+     * carried verbatim for a later census. Empty on a WHOOP 4.0 and on the live path. Nothing reads it.
+     */
+    val v18Aux: List<V18AuxRow> = emptyList(),
+    /**
      * #547: how many historical records this batch DROPPED because their timestamp was implausible
      * (older than 2023-11 or more than a day ahead of now) , a bad strap clock/flash artefact. A
      * diagnostic counter only, NOT decoded data, so it is deliberately excluded from [isEmpty]. The
@@ -207,7 +212,18 @@ internal fun assignRrSeq(deviceId: String, rows: List<RrRow>): List<RrInterval> 
 data class EventEntry(val ts: Long, val kind: String, val payloadJSON: String)
 data class BatteryRow(val ts: Long, val soc: Double?, val mv: Int?, val charging: Boolean? = null)
 data class Spo2Row(val ts: Long, val red: Int, val ir: Int)
-data class SkinTempRow(val ts: Long, val raw: Int)
+/**
+ * A skin-temperature reading at [ts], plus the two AUXILIARY thermal channels that ride the same 5/MG
+ * v18 record ([aux1Raw] = `temp_aux_1_raw@69`, [aux2Raw] = `temp_aux_2_raw@71`).
+ *
+ * [raw] is the primary channel (`skin_temp_raw@73`) and is unchanged. The aux channels are signed i16
+ * registers on their OWN scale — °C = value/10, NOT the primary's /100 — decoded since the v18 layout was
+ * mapped and dropped at the storage boundary until now. They track the primary closely (corr ~0.92 and
+ * ~0.97 over the captured corpus) with the same diurnal curve; nothing here asserts what they measure and
+ * no analytic reads them. Null on a WHOOP 4.0, on a byte that failed the decoder's thermal gate, and on
+ * every row banked before the channels were persisted. Swift `SkinTempSample`.
+ */
+data class SkinTempRow(val ts: Long, val raw: Int, val aux1Raw: Int? = null, val aux2Raw: Int? = null)
 /**
  * Cumulative u16 step/motion counter at [ts] (WHOOP5 step_motion_counter@57). deviceId attached on insert. (#78)
  * [activityClass] is the per-record activity-class enum from @63 (community finding #316): 0=still, 1=walk,
@@ -219,9 +235,28 @@ data class StepRow(val ts: Long, val counter: Int, val activityClass: Int? = nul
  * The strap's OWN @81 high-nibble band sleep_state at [ts] (0 wake/1 still/2 asleep/3 up), decoded and
  * streamed but dropped at storage until #175. deviceId attached on insert. Swift `SleepStateSample`.
  */
-data class SleepStateRow(val ts: Long, val state: Int)
+data class SleepStateRow(val ts: Long, val state: Int, val rawByte: Int? = null)
 data class RespRow(val ts: Long, val raw: Int)
-data class GravityRow(val ts: Long, val x: Double, val y: Double, val z: Double)
+/**
+ * The 1 Hz gravity vector at [ts], plus the strap's OWN gravity-removed motion magnitude from the same
+ * record ([dynAccel] = `dynamic_acceleration@41`, f32 g).
+ *
+ * The two are different measurements of the same second and belong together. NOOP's motion spine derives
+ * its stillness signal from `gravityDeltas` — the L2 distance between CONSECUTIVE 1 Hz gravity vectors —
+ * which is a proxy: it sees orientation CHANGE at 1 Hz, not acceleration. [dynAccel] is the strap's
+ * absolute gravity-removed magnitude at one instant, computed on-device from the full-rate IMU. It is
+ * stored BESIDE the proxy, never instead of it, and read by nothing — before this it was computed and
+ * discarded one line after decode, and the strap trims its banked history as soon as an offload is acked,
+ * so every second of it was lost permanently. Null on a WHOOP 4.0, outside the decoder's [0, 8] g gate,
+ * and on every row banked before the column existed. Swift `GravitySample`.
+ */
+data class GravityRow(
+    val ts: Long,
+    val x: Double,
+    val y: Double,
+    val z: Double,
+    val dynAccel: Double? = null,
+)
 /** HR derived from the v26 PPG waveform: [ts] window-centre sec, [bpm], [conf] in 0…1. (#156) */
 data class PpgHrRow(val ts: Long, val bpm: Int, val conf: Double)
 /**
@@ -345,7 +380,11 @@ class WhoopRepository(private val dao: WhoopDao) {
         val spo2Ids = if (streams.spo2.isEmpty()) emptyList() else
             dao.insertSpo2(streams.spo2.map { Spo2Sample(deviceId, it.ts, it.red, it.ir) })
         val skinIds = if (streams.skinTemp.isEmpty()) emptyList() else
-            dao.insertSkinTemp(streams.skinTemp.map { SkinTempSample(deviceId, it.ts, it.raw) })
+            dao.insertSkinTemp(
+                streams.skinTemp.map {
+                    SkinTempSample(deviceId, it.ts, it.raw, aux1Raw = it.aux1Raw, aux2Raw = it.aux2Raw)
+                },
+            )
         // activityClass (#316, v13 column) is the @63 activity-class enum (0=still/1=walk/2=run) the decoder
         // already carries on each StepRow; it was dropped here before v13 (the insert listed only ts/counter).
         // it.activityClass is null when the @63 byte was 0xFF/invalid/absent → stored as SQL NULL.
@@ -356,12 +395,18 @@ class WhoopRepository(private val dao: WhoopDao) {
         // by (deviceId, ts); not counted into InsertCounts (no consumer reads a count). The raw 0-3 code is
         // stored verbatim — a strap that never reports it inserts nothing.
         if (streams.sleepState.isNotEmpty()) {
-            dao.insertSleepState(streams.sleepState.map { SleepStateSampleEntity(deviceId, it.ts, it.state) })
+            dao.insertSleepState(
+                streams.sleepState.map { SleepStateSampleEntity(deviceId, it.ts, it.state, it.rawByte) },
+            )
         }
         val respIds = if (streams.resp.isEmpty()) emptyList() else
             dao.insertResp(streams.resp.map { RespSample(deviceId, it.ts, it.raw) })
         val gravIds = if (streams.gravity.isEmpty()) emptyList() else
-            dao.insertGravity(streams.gravity.map { GravitySample(deviceId, it.ts, it.x, it.y, it.z) })
+            dao.insertGravity(
+                streams.gravity.map {
+                    GravitySample(deviceId, it.ts, it.x, it.y, it.z, dynAccel = it.dynAccel)
+                },
+            )
         // v26 PPG-derived HR (#156). Idempotent by (deviceId, ts); counted into InsertCounts.hr so the
         // backfill "persisted N" summary reflects HR recovered from the optical waveform too.
         val ppgHrIds = if (streams.ppgHr.isEmpty()) emptyList() else
@@ -376,6 +421,18 @@ class WhoopRepository(private val dao: WhoopDao) {
                     PpgWaveformSampleEntity(deviceId, it.ts, StreamPersistence.packPpgSamples(it.samples))
                 },
             )
+        }
+
+        // Every remaining v18 slot (v31), one compact blob per strap-second. Persist-only, same as
+        // steps/sleepState/ppgWaveform: not added to InsertCounts. A sample whose slots are all absent
+        // packs to an empty blob and is SKIPPED rather than banking a meaningless row — which is also
+        // what keeps a WHOOP 4.0 offload from writing here at all.
+        if (streams.v18Aux.isNotEmpty()) {
+            val rows = streams.v18Aux.mapNotNull {
+                val blob = V18AuxCodec.pack(it)
+                if (blob.isEmpty()) null else V18AuxSampleEntity(deviceId, it.ts, blob)
+            }
+            if (rows.isNotEmpty()) dao.insertV18Aux(rows)
         }
 
         // OnConflictStrategy.IGNORE returns -1 for skipped (already-present) rows; count the inserts.
@@ -722,6 +779,18 @@ class WhoopRepository(private val dao: WhoopDao) {
         List<PpgWaveformRow> =
         dao.ppgWaveformSamples(deviceId, from, to, limit)
             .map { PpgWaveformRow(it.ts, StreamPersistence.unpackPpgSamples(it.samples)) }
+
+    /**
+     * The banked 5/MG v18 auxiliary fields in [from, to] for one device, ascending by ts — one row per
+     * strap-second, decoded from the compact blob by [V18AuxCodec]. Empty on a WHOOP 4.0 and for any
+     * window offloaded before the table existed. INSTRUMENTATION: nothing in the app calls this; it
+     * exists so the banked bytes are reachable for a census and so the write path has a round-trip test.
+     * Kotlin twin of the Swift `WhoopStore.v18AuxSamples(deviceId:from:to:)`.
+     */
+    suspend fun v18AuxSamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT):
+        List<V18AuxRow> =
+        dao.v18AuxSamples(deviceId, from, to, limit)
+            .map { V18AuxCodec.unpack(it.fields, it.ts) }
 
     /** #423: persist a batch of decoded 5/MG raw-IMU offload buffers (one row per strap-second, packed i16
      *  BLOB), then bound the table to the newest [RAW_IMU_RETENTION_ROWS] for the device. Comes from the

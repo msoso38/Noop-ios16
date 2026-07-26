@@ -481,6 +481,13 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
                note: "on-wrist/validity flag (b0-1)")
         fb.add(81, 1, "wake_quality", "sleep", value: .int((sb >> 2) & 3),
                note: "quality code (b2-3); observed nonzero only in wake")
+        // The WHOLE byte, unmasked. The three fields above are the nibbles this project has interpreted;
+        // this key is the strap's own byte VERBATIM so all 8 bits survive to storage — including b6-7,
+        // which read 0 across every capture held here and therefore have no interpretation at all yet.
+        // A per-nibble store would make those bits permanently unrecoverable, because the strap trims its
+        // banked history the moment an offload is acked. Instrumentation only: nothing scores this.
+        fb.add(81, 1, "sleep_state_byte", "sleep", value: .int(sb),
+               note: "the RAW @81 flag byte, all 8 bits (b0-1 onwrist, b2-3 wake_quality, b4-5 sleep_state, b6-7 reserved)")
     }
     if let v = readDType(frame, 82, "u8") {
         fb.add(82, 1, "aux_byte_82", "status", value: .int(v),

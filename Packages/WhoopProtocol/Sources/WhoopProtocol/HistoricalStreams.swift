@@ -218,8 +218,16 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
             if let red = p["spo2_red"]?.intValue {
                 out.spo2.append(SpO2Sample(ts: ts, red: red, ir: p["spo2_ir"]?.intValue ?? 0))
             }
+            // The two AUXILIARY thermal channels (`temp_aux_1_raw@69` / `temp_aux_2_raw@71`, i16, °C =
+            // value/10) ride the primary skin-temp row for the same second. Both were decoded and dropped
+            // here until now. They are carried ONLY when the primary channel decoded, because that is the
+            // row's key — a record whose @73 failed the decoder's 5-45 °C gate banks no skinTempSample at
+            // all, and inventing one to hold an aux value would put a fabricated primary reading in the
+            // store. nil for a WHOOP 4.0, whose v24/v25 layouts have no such fields.
             if let raw = p["skin_temp_raw"]?.intValue {
-                out.skinTemp.append(SkinTempSample(ts: ts, raw: raw))
+                out.skinTemp.append(SkinTempSample(ts: ts, raw: raw,
+                                                   aux1Raw: p["temp_aux_1_raw"]?.intValue,
+                                                   aux2Raw: p["temp_aux_2_raw"]?.intValue))
             }
             // step_motion_counter@57 is the WHOOP5 cumulative u16 counter — decoded but, until now,
             // dropped on macOS (Android persists it). APPROXIMATE; semantics unverified vs the app (#78).
@@ -231,24 +239,71 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
             // decoded but DROPPED here until now, so the whole band-state chain (persist → the H7 re-onset
             // confirm guard → Deep Timeline track) had no source. Carried VERBATIM including 0 (a real wake
             // reading, not "absent"): only 5/MG v18 records emit the key, so a WHOOP 4.0 simply adds nothing.
+            // `rawByte` carries the WHOLE @81 byte beside the high-nibble `state` this row already stored,
+            // so the bits the mask throws away survive: b0-1 `onwrist` and b2-3 `wake_quality` are both
+            // decoded by the Interpreter and were discarded right here, and b6-7 have no interpretation at
+            // all yet. `state` is unchanged, so #175 / the H7 guard / the Deep Timeline track are
+            // bit-identical.
             if let st = p["sleep_state"]?.intValue {
-                out.sleepState.append(SleepStateSample(ts: ts, state: st))
+                out.sleepState.append(SleepStateSample(ts: ts, state: st,
+                                                       rawByte: p["sleep_state_byte"]?.intValue))
             }
             if let raw = p["resp_rate_raw"]?.intValue {
                 out.resp.append(RespSample(ts: ts, raw: raw))
             }
+            // `dynAccel` is the strap's OWN gravity-removed motion magnitude (`dynamic_acceleration@41`)
+            // for this same second, riding the gravity row it belongs beside. It was decoded and dropped
+            // here until now, so every second of it was lost once the offload was acked. nil for a WHOOP
+            // 4.0 or a record whose f32 failed the decoder's [0, 8] g gate.
             if let gx = p["gravity_x"]?.doubleValue {
                 out.gravity.append(GravitySample(ts: ts, x: gx,
-                    y: p["gravity_y"]?.doubleValue ?? 0, z: p["gravity_z"]?.doubleValue ?? 0))
+                    y: p["gravity_y"]?.doubleValue ?? 0, z: p["gravity_z"]?.doubleValue ?? 0,
+                    dynAccel: p["dynamic_acceleration"]?.doubleValue))
             }
-            // #520 diagnostic: fold `dynamic_acceleration@41` into a summary. Counted, never stored —
-            // the decoder has emitted this field all along with nothing consuming it, so there is no
-            // evidence on whether it beats the gravity-delta stillness the stager derives today. The
-            // threshold is the stager's own cut, borrowed as a reference point (the stager thresholds a
-            // per-sample delta, this is an absolute magnitude — related, not the same measurement);
-            // it is passed as a literal because WhoopProtocol must not depend on StrandAnalytics.
+            // #520 diagnostic: fold `dynamic_acceleration@41` into a summary for the strap log. Kept
+            // alongside the per-second column above, not replaced by it: this is a whole-session shape
+            // (count / still-fraction / min / max / mean) the Backfiller logs once, whereas the column is
+            // the durable per-second series. The threshold is the stager's own cut, borrowed as a
+            // reference point (the stager thresholds a per-sample delta, this is an absolute magnitude —
+            // related, not the same measurement); it is passed as a literal because WhoopProtocol must
+            // not depend on StrandAnalytics.
             if let dyn = p["dynamic_acceleration"]?.doubleValue {
                 out.dynAccel.add(dyn, threshold: dynAccelStillThresholdG)
+            }
+            // Everything ELSE the v18 decoder produced for this second. Each of these was computed and
+            // then dropped one line later; the strap trims its banked history the moment the offload is
+            // acked, so an unbanked field is unrecoverable and can never be censused. Carried verbatim
+            // under the decoder's own names, no scaling and no interpretation.
+            //
+            // Gated on `hist_version == 18` — the exact layout these offsets were read off. Every other
+            // layout adds NOTHING: a WHOOP 4.0 v24/v25 record and a 5/MG v20/v21/v26 record are untouched.
+            // The gate is explicit rather than implied by which keys happen to be present, because
+            // `rr_count` IS shared with the 4.0 schema and a presence-based test would start banking a
+            // near-empty row for every WHOOP 4.0 second.
+            if p["hist_version"]?.intValue == 18 {
+                let aux = V18AuxSample(
+                    ts: ts,
+                    recordIndex: p["record_index"]?.intValue,
+                    rrCount: p["rr_count"]?.intValue,
+                    cardiacFlags: p["cardiac_flags"]?.intValue,
+                    hrFixed88: p["hr_fixed_8_8"]?.intValue,
+                    rrPacked: p["rr_packed"]?.intValue,
+                    cardiacStatus: p["cardiac_status"]?.intValue,
+                    stepCadence: p["step_cadence"]?.intValue,
+                    statusWord: p["status_word"]?.intValue,
+                    statusWord1: p["status_word_1"]?.intValue,
+                    statusWord2: p["status_word_2"]?.intValue,
+                    auxByte82: p["aux_byte_82"]?.intValue,
+                    opticalBaseline106: p["optical_baseline_106"]?.intValue,
+                    opticalAmpA: p["optical_amp_a"]?.intValue,
+                    opticalAmpB: p["optical_amp_b"]?.intValue,
+                    // Banked as the float's raw 32-bit pattern, not a decoded value — the decoder gates this
+                    // field to finite floats, which round-trip Double->Float exactly, so no precision is lost.
+                    unknownF32Bits: p["unknown_f32_113"]?.doubleValue.map {
+                        Int(Float($0).bitPattern)
+                    })
+                // A record that decoded none of the slots banks no row at all — absence stays absence.
+                if !aux.isEmpty { out.v18Aux.append(aux) }
             }
         case "REALTIME_RAW_DATA":
             // #547 gate: the device-epoch→wall mapping can also land out of bounds on a bad clock, so

@@ -185,13 +185,16 @@ extension WhoopStore {
                     spo2 += db.changesCount
                 }
             }
+            // `aux1Raw`/`aux2Raw` (v31) are the two auxiliary thermal channels riding the same v18 record
+            // as the primary reading. nil (a WHOOP 4.0, or a byte that failed the decoder's thermal gate)
+            // stores SQL NULL, so an absent channel stays absent.
             if !streams.skinTemp.isEmpty {
                 let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO skinTempSample (deviceId, ts, raw) VALUES (?, ?, ?)
+                    INSERT INTO skinTempSample (deviceId, ts, raw, aux1Raw, aux2Raw) VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(deviceId, ts) DO NOTHING
                     """)
                 for s in streams.skinTemp {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.raw])
+                    try stmt.execute(arguments: [deviceId, s.ts, s.raw, s.aux1Raw, s.aux2Raw])
                     skin += db.changesCount
                 }
             }
@@ -205,13 +208,16 @@ extension WhoopStore {
                     resp += db.changesCount
                 }
             }
+            // `dynAccel` (v31) is the strap's OWN gravity-removed motion magnitude for the same second —
+            // stored BESIDE the vector, never in place of it, and read by nothing. nil (a WHOOP 4.0, or an
+            // f32 outside the decoder's [0, 8] g gate) stores SQL NULL.
             if !streams.gravity.isEmpty {
                 let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO gravitySample (deviceId, ts, x, y, z) VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO gravitySample (deviceId, ts, x, y, z, dynAccel) VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(deviceId, ts) DO NOTHING
                     """)
                 for s in streams.gravity {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.x, s.y, s.z])
+                    try stmt.execute(arguments: [deviceId, s.ts, s.x, s.y, s.z, s.dynAccel])
                     grav += db.changesCount
                 }
             }
@@ -233,13 +239,15 @@ extension WhoopStore {
             // (0 wake/1 still/2 asleep/3 up), decoded and streamed but dropped at storage until now. Keyed by
             // (deviceId, ts); ON CONFLICT DO NOTHING keeps the first-seen state for a second so a re-sync is
             // idempotent. The raw 0-3 code is stored verbatim — a strap that never reports it inserts nothing.
+            // `rawByte` (v31) is the WHOLE @81 byte; `state` remains exactly its high nibble, so every
+            // existing #175 consumer is bit-identical. nil stores SQL NULL.
             if !streams.sleepState.isEmpty {
                 let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO sleepStateSample (deviceId, ts, state) VALUES (?, ?, ?)
+                    INSERT INTO sleepStateSample (deviceId, ts, state, rawByte) VALUES (?, ?, ?, ?)
                     ON CONFLICT(deviceId, ts) DO NOTHING
                     """)
                 for s in streams.sleepState {
-                    try stmt.execute(arguments: [deviceId, s.ts, s.state])
+                    try stmt.execute(arguments: [deviceId, s.ts, s.state, s.rawByte])
                 }
             }
             // PPG-derived HR from the v26 optical buffer (#156). Persist-only, same as steps, the count
@@ -267,6 +275,21 @@ extension WhoopStore {
                     """)
                 for s in streams.ppgWaveform {
                     try stmt.execute(arguments: [deviceId, s.ts, WhoopStore.packPpgSamples(s.samples)])
+                }
+            }
+            // Every remaining v18 slot (v31), one compact blob per strap-second. Persist-only, same as
+            // steps/sleepState/ppgHr/ppgWaveform: not added to the 8-field return tuple. A sample whose
+            // slots are all absent packs to empty and is SKIPPED rather than banking a meaningless row —
+            // which is also what keeps a WHOOP 4.0 offload from writing here at all.
+            if !streams.v18Aux.isEmpty {
+                let stmt = try db.cachedStatement(sql: """
+                    INSERT INTO v18AuxSample (deviceId, ts, fields) VALUES (?, ?, ?)
+                    ON CONFLICT(deviceId, ts) DO NOTHING
+                    """)
+                for s in streams.v18Aux {
+                    let blob = V18AuxCodec.pack(s)
+                    if blob.isEmpty { continue }
+                    try stmt.execute(arguments: [deviceId, s.ts, blob])
                 }
             }
             return (hr, rr, ev, bat, spo2, skin, resp, grav)
@@ -478,16 +501,38 @@ extension WhoopStore {
         -> [SleepStateSample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, state FROM sleepStateSample
+                SELECT ts, state, rawByte FROM sleepStateSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts LIMIT ?
                 """, arguments: [deviceId, from, to, limit])
-                .map { SleepStateSample(ts: $0["ts"], state: $0["state"]) }
+                // rawByte (v31) is the whole @81 byte; nil on any pre-v31 row. `state` is unchanged, so
+                // the H7 guard and the Deep Timeline track see exactly what they saw before.
+                .map { SleepStateSample(ts: $0["ts"], state: $0["state"], rawByte: $0["rawByte"]) }
         }
     }
 
     public func sleepStateCountForTest() async throws -> Int {
         try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sleepStateSample") ?? 0 }
+    }
+
+    /// The remaining 5/MG v18 per-second fields (v31) in `[from, to]` for one device, ascending by ts.
+    /// Each row is one strap-second's slots, decoded from the compact blob by `V18AuxCodec`. Empty for a
+    /// WHOOP 4.0 and for any window offloaded before v31. INSTRUMENTATION: no analytic calls this — it
+    /// exists so the banked bytes are reachable for a census, and so the write path has a round-trip test.
+    public func v18AuxSamples(deviceId: String, from: Int, to: Int, limit: Int = 200_000) async throws
+        -> [V18AuxSample] {
+        try syncRead { db in
+            try Row.fetchAll(db, sql: """
+                SELECT ts, fields FROM v18AuxSample
+                WHERE deviceId = ? AND ts >= ? AND ts <= ?
+                ORDER BY ts LIMIT ?
+                """, arguments: [deviceId, from, to, limit])
+                .map { V18AuxCodec.unpack($0["fields"] ?? Data(), ts: $0["ts"]) }
+        }
+    }
+
+    public func v18AuxCountForTest() async throws -> Int {
+        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM v18AuxSample") ?? 0 }
     }
 
     public func ppgHrCountForTest() async throws -> Int {

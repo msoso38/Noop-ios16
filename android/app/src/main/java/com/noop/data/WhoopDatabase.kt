@@ -50,8 +50,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LiveSessionRow::class,
         PpgWaveformSampleEntity::class,
         RawImuSampleEntity::class,
+        V18AuxSampleEntity::class,
     ],
-    version = 24,
+    version = 25,
     exportSchema = false,
 )
 abstract class WhoopDatabase : RoomDatabase() {
@@ -624,6 +625,61 @@ abstract class WhoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Stop DISCARDING the per-second channels the 5/MG v18 decoder already produces. Twin of the
+         * Swift GRDB migration `v31-deep-capture-channels`.
+         *
+         * `extractHistoricalStreams` is a narrow funnel — a field the decoder produces but the funnel
+         * does not name is computed and dropped one line later. That drop is PERMANENT: the strap trims
+         * its banked history as soon as NOOP acks the offload, so those seconds are not re-fetchable.
+         *
+         *   gravitySample.dynAccel     `dynamic_acceleration@41` (f32 g), the strap's OWN gravity-removed
+         *                              motion magnitude, stored BESIDE the 1 Hz vector the motion spine
+         *                              actually derives stillness from.
+         *   sleepStateSample.rawByte   the WHOLE @81 flag byte. `state` remains exactly its high nibble,
+         *                              so #175 behaviour is bit-identical; this keeps b0-1 `onwrist`,
+         *                              b2-3 `wake_quality`, and the uninterpreted b6-7.
+         *   skinTempSample.aux1Raw     `temp_aux_1_raw@69` / `temp_aux_2_raw@71` (i16, °C = value/10 — a
+         *   skinTempSample.aux2Raw     DIFFERENT scale from the primary's /100).
+         *   v18AuxSample               the remaining fifteen slots as one compact blob (see [V18AuxCodec]
+         *                              for the wire format and the column-vs-blob tradeoff). Its own
+         *                              table because no existing per-second table is guaranteed present
+         *                              for a v18 record, and to keep unpinned bytes out of the tables
+         *                              analytics read.
+         *
+         * Additive only, the MIGRATION_3_4 / MIGRATION_23_24 form: no table rebuild, no row touched, no
+         * key changed. The three added columns are nullable with NO SQL DEFAULT, and `fields` is NOT NULL
+         * only because a row is written solely when at least one slot is present — absence is encoded as
+         * "no row" and, within a row, as a clear bitmap bit. Never a fabricated 0: a WHOOP 4.0 emits none
+         * of these, and history banked before this migration cannot be backfilled (the strap already
+         * trimmed it), so an absent channel must stay absent.
+         *
+         * The columns are appended by ALTER TABLE, which places them LAST — matching the entity field
+         * order (each new field is declared after the existing ones), so a migrated schema and a
+         * freshly-created one agree. The CREATE TABLE column order matches [V18AuxSampleEntity]'s field
+         * order and the GRDB schema, so a `.noopbak` round-trips.
+         *
+         * INSTRUMENTATION ONLY. Nothing reads these: no analytic, no score, no gate, no UI.
+         *
+         * Exposed as [DEEP_CAPTURE_MIGRATION_SQL] so a plain-JVM unit test can assert its shape without
+         * an emulator, like the migrations above.
+         */
+        internal val DEEP_CAPTURE_MIGRATION_SQL: List<String> = listOf(
+            "ALTER TABLE `gravitySample` ADD COLUMN `dynAccel` REAL",
+            "ALTER TABLE `sleepStateSample` ADD COLUMN `rawByte` INTEGER",
+            "ALTER TABLE `skinTempSample` ADD COLUMN `aux1Raw` INTEGER",
+            "ALTER TABLE `skinTempSample` ADD COLUMN `aux2Raw` INTEGER",
+            "CREATE TABLE IF NOT EXISTS `v18AuxSample` (`deviceId` TEXT NOT NULL, " +
+                "`ts` INTEGER NOT NULL, `fields` BLOB NOT NULL, " +
+                "PRIMARY KEY(`deviceId`, `ts`))",
+        )
+
+        internal val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in DEEP_CAPTURE_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
         private fun build(appContext: Context): WhoopDatabase =
             Room.databaseBuilder(appContext, WhoopDatabase::class.java, DB_NAME)
                 // #1014: replace ONLY the corruption handling of the default open-helper. The
@@ -640,7 +696,7 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18,
                     MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22,
-                    MIGRATION_22_23, MIGRATION_23_24,
+                    MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25,
                 )
                 // #1037: a FRESH install builds the schema straight at the current version and runs NO
                 // migrations, so the MIGRATION_7_8 "my-whoop" registry seed never fires and the WHOOP,
