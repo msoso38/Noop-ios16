@@ -74,6 +74,89 @@ final class ReadTests: XCTestCase {
         XCTAssertEqual(rr, [RRInterval(ts: 100, rrMs: 800), RRInterval(ts: 100, rrMs: 820)])
     }
 
+    // MARK: - hrWindowStats (#836)
+
+    /// The bug this exists for: the average must count PPG-derived seconds, exactly as the chart does.
+    /// A WHOOP 5 banks v26 PPG instead of v18 HR per second, so a PPG-heavy workout charted a full trace
+    /// while a measured-only aggregate fell under the caller's 60-sample floor and Avg HR rendered blank.
+    func testHrWindowStatsCountsPpgDerivedSeconds() async throws {
+        let store = try await WhoopStore.inMemory()
+        try await store.upsertDevice(id: "dev1", mac: nil, name: nil)
+        // 20 measured seconds, 400 PPG seconds, 5 of them overlapping measured ones.
+        var hr: [HRSample] = [], ppg: [PpgHrSample] = []
+        for t in 0..<20 { hr.append(HRSample(ts: t, bpm: 120)) }
+        for t in 15..<415 { ppg.append(PpgHrSample(ts: t, bpm: 140, conf: 0.8)) }
+        _ = try await store.insert(Streams(hr: hr, ppgHr: ppg), deviceId: "dev1")
+
+        let stats = try await store.hrWindowStats(deviceId: "dev1", from: 0, to: 1_000)
+        XCTAssertEqual(stats.n, 415, "measured ∪ PPG, with the 5 overlapping seconds counted once")
+        XCTAssertEqual(stats.max, 140)
+
+        // It must agree with what the chart read returns — that agreement IS the fix.
+        let charted = try await store.hrSamples(deviceId: "dev1", from: 0, to: 1_000, limit: 100_000)
+        XCTAssertEqual(stats.n, charted.count)
+        let meanOfChart = Double(charted.reduce(0) { $0 + $1.bpm }) / Double(charted.count)
+        XCTAssertEqual(try XCTUnwrap(stats.avg), meanOfChart, accuracy: 1e-9)
+    }
+
+    /// A measured second must never be double-counted by its own PPG estimate (the anti-join).
+    func testHrWindowStatsDoesNotDoubleCountOverlappingSeconds() async throws {
+        let store = try await WhoopStore.inMemory()
+        try await store.upsertDevice(id: "dev1", mac: nil, name: nil)
+        _ = try await store.insert(
+            Streams(hr: (0..<10).map { HRSample(ts: $0, bpm: 100) },
+                    ppgHr: (0..<10).map { PpgHrSample(ts: $0, bpm: 180, conf: 0.9) }),
+            deviceId: "dev1")
+        let stats = try await store.hrWindowStats(deviceId: "dev1", from: 0, to: 1_000)
+        XCTAssertEqual(stats.n, 10, "every second is measured; no PPG row may be added")
+        XCTAssertEqual(try XCTUnwrap(stats.avg), 100, accuracy: 1e-9)
+        XCTAssertEqual(stats.max, 100, "the PPG 180s must not become the peak")
+    }
+
+    /// The parity half of #836: no row limit. Reducing `hrSamples(limit: 8000)` reported the mean of a
+    /// long session's FIRST 8000 samples; Kotlin aggregated the whole window. Now both do.
+    func testHrWindowStatsHasNoEightThousandRowCap() async throws {
+        let store = try await WhoopStore.inMemory()
+        try await store.upsertDevice(id: "dev1", mac: nil, name: nil)
+        // 3 h at 1 Hz with HR stepping up: the first 8000 s average BELOW the true whole-session mean.
+        let n = 10_800
+        let hr = (0..<n).map { HRSample(ts: $0, bpm: $0 < 8_000 ? 120 : 170) }
+        _ = try await store.insert(Streams(hr: hr), deviceId: "dev1")
+
+        let stats = try await store.hrWindowStats(deviceId: "dev1", from: 0, to: 20_000)
+        XCTAssertEqual(stats.n, n, "the whole window, not a capped page of it")
+        let trueMean = (120.0 * 8_000 + 170.0 * 2_800) / Double(n)
+        XCTAssertEqual(try XCTUnwrap(stats.avg), trueMean, accuracy: 1e-9)
+        XCTAssertEqual(Int(try XCTUnwrap(stats.avg).rounded()), 133)
+        // What the old capped reduce would have reported, and why it was wrong.
+        XCTAssertNotEqual(Int(try XCTUnwrap(stats.avg).rounded()), 120)
+    }
+
+    /// Empty window: nil rather than a fabricated zero, so the caller's `avg == nil` guard still fires.
+    func testHrWindowStatsEmptyWindowIsNil() async throws {
+        let store = try await WhoopStore.inMemory()
+        try await store.upsertDevice(id: "dev1", mac: nil, name: nil)
+        let stats = try await store.hrWindowStats(deviceId: "dev1", from: 0, to: 1_000)
+        XCTAssertEqual(stats.n, 0)
+        XCTAssertNil(stats.avg)
+        XCTAssertNil(stats.max)
+    }
+
+    /// A device with no PPG at all (WHOOP 4, or a 5 that banked v18 throughout) must be unchanged by the
+    /// union — the guarantee that this fix cannot move numbers it has no business moving.
+    func testHrWindowStatsWithNoPpgMatchesMeasuredOnly() async throws {
+        let store = try await WhoopStore.inMemory()
+        try await store.upsertDevice(id: "dev1", mac: nil, name: nil)
+        _ = try await store.insert(
+            Streams(hr: (0..<100).map { HRSample(ts: $0, bpm: 90 + $0 % 7) }), deviceId: "dev1")
+        let stats = try await store.hrWindowStats(deviceId: "dev1", from: 0, to: 1_000)
+        let measured = try await store.hrSamples(deviceId: "dev1", from: 0, to: 1_000, limit: 100_000)
+        XCTAssertEqual(stats.n, measured.count)
+        XCTAssertEqual(try XCTUnwrap(stats.avg),
+                       Double(measured.reduce(0) { $0 + $1.bpm }) / Double(measured.count), accuracy: 1e-9)
+        XCTAssertEqual(stats.max, measured.map(\.bpm).max())
+    }
+
     func testEventsDecodePayload() async throws {
         let store = try await seeded()
         let evs = try await store.events(deviceId: "dev1", from: 0, to: 1000, limit: 100)

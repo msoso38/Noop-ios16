@@ -2151,12 +2151,15 @@ final class Repository: ObservableObject {
                                              minSamples: Int = 60, cap: Int = 300) async -> [WorkoutRow] {
         // #833 (on-open freeze): this used to run a SEQUENTIAL per-row loop, each awaiting one
         // `store.hrSamples(.., limit: 8000)` then reducing up to 8000 ints SYNCHRONOUSLY on the @MainActor
-        // (sum + max), for up to `cap` rows. On a deep history that beach-balled first paint. Two changes,
-        // both output-preserving: (1) the eligible rows' reads run with BOUNDED concurrency (chunks of
-        // `readChunk`) so the single-connection store isn't swamped, and (2) the per-row sum/max moved OFF
-        // the main actor into the `nonisolated static` `reduceWorkoutHr`. Eligibility + the `cap` budget are
-        // resolved FIRST in row order (identical to the old loop: budget is spent on eligible rows top-down
-        // and reads stop once it hits 0), so exactly the same rows are read and the result is byte-identical.
+        // (sum + max), for up to `cap` rows. On a deep history that beach-balled first paint. The eligible
+        // rows' reads run with BOUNDED concurrency (chunks of `readChunk`) so the single-connection store
+        // isn't swamped, and eligibility + the `cap` budget are resolved FIRST in row order (identical to
+        // the old loop: budget is spent on eligible rows top-down and reads stop once it hits 0), so exactly
+        // the same rows are read.
+        //
+        // #836 went further: the mean/peak is now a SQLite aggregate (`store.hrWindowStats`), so the common
+        // path materialises no rows at all and there is nothing left to reduce off-main — which retired the
+        // `reduceWorkoutHr` helper this comment used to describe. Rows are read only for a strain fill.
         let readChunk = 8
 
         // Phase 1 , resolve eligibility + spend the `cap` budget in ORIGINAL row order, exactly as the old
@@ -2205,17 +2208,27 @@ final class Repository: ObservableObject {
                     // only the resulting Sendable String crosses into the task.
                     let hrDeviceId = Self.workoutHrDeviceId(source: rows[idx].source, activeStrapId: deviceId)
                     group.addTask { [hrDeviceId] in
-                        let samples = (try? await store.hrSamples(deviceId: hrDeviceId,
-                                                                  from: startTs, to: endTs,
-                                                                  limit: 8000)) ?? []
-                        guard samples.count >= minSamples else { return nil }
-                        // Sum + max over up to 8000 ints , off the @MainActor (the freeze fix).
-                        let (avg, peak) = Repository.reduceWorkoutHr(samples)
+                        // #836: aggregate in SQLite over the WHOLE window instead of reducing up to 8000
+                        // materialised rows. The old read capped at 8000, so a workout longer than ~2h13m
+                        // at 1 Hz reported the mean of its FIRST 8000 samples as the session average — wrong
+                        // on its own terms, and divergent from Kotlin, which aggregates the lot. This also
+                        // makes the common path (no strain fill) read no rows at all, which is strictly
+                        // better for the #833 freeze this function exists to avoid.
+                        guard let stats = try? await store.hrWindowStats(deviceId: hrDeviceId,
+                                                                         from: startTs, to: endTs),
+                              stats.n >= minSamples,
+                              let mean = stats.avg, let peak = stats.max else { return nil }
+                        let avg = Int(mean.rounded())
                         // #961: recompute Effort from the SAME samples the graph/zones use, off-main. Uses the
                         // app's StrainScorer with the injected HRmax + sex so it matches endWorkout's own score;
                         // StrainScorer returns nil on a still-too-thin window (never a fabricated number).
+                        // Reads rows ONLY for this — StrainScorer needs the series, not an aggregate. The 8000
+                        // cap stays here: it bounds the strain window, not the average. (Kotlin does the same.)
                         let strain: Double?
                         if wantStrain, let p = strainProfile {
+                            let samples = (try? await store.hrSamples(deviceId: hrDeviceId,
+                                                                      from: startTs, to: endTs,
+                                                                      limit: 8000)) ?? []
                             strain = StrainScorer.strain(samples, maxHR: p.hrMax, sex: p.sex)
                         } else {
                             strain = nil
@@ -2260,22 +2273,6 @@ final class Repository: ObservableObject {
     nonisolated static func workoutHrDeviceId(source: String, activeStrapId: String) -> String {
         guard WorkoutSource.classify(source) == .detected else { return activeStrapId }
         return source.hasSuffix("-noop") ? String(source.dropLast(5)) : source
-    }
-
-    /// #833: the per-workout HR reduction (mean bpm → rounded Int, peak bpm), pulled OUT of the @MainActor
-    /// reconcile loop. `nonisolated static` so a `withTaskGroup` child task runs it OFF the main actor , a
-    /// dense workout's up-to-8000 1 Hz samples no longer sum/max on the actor that drives SwiftUI. Pure +
-    /// unit-testable. Byte-identical to the old inline `reduce(0,+)` / `max()`: same rounding, same peak.
-    /// Caller guarantees `samples` is non-empty (the `minSamples` gate), so the mean divisor is never zero.
-    nonisolated static func reduceWorkoutHr(_ samples: [HRSample]) -> (avg: Int, peak: Int) {
-        var sum = 0
-        var peak = 0
-        for s in samples {
-            sum += s.bpm
-            if s.bpm > peak { peak = s.bpm }
-        }
-        let avg = Int((Double(sum) / Double(samples.count)).rounded())
-        return (avg, peak)
     }
 
     // MARK: - Workout editing (manual add/edit · relabel · dismiss · delete)
