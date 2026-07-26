@@ -181,14 +181,25 @@ data class RrRow(val ts: Long, val rrMs: Int)
  * straddle a live-flush boundary still collide (batch-local), the same narrow case the old key dropped and
  * strictly no worse; the authoritative historical path delivers a second's beats atomically in one batch.
  * Pure so it is unit-testable.
+ *
+ * Also stamps `ord` (Room v24, #823): the beat's position among ALL beats sharing this `ts` in this batch —
+ * its emission order, which `seq` cannot express because `seq` keys on (ts, rrMs) and so is 0 for every
+ * DISTINCT beat in a second. `ord` is NOT in the key and never affects which rows survive; it exists so
+ * reads can return beats in the order the heart produced them rather than sorted by value, which biases
+ * RMSSD down. Same batch-local caveat as `seq`: a second split across two live flushes restarts `ord` at 0,
+ * and ON CONFLICT DO NOTHING keeps whichever row landed first. The historical path delivers a second
+ * atomically, so the authoritative copy is correctly ordered.
  */
 internal fun assignRrSeq(deviceId: String, rows: List<RrRow>): List<RrInterval> {
     val seqByBeat = HashMap<Pair<Long, Int>, Int>()
+    val ordByTs = HashMap<Long, Int>()
     return rows.map { row ->
         val key = row.ts to row.rrMs
         val s = seqByBeat.getOrDefault(key, 0)
         seqByBeat[key] = s + 1
-        RrInterval(deviceId = deviceId, ts = row.ts, rrMs = row.rrMs, seq = s)
+        val o = ordByTs.getOrDefault(row.ts, 0)
+        ordByTs[row.ts] = o + 1
+        RrInterval(deviceId = deviceId, ts = row.ts, rrMs = row.rrMs, seq = s, ord = o)
     }
 }
 
