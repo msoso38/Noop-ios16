@@ -4,7 +4,7 @@ import StrandDesign
 
 // MARK: - Quick Launch Panel
 //
-// A liquid-glass rectangle that expands above the split tab bar when the "+" circle is tapped.
+// A liquid-glass rectangle that materializes above the split tab bar when the "+" circle is tapped.
 // Five horizontal pages (Favourites · Insights · Body · Data · App), each a 3×3 grid of
 // icon circles + labels. Swiping left/right flips pages; dots below track the current one.
 // Long-pressing the Favourites page enters edit mode (iOS home-screen jiggle parity): every
@@ -193,11 +193,11 @@ struct QuickLaunchPanel: View {
             return
         }
         withAnimation(reduceMotion ? nil : StrandMotion.quick) { isEndingEditing = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + StrandMotion.editExitLeadDelay) {
             guard isEndingEditing else { return }
             withAnimation(reduceMotion ? nil : StrandMotion.quick) { isEditing = false }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + StrandMotion.editExitCompletionDelay) {
             guard isEndingEditing else { return }
             isEndingEditing = false
             afterExit?()
@@ -297,7 +297,9 @@ struct QuickLaunchPanel: View {
         if reduceMotion {
             onSelect(id)
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { onSelect(id) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + StrandMotion.durationFast) {
+                onSelect(id)
+            }
         }
     }
 

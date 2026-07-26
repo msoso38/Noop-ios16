@@ -27,6 +27,9 @@ public enum StrandMotion {
     /// Standard transition (card appear, fades).
     public static let durationStandard: Double = 0.30
 
+    /// Deliberate sheet presentation / navigation settle.
+    public static let durationSheet: Double = 0.42
+
     /// Slow / draw-in (ring arc, waveform ignite).
     public static let durationSlow: Double = 0.9
 
@@ -66,6 +69,18 @@ public enum StrandMotion {
 
     // MARK: Shell transitions (iOS split tab bar + quick-launch panel)
 
+    /// Delay between dismissing one system sheet and presenting its replacement.
+    public static let sheetSwapDelay: Double = 0.05
+
+    /// Delay before the edit-mode chrome and tile state overlap their exits.
+    public static let editExitLeadDelay: Double = 0.04
+
+    /// Completion point for the overlapping edit-mode exit.
+    public static let editExitCompletionDelay: Double = 0.22
+
+    /// Completion point for an `interactive` drag settle.
+    public static let interactiveSettleDelay: Double = 0.28
+
     /// The design-system "calm" easing — the global tab crossfade / panel curve.
     /// cubic-bezier(0.22, 1, 0.36, 1) at the standard tab-swap duration.
     public static let calm = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)
@@ -80,13 +95,18 @@ public enum StrandMotion {
     public static func calmQuick(reduced: Bool) -> Animation? { reduced ? nil : calmQuick }
 
     /// Quick-launch panel open/close — also the interactive pull-down finish, so opening,
-    /// button-dismiss, and pull-to-dismiss all share one spring character. Slightly slower and
-    /// more damped than the original full-height slide so the anchored expansion feels deliberate
-    /// without a rubbery overshoot on a physical device.
-    public static let panel = Animation.spring(response: 0.38, dampingFraction: 0.90)
+    /// button-dismiss, and pull-to-dismiss share one measured curve. The native glass transition needs
+    /// enough time for its lensing to read, without spring overshoot extending the material past content.
+    public static let panel = Animation.easeInOut(duration: durationStandard)
 
     /// `panel`, suppressed under Reduce Motion.
     public static func panel(reduced: Bool) -> Animation? { reduced ? nil : panel }
+
+    /// System-sheet presentation on the same calm curve, at its deliberate presentation duration.
+    public static let sheet = Animation.timingCurve(0.22, 1, 0.36, 1, duration: durationSheet)
+
+    /// `sheet`, suppressed under Reduce Motion.
+    public static func sheet(reduced: Bool) -> Animation? { reduced ? nil : sheet }
 
     /// Brief tap/selection fade (grid-tile launch, drop-target highlight).
     public static let tap = Animation.easeInOut(duration: 0.15)

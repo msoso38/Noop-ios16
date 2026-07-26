@@ -245,7 +245,9 @@ struct FavouritesSlotGrid: View {
                 dragTranslation = .zero
                 dragIsLifted = false
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { resetDrag(animated: false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + StrandMotion.interactiveSettleDelay) {
+                resetDrag(animated: false)
+            }
             return
         }
         if reduceMotion {
@@ -266,7 +268,7 @@ struct FavouritesSlotGrid: View {
             dragTranslation = delta
             dragIsLifted = false
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + StrandMotion.interactiveSettleDelay) {
             commitPlacement(from: origin, to: target)
             resetDrag(animated: false)
         }

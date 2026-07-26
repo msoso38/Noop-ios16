@@ -88,19 +88,11 @@ struct RootTabView: View {
             }
     }
 
-    /// Quick Launch is opened by the bottom-trailing circle, so its transition starts near that
-    /// control instead of travelling its full height up from below the screen like an unrelated sheet.
-    /// On iOS 26 the glass itself materializes natively; older releases add a restrained opacity fade
-    /// to the same short anchored expansion.
+    /// Keep the panel at its final frame while the material's lensing resolves in place. Opacity is
+    /// deliberately non-spatial, and—unlike `.identity`—retains the disappearing hierarchy long enough
+    /// for Liquid Glass to render its materialize-out phase as well as materialize-in.
     private var launchPanelTransition: AnyTransition {
-        guard !reduceMotion else { return .opacity }
-        let anchoredExpansion = AnyTransition
-            .scale(scale: 0.90, anchor: .bottomTrailing)
-            .combined(with: .offset(x: 0, y: NoopMetrics.space3))
-        if #available(iOS 26.0, *) {
-            return anchoredExpansion
-        }
-        return anchoredExpansion.combined(with: .opacity)
+        return .opacity
     }
 
     var body: some View {
@@ -144,6 +136,7 @@ struct RootTabView: View {
 
             if launchPanelOpen {
                 Button {
+                    StrandHaptic.selection.play()
                     withAnimation(StrandMotion.panel(reduced: reduceMotion)) {
                         launchPanelOpen = false
                     }
@@ -157,6 +150,10 @@ struct RootTabView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Close menu")
+                // This layer is already visually transparent and only owns outside taps. Letting it
+                // inherit the animated transaction's default fade kept an invisible full-screen
+                // rectangle alive briefly after the visible panel had closed.
+                .transition(.identity)
             }
 
             // Split bar + panel stack — aligned to the bottom of the screen.
@@ -173,10 +170,9 @@ struct RootTabView: View {
                             }
                         }
                     )
-                    // Materialize from the control that opened it instead of crossing the entire
-                    // panel height from below the screen. This makes the panel read as the plus
-                    // circle expanding into its contents, not as a separate sheet presentation.
-                    .quickLaunchMaterialization()
+                    // Native materialization drives the glass on iOS 26. The accompanying opacity
+                    // transition has no geometry and keeps removal alive for the materialize-out pass.
+                    .quickLaunchGlassTransition(reduceMotion: reduceMotion)
                     .transition(launchPanelTransition)
                 }
                 FloatingTabBar(
@@ -257,23 +253,23 @@ struct RootTabView: View {
                 router.requestedDestination = nil
             case .trends:
                 // Trends is a primary tab on iPhone (not a pillar sheet) — switch to it.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 1 }
+                withAnimation(StrandMotion.calm(reduced: reduceMotion)) { selectedTab = 1 }
                 router.requestedDestination = nil
             case .activeWorkout:
                 // The Today active-workout indicator opens Live through the quick-action Live sheet; once
                 // it's up, LiveView consumes the one-shot `presentActiveWorkout` flag and presents the
                 // in-exercise screen. Calm sheet easing, matching the other quick-action presents.
-                withAnimation(Self.sheetEase) { quickAction = .live }
+                withAnimation(StrandMotion.sheet(reduced: reduceMotion)) { quickAction = .live }
                 router.requestedDestination = nil
             case .liveSession:
                 // Live Sessions is presented from Today's own Start entry (a cover, not a routed sheet),
                 // so a deep-link lands on the Today tab where that entry lives.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 0 }
+                withAnimation(StrandMotion.calm(reduced: reduceMotion)) { selectedTab = 0 }
                 router.requestedDestination = nil
             case .journal:
                 // The #627 Today journal widget opens the journal through the quick-action Journal sheet
                 // (InsightsView), matching the FAB's "Log journal" action. Calm sheet easing.
-                withAnimation(Self.sheetEase) { quickAction = .journal }
+                withAnimation(StrandMotion.sheet(reduced: reduceMotion)) { quickAction = .journal }
                 router.requestedDestination = nil
             case nil:
                 break
@@ -282,7 +278,7 @@ struct RootTabView: View {
         // A screen's top-bar "+" routes here: open the quick-action sheet, then clear the flag.
         .onChange(of: router.quickActionsRequested) { _, req in
             if req {
-                withAnimation(Self.sheetEase) { quickAction = .menu }
+                withAnimation(StrandMotion.sheet(reduced: reduceMotion)) { quickAction = .menu }
                 router.quickActionsRequested = false
             }
         }
@@ -369,9 +365,6 @@ struct RootTabView: View {
         tabPaths[selectedTab].append(TabRoute.coach)
     }
 
-    /// Calm-easing curve (cubic-bezier(0.22,1,0.36,1)) at the README sheet-present duration.
-    private static let sheetEase = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.42)
-
     // MARK: - Quick-action sheet
 
     /// Routes a chosen quick action to the existing screen, or shows the action menu itself.
@@ -383,8 +376,10 @@ struct RootTabView: View {
                 // Swap the menu for the chosen destination on the next runloop so the sheet
                 // re-presents cleanly (avoids dismiss/re-present races). Calm easing on re-present.
                 quickAction = nil
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    withAnimation(Self.sheetEase) { quickAction = picked }
+                DispatchQueue.main.asyncAfter(deadline: .now() + StrandMotion.sheetSwapDelay) {
+                    withAnimation(StrandMotion.sheet(reduced: reduceMotion)) {
+                        quickAction = picked
+                    }
                 }
             }
             .presentationDetents([.height(344)])
@@ -636,7 +631,9 @@ private struct FloatingTabBar: View {
                             : panelOpen ? StrandPalette.textSecondary : StrandPalette.accent
                     )
                     .rotationEffect(.degrees(panelOpen && !coachShortcutFeedback ? 45 : 0))
-                    .contentTransition(.symbolEffect(.replace))
+                    // Treat both glyphs as single marks. Replacing each SF Symbol layer separately
+                    // makes the three Coach sparkles scatter while the plus collapses.
+                    .contentTransition(.symbolEffect(.replace.downUp.wholeSymbol))
                     .animation(reduceMotion ? nil : StrandMotion.calmQuick, value: coachShortcutFeedback)
                     .frame(
                         width: NoopMetrics.LaunchChrome.toggleDiameter,
@@ -650,9 +647,7 @@ private struct FloatingTabBar: View {
             .accessibilityLabel(panelOpen ? "Close menu" : "Open menu")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction {
-                withAnimation(StrandMotion.panel(reduced: reduceMotion)) {
-                    panelOpen.toggle()
-                }
+                togglePanel()
             }
             .accessibilityAction(named: Text("Coach")) {
                 commitCoachShortcut()
@@ -668,11 +663,18 @@ private struct FloatingTabBar: View {
                 case .first:
                     commitCoachShortcut()
                 case .second:
-                    withAnimation(StrandMotion.panel(reduced: reduceMotion)) {
-                        panelOpen.toggle()
-                    }
+                    togglePanel()
                 }
             }
+    }
+
+    /// The light toggle haptic lands on the same frame that the glass begins materializing.
+    /// A deliberate Coach hold uses the stronger commit haptic instead.
+    private func togglePanel() {
+        StrandHaptic.selection.play()
+        withAnimation(StrandMotion.panel(reduced: reduceMotion)) {
+            panelOpen.toggle()
+        }
     }
 
     /// Confirm the hidden Coach shortcut before routing: the plus becomes the same sparkle glyph used
@@ -688,10 +690,15 @@ private struct FloatingTabBar: View {
             coachShortcutFeedback = true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + StrandMotion.durationFast) {
-            withAnimation(StrandMotion.calmQuick) {
-                coachShortcutFeedback = false
-            }
             onCoach()
+            // Keep the confirmed Coach glyph stable throughout the navigation push. Starting the
+            // reverse replacement in the same update made both animations compete and tear.
+            DispatchQueue.main.asyncAfter(deadline: .now() + StrandMotion.durationSheet) {
+                guard coachShortcutFeedback else { return }
+                withAnimation(StrandMotion.calmQuick) {
+                    coachShortcutFeedback = false
+                }
+            }
         }
     }
 
@@ -724,8 +731,8 @@ private struct FloatingTabBar: View {
     }
 }
 
-/// Native Liquid Glass groups and materialization are iOS 26-only. The modifiers keep the call site
-/// stable across the iOS 17 deployment range so the fallback remains the existing material surface.
+/// Native Liquid Glass grouping and transition controls are iOS 26-only. The modifiers keep the call
+/// site stable across the iOS 17 deployment range so the fallback remains the existing material surface.
 private struct QuickLaunchGlassContainerModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -739,11 +746,13 @@ private struct QuickLaunchGlassContainerModifier: ViewModifier {
     }
 }
 
-private struct QuickLaunchMaterializationModifier: ViewModifier {
+private struct QuickLaunchGlassTransitionModifier: ViewModifier {
+    let reduceMotion: Bool
+
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.glassEffectTransition(.materialize)
+            content.glassEffectTransition(reduceMotion ? .identity : .materialize)
         } else {
             content
         }
@@ -755,8 +764,8 @@ private extension View {
         modifier(QuickLaunchGlassContainerModifier())
     }
 
-    func quickLaunchMaterialization() -> some View {
-        modifier(QuickLaunchMaterializationModifier())
+    func quickLaunchGlassTransition(reduceMotion: Bool) -> some View {
+        modifier(QuickLaunchGlassTransitionModifier(reduceMotion: reduceMotion))
     }
 }
 
