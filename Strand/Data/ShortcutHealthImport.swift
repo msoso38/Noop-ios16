@@ -2,7 +2,7 @@ import Foundation
 import WhoopStore
 
 /// PR #581 — HealthKit-free Apple Health **import** for sideloaded iOS installs. The mirror of the
-/// #155 export (`ShortcutHealthExport`): a free (7-day) signing identity can't carry the HealthKit
+/// NDJSON export (`ShortcutNdjsonExport`): a free (7-day) signing identity can't carry the HealthKit
 /// entitlement, so the in-app `AppleHealthImport` (which reads an `export.zip` via HealthKit-shaped
 /// XML) is the user's only path — and that still works. This adds a SECOND, lighter path for the
 /// data Apple Health can hand a Shortcut directly: the reporter builds a Siri Shortcut that reads
@@ -20,10 +20,10 @@ import WhoopStore
 ///
 /// LOOP-FREEDOM (the #581 review's central risk). Everything this ingests lands under the
 /// `apple-health` source id — the SAME source the `export.zip` importer writes and NEVER the strap
-/// (`my-whoop`) source. The complementary export (#155) reads the strap source ONLY and writes into
+/// (`my-whoop`) source. The complementary NDJSON export reads the strap source ONLY and writes into
 /// Apple Health. So the round-trip is one-way at each hop:
 ///
-///   strap (`my-whoop`)  --[#155 export Shortcut]-->  Apple Health  --[this import]-->  `apple-health`
+///   strap (`my-whoop`)  --[NDJSON export Shortcut]-->  Apple Health  --[this import]-->  `apple-health`
 ///
 /// A value this import writes can never be picked up by the export (the export ignores `apple-health`)
 /// and so can never be re-logged into Apple Health and re-imported. `targetSource` is asserted equal to
@@ -31,7 +31,7 @@ import WhoopStore
 /// guard so a future caller can't accidentally point the ingest at the strap and create the loop.
 /// `ShortcutHealthImportTests.testRejectsStrapTarget` pins this.
 ///
-/// Platform-neutral (no UIKit) so it compiles into the macOS target too, mirroring `ShortcutHealthExport`;
+/// Platform-neutral (no UIKit) so it compiles into the macOS target too, mirroring `ShortcutNdjsonExport`;
 /// the iOS-only `.onOpenURL` wiring lives in StrandiOS/ (see crossLaneNotes / Lane E) and calls
 /// `AppModel.handleHealthImportURL(_:)`.
 enum ShortcutHealthImport {
