@@ -422,14 +422,14 @@ Source: `HRVFreqDomain.swift`. LF/HF band power over R-R. **Status: Live**, pure
 
 ### `StressOnsetDetector` — L3 closed-loop stress check-in (JITAI)
 
-Source: `StressOnsetDetector.swift`. Generalises the inline logic in `AppModel.evaluateStress()`'s legacy resting-stress nudge into an edge-triggered, motion-gated, replay-safe detector that decides, at the moment it matters, whether to offer a passive breathing-cue check-in.
+Source: `StressOnsetDetector.swift`. Generalises what used to be inline logic in `AppModel.evaluateStress()` into an edge-triggered, motion-gated, replay-safe detector that decides, at the moment it matters, whether to offer a passive breathing-cue check-in.
 
 - Tracks a **fast** RMSSD (latest `fastWindowBeats = 60` clean beats) against a **slow** EMA baseline (`baselineEmaAlpha = 0.98`, the same weight as the legacy nudge).
 - Fires only on a **fresh edge** — the fast RMSSD crossing from above to below `baseline × dropRatio (0.6)` — not on every tick it stays below.
 - **Exercise-gated:** suppressed when HR is outside the resting band (`55–100` bpm) or recent wrist motion is at/above a threshold shared with `SedentaryDetector` — a brisk walk's HRV dip must not read as stress.
 - Rate-limited to one fire per `minSecondsBetweenFires = 900` s (15 min), suppressible by quiet hours or an active manual session.
 - Pure and stateless between calls — the caller persists `State` (baseline EMA, edge flag, last-fire clock) and feeds it back, so a replayed window can't re-fire.
-- **Status: Live, opt-in (default OFF).** Wired into `Strand/App/AppModel.swift`'s `evaluateStress()`, which calls `StressOnsetDetector.evaluate(...)` alongside (not replacing) the legacy inline nudge, gated on a "stress check-ins" master + auto-nudge toggle (both default off, `BiofeedbackPrefs.stressConfig()`). State round-trips through `BiofeedbackPrefs.loadStressState()` / `saveStressState(_:)`; a fire posts to `StressNudgeCenter`, surfaced by the dismissible `StressCheckInCard` (Breathe now / Not now / Turn off) — never a push notification.
+- **Status: Live, opt-in (default OFF).** Wired into `Strand/App/AppModel.swift`'s `evaluateStress()`, which is now the detector's *only* caller — the legacy inline resting-stress nudge it generalised has since been removed, so `evaluateStress()` delegates every gate to the engine. Gated on a "stress check-ins" master + auto-nudge toggle (both default off, `BiofeedbackPrefs.stressConfig()`), plus `live.bonded` and `live.worn`. State round-trips through `BiofeedbackPrefs.loadStressState()` / `saveStressState(_:)`; a fire posts to `StressNudgeCenter`, surfaced by the dismissible `StressCheckInCard` (Breathe now / Not now / Turn off) — never a push notification.
 
 ---
 
