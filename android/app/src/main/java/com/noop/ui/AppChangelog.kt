@@ -39,7 +39,7 @@ object AppChangelog {
     val releases: List<Release> = listOf(
         Release(
             version = "9.2.0",
-            title = "HRV accuracy fix, Oura sleep and motion, richer 5/MG decoding, and a stoppable sync",
+            title = uiString(R.string.l10n_app_changelog_hrv_accuracy_fix_oura_sleep_and_4ed31e39),
             date = "July 2026",
             items = listOf(
                 "**HRV was reading low (#823).** Same-second R-R beats were sorted by size instead of the order the strap sent them, which biased RMSSD downward. Fixed on both platforms — your HRV numbers will shift slightly, and the new ones are the correct ones.",
