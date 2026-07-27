@@ -1,5 +1,7 @@
 package com.noop.ui
 
+import com.noop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Switch
@@ -35,8 +38,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.BuildConfig
 import com.noop.analytics.Baselines
+import com.noop.analytics.HRVReadiness
+import com.noop.analytics.ReadinessTier
 import com.noop.ble.PuffinExperiment
 import com.noop.ble.WhoopModel
+import com.noop.data.DailyMetric
 import com.noop.testcentre.CaptureAccumulator
 import com.noop.testcentre.CaptureKind
 import com.noop.testcentre.DisplayPerformanceMonitor
@@ -50,6 +56,7 @@ import com.noop.testcentre.TestModeRegistry
 import com.noop.testcentre.TestReportFlow
 import com.noop.testcentre.TestReportLink
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * Settings -> Test Centre (spec section 7), the Android twin of TestCentreView. Four sections: domain
@@ -102,13 +109,13 @@ fun TestCentreScreen(vm: AppViewModel) {
     }
 
     ScreenScaffold(
-        title = "Test Centre",
+        title = uiString(R.string.l10n_test_centre_screen_test_centre_37b36828),
         subtitle = "Turn on a test for the thing that's wrong, wear the strap, then tap Report. Everything stays on this phone.",
     ) {
         // --- Section 1: Domain test modes ---
         SettingsSectionTC(
             icon = Icons.Filled.BugReport,
-            title = "Test modes",
+            title = uiString(R.string.l10n_test_centre_screen_test_modes_e21f1d3c),
             blurb = "Each test logs extra detail for one part of the app while you wear the strap, then bundles it for a bug report.",
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -162,6 +169,9 @@ fun TestCentreScreen(vm: AppViewModel) {
                 scope.launch { pendingReport = buildPending(context, MASTER_REPORT_MODE, vm.ble.exportLogText(), vm) }
             },
         )
+
+        // --- Section 4: Experimental algorithms ---
+        ExperimentalAlgorithmsCard(vm)
     }
 
     pendingReport?.let { p ->
@@ -203,7 +213,7 @@ private class PendingReport(
 /** The "whole app" report profile for the section-3 manual Report button. MASTER is not a registry mode
  *  (it has no wear-and-capture flow), so the deep-link self-applies the test:all label via this. */
 private val MASTER_REPORT_MODE = TestMode(
-    domain = TestDomain.MASTER, title = "Bug report", blurb = "", icon = "ic_bug",
+    domain = TestDomain.MASTER, title = uiString(R.string.l10n_test_centre_screen_bug_report_5a7ee5ac), blurb = "", icon = "ic_bug",
     priority = com.noop.testcentre.TestPriority.HIGH, captures = emptyList(),
     questionnaire = emptyList(), liveReadout = emptyList(),
     capture = com.noop.testcentre.CaptureKind.Toggle, includesScreenshot = false, requires5MG = false,
@@ -302,7 +312,7 @@ private fun TestModeRow(
         Row {
             Spacer(Modifier.weight(1f))
             TextButton(onClick = onReport) {
-                Text("Report", color = Palette.accent, style = NoopType.body)
+                Text(uiString(R.string.l10n_test_centre_screen_report_ee45c303), color = Palette.accent, style = NoopType.body)
             }
         }
     }
@@ -317,13 +327,13 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
     var debugLogging by remember { mutableStateOf(NoopPrefs.debugLogging(context)) }
     SettingsSectionTC(
         icon = Icons.Filled.Info,
-        title = "Diagnostic tools",
+        title = uiString(R.string.l10n_test_centre_screen_diagnostic_tools_04ba4d3f),
         blurb = "Your strap log, a Charge recalibrate, and the device environment. Nothing leaves the phone unless you share it.",
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             // Strap log, the same exportLogText share the Settings Diagnostics button uses.
             NoopButton(
-                text = "Share strap log (for bug reports)",
+                text = uiString(R.string.l10n_test_centre_screen_share_strap_log_for_bug_reports_b9802500),
                 leadingIcon = Icons.Filled.Upload,
                 kind = NoopButtonKind.Secondary,
                 fullWidth = true,
@@ -331,7 +341,7 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
             )
             // Recalibrate Charge baseline, the same Baselines.recalibrateRecoveryBaselines call.
             NoopButton(
-                text = "Recalibrate Charge baseline",
+                text = uiString(R.string.l10n_test_centre_screen_recalibrate_charge_baseline_52a05a26),
                 leadingIcon = Icons.Filled.Autorenew,
                 kind = NoopButtonKind.Secondary,
                 fullWidth = true,
@@ -345,9 +355,9 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Debug logging", style = NoopType.subhead, color = Palette.textPrimary)
+                    Text(uiString(R.string.l10n_test_centre_screen_debug_logging_daaa7d74), style = NoopType.subhead, color = Palette.textPrimary)
                     Text(
-                        "Also write the strap log to the system log (logcat) for development over adb. Off by default.",
+                        uiString(R.string.l10n_test_centre_screen_also_write_the_strap_log_to_655b55b2),
                         style = NoopType.footnote,
                         color = Palette.textTertiary,
                     )
@@ -364,10 +374,10 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
         AlertDialog(
             onDismissRequest = { showRecalibrate = false },
             containerColor = Palette.surfaceOverlay,
-            title = { Text("Recalibrate your Charge baseline?", style = NoopType.title2, color = Palette.textPrimary) },
+            title = { Text(uiString(R.string.l10n_test_centre_screen_recalibrate_your_charge_baseline_018e3846), style = NoopType.title2, color = Palette.textPrimary) },
             text = {
                 Text(
-                    "This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays.",
+                    uiString(R.string.l10n_test_centre_screen_this_restarts_the_roughly_4_night_33cce377),
                     style = NoopType.subhead, color = Palette.textSecondary,
                 )
             },
@@ -379,11 +389,11 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
                     editor.apply()
                     showRecalibrate = false
                     vm.syncNow()
-                }) { Text("Recalibrate", style = NoopType.body, color = Palette.accent) }
+                }) { Text(uiString(R.string.l10n_test_centre_screen_recalibrate_aaa989ea), style = NoopType.body, color = Palette.accent) }
             },
             dismissButton = {
                 TextButton(onClick = { showRecalibrate = false }) {
-                    Text("Cancel", style = NoopType.body, color = Palette.textSecondary)
+                    Text(uiString(R.string.l10n_test_centre_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
                 }
             },
         )
@@ -398,12 +408,12 @@ private fun ExportCard(vm: AppViewModel, onReport: () -> Unit) {
     var minutes by remember { mutableStateOf(settings.timeMinutes) }
     SettingsSectionTC(
         icon = Icons.Filled.Upload,
-        title = "Export",
+        title = uiString(R.string.l10n_test_centre_screen_export_f3e4fadb),
         blurb = "Report a bug with your log, or have NOOP drop a daily copy into its export folder.",
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             NoopButton(
-                text = "Report a bug with my log",
+                text = uiString(R.string.l10n_test_centre_screen_report_a_bug_with_my_log_5101ee49),
                 leadingIcon = Icons.Filled.BugReport,
                 kind = NoopButtonKind.Primary,
                 fullWidth = true,
@@ -412,9 +422,9 @@ private fun ExportCard(vm: AppViewModel, onReport: () -> Unit) {
             // Daily auto-export, the same DebugExportSettings writes the Settings card uses.
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Daily auto-export", style = NoopType.subhead, color = Palette.textPrimary)
+                    Text(uiString(R.string.l10n_test_centre_screen_daily_auto_export_02ed9f75), style = NoopType.subhead, color = Palette.textPrimary)
                     Text(
-                        "Android runs this via WorkManager (Doze may delay it).",
+                        uiString(R.string.l10n_test_centre_screen_android_runs_this_via_workmanager_doze_875e499e),
                         style = NoopType.footnote, color = Palette.textTertiary,
                     )
                 }
@@ -431,7 +441,7 @@ private fun ExportCard(vm: AppViewModel, onReport: () -> Unit) {
             if (enabled) {
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Export time", style = NoopType.subhead, color = Palette.textPrimary)
+                        Text(uiString(R.string.l10n_test_centre_screen_export_time_2ca90c2e), style = NoopType.subhead, color = Palette.textPrimary)
                     }
                     TimeChip(
                         minutes = minutes,
@@ -448,6 +458,124 @@ private fun ExportCard(vm: AppViewModel, onReport: () -> Unit) {
     }
 }
 
+/**
+ * Test Centre → Experimental algorithms. The single home for OPT-IN, off-by-default, non-clinical research
+ * variants that swap which model computes a metric (never detection, never a stored WHOOP value). Each toggle
+ * writes the SAME [PuffinExperiment] key its Swift twin reads, so the platforms stay in lockstep. Hosts the
+ * HR-from-PPG sub-lag interpolation variant and the read-only HRV-readiness (Plews/Altini) tier readout.
+ * Twin of the Swift TestCentreView experimentalAlgorithmsCard.
+ */
+@Composable
+private fun ExperimentalAlgorithmsCard(vm: AppViewModel) {
+    val context = LocalContext.current
+    val puffin = remember { PuffinExperiment.from(context) }
+    var ppgHrSubLag by remember { mutableStateOf(puffin.ppgHrSubLagInterp) }
+    var hrvReadiness by remember { mutableStateOf(puffin.hrvReadiness) }
+    // The SAME nightly HRV series the recovery UI reads (repo-merged DailyMetric.avgHrv, oldest-first), fed
+    // into the pure HRVReadiness engine ONLY to render the toggle's own reading inline below — the default
+    // Charge ring / analyzeDay path is never touched, and this feeds no downstream gate.
+    val recentDays by vm.recentDays.collectAsStateWithLifecycle()
+    SettingsSectionTC(
+        icon = Icons.Filled.Science,
+        title = uiString(R.string.l10n_test_centre_screen_experimental_algorithms_e09581e2),
+        blurb = "Research-grade alternatives / precision tweaks. Opt-in, off by default, non-clinical.",
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            ToggleRowTC(
+                title = uiString(R.string.l10n_test_centre_screen_hr_from_ppg_sub_lag_interpolation_a3ed1536),
+                description = "When NOOP reconstructs heart rate from the WHOOP 5/MG v26 optical waveform (the " +
+                    "seconds the strap stored no HR), refine the autocorrelation peak with a parabolic sub-lag " +
+                    "fit so the estimate is not quantized to roughly 16 bpm steps near a high HR. It only fills " +
+                    "seconds the strap never reported; it never overrides a stored HR. 5/MG only, off by default.",
+                checked = ppgHrSubLag,
+                onCheckedChange = { ppgHrSubLag = it; puffin.ppgHrSubLagInterp = it },
+            )
+            ToggleRowTC(
+                title = uiString(R.string.l10n_test_centre_screen_hrv_readiness_plews_altini_bce6578f),
+                description = "A read-only Plews/Altini smallest-worthwhile-change reading of your nightly HRV: " +
+                    "it shows whether your 7-night HRV baseline sits above, inside, or below your personal " +
+                    "normal band. It changes nothing else - the Charge ring is identical whether this is on or " +
+                    "off. This is rough / early testing, not yet validated against varying real data (n=1).",
+                checked = hrvReadiness,
+                onCheckedChange = { hrvReadiness = it; puffin.hrvReadiness = it },
+            )
+            // The toggle's OWN effect, shown in place: when on, the live Plews/Altini reading. Nothing renders
+            // when off, so the flag off is zero behaviour change and feeds no downstream gate.
+            if (hrvReadiness) HrvReadinessReadoutTC(recentDays)
+        }
+    }
+}
+
+/**
+ * Inline, opt-in HRV-readiness readout. Renders directly under the "HRV readiness (Plews/Altini)" toggle when
+ * the flag is on, so the toggle's own effect is visible in place. Reads the SAME repo-merged nightly
+ * [DailyMetric.avgHrv] series (oldest-first) the recovery UI has and runs it through the pure [HRVReadiness]
+ * engine — it never touches the default Charge ring or analyzeDay. Below [HRVReadiness.MIN_NIGHTS] valid
+ * nights it shows the honest calibrating count instead of a fabricated tier. Twin of the Swift
+ * `hrvReadinessReadout`.
+ */
+@Composable
+private fun HrvReadinessReadoutTC(days: List<DailyMetric>) {
+    // Memoize the pure evaluate + valid-night count against the day-list identity so it only recomputes when
+    // the series actually changes (not on every recomposition).
+    val (result, validCount) = remember(days) {
+        val cfg = Baselines.hrvCfg
+        val series = days.map { it.avgHrv }
+        val valid = series.count { v -> v != null && v >= cfg.minVal && v <= cfg.maxVal }
+        HRVReadiness.evaluate(series) to valid
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (result != null) {
+            val (word, color) = when (result.tier) {
+                ReadinessTier.PRIMED -> "primed" to Palette.statusPositive
+                ReadinessTier.NORMAL -> "normal" to Palette.textPrimary
+                ReadinessTier.SUPPRESSED -> "suppressed" to Palette.statusWarning
+            }
+            Text(uiString(R.string.l10n_test_centre_screen_hrv_readiness_experimental_word_a471930e, word), style = NoopType.subhead, color = color)
+            val base = result.baseline7Ms.roundToInt()
+            val lo = result.normalLowMs.roundToInt()
+            val hi = result.normalHighMs.roundToInt()
+            val watch = if (result.overreachingWatch) ", overreaching watch" else ""
+            Text(
+                uiString(R.string.l10n_test_centre_screen_7_night_baseline_base_ms_normal_43d9cfa6, base, lo, hi, watch),
+                style = NoopType.footnote, color = Palette.textTertiary,
+            )
+        } else {
+            Text(uiString(R.string.l10n_test_centre_screen_hrv_readiness_experimental_924f61bc), style = NoopType.subhead, color = Palette.textTertiary)
+            Text(
+                uiString(R.string.l10n_test_centre_screen_calibrating_validcount_hrvreadiness_min_nights_nights_c5b21706, validCount, HRVReadiness.MIN_NIGHTS),
+                style = NoopType.footnote, color = Palette.textTertiary,
+            )
+        }
+    }
+}
+
+/** A titled toggle + caption row for the Experimental algorithms card (same NoopType/Palette tokens + switch
+ *  colours as the other Test Centre rows). Local to Test Centre so it never reaches into SettingsScreen. */
+@Composable
+private fun ToggleRowTC(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(title, style = NoopType.subhead, color = Palette.textPrimary, modifier = Modifier.weight(1f))
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                colors = settingsSwitchColors(),
+            )
+        }
+        Text(description, style = NoopType.footnote, color = Palette.textTertiary)
+    }
+}
+
 @Composable
 private fun ReportReviewDialog(
     previewText: String,
@@ -458,7 +586,7 @@ private fun ReportReviewDialog(
     AlertDialog(
         onDismissRequest = onCancel,
         containerColor = Palette.surfaceOverlay,
-        title = { Text("Review before sharing", style = NoopType.title2, color = Palette.textPrimary) },
+        title = { Text(uiString(R.string.l10n_test_centre_screen_review_before_sharing_d7050383), style = NoopType.title2, color = Palette.textPrimary) },
         text = {
             Column {
                 if (modeInactive) {
@@ -466,7 +594,7 @@ private fun ReportReviewDialog(
                     // for the very thing being reported. Warn plainly, with the fix, BEFORE the user
                     // ships a report a maintainer can't act on. Twin of the Swift review-sheet warning.
                     Text(
-                        "Heads up: this test mode is off, so the report has no capture for it. For a " +
+                        uiString(R.string.l10n_test_centre_screen_heads_up_this_test_mode_is_8b82ed69) +
                             "useful report, turn the mode on, reproduce the problem while wearing the " +
                             "strap, then report again.",
                         style = NoopType.footnote, color = Palette.statusWarning,
@@ -474,7 +602,7 @@ private fun ReportReviewDialog(
                     )
                 }
                 Text(
-                    "This is exactly what your report will contain. Nothing leaves this phone until you tap Share.",
+                    uiString(R.string.l10n_test_centre_screen_this_is_exactly_what_your_report_77278bdd),
                     style = NoopType.subhead, color = Palette.textSecondary,
                 )
                 Text(
@@ -489,10 +617,10 @@ private fun ReportReviewDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onShare) { Text("Share", style = NoopType.body, color = Palette.accent) }
+            TextButton(onClick = onShare) { Text(uiString(R.string.l10n_test_centre_screen_share_09ca55ca), style = NoopType.body, color = Palette.accent) }
         },
         dismissButton = {
-            TextButton(onClick = onCancel) { Text("Cancel", style = NoopType.body, color = Palette.textSecondary) }
+            TextButton(onClick = onCancel) { Text(uiString(R.string.l10n_test_centre_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary) }
         },
     )
 }

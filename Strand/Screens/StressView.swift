@@ -499,11 +499,11 @@ struct StressView: View {
                         ("Days", "\(points.count)"),
                     ])
                 }
-                // The one segmented control — full width, right-aligned.
-                HStack {
-                    Spacer()
-                    SegmentedPillControl(ExploreRange.allCases, selection: $range) { $0.label }
-                }
+                // The one segmented control. Its eight options use the shared adaptive-width mode so
+                // the control stays inside the same page gutter as the chart on compact iPhones.
+                SegmentedPillControl(ExploreRange.allCases, selection: $range,
+                                     adaptsToAvailableWidth: true) { $0.label }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 NoopCard(tint: StressRamp.calm) {
                     Text("Not enough recent days to chart a trend yet. Import a history or keep wearing your strap.")
@@ -1178,7 +1178,9 @@ private struct StressPreviewHarness: View {
                 } footer: {
                     ChartFooter([("Today", String(format: "%.1f", score)), ("Average", "1.5"), ("Days", "30")])
                 }
-                HStack { Spacer(); SegmentedPillControl(ExploreRange.allCases, selection: $range) { $0.label } }
+                SegmentedPillControl(ExploreRange.allCases, selection: $range,
+                                     adaptsToAvailableWidth: true) { $0.label }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(NoopMetrics.screenPadding)
         }

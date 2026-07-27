@@ -50,6 +50,40 @@ final class OuraStreamMappingTests: XCTestCase {
         XCTAssertEqual(ev.payload["b2"], .int(3))
     }
 
+    // MARK: - Motion 0x47 -> events[OURA_MOTION]
+
+    func testMotionMapsToOuraMotionEvent() {
+        let s = OuraStreamMapping.streams(from: [
+            .motionEvent(OuraMotionEvent(ringTimestamp: 100, orientation: 5, motionSeconds: 21,
+                                         avgX: -96, avgY: 0, avgZ: -1024, lowIntensity: 42, highIntensity: 63)),
+        ], at: ts)
+        XCTAssertEqual(s.events.count, 1)
+        let ev = s.events[0]
+        XCTAssertEqual(ev.kind, OuraStreamMapping.motionEventKind)
+        XCTAssertEqual(ev.kind, "OURA_MOTION")
+        XCTAssertEqual(ev.ts, ts)
+        // The ring's OWN per-window motion summary; keys/values must match the Kotlin twin exactly.
+        XCTAssertEqual(ev.payload["orientation"], .int(5))
+        XCTAssertEqual(ev.payload["motion_seconds"], .int(21))
+        XCTAssertEqual(ev.payload["x"], .int(-96))
+        XCTAssertEqual(ev.payload["y"], .int(0))
+        XCTAssertEqual(ev.payload["z"], .int(-1024))
+        XCTAssertEqual(ev.payload["low_intensity"], .int(42))
+        XCTAssertEqual(ev.payload["high_intensity"], .int(63))
+    }
+
+    func testMotionShortRecordOmitsIntensityKeys() {
+        // A short (4-byte) record decodes with nil low/high — the keys are ABSENT, never faked to 0.
+        let s = OuraStreamMapping.streams(from: [
+            .motionEvent(OuraMotionEvent(ringTimestamp: 100, orientation: 1, motionSeconds: 0,
+                                         avgX: 80, avgY: 0, avgZ: 0, lowIntensity: nil, highIntensity: nil)),
+        ], at: ts)
+        let ev = s.events[0]
+        XCTAssertEqual(ev.payload["motion_seconds"], .int(0))
+        XCTAssertNil(ev.payload["low_intensity"], "absent intensity must not be faked")
+        XCTAssertNil(ev.payload["high_intensity"], "absent intensity must not be faked")
+    }
+
     // MARK: - SpO2 -> spo2:[SpO2Sample]
 
     func testSpO2MapsToSpO2StreamPreservingUnit() {
@@ -80,15 +114,18 @@ final class OuraStreamMappingTests: XCTestCase {
     // MARK: - Sleep phase -> events[OURA_SLEEP_PHASE]
 
     func testSleepPhaseMapsToEventWithPhaseCode() {
+        // Raw codes persist per open_oura's validated mapping (deep=0, light=1, rem=2, awake=3). Each
+        // code arrives with its RECONSTRUCTED ts (30 s-spaced by OuraHypnogramAssembler upstream), so
+        // the mapping stores the given ts verbatim — no synthetic index offset.
         let s = OuraStreamMapping.streams(from: [
             .sleepPhase(OuraSleepPhase(ringTimestamp: 100, index: 0, stage: .deep)),
             .sleepPhase(OuraSleepPhase(ringTimestamp: 100, index: 1, stage: .rem)),
         ], at: ts)
         XCTAssertEqual(s.events.count, 2)
         XCTAssertTrue(s.events.allSatisfy { $0.kind == OuraStreamMapping.sleepPhaseEventKind })
-        XCTAssertEqual(s.events.map { $0.payload["phase"] }, [.int(2), .int(3)])
+        XCTAssertEqual(s.events.map { $0.payload["phase"] }, [.int(0), .int(2)])
         XCTAssertEqual(s.events.map { $0.payload["index"] }, [.int(0), .int(1)])
-        XCTAssertEqual(s.events.map { $0.ts }, [ts, ts])
+        XCTAssertEqual(s.events.map { $0.ts }, [ts, ts], "ts is stored verbatim; spacing happens upstream")
     }
 
     // MARK: - Battery -> battery:[BatterySample]

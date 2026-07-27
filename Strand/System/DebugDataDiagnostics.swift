@@ -60,6 +60,19 @@ enum DebugDataDiagnostics {
         }
         lines.append("Backup mode:  \(FolderBackup.useInternalFolder ? "NOOP's own folder (#52 fallback)" : (FolderBackup.hasFolder ? "external folder" : "none chosen"))")
         #endif
+        #if os(macOS)
+        // #278: macOS Backup & Sync restore-list health. When a user reports "restore shows no files",
+        // this pins whether a folder is even configured and whether its raw entries are being recognized
+        // as backups — a folder with real snapshots but 0 recognized (e.g. an undownloaded iCloud Drive
+        // placeholder, see `BackupSync.iCloudPlaceholderRealName`) looks very different from a genuinely
+        // empty folder, and neither was visible in a debug export before this.
+        if let health = FolderBackup.restoreListHealth() {
+            lines.append("Backup folder: \(health.isICloud ? "iCloud Drive" : "local")")
+            lines.append("Restore list: \(health.snapshots) snapshot(s) recognized of \(health.rawEntries) folder entries")
+        } else {
+            lines.append("Backup folder: none chosen")
+        }
+        #endif
         lines.append("Timezone:    \(tzLine())")
         return lines
     }
@@ -89,20 +102,29 @@ enum DebugDataDiagnostics {
         lines.append(String(repeating: "─", count: 40))
         lines.append("Analytics funnels (latest night, best-effort)")
         let nowSec = Int(Date().timeIntervalSince1970)
-        guard let cs = await repo.sleepSessions(from: nowSec - 14 * 86400, to: nowSec, limit: 1).last else {
-            lines.append("(no sleep session in the last 14 days to analyze)")
-            return lines
-        }
         guard let store = await repo.storeHandle() else {
             lines.append("(on-device store not open yet)")
             return lines
         }
         let did = repo.deviceId
+        // Pick the MOST RECENT night that actually carries skin-temp — not the OLDEST in the window. The old
+        // `sleepSessions(…, limit: 1).last` returned the oldest session (ASC order), so a fresh gap night read
+        // "skin=0" and the funnel never saw a real night. Walk newest→oldest and stop at the first with skin.
+        let recent = await repo.sleepSessions(from: nowSec - 14 * 86400, to: nowSec, limit: 200)
+        guard let newest = recent.last else {
+            lines.append("(no sleep session in the last 14 days to analyze)")
+            return lines
+        }
+        var cs = newest
+        var skin: [SkinTempSample] = []
+        for s in recent.reversed() {
+            let sk = (try? await store.skinTempSamples(deviceId: did, from: s.startTs, to: s.endTs, limit: 200_000)) ?? []
+            if !sk.isEmpty { cs = s; skin = sk; break }
+        }
         let grav = (try? await store.gravitySamples(deviceId: did, from: cs.startTs, to: cs.endTs, limit: 200_000)) ?? []
         let hr = await repo.hrSamples(from: cs.startTs, to: cs.endTs, limit: 200_000)
         let rr = (try? await store.rrIntervals(deviceId: did, from: cs.startTs, to: cs.endTs, limit: 200_000)) ?? []
         let resp = (try? await store.respSamples(deviceId: did, from: cs.startTs, to: cs.endTs, limit: 200_000)) ?? []
-        let skin = (try? await store.skinTempSamples(deviceId: did, from: cs.startTs, to: cs.endTs, limit: 200_000)) ?? []
         lines.append("Night \(dayStamp(cs.startTs)): grav=\(grav.count) hr=\(hr.count) rr=\(rr.count) resp=\(resp.count) skin=\(skin.count)")
         if grav.isEmpty && hr.isEmpty {
             lines.append("(no raw biometric samples under '\(did)' for this night — expected on a freshly re-added strap; reconnect + let a history sync run, then re-export)")
@@ -116,7 +138,13 @@ enum DebugDataDiagnostics {
         let det = SleepSession(start: cs.startTs, end: cs.endTs, efficiency: cs.efficiency ?? 0,
                                stages: [], restingHR: cs.restingHr, avgHRV: cs.avgHrv)
         let family: DeviceFamily = (UserDefaults.standard.string(forKey: "selectedWhoopModel") == "whoop5") ? .whoop5 : .whoop4
-        lines.append(AnalyticsEngine.skinTempFunnel([det], hr: hr, skinTemp: skin, family: family).summary)
+        // Mirror the real per-device anchor (#404): learn it from the WHOLE recent window's raws — not just
+        // this night — so a single sparse night (<100 in-band) can't misreport under the global fallback when
+        // the window as a whole has enough in-band samples for analyzeDay to learn a device anchor.
+        let windowSkin = (try? await store.skinTempSamples(deviceId: did, from: nowSec - 14 * 86400, to: nowSec, limit: 200_000)) ?? []
+        let devAnchor = family == .whoop4 ? Whoop4SkinTemp.deviceAnchorRaw(windowSkin.map { $0.raw }) : nil
+        lines.append(AnalyticsEngine.skinTempFunnel([det], hr: hr, skinTemp: skin,
+                                                    family: family, anchorRaw: devAnchor).summary)
         return lines
     }
 
@@ -170,21 +198,35 @@ enum DebugDataDiagnostics {
                    "apple-health", "health-connect"].filter { seen.insert($0).inserted }
         var parts: [String] = []
         var spine: [DailyMetric] = []
+        var activeRows: [DailyMetric] = []
         for id in ids {
             let rows = (try? await store.dailyMetrics(deviceId: id, from: "0000-01-01", to: "9999-12-31")) ?? []
             parts.append("\(id)=\(rows.count)")
             if id == "my-whoop" { spine = rows }
+            if id == did { activeRows = rows }
         }
         lines.append("Days: " + parts.joined(separator: "  "))
-        let recent = Array(spine.suffix(7))
-        if !recent.isEmpty {
+        // #731: this line used to read ONLY "my-whoop" and label it "Recent 7d". For a live-BLE user whose
+        // rows land under the ACTIVE strap id that reported sleep=0/7 while every one of the last 7 nights
+        // had sleep — it sent triage hunting for missing data that was never missing. It also took
+        // `suffix(7)` of that id's rows, so "Recent" could be the last 7 IMPORTED days (months old) rather
+        // than the last 7 calendar days. Report the active id (where live data lands) AND the import spine
+        // when they differ, each stamped with the day range it actually covers so staleness is visible.
+        func recentLine(_ rows: [DailyMetric], id: String) -> String? {
+            let recent = Array(rows.suffix(7))
+            guard !recent.isEmpty else { return nil }
             let n = recent.count
-            lines.append("Recent \(n)d (my-whoop): "
+            let span = (recent.first?.day ?? "?") + "…" + (recent.last?.day ?? "?")
+            return "Recent \(n) rows (\(id), \(span)): "
                 + "sleep=\(recent.filter { ($0.totalSleepMin ?? 0) > 0 }.count)/\(n)  "
                 + "recovery=\(recent.filter { $0.recovery != nil }.count)/\(n)  "
                 + "steps=\(recent.filter { $0.steps != nil }.count)/\(n)  "
-                + "kcal=\(recent.filter { $0.activeKcalEst != nil }.count)/\(n)")
-        } else {
+                + "kcal=\(recent.filter { $0.activeKcalEst != nil }.count)/\(n)"
+        }
+        var emitted = false
+        if let l = recentLine(activeRows, id: did) { lines.append(l); emitted = true }
+        if did != "my-whoop", let l = recentLine(spine, id: "my-whoop") { lines.append(l); emitted = true }
+        if !emitted {
             lines.append("Recent: no day rows")
         }
         if let dv = await repo.dataVolumeSnapshot() {
@@ -236,6 +278,11 @@ enum DebugDataDiagnostics {
             if let skew = d.object(forKey: "alarm.lastArmClockSkew") as? Int, abs(skew) > 3600 {
                 let mag = abs(skew) >= 86400 ? "\(skew / 86400)d" : "\(skew / 3600)h"
                 line += " · strap clock at arm \(skew > 0 ? "+" : "")\(mag)"
+            }
+            // #34: live HR at arm, logged only to test whether the strap's own sleep/rest detection (not
+            // anything NOOP sends) gates the physical haptic — see the doc comment on recordAlarmArm.
+            if let hr = d.object(forKey: "alarm.lastArmHeartRate") as? Int {
+                line += " · HR \(hr) bpm at arm"
             }
             lines.append(line)
             if let reported = d.object(forKey: "alarm.lastReportedEpoch") as? Int {

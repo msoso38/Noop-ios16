@@ -94,9 +94,22 @@ data class HrWindowStats(
  * ever dropped — including across separate insert batches or the live/historical merge (rrMs stays in the
  * key). Re-syncing identical records reproduces the same (ts, rrMs, seq), so the insert stays idempotent.
  *
- * PARITY NOTE: this intentionally diverges from the Swift `rrInterval` key, which is still
- * (deviceId, ts, rrMs); the identical value-key drop exists in `WhoopStore` (Database.swift / StreamStore /
- * Reads) and should get the same widening in a follow-up. See the PR description.
+ * `ord` (Room v24, #823) is the beat's EMISSION order within its (deviceId, ts) group — the position the
+ * strap sent it in, recorded at decode time. It is deliberately NOT in the key: the key must stay
+ * (deviceId, ts, rrMs, seq) for the dedup/idempotency reasons above, and an insertion counter in the key
+ * would collide distinct beats across batches. `ord` exists purely so reads can restore emission order.
+ * Reads MUST order by it — see WhoopDao.rrIntervals. Without it, reads came back in MAGNITUDE order
+ * (`ORDER BY ts, rrMs`), which sorts successive beats to be similar by construction and biases RMSSD
+ * DOWN, since RMSSD is built entirely from successive differences.
+ *
+ * NULL means "emission order unknown": every row written before v24, and any row from a source that
+ * cannot supply it. That is honest rather than a guess, and it sorts correctly for free — SQLite orders
+ * NULL first in ASC, so a pre-v24 second (all NULL) ties on `ord` and falls through to the old
+ * `rrMs, seq` order exactly. Not backfillable: the order was never recorded.
+ *
+ * PARITY: the Swift `rrInterval` key was widened to match in WhoopStore `v24-rr-seq`, and `ord` lands
+ * there as `v30-rr-ord`. (An earlier revision of this note said the Swift widening was still pending;
+ * it had already shipped.)
  */
 @Entity(tableName = "rrInterval", primaryKeys = ["deviceId", "ts", "rrMs", "seq"])
 data class RrInterval(
@@ -105,6 +118,7 @@ data class RrInterval(
     val rrMs: Int,
     val seq: Int = 0,
     val synced: Int = 0,
+    val ord: Int? = null,
 )
 
 /**
@@ -239,8 +253,9 @@ data class DailyMetric(
     val spo2Pct: Double? = null,        // mean SpO2 (%) during sleep
     val skinTempDevC: Double? = null,   // skin-temperature deviation (°C) from baseline
     val respRateBpm: Double? = null,    // mean respiration rate (breaths/min) during sleep
-    // On-device derived daily step total from the WHOOP5 step_motion_counter@57 (sum of positive
-    // consecutive u16-counter deltas over the day). APPROXIMATE, not cloud/clinical parity. (#78)
+    // On-device derived or imported step total. WHOOP5 days use step_motion_counter@57 (sum of
+    // positive u16-counter deltas); activity-file imports can fill missing steps from file summaries.
+    // APPROXIMATE, not cloud/clinical parity. (#78)
     val steps: Int? = null,
     // On-device APPROXIMATE whole-day active+resting energy estimate (kcal), computed from HR alone
     // by AnalyticsEngine (Keytel active + Harris–Benedict BMR). Null when the day has no scored HR
@@ -338,6 +353,22 @@ data class MetricSeriesRow(
     val day: String,
     @ColumnInfo(name = "key") val key: String,
     val value: Double,
+)
+
+/**
+ * Provider provenance for one NOOP-computed score. Separate from `dayOwnership`: ownership controls
+ * raw-input resolution, while this records the source actually used for a persisted metric.
+ */
+@Entity(
+    tableName = "scoreInputProvenance",
+    primaryKeys = ["deviceId", "day", "key"],
+    indices = [Index(name = "idx_scoreInputProvenance_source", value = ["sourceId"])],
+)
+data class ScoreInputProvenanceRow(
+    val deviceId: String,
+    val day: String,
+    @ColumnInfo(name = "key") val key: String,
+    val sourceId: String,
 )
 
 /**
@@ -451,13 +482,17 @@ data class DismissedWorkout(
  * re-derived by the recompute, mirroring [DismissedWorkout] (#107). PK (deviceId, startTs), keyed on
  * the deleted session's start; `endTs` is the span the recompute's overlap test uses (a re-detected
  * onset can drift second-to-second). iOS has the twin sleep-delete path since #68 (its tombstones live in
- * UserDefaults, not a table); the undo lifts a tombstone by (deviceId, startTs) (#65). Added by MIGRATION_9_10.
+ * UserDefaults, not a table); the undo lifts a tombstone by (deviceId, startTs) (#65).
+ * [managementVisible] controls only whether the Android Sleep screen offers this marker for
+ * recomputation. Hiding that row must never weaken the tombstone's suppression of re-detection (#515).
+ * Added by MIGRATION_9_10; managementVisible by MIGRATION_21_22.
  */
 @Entity(tableName = "dismissedSleep", primaryKeys = ["deviceId", "startTs"])
 data class DismissedSleep(
     val deviceId: String,
     val startTs: Long,
     val endTs: Long,
+    val managementVisible: Boolean = true,
 )
 
 /**
@@ -479,8 +514,74 @@ data class AppleDaily(
 )
 
 /**
- * Cached hourly Apple-Health step count (v26 / MIGRATION_18_19). Swift `appleStepHour`
- * (WhoopStore Database.swift v26-apple-step-hour migration). `ts` is the hour-BUCKET START
+ * The RAW WHOOP 5.0 v26 optical PPG waveform, one record per second (v27 / MIGRATION_18_19, issue #156
+ * follow-up). Swift `ppgWaveformSample` (WhoopStore Database.swift `v27-ppg-waveform` migration). The
+ * strap's 24 Hz buffer was fully decoded but only ever used to derive [PpgHrSample]; the samples
+ * themselves were discarded right after. Persisted here so a future re-analysis (a better HR estimator,
+ * HRV-from-PPG, a waveform viewer) can run over the ORIGINAL samples, not just the derived bpm.
+ *
+ * The 24 raw i16 ADC samples are packed into a compact BLOB (2 bytes/sample, little-endian i16, see
+ * [StreamPersistence.packPpgSamples]/[StreamPersistence.unpackPpgSamples]) instead of 24 scalar rows,
+ * keeping a v26-heavy night to roughly the same order of magnitude as ONE extra per-second stream. The
+ * BLOB format is byte-identical to the Swift GRDB `WhoopStore.packPpgSamples` so a `.noopbak` round-trips.
+ * PK (deviceId, ts) mirrors every other per-second stream; a truncated frame can decode fewer than 24
+ * samples. Fields are declared in the SAME order as the GRDB schema (deviceId, ts, samples) so the
+ * migration's CREATE TABLE column order matches Room's generated shape.
+ */
+@Entity(tableName = "ppgWaveformSample", primaryKeys = ["deviceId", "ts"])
+data class PpgWaveformSampleEntity(
+    val deviceId: String,
+    val ts: Long,
+    val samples: ByteArray,
+) {
+    // ByteArray needs structural equals/hashCode (the generated identity ones break round-trip asserts).
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PpgWaveformSampleEntity) return false
+        return deviceId == other.deviceId && ts == other.ts && samples.contentEquals(other.samples)
+    }
+
+    override fun hashCode(): Int {
+        var result = deviceId.hashCode()
+        result = 31 * result + ts.hashCode()
+        result = 31 * result + samples.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * One 1-second WHOOP 5/MG raw-IMU offload buffer (#423): 100 Hz 6-axis inertial data. [samples] is a
+ * packed little-endian i16 BLOB of the six columns in wire order — ax×100, ay×100, az×100, gx×100, gy×100,
+ * gz×100 (1200 bytes) — decoded by [com.noop.protocol.Whoop5RawImu] (scales 1/4096 g/LSB, 2000/32768 dps/
+ * LSB). The strap already delivers this in the connect-time offload burst; capturing it needs NO arming.
+ * Instrument-first + bounded: written only when raw capture is enabled, and pruned to a rolling recent
+ * window ([WhoopRepository.RAW_IMU_RETENTION_ROWS]). Twin of the GRDB `rawImuSample` table. Natural key
+ * (deviceId, ts) = one row per strap-second.
+ */
+@Entity(tableName = "rawImuSample", primaryKeys = ["deviceId", "ts"])
+data class RawImuSampleEntity(
+    val deviceId: String,
+    val ts: Long,
+    val samples: ByteArray,
+) {
+    // ByteArray needs structural equals/hashCode (the generated identity ones break round-trip asserts).
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is RawImuSampleEntity) return false
+        return deviceId == other.deviceId && ts == other.ts && samples.contentEquals(other.samples)
+    }
+
+    override fun hashCode(): Int {
+        var result = deviceId.hashCode()
+        result = 31 * result + ts.hashCode()
+        result = 31 * result + samples.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * Cached hourly Apple-Health step count (v31 / MIGRATION_24_25). Swift `appleStepHour`
+ * (WhoopStore Database.swift v31-apple-step-hour migration). `ts` is the hour-BUCKET START
  * (wall-clock unix seconds, local-hour aligned by the HealthKit collection query); `steps` is the
  * cumulative step sum within that hour. Natural key (deviceId, ts) mirrors every other per-sample
  * table so the hourly upsert is idempotent. `appleDaily.steps` answers "how many steps that day";

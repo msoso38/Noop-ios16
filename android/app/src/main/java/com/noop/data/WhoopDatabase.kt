@@ -37,6 +37,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DailyMetric::class,
         SleepSession::class,
         MetricSeriesRow::class,
+        ScoreInputProvenanceRow::class,
         JournalEntry::class,
         WorkoutRow::class,
         DismissedWorkout::class,
@@ -47,9 +48,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DayOwnershipRow::class,
         LabMarkerRow::class,
         LiveSessionRow::class,
+        PpgWaveformSampleEntity::class,
+        RawImuSampleEntity::class,
         AppleStepHour::class,
     ],
-    version = 19,
+    version = 25,
     exportSchema = false,
 )
 abstract class WhoopDatabase : RoomDatabase() {
@@ -482,8 +485,149 @@ abstract class WhoopDatabase : RoomDatabase() {
         }
 
         /**
-         * v18 -> v19: ADDITIVE, adds the `appleStepHour` table, the Android twin of the Swift WhoopStore
-         * `v26-apple-step-hour` migration. Hourly Apple-Health step counts: `appleDaily.steps` flattens a
+         * v18 -> v19: Oura/WHOOP efficiency-unit HEAL, the Room twin of the Swift WhoopStore v26
+         * `v26-efficiency-heal` GRDB migration (#376). UPDATE-only, NO schema change: the Oura API
+         * importer and (pre-fix) the WHOOP CSV importer wrote a 0-100 integer efficiency straight into
+         * `sleepSession.efficiency` / `dailyMetric.efficiency`, but NOOP's own sleep pipeline stores that
+         * shared column as a 0-1 FRACTION everywhere it computes it (asleep ÷ in-bed) — same column, two
+         * scales for rows written before the importer fix. Divides `efficiency` by 100 for every row
+         * where it's > 1.5 — a threshold no genuine fraction can exceed (the column's convention caps at
+         * 1.0) and no genuine percent-scale leftover can fall under (no real night is ≤1.5% efficient),
+         * so the predicate can't touch an already-correct row and a second run finds nothing left:
+         * idempotent. Deliberately NOT deviceId-scoped, matching the Swift heal: both known percent
+         * writers (the Oura API importer's 'oura-api' rows and the WHOOP CSV importer's rows under
+         * whatever strap deviceId the user imported into) are healed by the same predicate.
+         *
+         * This is REQUIRED, not optional (flagged in review): the Android CSV exporter does
+         * `efficiency * 100` at write time, so an unhealed percent row (92) would export as 9200; and
+         * without this heal, an iOS user and an Android user who imported the SAME WHOOP CSV would have
+         * permanently different stored efficiency (iOS 0.92 after v26, Android 92 unhealed) — the
+         * cross-platform parity contract (stored data must be byte-identical) needs the heal on both
+         * platforms, not just the write-boundary fix.
+         *
+         * SEQUENCING CAVEAT: this claims Room version 18 -> 19 as the next free slot as of this PR. The
+         * Swift v26 GRDB slot has the identical collision risk against other pending PRs (flagged in the
+         * same review) — if another pending PR also lands a Room migration first, whichever merges
+         * SECOND must renumber. Coordinate before merging both.
+         *
+         * The SQL is exposed as [EFFICIENCY_HEAL_MIGRATION_SQL] so a plain-JVM unit test
+         * ([com.noop.data.EfficiencyHealMigrationTest]) can pin this shape without Robolectric.
+         */
+        internal val EFFICIENCY_HEAL_MIGRATION_SQL: List<String> = listOf(
+            "UPDATE `sleepSession` SET `efficiency` = `efficiency` / 100.0 WHERE `efficiency` > 1.5",
+            "UPDATE `dailyMetric` SET `efficiency` = `efficiency` / 100.0 WHERE `efficiency` > 1.5",
+        )
+
+        internal val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in EFFICIENCY_HEAL_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /**
+         * v19 -> v20: ADDITIVE, adds the `ppgWaveformSample` table (issue #156 follow-up), the Android twin
+         * of the Swift WhoopStore `v27-ppg-waveform` GRDB migration. Durable storage for the WHOOP 5.0 v26
+         * optical PPG waveform: the strap's 24 Hz buffer was fully DECODED but only ever used to derive
+         * `ppgHrSample` (v6) — the waveform itself was discarded right after. One row per (deviceId, ts),
+         * the SAME shape as every other per-second decoded stream, but the samples are packed into a compact
+         * BLOB (2 bytes/sample, little-endian i16, [StreamPersistence.packPpgSamples]) rather than 24 scalar
+         * rows.
+         *
+         * CREATE TABLE only (no existing data touched), so already-offloaded raw streams survive. The SQL MUST
+         * match Room's generated schema for [PpgWaveformSampleEntity] exactly: deviceId TEXT NOT NULL, ts
+         * INTEGER NOT NULL, samples BLOB NOT NULL (all Kotlin non-null, no SQL DEFAULT), composite PRIMARY KEY
+         * (deviceId, ts) in declaration order — matching the GRDB `t.column(...).notNull()` order deviceId, ts,
+         * samples. No destructive fallback (see the class doc). Exposed as [PPG_WAVEFORM_MIGRATION_SQL] so a
+         * plain-JVM unit test can pin the shape without Robolectric.
+         *
+         * SEQUENCING: this claims Room 19 -> 20 because MIGRATION_18_19 (efficiency-heal, Swift v26) already
+         * took slot 19 on this branch; the GRDB twin is `v27-ppg-waveform` (Swift's next slot after v26), so
+         * the two platforms' migration COUNTS stay aligned even though the table shape, not the number, is the
+         * contract.
+         */
+        internal val PPG_WAVEFORM_MIGRATION_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `ppgWaveformSample` (`deviceId` TEXT NOT NULL, " +
+                "`ts` INTEGER NOT NULL, `samples` BLOB NOT NULL, PRIMARY KEY(`deviceId`, `ts`))",
+        )
+
+        internal val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in PPG_WAVEFORM_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /** #423: the WHOOP 5/MG raw-IMU offload-capture table. Additive; GRDB twin is `v28-raw-imu`
+         *  (Swift's next slot after v27-ppg-waveform), so the migration COUNTS stay aligned. Column order ==
+         *  [RawImuSampleEntity] field order, matching the GRDB schema's t.column(deviceId/ts/samples). */
+        internal val RAW_IMU_MIGRATION_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `rawImuSample` (`deviceId` TEXT NOT NULL, " +
+                "`ts` INTEGER NOT NULL, `samples` BLOB NOT NULL, PRIMARY KEY(`deviceId`, `ts`))",
+        )
+
+        internal val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in RAW_IMU_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /** #515 follow-up: keep deleted-sleep suppression independent from the Android Sleep screen's
+         *  recompute list. Existing markers remain visible after upgrade; hiding one only flips this
+         *  additive flag and never removes the tombstone that protects against re-detection. */
+        internal val DISMISSED_SLEEP_VISIBILITY_MIGRATION_SQL: List<String> = listOf(
+            "ALTER TABLE `dismissedSleep` ADD COLUMN `managementVisible` INTEGER NOT NULL DEFAULT 1",
+        )
+
+        internal val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in DISMISSED_SLEEP_VISIBILITY_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /** Metric-level provenance for NOOP-computed scores. Additive and intentionally independent
+         *  from dayOwnership, whose resolver semantics remain unchanged. */
+        internal val SCORE_INPUT_PROVENANCE_MIGRATION_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `scoreInputProvenance` (`deviceId` TEXT NOT NULL, " +
+                "`day` TEXT NOT NULL, `key` TEXT NOT NULL, `sourceId` TEXT NOT NULL, " +
+                "PRIMARY KEY(`deviceId`, `day`, `key`))",
+            "CREATE INDEX IF NOT EXISTS `idx_scoreInputProvenance_source` " +
+                "ON `scoreInputProvenance` (`sourceId`)",
+        )
+
+        internal val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in SCORE_INPUT_PROVENANCE_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /**
+         * #823: record each R-R beat's EMISSION order within its second so reads can stop returning
+         * them in magnitude order (which biases RMSSD down — see the RrInterval doc).
+         *
+         * Additive and nullable, the MIGRATION_3_4 form: no table rebuild, no row touched, and
+         * critically NOT part of the primary key, which must stay (deviceId, ts, rrMs, seq) — an
+         * insertion counter in the key would collide distinct beats across insert batches, the
+         * data-loss regression assignRrSeq's doc warns about.
+         *
+         * Existing rows stay NULL. The order was never recorded, so it cannot be backfilled and a
+         * guess would be worse than an admission; NULL sorts first in SQLite ASC, so a pre-v24
+         * second ties on `ord` and falls through to the old (rrMs, seq) order unchanged.
+         *
+         * Exposed as [RR_ORD_MIGRATION_SQL] so a plain-JVM unit test can assert its shape without an
+         * emulator, like the migrations above.
+         */
+        internal val RR_ORD_MIGRATION_SQL: List<String> = listOf(
+            "ALTER TABLE `rrInterval` ADD COLUMN `ord` INTEGER",
+        )
+
+        internal val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in RR_ORD_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /**
+         * v24 -> v25: ADDITIVE, adds the `appleStepHour` table, the Android twin of the Swift WhoopStore
+         * `v31-apple-step-hour` migration. Hourly Apple-Health step counts: `appleDaily.steps` flattens a
          * whole day to one total, so a dead/absent phone for part of a day is invisible; this per-hour table
          * records exactly which hours had a recording. `ts` is the hour-bucket start (unix seconds), `steps`
          * the cumulative sum within that hour, composite PK (deviceId, ts) so the hourly upsert is idempotent.
@@ -495,13 +639,17 @@ abstract class WhoopDatabase : RoomDatabase() {
          * no Android analogue), so Android carries the table for .noopbak byte-parity but no importer writes it.
          * No destructive fallback (see the class doc). Exposed as [APPLE_STEP_HOUR_MIGRATION_SQL] so a plain-JVM
          * unit test can pin the shape without Robolectric.
+         *
+         * SEQUENCING: 24 -> 25 is the next free Room slot as of this rebase (upstream is at 24 /
+         * MIGRATION_23_24). If another pending PR lands a Room migration first, whichever merges SECOND
+         * renumbers — the same caveat the `v26-efficiency-heal` doc above carries.
          */
         internal val APPLE_STEP_HOUR_MIGRATION_SQL: List<String> = listOf(
             "CREATE TABLE IF NOT EXISTS `appleStepHour` (`deviceId` TEXT NOT NULL, " +
                 "`ts` INTEGER NOT NULL, `steps` INTEGER NOT NULL, PRIMARY KEY(`deviceId`, `ts`))",
         )
 
-        internal val MIGRATION_18_19 = object : Migration(18, 19) {
+        internal val MIGRATION_24_25 = object : Migration(24, 25) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 for (stmt in APPLE_STEP_HOUR_MIGRATION_SQL) db.execSQL(stmt)
             }
@@ -522,7 +670,8 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18,
-                    MIGRATION_18_19,
+                    MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22,
+                    MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25,
                 )
                 // #1037: a FRESH install builds the schema straight at the current version and runs NO
                 // migrations, so the MIGRATION_7_8 "my-whoop" registry seed never fires and the WHOOP,

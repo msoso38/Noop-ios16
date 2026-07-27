@@ -6,8 +6,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pure planning logic for the Health Connect export (HR decimation/windowing/chunking, sleep
- * AWAKE/SLEEPING mapping). All offline-on-JVM; the SDK glue in [HealthConnectWriter] is the thin
+ * Pure planning logic for the Health Connect export (HR decimation/windowing/chunking, detailed
+ * sleep-stage mapping). All offline-on-JVM; the SDK glue in [HealthConnectWriter] is the thin
  * untestable layer. (Daily steps/active-energy aggregates were removed with the steps/kcal
  * write-back — see HealthConnectWriter.)
  */
@@ -83,23 +83,28 @@ class HealthExportPlanTest {
 
     // ---- Sleep session tests ----
 
+    /** Unedited fragment: key == effective onset (the common case). */
+    private fun input(start: Long, end: Long, json: String? = null) =
+        HealthExportPlan.SleepInput(keyStartTs = start, startTs = start, endTs = end, stagesJSON = json)
+
     @Test fun sleep_excludesUnfinalizedSessions() {
-        val sessions = listOf(HealthExportPlan.SleepInput(startTs = 100, endTs = 900, stagesJSON = null))
-        val out = HealthExportPlan.sleepSessions(sessions, nowSec = 500L) // ends in the future
+        val sessions = listOf(input(100, 900))
+        val out = HealthExportPlan.sleepSessions(sessions, nowSec = 500L, offsetSec = 0L) // ends in the future
         assertTrue(out.isEmpty())
     }
 
     @Test fun sleep_emitsFinalizedSessionWithClientId() {
-        val sessions = listOf(HealthExportPlan.SleepInput(100, 900, null))
-        val out = HealthExportPlan.sleepSessions(sessions, nowSec = 1000L)
+        val sessions = listOf(input(100, 900))
+        val out = HealthExportPlan.sleepSessions(sessions, nowSec = 1000L, offsetSec = 0L)
         assertEquals(1, out.size)
         assertEquals("noop-sleep-100", out[0].clientId)
         assertEquals(100L, out[0].startSec)
         assertEquals(900L, out[0].endSec)
         assertTrue(out[0].stages.isEmpty()) // null stagesJSON -> session bounds only
+        assertTrue(out[0].absorbedClientIds.isEmpty())
     }
 
-    @Test fun sleep_mapsWakeVsAsleepAndCoalesces() {
+    @Test fun sleep_preservesDetailedStagesAndCoalescesAwakeAliases() {
         val json = """
             [{"start":100,"end":200,"stage":"light"},
              {"start":200,"end":300,"stage":"deep"},
@@ -108,18 +113,27 @@ class HealthExportPlanTest {
              {"start":500,"end":600,"stage":"rem"}]
         """.trimIndent()
         val out = HealthExportPlan.sleepSessions(
-            listOf(HealthExportPlan.SleepInput(100, 600, json)), nowSec = 1000L)
+            listOf(input(100, 600, json)), nowSec = 1000L, offsetSec = 0L)
         val stages = out[0].stages
-        // light+deep coalesce -> asleep[100,300); wake+awake coalesce -> awake[300,500); rem -> asleep[500,600)
-        assertEquals(3, stages.size)
-        assertEquals(true, stages[0].asleep); assertEquals(100L, stages[0].startSec); assertEquals(300L, stages[0].endSec)
-        assertEquals(false, stages[1].asleep); assertEquals(300L, stages[1].startSec); assertEquals(500L, stages[1].endSec)
-        assertEquals(true, stages[2].asleep); assertEquals(500L, stages[2].startSec); assertEquals(600L, stages[2].endSec)
+        // Only adjacent segments of the same detailed stage coalesce; wake/awake normalize to AWAKE.
+        assertEquals(4, stages.size)
+        assertEquals(HealthExportPlan.StageKind.LIGHT, stages[0].kind)
+        assertEquals(HealthExportPlan.StageKind.DEEP, stages[1].kind)
+        assertEquals(HealthExportPlan.StageKind.AWAKE, stages[2].kind)
+        assertEquals(300L, stages[2].startSec); assertEquals(500L, stages[2].endSec)
+        assertEquals(HealthExportPlan.StageKind.REM, stages[3].kind)
+    }
+
+    @Test fun sleep_preservesGenericSleepingStage() {
+        val json = """[{"start":100,"end":200,"stage":"sleeping"}]"""
+        val stages = HealthExportPlan.sleepSessions(
+            listOf(input(100, 200, json)), nowSec = 1000L, offsetSec = 0L).single().stages
+        assertEquals(HealthExportPlan.StageKind.SLEEPING, stages.single().kind)
     }
 
     @Test fun sleep_malformedJsonYieldsNoStagesButKeepsSession() {
         val out = HealthExportPlan.sleepSessions(
-            listOf(HealthExportPlan.SleepInput(100, 900, "not json")), nowSec = 1000L)
+            listOf(input(100, 900, "not json")), nowSec = 1000L, offsetSec = 0L)
         assertEquals(1, out.size)
         assertTrue(out[0].stages.isEmpty())
     }
@@ -127,7 +141,7 @@ class HealthExportPlanTest {
     @Test fun sleep_includesSessionEndingExactlyAtNow() {
         // endTs == nowSec is finalized (the session has ended); locks in the boundary contract.
         val out = HealthExportPlan.sleepSessions(
-            listOf(HealthExportPlan.SleepInput(100, 1000, null)), nowSec = 1000L)
+            listOf(input(100, 1000)), nowSec = 1000L, offsetSec = 0L)
         assertEquals(1, out.size)
     }
 
@@ -140,7 +154,7 @@ class HealthExportPlanTest {
              {"start":300,"end":400,"stage":"deep"}]
         """.trimIndent()
         val out = HealthExportPlan.sleepSessions(
-            listOf(HealthExportPlan.SleepInput(100, 400, json)), nowSec = 1000L)
+            listOf(input(100, 400, json)), nowSec = 1000L, offsetSec = 0L)
         val stages = out[0].stages
         // light[100,200) and deep[300,400) both asleep but NOT contiguous (gap 200..300) -> 2 segments.
         assertEquals(2, stages.size)
@@ -151,11 +165,54 @@ class HealthExportPlanTest {
     @Test fun sleep_skipsInvertedOrZeroLengthSession() {
         val out = HealthExportPlan.sleepSessions(
             listOf(
-                HealthExportPlan.SleepInput(500, 500, null), // zero-length
-                HealthExportPlan.SleepInput(900, 400, null), // inverted
+                input(500, 500), // zero-length
+                input(900, 400), // inverted
             ),
             nowSec = 10_000L,
+            offsetSec = 0L,
         )
         assertTrue(out.isEmpty())
+    }
+
+    // ---- #364: bridged-night grouping (twin of the Swift mergedSleepPlan tests) ----
+
+    @Test fun sleep_foldsBridgedFragmentsWithAwakeSeam() {
+        // 2026-01-02 00:00 UTC. Two fragments split by a 16-minute wake -> ONE record whose seam is
+        // an explicit AWAKE stage; the clientRecordId keys off the earliest fragment; the absorbed
+        // fragment's old per-fragment id is surfaced for deletion.
+        val t = 1_767_312_000L
+        val a = input(t - 3_600, t + 2 * 3_600, """[{"start":${t - 3_600},"end":${t + 2 * 3_600},"stage":"light"}]""")
+        val b = input(t + 2 * 3_600 + 960, t + 6 * 3_600,
+            """[{"start":${t + 2 * 3_600 + 960},"end":${t + 6 * 3_600},"stage":"deep"}]""")
+        val plans = HealthExportPlan.sleepSessions(listOf(a, b), nowSec = t + 86_400, offsetSec = 0L)
+        assertEquals(1, plans.size)
+        val p = plans[0]
+        assertEquals("noop-sleep-${t - 3_600}", p.clientId)
+        assertEquals(t - 3_600, p.startSec)
+        assertEquals(t + 6 * 3_600, p.endSec)
+        assertEquals(listOf("noop-sleep-${t + 2 * 3_600 + 960}"), p.absorbedClientIds)
+        assertTrue(p.stages.contains(
+            HealthExportPlan.StagePlan(t + 2 * 3_600, t + 2 * 3_600 + 960,
+                HealthExportPlan.StageKind.AWAKE)))
+    }
+
+    @Test fun sleep_napStaysItsOwnPlanWithNoAbsorbedIds() {
+        val t = 1_767_312_000L
+        val night = input(t - 3_600, t + 6 * 3_600)
+        val nap = input(t + 14 * 3_600, t + 15 * 3_600)      // 14:00 local, hours away -> own record
+        val plans = HealthExportPlan.sleepSessions(listOf(night, nap), nowSec = t + 86_400, offsetSec = 0L)
+        assertEquals(2, plans.size)
+        assertTrue(plans.all { it.absorbedClientIds.isEmpty() })
+        assertEquals("noop-sleep-${t - 3_600}", plans[0].clientId)
+        assertEquals("noop-sleep-${t + 14 * 3_600}", plans[1].clientId)
+    }
+
+    @Test fun sleep_editedOnsetMovesSpanButClientIdStaysImmutable() {
+        val t = 1_767_312_000L
+        val edited = HealthExportPlan.SleepInput(
+            keyStartTs = t, startTs = t + 600, endTs = t + 7_200, stagesJSON = null)
+        val p = HealthExportPlan.sleepSessions(listOf(edited), nowSec = t + 86_400, offsetSec = 0L)[0]
+        assertEquals("noop-sleep-$t", p.clientId)   // immutable detected key
+        assertEquals(t + 600, p.startSec)           // edited onset drives the span
     }
 }

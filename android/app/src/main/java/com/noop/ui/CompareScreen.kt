@@ -1,5 +1,8 @@
 package com.noop.ui
 
+import com.noop.R
+import androidx.compose.ui.res.stringResource
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -186,6 +189,8 @@ private object CompareCatalog {
 
     fun byKey(key: String): CompareMetric? = all.firstOrNull { it.key == key }
 
+    fun byId(id: String): CompareMetric? = all.firstOrNull { it.id == id }
+
     /** Map a my-whoop metric key to the matching DailyMetric column accessor, if any. */
     fun dailyPick(key: String): ((DailyMetric) -> Double?)? = when (key) {
         "recovery" -> { d -> d.recovery }
@@ -218,6 +223,54 @@ private enum class CompareRange(val label: String, val days: Int?, val phrase: S
     /** This range plus every LARGER range, ascending — the auto-expand search order. */
     val widening: List<CompareRange>
         get() = entries.subList(ordinal, entries.size)
+}
+
+private val defaultCompareMetricKeys = listOf("recovery", "sleep_performance", "weight")
+
+internal fun parseCompareSelection(raw: String?, minSelection: Int, maxSelection: Int): List<CompareMetric>? {
+    if (raw == null) return null
+
+    val tokens = raw.split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+    val parsed = tokens
+        .mapNotNull { CompareCatalog.byId(it) }
+        .distinctBy { it.id }
+        .take(maxSelection)
+
+    return if (parsed.size == tokens.distinct().size || parsed.size >= minSelection) {
+        parsed
+    } else {
+        null
+    }
+}
+
+private object ComparePrefs {
+    private const val KEY_RANGE = "compare.range"
+    private const val KEY_SELECTED = "compare.selectedMetrics"
+
+    fun readRange(context: Context): CompareRange {
+        val raw = NoopPrefs.of(context).getString(KEY_RANGE, null) ?: return CompareRange.Year
+        return CompareRange.entries.firstOrNull { it.name == raw } ?: CompareRange.Year
+    }
+
+    fun writeRange(context: Context, range: CompareRange) {
+        NoopPrefs.of(context).edit().putString(KEY_RANGE, range.name).apply()
+    }
+
+    fun readSelection(context: Context, minSelection: Int, maxSelection: Int): List<CompareMetric> {
+        val raw = NoopPrefs.of(context).getString(KEY_SELECTED, null)
+        parseCompareSelection(raw, minSelection, maxSelection)?.let { return it }
+
+        val picks = defaultCompareMetricKeys.mapNotNull { CompareCatalog.byKey(it) }
+        return (if (picks.isEmpty()) CompareCatalog.all.take(2) else picks).take(maxSelection)
+    }
+
+    fun writeSelection(context: Context, selected: List<CompareMetric>) {
+        NoopPrefs.of(context).edit()
+            .putString(KEY_SELECTED, selected.joinToString(",") { it.id })
+            .apply()
+    }
 }
 
 // MARK: - Per-series model
@@ -330,19 +383,17 @@ fun CompareScreen(vm: AppViewModel) {
     // same day-cycle-background preference the liquid Today honours. Off = the flat dark canvas path.
     val context = LocalContext.current
     val showDayCycleBackground = remember { NoopPrefs.showDayCycleBackground(context) }
+    val skyBehindCards = remember { NoopPrefs.skyBehindCards(context) }
 
     val maxSelection = 4
     val minSelection = 2
 
-    // Default starter selection (falls back gracefully if a key is missing).
-    val defaultKeys = listOf("recovery", "sleep_performance", "weight")
-
-    var range by remember { mutableStateOf(CompareRange.Year) }
+    var range by remember { mutableStateOf(ComparePrefs.readRange(context)) }
     // Ordered selection (max 4). Drives both the legend order and color mapping.
     val selected = remember {
-        val picks = defaultKeys.mapNotNull { CompareCatalog.byKey(it) }
-        val seed = if (picks.isEmpty()) CompareCatalog.all.take(2) else picks.take(maxSelection)
-        mutableStateListOf<CompareMetric>().apply { addAll(seed) }
+        mutableStateListOf<CompareMetric>().apply {
+            addAll(ComparePrefs.readSelection(context, minSelection, maxSelection))
+        }
     }
     // Full-history series per selected metric id (ascending by day).
     val fullSeries = remember { mutableStateMapOf<String, List<Pair<String, Double>>>() }
@@ -409,11 +460,14 @@ fun CompareScreen(vm: AppViewModel) {
     }
 
     LazyScreenScaffold(
-        title = "Compare",
+        title = uiString(R.string.l10n_compare_screen_compare_8d105cf4),
         subtitle = "Overlay signals, draw conclusions.",
         // Liquid sky backdrop (LiquidScreenSky.kt) in the scaffold's topBackground slot, gated on the
         // day-cycle preference — the same pilot plumbing the liquid Today uses.
-        topBackground = if (showDayCycleBackground) { { LiquidScreenSky() } } else null,
+        topBackground = if (showDayCycleBackground) { { LiquidScreenSky(fillHeight = skyBehindCards) } } else null,
+        // Sky-behind-cards fills the viewport so the transparent cards reveal the sky the whole way
+        // down (Today / Trends / Sleep / metric-detail parity - same two prefs, same two behaviours).
+        fullBleedBackground = showDayCycleBackground && skyBehindCards,
     ) {
 
         // ── Metric picker section (chips + range control)
@@ -422,14 +476,24 @@ fun CompareScreen(vm: AppViewModel) {
             SectionHeader("Metrics", overline = "Overlay 2-4 signals")
             NoopCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        SegmentedPillControl(
-                            items = CompareRange.entries.toList(),
-                            selection = range,
-                            label = { it.label },
-                            onSelect = { range = it },
-                        )
-                        Spacer(Modifier.weight(1f))
+                    SegmentedPillControl(
+                        items = CompareRange.entries.toList(),
+                        selection = range,
+                        label = { it.label },
+                        onSelect = {
+                            range = it
+                            ComparePrefs.writeRange(context, it)
+                        },
+                    )
+
+                    // #492: this used to share a row with the segmented range picker. On narrow
+                    // screens the picker consumed the width and collapsed "Add metric" into a
+                    // one-character-wide column. Give the action its own trailing-aligned row so
+                    // both controls retain their intended intrinsic width.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
                         AddMetricMenu(
                             selectedCount = selected.size,
                             maxSelection = maxSelection,
@@ -441,6 +505,7 @@ fun CompareScreen(vm: AppViewModel) {
                                 } else if (selected.size < maxSelection) {
                                     selected.add(m)
                                 }
+                                ComparePrefs.writeSelection(context, selected)
                             },
                         )
                     }
@@ -455,7 +520,7 @@ fun CompareScreen(vm: AppViewModel) {
 
                     if (selected.isEmpty()) {
                         Text(
-                            "Nothing selected yet.",
+                            uiString(R.string.l10n_compare_screen_nothing_selected_yet_60968db6),
                             style = NoopType.subhead,
                             color = Palette.textTertiary,
                         )
@@ -466,7 +531,10 @@ fun CompareScreen(vm: AppViewModel) {
                                 val i = selected.indexOfFirst { it.id == m.id }
                                 if (i < 0) Palette.textSecondary else seriesPalette[i % seriesPalette.size]
                             },
-                            onRemove = { m -> selected.removeAll { it.id == m.id } },
+                            onRemove = { m ->
+                                selected.removeAll { it.id == m.id }
+                                ComparePrefs.writeSelection(context, selected)
+                            },
                         )
                     }
                 }
@@ -484,7 +552,7 @@ fun CompareScreen(vm: AppViewModel) {
                 if (loadedOnce) {
                     item {
                         DataPendingNote(
-                            title = "Compare needs at least two metrics with history",
+                            title = uiString(R.string.l10n_compare_screen_compare_needs_at_least_two_metrics_2bfe1fad),
                             body = "Compare needs at least two metrics with history. Import your " +
                                 "WHOOP export in Data Sources first.",
                         )
@@ -557,7 +625,7 @@ private fun AddMetricMenu(
         ) {
             Icon(
                 Icons.Filled.Add,
-                contentDescription = "Add a metric to compare",
+                contentDescription = uiString(R.string.l10n_compare_screen_add_a_metric_to_compare_e6a7c9f1),
                 tint = tint,
                 modifier = Modifier.size(16.dp),
             )
@@ -565,6 +633,7 @@ private fun AddMetricMenu(
                 if (atMax) "Max 4" else "Add metric",
                 style = NoopType.subhead,
                 color = tint,
+                maxLines = 1,
             )
         }
 
@@ -689,7 +758,7 @@ private fun MetricChip(
         )
         Icon(
             Icons.Filled.Close,
-            contentDescription = "Remove $title",
+            contentDescription = uiString(R.string.l10n_compare_screen_remove_title_ddb5361c, title),
             tint = Palette.textTertiary,
             modifier = Modifier
                 .size(18.dp)
@@ -898,7 +967,7 @@ private fun Legend(series: List<CompareSeries>) {
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    "${s.metric.format(s.realMin, unitSystem, tempUnit)}-" +
+                    uiString(R.string.l10n_compare_screen_s_metric_format_s_realmin_unitsystem_0da2a1f2, s.metric.format(s.realMin, unitSystem, tempUnit)) +
                         s.metric.format(s.realMax, unitSystem, tempUnit),
                     style = NoopType.captionNumber,
                     color = Palette.textSecondary,
@@ -956,7 +1025,7 @@ private fun CorrelationSection(series: List<CompareSeries>, range: CompareRange)
         if (pairs.isEmpty()) {
             NoopCard {
                 Text(
-                    "Not enough overlapping days between these metrics in ${range.phrase}. Widen the range.",
+                    uiString(R.string.l10n_compare_screen_not_enough_overlapping_days_between_these_44563110, range.phrase),
                     style = NoopType.subhead,
                     color = Palette.textTertiary,
                 )
@@ -983,7 +1052,7 @@ private fun PairCard(p: PairResult) {
                     Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(p.b.color))
                 }
                 Text(
-                    "${p.a.metric.title} ↔ ${p.b.metric.title}",
+                    uiString(R.string.l10n_compare_screen_p_a_metric_title_p_b_06c36e56, p.a.metric.title, p.b.metric.title),
                     style = NoopType.headline,
                     color = Palette.textPrimary,
                     maxLines = 2,
@@ -1017,7 +1086,7 @@ private fun PairCard(p: PairResult) {
             Text(insightSentence(p), style = NoopType.subhead, color = Palette.textSecondary)
 
             Text(
-                "${p.n} overlapping days · ${strengthWord(p.r)} ${directionWord(p.r)} correlation"
+                uiString(R.string.l10n_compare_screen_p_n_overlapping_days_strengthword_p_8a8f56c7, p.n, strengthWord(p.r), directionWord(p.r))
                     .replace("  ", " "),
                 style = NoopType.footnote,
                 color = Palette.textTertiary,

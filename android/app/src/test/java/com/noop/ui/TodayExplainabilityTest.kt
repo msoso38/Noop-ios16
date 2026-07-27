@@ -3,6 +3,7 @@ package com.noop.ui
 import com.noop.analytics.FusionSource
 import com.noop.data.DailyMetric
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -301,5 +302,107 @@ class TodayExplainabilityTest {
         // "$deviceId-noop" — otherwise these rows would fall through to the raw id verbatim.
         assertEquals("On-device", provenanceDisplayLabel("whoop5-C0FF-noop", deviceId = "my-whoop"))
         assertEquals("On-device", provenanceDisplayLabel("my-whoop-noop", deviceId = "strap-42"))
+    }
+
+    @Test
+    fun todayScoreProviderLabel_coversImportedAndRegisteredProviders() {
+        assertEquals("Whoop", todayScoreProviderLabel(ScoreInputProvider("my-whoop", "WHOOP")))
+        assertEquals("Apple Watch", todayScoreProviderLabel(ScoreInputProvider("apple-health")))
+        assertEquals("Health Connect", todayScoreProviderLabel(ScoreInputProvider("health-connect")))
+        assertEquals("Oura", todayScoreProviderLabel(ScoreInputProvider("oura-import")))
+        assertEquals("Fitbit", todayScoreProviderLabel(ScoreInputProvider("fitbit-import")))
+        assertEquals("Garmin", todayScoreProviderLabel(ScoreInputProvider("garmin-import")))
+        assertEquals("Mi Band", todayScoreProviderLabel(ScoreInputProvider("xiaomi-band")))
+        for (brand in com.noop.data.DeviceBrandCatalog.all.map { it.brand }) {
+            assertEquals(brand, todayScoreProviderLabel(ScoreInputProvider("device-$brand", brand)))
+        }
+    }
+
+    @Test
+    fun todayScoreProviderLabel_unknownSourceDoesNotPretendToBeWhoop() {
+        assertEquals("sensor-42", todayScoreProviderLabel(ScoreInputProvider("sensor-42")))
+        assertEquals("not-a-whoop", todayScoreProviderLabel(ScoreInputProvider("not-a-whoop")))
+    }
+
+    @Test
+    fun liquidHeroSourceLabel_deduplicatesOneProvider() {
+        assertEquals(
+            "Polar",
+            heroSourceLabel(
+                listOf(
+                    ScoreInputProvider("polar-1", "Polar"),
+                    ScoreInputProvider("polar-1", "Polar"),
+                    ScoreInputProvider("polar-1", "Polar"),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun liquidHeroSourceLabel_capsMixedProvidersAtTwoInScoreOrder() {
+        assertEquals(
+            "Whoop + Oura",
+            heroSourceLabel(
+                listOf(
+                    ScoreInputProvider("my-whoop", "WHOOP"),
+                    ScoreInputProvider("oura-import"),
+                    ScoreInputProvider("health-connect"),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun liquidHeroSourceLabel_usesAudienceFacingAppleWatchName() {
+        assertEquals("Apple Watch", heroSourceLabel(listOf(ScoreInputProvider("apple-health"))))
+    }
+
+    @Test
+    fun liquidHeroSourceLabel_hidesWhenNoScoreHasAResolvedSource() {
+        assertNull(heroSourceLabel(emptyList()))
+    }
+
+    @Test
+    fun liquidHeroSourceLabel_usesCarriedChargeSourceWhenTodayRecoveryIsAbsent() {
+        assertEquals(
+            "Whoop",
+            scoreHeroSourceLabel(
+                providerByMetric = emptyMap(),
+                carriedRecoveryProvider = ScoreInputProvider("my-whoop", "WHOOP"),
+                usesCarriedRecovery = true,
+            ),
+        )
+    }
+
+    @Test
+    fun liquidHeroSourceLabel_keepsCurrentDayRecoveryAheadOfCarriedFallback() {
+        assertEquals(
+            "Oura",
+            scoreHeroSourceLabel(
+                providerByMetric = mapOf("recovery" to ScoreInputProvider("oura-import")),
+                carriedRecoveryProvider = ScoreInputProvider("my-whoop", "WHOOP"),
+                usesCarriedRecovery = true,
+            ),
+        )
+    }
+
+    @Test
+    fun liquidHeroSourceLabel_ignoresCarriedSourceWhenChargeIsNotCarried() {
+        assertNull(
+            scoreHeroSourceLabel(
+                providerByMetric = emptyMap(),
+                carriedRecoveryProvider = ScoreInputProvider("my-whoop", "WHOOP"),
+                usesCarriedRecovery = false,
+            ),
+        )
+    }
+
+    @Test
+    fun pullToSync_onlyEnabledWhenConnectedBondedAndIdle() {
+        assertTrue(todayPullToSyncEnabled(connected = true, bonded = true, backfilling = false))
+
+        assertFalse(todayPullToSyncEnabled(connected = false, bonded = true, backfilling = false))
+        assertFalse(todayPullToSyncEnabled(connected = true, bonded = false, backfilling = false))
+        assertFalse(todayPullToSyncEnabled(connected = true, bonded = true, backfilling = true))
     }
 }

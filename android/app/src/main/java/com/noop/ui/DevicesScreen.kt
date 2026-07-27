@@ -1,5 +1,7 @@
 package com.noop.ui
 
+import com.noop.R
+import androidx.compose.ui.res.stringResource
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -56,7 +58,14 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import com.noop.ble.WhoopBleClient
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -102,11 +111,16 @@ fun DevicesScreen(
 ) {
     val scope = rememberCoroutineScope()
     val live by viewModel.live.collectAsStateWithLifecycle()
+    // #592 extended-battery probe result — non-null (incl. the " waiting" sentinel) shows the result dialog.
+    val batteryProbeResult by viewModel.extendedBatteryProbe.collectAsStateWithLifecycle()
+    // #690 body-location probe result — same non-null-shows-the-dialog contract.
+    val bodyLocationProbeResult by viewModel.bodyLocationProbe.collectAsStateWithLifecycle()
 
     // Liquid sky backdrop gate — the SAME "Day-cycle background" preference the liquid Today honours (#698,
     // default ON). Off falls back to the flat dark canvas, so the setting governs every liquid screen alike.
     val context = LocalContext.current
     val showDayCycleBackground = remember { NoopPrefs.showDayCycleBackground(context) }
+    val skyBehindCards = remember { NoopPrefs.skyBehindCards(context) }
 
     // The current device list, reloaded after each registry op. Null while the first read is in flight.
     var devices by remember { mutableStateOf<List<PairedDeviceRow>?>(null) }
@@ -124,6 +138,8 @@ fun DevicesScreen(
     var rebootTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     // WHOOP 4.0 reboot probe (Test Centre → Connection, 4.0 only) — the device whose probe sheet is open.
     var probeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
+    var batteryProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
+    var bodyLocationProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     // After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     var pickNewActive by remember { mutableStateOf(false) }
 
@@ -139,19 +155,47 @@ fun DevicesScreen(
     // the static button/footer are single items. Only on-screen cards compose + are accessibility-walked.
     // Conditional rows use `if (cond) { item/items }` so a hidden section adds no row.
     LazyScreenScaffold(
-        title = "Devices",
+        title = uiString(R.string.l10n_devices_screen_devices_df485c87),
         subtitle = "Pair and manage the bands NOOP reads from.",
         // LIQUID SKY BACKDROP (the pilot pattern — LiquidScreenSky.kt): the time-of-day liquid sky settles
         // into the flat canvas behind the top of the screen so the frosted device cards float over it. The
         // static sky (LiquidSkyStatic inside the helper) carries no per-frame cost on this scrolling list.
         // Gated on the same "Day-cycle background" setting as Today; off passes null for the plain canvas.
-        topBackground = if (showDayCycleBackground) { { LiquidScreenSky() } } else null,
+        topBackground = if (showDayCycleBackground) { { LiquidScreenSky(fillHeight = skyBehindCards) } } else null,
+        // Sky-behind-cards fills the viewport so the transparent cards reveal the sky the whole way
+        // down (Today / Trends / Sleep / metric-detail parity - same two prefs, same two behaviours).
+        fullBleedBackground = showDayCycleBackground && skyBehindCards,
     ) {
+        // #802: the re-pair guide belongs HERE too, not only on Live. A strap that connects but never
+        // finishes bonding leaves the user on this screen — it is where you go to fix a device — while the
+        // four steps that actually resolve it were rendered one tab away. The reporter in #802 filed an
+        // issue with the guide already armed, because nothing on Devices said so. Same state, same strings
+        // as LiveScreen; no new copy.
+        live.reconnectGuide?.let { guide ->
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Palette.surfaceRaised, RoundedCornerShape(12.dp))
+                        .border(1.dp, Palette.statusWarning.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        uiString(R.string.l10n_live_screen_can_t_connect_your_strap_s_cf78be83),
+                        style = NoopType.subhead,
+                        color = Palette.textPrimary,
+                    )
+                    Text(guide, style = NoopType.footnote, color = Palette.textSecondary)
+                }
+            }
+        }
+
         if (devices == null) {
             // The registry resolves a beat after launch. Show a calm pending note in that brief window.
             item {
             DataPendingNote(
-                title = "Getting your devices ready",
+                title = uiString(R.string.l10n_devices_screen_getting_your_devices_ready_bd391949),
                 body = "NOOP is opening your on-device data. Your paired bands will appear here in a moment.",
             )
             }
@@ -178,9 +222,14 @@ fun DevicesScreen(
                 // strap, or an FTMS machine all funnel into live.batteryPct). null otherwise.
                 liveBatteryPct = if (device.status == DeviceStatus.active.name && live.connected)
                     live.batteryPct?.let { Math.round(it).toInt() } else null,
+                liveBatteryMv = if (device.status == DeviceStatus.active.name && live.connected)
+                    live.batteryMv else null,
                 // Firmware version from the connect handshake: only for the active, connected strap.
                 liveFirmware = if (device.status == DeviceStatus.active.name && live.connected)
                     live.strapFirmware else null,
+                // Historical record layout from the current backfill, distinct from strap firmware.
+                liveHistoryLayout = if (device.status == DeviceStatus.active.name && live.connected)
+                    live.historyLayoutVersion else null,
                 onMakeActive = { switchTarget = device },
                 onRename = { renameTarget = device },
                 onRemove = { removeTarget = device },
@@ -205,6 +254,18 @@ fun DevicesScreen(
                     SourceCoordinator.isWhoop(device) && !live.whoop5Detected &&
                     TestCentre.from(context).active(TestDomain.CONNECTION)
                 ) { { probeTarget = device } } else null,
+                // #592 extended-battery opcode probe: read-only, BOTH families (the 4.0 is the
+                // discriminating device, but a 5/MG capture is useful too). Same Test Centre →
+                // Connection gate as the reboot probe.
+                onBatteryProbe = if (device.status == DeviceStatus.active.name && live.connected &&
+                    SourceCoordinator.isWhoop(device) &&
+                    TestCentre.from(context).active(TestDomain.CONNECTION)
+                ) { { batteryProbeTarget = device } } else null,
+                // #690 body-location opcode probe: read-only, both families. Same Test Centre gate.
+                onBodyLocationProbe = if (device.status == DeviceStatus.active.name && live.connected &&
+                    SourceCoordinator.isWhoop(device) &&
+                    TestCentre.from(context).active(TestDomain.CONNECTION)
+                ) { { bodyLocationProbeTarget = device } } else null,
             )
         }
 
@@ -245,7 +306,7 @@ fun DevicesScreen(
     // --- Switch confirm ---
     switchTarget?.let { device ->
         ConfirmDialog(
-            title = "Make this your active strap?",
+            title = uiString(R.string.l10n_devices_screen_make_this_your_active_strap_fea6bebd),
             message = "Make ${displayName(device)} your active strap? From now on it provides your live data. " +
                 "$currentActiveName's history stays exactly as it is. Only new days come from ${displayName(device)}.",
             confirmLabel = "Make active",
@@ -272,7 +333,7 @@ fun DevicesScreen(
     // --- Remove confirm ---
     removeTarget?.let { device ->
         ConfirmDialog(
-            title = "Remove this device?",
+            title = uiString(R.string.l10n_devices_screen_remove_this_device_dd9dbda9),
             message = "Remove ${displayName(device)}? NOOP will stop connecting to it. Its recorded data is " +
                 "kept and you can re-add it any time.",
             confirmLabel = "Remove",
@@ -297,7 +358,7 @@ fun DevicesScreen(
     // --- Restart strap confirm (#166) ---
     rebootTarget?.let { device ->
         ConfirmDialog(
-            title = "Restart this strap?",
+            title = uiString(R.string.l10n_devices_screen_restart_this_strap_50fc481b),
             message = "Restart ${displayName(device)}? It disconnects for about 30 seconds while it " +
                 "reboots, then reconnects on its own. Your recorded data is kept.",
             confirmLabel = "Restart",
@@ -316,10 +377,41 @@ fun DevicesScreen(
         )
     }
 
+    // --- #592 extended-battery opcode probe: read-only, dumps the strap's full raw reply to the log so a
+    //     normal export settles the disputed GET_EXTENDED_BATTERY_INFO number (98 vs an APK decompile's 87). ---
+    batteryProbeTarget?.let {
+        BatteryInfoProbeDialog(
+            onSend = { viewModel.probeExtendedBatteryInfo(); batteryProbeTarget = null },
+            onDismiss = { batteryProbeTarget = null },
+        )
+    }
+
+    // #592: the probe reply (or the " waiting" sentinel while in flight) — readable + copyable in place,
+    // so a capture doesn't need a full strap-log export to read or share.
+    batteryProbeResult?.let { result ->
+        BatteryInfoProbeResultDialog(
+            text = result,
+            onDismiss = { viewModel.clearExtendedBatteryProbe() },
+        )
+    }
+    // #690 body-location opcode probe: read-only send + full raw-response dump + decoded record.
+    bodyLocationProbeTarget?.let {
+        BodyLocationProbeDialog(
+            onSend = { viewModel.probeBodyLocationAndStatus(); bodyLocationProbeTarget = null },
+            onDismiss = { bodyLocationProbeTarget = null },
+        )
+    }
+    bodyLocationProbeResult?.let { result ->
+        BodyLocationProbeResultDialog(
+            text = result,
+            onDismiss = { viewModel.clearBodyLocationProbe() },
+        )
+    }
+
     // --- Second, strongly-worded delete-data confirm (from the Removed card's secondary control) ---
     deleteDataTarget?.let { device ->
         ConfirmDialog(
-            title = "Delete all of this device's data?",
+            title = uiString(R.string.l10n_devices_screen_delete_all_of_this_device_s_754cde90),
             message = "This permanently deletes all data recorded from ${displayName(device)}. This can't be undone.",
             confirmLabel = "Delete data",
             destructive = true,
@@ -369,9 +461,12 @@ private fun DeviceCard(
     /** The active+connected device's live battery percent (0–100) — surfaced the same way for WHOOP, a
      *  generic strap, or an FTMS machine. null when not active/connected or no battery was reported. */
     liveBatteryPct: Int? = null,
+    liveBatteryMv: Int? = null,
     /** The active+connected strap's firmware version (from the connect handshake). null when not
      *  active/connected, or for a source that reports no firmware (e.g. a non-WHOOP strap). */
     liveFirmware: String? = null,
+    /** The active+connected strap's observed banked-history record layout (`hist_version`). */
+    liveHistoryLayout: Int? = null,
     onMakeActive: () -> Unit,
     onRename: () -> Unit,
     onRemove: (() -> Unit)?,
@@ -383,6 +478,10 @@ private fun DeviceCard(
     // WHOOP 4.0 reboot probe (Test Centre → Connection, 4.0 only). Non-null only when the parent has
     // decided the probe applies (live-connected WHOOP 4.0 + Connection test mode on); null otherwise. (#235)
     onRebootProbe: (() -> Unit)? = null,
+    // #592 extended-battery opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
+    onBatteryProbe: (() -> Unit)? = null,
+    // #690 body-location opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
+    onBodyLocationProbe: (() -> Unit)? = null,
 ) {
     val profile = deviceProfile(device)
     // The per-device actions menu's open state is hoisted here so the WHOLE card is a tap target that opens
@@ -467,10 +566,17 @@ private fun DeviceCard(
                 BatteryTube(pct = liveBatteryPct)
             }
 
+            // #592: strap pack voltage (mV → volts, 2dp) beside the percent, when the battery event has
+            // reported it. Localized unit resource; purely additive, the percent tube is unchanged.
+            val voltsSuffix = if (liveBatteryMv != null)
+                " · " + stringResource(R.string.l10n_devices_screen_pack_voltage_9af3c3ff, liveBatteryMv / 1000.0)
+            else ""
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     lastSeenLine(device, isLiveConnected, bondRefused) +
-                        (liveFirmware?.let { " · FW $it" } ?: ""),
+                        (liveFirmware?.let { " · FW $it" } ?: "") +
+                        voltsSuffix +
+                        (historyLayoutLine(liveHistoryLayout)?.let { " · $it" } ?: ""),
                     style = NoopType.footnote,
                     color = Palette.textTertiary,
                     modifier = Modifier.weight(1f),
@@ -490,6 +596,8 @@ private fun DeviceCard(
                     onDisconnect = onDisconnect,
                     onReboot = onReboot,
                     onRebootProbe = onRebootProbe,
+                    onBatteryProbe = onBatteryProbe,
+                    onBodyLocationProbe = onBodyLocationProbe,
                 )
             }
         }
@@ -527,16 +635,16 @@ private fun BatteryTube(pct: Int) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.semantics { contentDescription = "Battery $clamped%" },
+        modifier = Modifier.semantics { contentDescription = uiString(R.string.l10n_devices_screen_battery_clamped_2494c8c9, clamped) },
     ) {
-        Text("Battery", style = NoopType.footnote, color = Palette.textTertiary)
+        Text(uiString(R.string.l10n_devices_screen_battery_4a9be042), style = NoopType.footnote, color = Palette.textTertiary)
         LiquidTube(
             frac = clamped / 100.0,
             tint = Palette.accent,
             animated = false,
             modifier = Modifier.weight(1f),
         )
-        Text("$clamped%", style = NoopType.footnote, color = Palette.textSecondary)
+        Text(uiString(R.string.l10n_devices_screen_clamped_1f39cebb, clamped), style = NoopType.footnote, color = Palette.textSecondary)
     }
 }
 
@@ -608,13 +716,15 @@ private fun DeviceActionsMenu(
     onDisconnect: (() -> Unit)? = null,
     onReboot: (() -> Unit)? = null,
     onRebootProbe: (() -> Unit)? = null,
+    onBatteryProbe: (() -> Unit)? = null,
+    onBodyLocationProbe: (() -> Unit)? = null,
 ) {
     Box {
         IconButton(
             onClick = { onOpenChange(true) },
             modifier = Modifier
                 .size(32.dp)
-                .semantics { contentDescription = "Device actions for ${displayName(device)}" },
+                .semantics { contentDescription = uiString(R.string.l10n_devices_screen_device_actions_for_displayname_device_160eb3de, displayName(device)) },
         ) {
             Icon(Icons.Filled.MoreVert, contentDescription = null, tint = Palette.textSecondary, modifier = Modifier.size(20.dp))
         }
@@ -656,6 +766,15 @@ private fun DeviceActionsMenu(
                 if (onRebootProbe != null) {
                     MenuItem("Reboot probe (4.0 RE)…", Icons.Filled.BugReport) { onOpenChange(false); onRebootProbe() }
                 }
+                // #592: read-only extended-battery opcode probe — settles the disputed GET_EXTENDED_
+                // BATTERY_INFO number (98 vs an APK decompile's 87) from a strap-log export.
+                if (onBatteryProbe != null) {
+                    MenuItem(uiString(R.string.l10n_devices_screen_battery_info_probe_592_re_1dbd4c0f), Icons.Filled.BugReport) { onOpenChange(false); onBatteryProbe() }
+                }
+                // #690: read-only body-location opcode probe — decodes revision/location/confidence/status.
+                if (onBodyLocationProbe != null) {
+                    MenuItem(uiString(R.string.l10n_devices_screen_body_location_probe_690_re_7def8c39), Icons.Filled.BugReport) { onOpenChange(false); onBodyLocationProbe() }
+                }
                 if (onRemove != null) {
                     HorizontalDivider(color = Palette.hairline)
                     MenuItem("Remove", Icons.Filled.RemoveCircleOutline, destructive = true) {
@@ -688,13 +807,13 @@ private fun AddDeviceButton(onClick: () -> Unit) {
     // filled-accent-blue / white-label primary the iOS DevicesView uses (`NoopButton(... kind: .primary,
     // fullWidth: true)`) — no hand-rolled gold-text fill, no glow.
     NoopButton(
-        text = "Add a device",
+        text = uiString(R.string.l10n_devices_screen_add_a_device_f90866b8),
         leadingIcon = Icons.Filled.Add,
         kind = NoopButtonKind.Primary,
         fullWidth = true,
         modifier = Modifier
             .padding(top = 4.dp)
-            .semantics { contentDescription = "Add a device" },
+            .semantics { contentDescription = uiString(R.string.l10n_devices_screen_add_a_device_f90866b8) },
         onClick = onClick,
     )
 }
@@ -713,7 +832,7 @@ private fun WhoopFirstFooter() {
             modifier = Modifier.size(16.dp),
         )
         Text(
-            "WHOOP is NOOP's primary, fully-supported band. Other heart-rate straps are an early, " +
+            uiString(R.string.l10n_devices_screen_whoop_is_noop_s_primary_fully_1c9e67fd) +
                 "in-development addition: they stream live heart rate and HRV, but not WHOOP's deeper " +
                 "sleep and recovery data.",
             style = NoopType.footnote,
@@ -766,11 +885,11 @@ private fun RebootProbeDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.surfaceOverlay,
-        title = { Text("WHOOP 4.0 reboot probe", style = NoopType.title2, color = Palette.textPrimary) },
+        title = { Text(uiString(R.string.l10n_devices_screen_whoop_4_0_reboot_probe_b51fb50f), style = NoopType.title2, color = Palette.textPrimary) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "The WHOOP 4.0 reboot frame isn't confirmed — a normal Restart is ignored (#235). " +
+                    uiString(R.string.l10n_devices_screen_the_whoop_4_0_reboot_frame_690a8ff2) +
                         "Send each candidate and watch BOTH the strap log and the strap itself. " +
                         "“no disconnect within 12s” means the strap ignored the frame. A “link dropped” line " +
                         "means the frame reached the strap — but a dropped link alone isn't a reboot: a real " +
@@ -795,7 +914,143 @@ private fun RebootProbeDialog(
         confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel", style = NoopType.body, color = Palette.textSecondary)
+                Text(uiString(R.string.l10n_devices_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #592 extended-battery opcode probe: a single read-only send + a full raw-response dump to the strap
+ *  log. Settles whether GET_EXTENDED_BATTERY_INFO is 98 (this table) or 87 (an independent APK decompile)
+ *  from a normal strap-log export. Gated to Test Centre → Connection + a live WHOOP at the call site. */
+@Composable
+private fun BatteryInfoProbeDialog(
+    onSend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_battery_info_probe_592_re_1dbd4c0f), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Text(
+                uiString(R.string.l10n_devices_screen_battery_probe_explainer_2858bb6a),
+                style = NoopType.subhead,
+                color = Palette.textSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onSend) {
+                Text(uiString(R.string.l10n_devices_screen_send_probe_read_only_36b318bc), style = NoopType.body, color = Palette.accent)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #592 probe result: shows the raw hex + payload triage from the strap's reply (or a "waiting…" line
+ *  while in flight), with a Copy button so the capture can be pasted into the issue without exporting the
+ *  whole strap log. Read-only; dismiss clears the result. */
+@Composable
+private fun BatteryInfoProbeResultDialog(
+    text: String,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val waiting = text == WhoopBleClient.WAITING_EXTENDED_BATTERY_PROBE
+    val shown = if (waiting) uiString(R.string.l10n_devices_screen_waiting_for_the_straps_reply_5a06e7ac) else text
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_battery_info_probe_result_592_b97c0bb8), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                SelectionContainer {
+                    Text(shown, style = if (waiting) NoopType.subhead else NoopType.mono, color = Palette.textSecondary)
+                }
+            }
+        },
+        confirmButton = {
+            if (!waiting) {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(text)) }) {
+                    Text(uiString(R.string.l10n_devices_screen_copy_af74f7c5), style = NoopType.body, color = Palette.accent)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_close_bbfa773e), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #690 body-location opcode probe: a single read-only send + a full raw-response dump + decoded record.
+ *  Gated to Test Centre → Connection + a live WHOOP at the call site. */
+@Composable
+private fun BodyLocationProbeDialog(
+    onSend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_body_location_probe_690_re_7def8c39), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Text(
+                uiString(R.string.l10n_devices_screen_body_location_probe_explainer_a9363239),
+                style = NoopType.subhead,
+                color = Palette.textSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onSend) {
+                Text(uiString(R.string.l10n_devices_screen_send_probe_read_only_36b318bc), style = NoopType.body, color = Palette.accent)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #690 probe result: raw hex + decoded body-location record (or a "waiting…" state), with a Copy button.
+ *  Read-only; dismiss clears the result. Twin of the Swift BodyLocationProbeResultView. */
+@Composable
+private fun BodyLocationProbeResultDialog(
+    text: String,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val waiting = text == WhoopBleClient.WAITING_BODY_LOCATION_PROBE
+    val shown = if (waiting) uiString(R.string.l10n_devices_screen_waiting_for_the_straps_reply_5a06e7ac) else text
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_body_location_probe_result_690_60c5ee79), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                SelectionContainer {
+                    Text(shown, style = if (waiting) NoopType.subhead else NoopType.mono, color = Palette.textSecondary)
+                }
+            }
+        },
+        confirmButton = {
+            if (!waiting) {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(text)) }) {
+                    Text(uiString(R.string.l10n_devices_screen_copy_af74f7c5), style = NoopType.body, color = Palette.accent)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_close_bbfa773e), style = NoopType.body, color = Palette.textSecondary)
             }
         },
     )
@@ -811,11 +1066,11 @@ private fun RenameDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.surfaceOverlay,
-        title = { Text("Rename device", style = NoopType.title2, color = Palette.textPrimary) },
+        title = { Text(uiString(R.string.l10n_devices_screen_rename_device_ee233604), style = NoopType.title2, color = Palette.textPrimary) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "Give ${device.brand} ${device.model} a name you'll recognise.",
+                    uiString(R.string.l10n_devices_screen_give_device_brand_device_model_a_7a15585c, device.brand, device.model),
                     style = NoopType.subhead,
                     color = Palette.textSecondary,
                 )
@@ -823,20 +1078,20 @@ private fun RenameDialog(
                     value = draft,
                     onValueChange = { draft = it },
                     singleLine = true,
-                    placeholder = { Text("Name", style = NoopType.body, color = Palette.textTertiary) },
+                    placeholder = { Text(uiString(R.string.l10n_devices_screen_name_709a2322), style = NoopType.body, color = Palette.textTertiary) },
                     colors = devicesFieldColors(),
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Device name" },
+                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = uiString(R.string.l10n_devices_screen_device_name_79d7a157) },
                 )
             }
         },
         confirmButton = {
             TextButton(onClick = { onSave(draft) }) {
-                Text("Save", style = NoopType.body, color = Palette.accent)
+                Text(uiString(R.string.l10n_devices_screen_save_efc007a3), style = NoopType.body, color = Palette.accent)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel", style = NoopType.body, color = Palette.textSecondary)
+                Text(uiString(R.string.l10n_devices_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
             }
         },
     )
@@ -851,11 +1106,11 @@ private fun PickActiveDialog(
     AlertDialog(
         onDismissRequest = onLeaveNone,
         containerColor = Palette.surfaceOverlay,
-        title = { Text("Pick a new active strap", style = NoopType.title2, color = Palette.textPrimary) },
+        title = { Text(uiString(R.string.l10n_devices_screen_pick_a_new_active_strap_edd73542), style = NoopType.title2, color = Palette.textPrimary) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "You removed your active strap. Choose which paired band provides your live data, or " +
+                    uiString(R.string.l10n_devices_screen_you_removed_your_active_strap_choose_2ac91d48) +
                         "leave none active and pair one later.",
                     style = NoopType.subhead,
                     color = Palette.textSecondary,
@@ -878,7 +1133,7 @@ private fun PickActiveDialog(
         confirmButton = {},
         dismissButton = {
             TextButton(onClick = onLeaveNone) {
-                Text("Leave none active", style = NoopType.body, color = Palette.textSecondary)
+                Text(uiString(R.string.l10n_devices_screen_leave_none_active_b5c858cb), style = NoopType.body, color = Palette.textSecondary)
             }
         },
     )
@@ -1087,7 +1342,7 @@ private fun OuraLocalStateNote() {
     ) {
         Icon(Icons.Filled.Info, contentDescription = null, tint = Palette.statusWarning, modifier = Modifier.size(14.dp))
         Text(
-            "Paired locally. NOOP owns this ring while it holds the key. If you reset it again or set it " +
+            uiString(R.string.l10n_devices_screen_paired_locally_noop_owns_this_ring_30c16190) +
                 "up in the Oura app, NOOP no longer owns it and you would re-add it to take it over.",
             style = NoopType.caption,
             color = Palette.statusWarning,
@@ -1103,6 +1358,9 @@ private fun lastSeenLine(device: PairedDeviceRow, isLiveConnected: Boolean, bond
     isLiveConnected -> "Connected now"
     else -> "Last seen ${relativeAgo(device.lastSeenAt)}"
 }
+
+internal fun historyLayoutLine(version: Int?): String? =
+    version?.let { "v$it history" }
 
 /** Best-effort brand from the advertised name. Falls back to a neutral label. Mirrors Swift brandGuess.
  *  Delegates to the pure [com.noop.data.DeviceBrandCatalog] (single source of truth) so the token table

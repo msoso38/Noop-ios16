@@ -46,6 +46,11 @@ struct CoupledView: View {
     /// the cold-start threshold, which keeps the broad overnight-band bonus.
     @State private var habitualMidsleepSec: Int? = nil
 
+    /// #614: TODAY's workout count from the SAME deduped/dismissed-filtered list the Workouts screen shows
+    /// (`repo.workoutRows`), not `DailyMetric.exerciseCount` (strap-DETECTED only — a Health-Connect import
+    /// with auto-detect off read as 0 while the Workouts screen showed it). Loaded in `.task`.
+    @State private var workoutsToday: Int = 0
+
     /// The day the coupled read describes, today's resolved row (the same `resolveToday` #304/#144 boundary
     /// Today anchors on), never a second store read.
     private var day: DailyMetric? { repo.today }
@@ -57,6 +62,7 @@ struct CoupledView: View {
     /// exists. The SAME pure helper Today's ring reads, so the two screens can't disagree.
     private var calibrationNights: Int? {
         RecoveryScorer.calibrationNights(nightlyHrv: repo.days.map(\.avgHrv),
+                                         dayKeys: repo.days.map(\.day),
                                          hasRecovery: day?.recovery != nil)
     }
 
@@ -142,6 +148,14 @@ struct CoupledView: View {
         // bed→wake span below resolves identically (#294). Re-runs on a sync/import refresh.
         .task(id: repo.refreshSeq) {
             habitualMidsleepSec = await repo.habitualMidsleepSec()
+            // #614: count TODAY's workouts by their START's logical day (the SAME 04:00-rollover key
+            // DailyMetric.day uses), so the Coupled stat equals the Workouts overview for today.
+            let key = todayKey
+            // A short window is enough to count today's rows (the cross-source dedup is local to the set),
+            // and avoids loading the full history just for one number.
+            workoutsToday = await repo.workoutRows(days: 2).filter {
+                Repository.logicalDayKey(Date(timeIntervalSince1970: TimeInterval($0.startTs))) == key
+            }.count
         }
     }
 
@@ -307,11 +321,14 @@ struct CoupledView: View {
                     // Right: the coupled stat stack, OPTIMAL range (with a liquid tube band), calories, workouts.
                     VStack(alignment: .leading, spacing: 14) {
                         optimalStat
-                        heroStat("Calories",
+                        // heroStat renders `Text(title.uppercased())`, so `title` is a plain String and
+                        // a bare literal would NOT localize — pass the resolved localized value (the
+                        // catalog already carries Calories/Workouts) so German shows KALORIEN, not CALORIES.
+                        heroStat(String(localized: "Calories"),
                                  caloriesText,
                                  tint: StrandPalette.metricAmber)
-                        heroStat("Workouts",
-                                 (day?.exerciseCount).map { "\($0)" } ?? "0",
+                        heroStat(String(localized: "Workouts"),
+                                 "\(workoutsToday)",   // #614: real workout count (all sources), not exerciseCount
                                  tint: StrandPalette.textPrimary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -641,6 +658,15 @@ struct CoupledView: View {
                     Text(progress)
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
+                    // #731: when the countdown restarted because the user tapped "Recalibrate baseline",
+                    // say so — otherwise the natural response to a fresh countdown is to tap it again,
+                    // which resets it once more. nil (and no line) for anyone who never recalibrated.
+                    if let restarted = ChargeBreakdownFormat.currentCalibrationRestartCause() {
+                        Text(restarted)
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }

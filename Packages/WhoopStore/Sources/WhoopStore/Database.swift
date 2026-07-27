@@ -501,7 +501,109 @@ extension WhoopStore {
                           on: "ouraRaw", columns: ["deviceId", "endpoint", "day"])
         }
 
-        // v26-apple-step-hour: hourly Apple Health step counts. The daily `collect(.stepCount, …)` path
+        // v26 (Oura efficiency unit heal): the Oura API importer (OuraApiParser.swift) wrote Oura's
+        // native 0-100 integer `efficiency` straight into sleepSession.efficiency / dailyMetric.efficiency,
+        // but NOOP's own sleep pipeline (StrandAnalytics) stores that shared column as a 0-1 FRACTION
+        // everywhere it computes it (asleep ÷ in-bed) — same column, two scales for oura-api rows written
+        // before the importer fix. UPDATE-only, NO schema change: divides `efficiency` by 100 for every
+        // row where it's > 1.5 — a threshold no genuine fraction can exceed (the column's convention
+        // caps at 1.0: `AnalyticsEngine` writes actual-sleep ÷ in-bed) and no genuine percent-scale
+        // leftover can fall under (no real night is ≤1.5% efficient), so the predicate can't touch an
+        // already-correct row and a second run finds nothing left: idempotent. Deliberately NOT
+        // deviceId-scoped: both known percent writers are healed by the same predicate — the Oura API
+        // importer ('oura-api' rows) and the WHOOP CSV importer (rows under whatever strap deviceId the
+        // user imported into). No Android Room migration twin in this PR: the Kotlin CSV importer gets
+        // the same write-boundary fix, but healing Android's historical rows needs a Room migration a
+        // maintainer should own (schema-version bump + column-order pinning).
+        migrator.registerMigration("v26-efficiency-heal") { db in
+            try db.execute(sql: """
+                UPDATE sleepSession SET efficiency = efficiency / 100.0
+                WHERE efficiency > 1.5
+                """)
+            try db.execute(sql: """
+                UPDATE dailyMetric SET efficiency = efficiency / 100.0
+                WHERE efficiency > 1.5
+                """)
+        }
+
+        // v27 (issue #156 follow-up): durable storage for the WHOOP 5.0 v26 optical PPG waveform. The
+        // strap's 24 Hz buffer was fully DECODED (`ppg_waveform`, 24 i16 ADC samples/record) but only
+        // ever used to derive a per-second HR estimate (`ppgHrSample`, v12) — the waveform itself was
+        // discarded right after, and `rejectedHistoricalRecords` explicitly excludes v26 from the
+        // undecodable-record reject archive ("known-and-unstored by design"), so it had no home at all.
+        //
+        // One row per (deviceId, ts) — the SAME shape as every other per-second decoded stream (hrSample,
+        // spo2Sample, ppgHrSample, …) — but the 24 samples are packed into a compact BLOB (2 bytes/sample,
+        // little-endian i16, `WhoopStore.packPpgSamples`/`unpackPpgSamples`) instead of 24 scalar rows.
+        // That keeps a v26-heavy night to roughly the same order of magnitude as ONE extra per-second
+        // stream (≈50 bytes/row), not 24x that. Additive only, a NEW table, no existing row touched.
+        //
+        // Retention: no pruning, matching every other durable per-second table (hrSample, spo2Sample, …
+        // are never pruned either) — this is decoded biometric history, not the transient raw outbox.
+        // `PrunePolicy`'s ~50 MB cap governs ONLY `rawBatch` (raw, pre-decode frames kept for re-decode /
+        // re-sync); it is untouched by and unrelated to this table. Growth here is bounded by how much
+        // v26 data a strap actually emits (firmware chooses v26 vs v18 per second, not every night is
+        // v26-heavy), not by an artificial cap.
+        migrator.registerMigration("v27-ppg-waveform") { db in
+            try db.create(table: "ppgWaveformSample") { t in
+                t.column("deviceId", .text).notNull()
+                t.column("ts", .integer).notNull()
+                t.column("samples", .blob).notNull()
+                t.primaryKey(["deviceId", "ts"])
+            }
+        }
+
+        // #423: WHOOP 5/MG raw-IMU offload capture (100 Hz 6-axis). `samples` is a packed i16 LE BLOB of
+        // the six wire columns (ax…az,gx…gz). Twin of the Android `rawImuSample` table (MIGRATION_20_21);
+        // same column order + PK so a `.noopbak` round-trips byte-for-byte.
+        migrator.registerMigration("v28-raw-imu") { db in
+            try db.create(table: "rawImuSample") { t in
+                t.column("deviceId", .text).notNull()
+                t.column("ts", .integer).notNull()
+                t.column("samples", .blob).notNull()
+                t.primaryKey(["deviceId", "ts"])
+            }
+        }
+
+        // v29: provenance for NOOP-computed headline scores. This is deliberately separate from
+        // `dayOwnership`: ownership controls which device is allowed to supply a day's raw inputs,
+        // while this table records which source actually supplied each persisted computed metric.
+        // Metric-level keys keep mixed-source days honest and make missing legacy metadata explicit.
+        migrator.registerMigration("v29-score-input-provenance") { db in
+            try db.create(table: "scoreInputProvenance") { t in
+                t.column("deviceId", .text).notNull()   // computed "-noop" namespace
+                t.column("day", .text).notNull()
+                t.column("key", .text).notNull()
+                t.column("sourceId", .text).notNull()
+                t.primaryKey(["deviceId", "day", "key"])
+            }
+            try db.create(index: "idx_scoreInputProvenance_source",
+                          on: "scoreInputProvenance", columns: ["sourceId"])
+        }
+
+        // v30 (#823): record each R-R beat's EMISSION order within its second. Reads ordered by
+        // `rrMs`, i.e. by VALUE, which makes successive beats similar by construction and biases
+        // RMSSD — built entirely from successive differences — DOWNWARD. `seq` cannot serve here:
+        // it counts repeats of an identical (ts, rrMs) beat, so every DISTINCT beat in a second
+        // carries seq 0 and they all tie.
+        //
+        // Additive nullable column, no table rebuild, no existing row touched. Deliberately NOT in
+        // the primary key, which stays (deviceId, ts, rrMs, seq) from v24 — an insertion counter in
+        // the key would collide distinct beats arriving in separate batches, the data-loss
+        // regression the v24 note warns about. `ord` only informs read order.
+        //
+        // Pre-v30 rows stay NULL: the order was never recorded, so it cannot be backfilled and a
+        // guess would be worse than an admission. SQLite sorts NULL first in ASC, so an all-NULL
+        // second ties on `ord` and falls through to the old (rrMs, seq) order, unchanged.
+        //
+        // Twin of Room MIGRATION_23_24. Both stores are SQLite, so NULL-ordering matches exactly.
+        migrator.registerMigration("v30-rr-ord") { db in
+            try db.alter(table: "rrInterval") { t in
+                t.add(column: "ord", .integer)
+            }
+        }
+
+        // v31-apple-step-hour: hourly Apple Health step counts. The daily `collect(.stepCount, …)` path
         // in HealthKitBridge flattens a whole day to one `appleDaily.steps` total, so a dead/absent phone
         // for part of a day (e.g. the phone died mid-hike) is invisible — steps just read low for the
         // WHOLE day instead of showing exactly which hours had no recording. HealthKit retains hourly
@@ -512,7 +614,7 @@ extension WhoopStore {
         // hour. PK (deviceId, ts) mirrors every other per-sample table (hrSample, stepSample, …) and
         // makes the hourly upsert idempotent. Additive only — a NEW table, no existing row touched, old
         // readers unaffected.
-        migrator.registerMigration("v26-apple-step-hour") { db in
+        migrator.registerMigration("v31-apple-step-hour") { db in
             // ifNotExists: forks/sideloads that already carry this table under a different migration
             // identifier converge cleanly instead of failing the migrator.
             try db.create(table: "appleStepHour", options: [.ifNotExists]) { t in
