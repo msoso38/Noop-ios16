@@ -373,9 +373,19 @@ class WhoopRepository(private val dao: WhoopDao) {
     /**
      * Persist one decoded batch under [deviceId]. Returns the number of rows actually inserted
      * per stream (0 for rows that already existed). Empty sub-lists compile/run nothing.
-     * Port of WhoopStore.insert(_:deviceId:).
+     * Port of WhoopStore.insert(_:deviceId:v18AuxRetentionRows:v18AuxPruneEveryRows:).
      */
-    suspend fun insert(streams: StreamBatch, deviceId: String): InsertCounts {
+    suspend fun insert(
+        streams: StreamBatch,
+        deviceId: String,
+        // Injectable for the same reason the Swift twin takes them as parameters rather than reading the
+        // statics: once the v18-aux sweep became amortised, a test could no longer observe it at all
+        // without inserting 10 000 rows. `StreamStore.insert(_:deviceId:v18AuxRetentionRows:
+        // v18AuxPruneEveryRows:)` is the shape being mirrored. Production callers pass neither and get the
+        // shipped constants. (#888)
+        v18AuxRetentionRows: Int = V18_AUX_RETENTION_ROWS,
+        v18AuxPruneEveryRows: Int = V18_AUX_PRUNE_EVERY_ROWS,
+    ): InsertCounts {
         if (streams.isEmpty) return InsertCounts()
 
         val hrIds = if (streams.hr.isEmpty()) emptyList() else
@@ -455,8 +465,8 @@ class WhoopRepository(private val dao: WhoopDao) {
                 // Best-effort: the rows above are already committed, so a sweep failure must not surface
                 // as an insert failure and make Backfiller re-send a chunk it has already banked. Leaving
                 // the budget unspent means the next batch retries the sweep.
-                if (banked >= V18_AUX_PRUNE_EVERY_ROWS) {
-                    runCatching { dao.pruneV18Aux(deviceId, V18_AUX_RETENTION_ROWS) }
+                if (banked >= v18AuxPruneEveryRows) {
+                    runCatching { dao.pruneV18Aux(deviceId, v18AuxRetentionRows) }
                         .onSuccess { v18AuxRowsSincePrune[deviceId] = 0 }
                         // pruneV18Aux is a suspend call, so a scope cancellation arrives here as a
                         // CancellationException that runCatching would otherwise swallow — the caller would
