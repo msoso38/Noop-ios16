@@ -94,6 +94,12 @@ export.zip
 __pycache__/
 *.pyc
 
+# ── Rust (liters dependency) ────────────────────────────────────
+# Build output only. Rust/Cargo.lock IS tracked: it pins the exact liters
+# commit this tree builds against, which a branch-tracking git dependency
+# otherwise leaves floating.
+Rust/target/
+
 # Local release artifacts (zips/ipas built for upload; never tracked)
 dist/
 err.txt

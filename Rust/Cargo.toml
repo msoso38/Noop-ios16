@@ -1,0 +1,50 @@
+[package]
+name = "noop-liters"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "NOOP's build surface for liters: pins the liters-ffi git dependency and builds it against the same SQLite GRDB links."
+
+[lib]
+name = "noop_liters"
+# `staticlib` is what the iOS xcframework wraps. `cdylib` exists so
+# `uniffi-bindgen --library` has a host-native library to read the embedded
+# interface metadata out of; `lib` so the bindgen bin can depend on this crate.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+# liters — Litestream v0.5-compatible SQLite replication, by Kurt Mackey.
+# Upstream is https://github.com/mrkurt/liters; this points at the standalone
+# MIT-licensed derivative we develop in while upstream review is paused.
+#
+# `default-features = false` is LOAD-BEARING, not tidiness. It turns off
+# liters' `bundled-sqlite`, so liters links the platform's libsqlite3 instead
+# of compiling its own copy of the amalgamation into the staticlib.
+#
+# NOOP already links a SQLite: Packages/NoopLocalAccess and Packages/StrandImport
+# both depend on GRDB.swift 6.29.3, which links Apple's system libsqlite3
+# through `.systemLibrary(name: "CSQLite")`. A bundled liters would put a
+# SECOND SQLite in the same process, and the two do not share the
+# process-global `unixInodeInfo` table SQLite uses to work around POSIX's
+# "close any descriptor, lose all locks" rule — so either library can silently
+# drop the other's advisory locks. For liters that is a correctness bug rather
+# than a hazard: its guarantee that no foreign checkpointer restarts the WAL
+# under the writer *is* a long-running read lock, and losing it forces a
+# full-database snapshot upload on the next push.
+#
+# Do not add `features = ["bundled-sqlite"]` here. If a future change needs
+# bindings generated against the platform's own sqlite3.h, use
+# `features = ["system-sqlite-bindgen"]` (keeping default-features = false).
+liters-ffi = { git = "https://github.com/vishk23/liters-mobile.git", branch = "main", default-features = false }
+
+# Must stay on the same major/minor as liters-ffi's uniffi, or the generated
+# bindings and the shipped scaffolding come from different versions.
+uniffi = { version = "0.32", features = ["cli"] }
+
+[profile.release]
+lto = true
+strip = true
