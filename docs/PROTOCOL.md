@@ -410,10 +410,26 @@ On MAVERICK the clock commands also answer in the high opcode space — `SET_CLO
 and `GET_CLOCK` at 147 (0x93), alongside `GET_HELLO` at 145 (0x91) — distinct from the 4.0
 numbers (10 / 11) above.
 
-The strap further exposes an ECG/HeartKey command family (`ECG_MAIN_CONTROL`, `ECG_SEND_RAW`,
-`ECG_SAVE_RAW`, `ECG_SAVE_FILTERED`, `ECG_SELECT_WRIST`; five consecutive codes around 0x7B–0x8B),
-an `IMU_SET_DATA_STREAM` (code 106, shared with `TOGGLE_IMU_MODE`), and a `UART_DISABLE` (0x61–0x69).
-Exact codes for these are unconfirmed.
+The strap further exposes an ECG/HeartKey command family. The `CommandNumber` table carries four codes
+for it — 123 `SELECT_WRIST`, 124 `TOGGLE_LABRADOR_DATA_GENERATION`, 125 `TOGGLE_LABRADOR_RAW_SAVE`,
+139 `TOGGLE_LABRADOR_FILTERED` — which are **not** contiguous, and an earlier revision of this section
+described "five consecutive codes around 0x7B–0x8B" against five names (`ECG_MAIN_CONTROL`,
+`ECG_SEND_RAW`, `ECG_SAVE_RAW`, `ECG_SAVE_FILTERED`, `ECG_SELECT_WRIST`). Both cannot be right:
+`ECG_SEND_RAW` has no code, and 139 (0x8B) is separated from 123–125 (0x7B–0x7D). Treat the name↔code
+mapping as unconfirmed — the 5/MG is known to remap opcodes into the high space (the clock family answers
+at 145/146/147 there versus 10/11 on a 4.0), so a code that is accepted is not evidence that it means
+what the name says.
+
+What is confirmed: on a real WHOOP 5 MG (`WS50_r03`), 124, 125 and 139 are all **accepted** — each
+answers `COMMAND_RESPONSE` with result `SUCCESS(1)` — and no ECG-shaped data followed in a 30-second
+window. That is a null result with several live explanations (an open electrode circuit, flash rather
+than a realtime channel, a wrong opcode mapping, no start verb, a flag block, an entitlement gate); see
+#891. **NOOP does not send any of these** — none is in the sender enum on either platform, and the 5/MG
+send path is an allowlist. The three reply frames are pinned as decode fixtures in
+`Whoop5CommandResponseTests` / `CommandCatalogueTest`.
+
+The strap also exposes an `IMU_SET_DATA_STREAM` (code 106, shared with `TOGGLE_IMU_MODE`) and a
+`UART_DISABLE` (0x61–0x69). Exact codes for these are unconfirmed.
 
 ### Destructive commands — *do not send*
 
@@ -429,6 +445,14 @@ data, brick, or power-cycle the strap. NOOP must never send them.
 | 38 | `PROCESS_FIRMWARE_IMAGE` | firmware write |
 | 45 | `ENTER_BLE_DFU` | enters DFU bootloader |
 | 99 | `RESET_FUEL_GAUGE` | resets battery fuel gauge |
+| 142 | `START_FIRMWARE_LOAD_NEW` | firmware write |
+| 143 | `LOAD_FIRMWARE_DATA_NEW` | firmware write |
+| 144 | `PROCESS_FIRMWARE_IMAGE_NEW` | firmware write |
+
+The 142–144 family is the high-opcode-space counterpart of 36/37/38, in the same style as the clock
+family answering at 145–147 on MAVERICK. It is named by the schema and absent from the sender enum on
+both platforms; it was missing from this table, so nothing recorded that it must stay that way. (83
+`VERIFY_FIRMWARE_IMAGE` is part of the same flow but is not itself a write, and is likewise unsent.)
 
 **Two guarded exceptions — both restarts, both non-destructive** (a restart keeps the strap's stored
 data and just re-advertises after boot). Neither is ever sent automatically or on any connect/offload path.

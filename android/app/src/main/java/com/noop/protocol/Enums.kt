@@ -246,6 +246,116 @@ enum class CommandNumber(val rawValue: Int) {
 }
 
 /**
+ * DECODE-ONLY command names, mirroring the `CommandNumber` table in the canonical protocol schema
+ * (`Packages/WhoopProtocol/…/Resources/whoop_protocol.json`).
+ *
+ * This is NOT a send surface and must never become one. [CommandNumber] above is the curated *sender*
+ * enum and deliberately omits every destructive opcode; this map is the *reader's* dictionary, so it
+ * names opcodes NOOP will never emit (FORCE_TRIM, the firmware-load family, ENTER_BLE_DFU) purely so an
+ * inbound COMMAND_RESPONSE echoing one is legible in a strap log.
+ *
+ * Nothing here widens what can be sent, but note where that guarantee actually comes from: the 4.0
+ * builder `Framing.buildCommand` takes a [CommandNumber], so the omission is enforced by the type; the
+ * 5/MG `Framing.puffinCommandFrame` takes a raw `Int`, so there it is enforced by the send allowlist in
+ * `WhoopBleClient` instead. Either way a name in this map is never an input to either builder — it is
+ * only ever an output of decoding a frame the strap sent.
+ *
+ * Why it exists: Swift labels a response by asking the schema (`Schema.enumName("CommandNumber", …)`),
+ * which knows all 80 opcodes. Kotlin labelled it from the sender enum, which knows 34 — so the same
+ * strap log rendered `TOGGLE_LABRADOR_FILTERED(139)` on Apple and `0x8B(139)` on Android, and three
+ * opcodes (77, 119, 120) printed *different names* on the two platforms because the sender enum uses
+ * its own short case names. Reports pasted from the two apps could not be compared by eye. (#891)
+ */
+object CommandNames {
+    /** Raw opcode → schema name. Keep byte-identical to the schema's `CommandNumber` table. */
+    val byRaw: Map<Int, String> = mapOf(
+        1 to "LINK_VALID",
+        2 to "GET_MAX_PROTOCOL_VERSION",
+        3 to "TOGGLE_REALTIME_HR",
+        7 to "REPORT_VERSION_INFO",
+        10 to "SET_CLOCK",
+        11 to "GET_CLOCK",
+        14 to "TOGGLE_GENERIC_HR_PROFILE",
+        16 to "TOGGLE_R7_DATA_COLLECTION",
+        19 to "RUN_HAPTIC_PATTERN_MAVERICK",
+        20 to "ABORT_HISTORICAL_TRANSMITS",
+        22 to "SEND_HISTORICAL_DATA",
+        23 to "HISTORICAL_DATA_RESULT",
+        25 to "FORCE_TRIM",
+        26 to "GET_BATTERY_LEVEL",
+        29 to "REBOOT_STRAP",
+        32 to "POWER_CYCLE_STRAP",
+        33 to "SET_READ_POINTER",
+        34 to "GET_DATA_RANGE",
+        35 to "GET_HELLO_HARVARD",
+        36 to "START_FIRMWARE_LOAD",
+        37 to "LOAD_FIRMWARE_DATA",
+        38 to "PROCESS_FIRMWARE_IMAGE",
+        39 to "SET_LED_DRIVE",
+        40 to "GET_LED_DRIVE",
+        41 to "SET_TIA_GAIN",
+        42 to "GET_TIA_GAIN",
+        43 to "SET_BIAS_OFFSET",
+        44 to "GET_BIAS_OFFSET",
+        45 to "ENTER_BLE_DFU",
+        48 to "SEND_EVENT_PACKETS",
+        52 to "SET_DP_TYPE",
+        53 to "FORCE_DP_TYPE",
+        61 to "SET_AFE_PARAMETERS",
+        62 to "GET_AFE_PARAMETERS",
+        63 to "SEND_R10_R11_REALTIME",
+        66 to "SET_ALARM_TIME",
+        67 to "GET_ALARM_TIME",
+        68 to "RUN_ALARM",
+        69 to "DISABLE_ALARM",
+        76 to "GET_ADVERTISING_NAME_HARVARD",
+        77 to "SET_ADVERTISING_NAME_HARVARD",
+        79 to "RUN_HAPTICS_PATTERN",
+        80 to "GET_ALL_HAPTICS_PATTERN",
+        81 to "START_RAW_DATA",
+        82 to "STOP_RAW_DATA",
+        83 to "VERIFY_FIRMWARE_IMAGE",
+        84 to "GET_BODY_LOCATION_AND_STATUS",
+        96 to "ENTER_HIGH_FREQ_SYNC",
+        97 to "EXIT_HIGH_FREQ_SYNC",
+        98 to "GET_EXTENDED_BATTERY_INFO",
+        99 to "RESET_FUEL_GAUGE",
+        100 to "CALIBRATE_CAPSENSE",
+        105 to "TOGGLE_IMU_MODE_HISTORICAL",
+        106 to "TOGGLE_IMU_MODE",
+        107 to "ENABLE_OPTICAL_DATA",
+        108 to "TOGGLE_OPTICAL_MODE",
+        115 to "START_DEVICE_CONFIG_KEY_EXCHANGE",
+        116 to "SEND_NEXT_DEVICE_CONFIG",
+        117 to "START_FF_KEY_EXCHANGE",
+        118 to "SEND_NEXT_FF",
+        119 to "SET_DEVICE_CONFIG_VALUE",
+        120 to "SET_FF_VALUE",
+        121 to "GET_DEVICE_CONFIG_VALUE",
+        122 to "STOP_HAPTICS",
+        123 to "SELECT_WRIST",
+        124 to "TOGGLE_LABRADOR_DATA_GENERATION",
+        125 to "TOGGLE_LABRADOR_RAW_SAVE",
+        128 to "GET_FF_VALUE",
+        131 to "SET_RESEARCH_PACKET",
+        132 to "GET_RESEARCH_PACKET",
+        139 to "TOGGLE_LABRADOR_FILTERED",
+        140 to "SET_ADVERTISING_NAME",
+        141 to "GET_ADVERTISING_NAME",
+        142 to "START_FIRMWARE_LOAD_NEW",
+        143 to "LOAD_FIRMWARE_DATA_NEW",
+        144 to "PROCESS_FIRMWARE_IMAGE_NEW",
+        145 to "GET_HELLO",
+        151 to "GET_BATTERY_PACK_INFO",
+        153 to "TOGGLE_PERSISTENT_R20",
+        154 to "TOGGLE_PERSISTENT_R21",
+    )
+
+    /** `"NAME(raw)"` for a known opcode, else `"0xHH(raw)"` — byte-identical to Swift `Schema.enumName`. */
+    fun label(v: Int): String = byRaw[v]?.let { "$it($v)" } ?: "0x%02X(%d)".format(v, v)
+}
+
+/**
  * Candidate reboot frames for the WHOOP 4.0 reboot probe (Test Centre → Connection, WHOOP 4.0 only).
  *
  * A real WHOOP 4.0 silently ignores NOOP's production reboot frame (opcode 29 REBOOT_STRAP, empty body

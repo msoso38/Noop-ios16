@@ -69,4 +69,45 @@ final class Whoop5CommandResponseTests: XCTestCase {
         XCTAssertNil(f.parsed["device_name"])   // pay[16] == 0 → no printable name
         XCTAssertNil(f.parsed["fw_version"])     // pay[93] != 50 → fails the generation guard
     }
+
+    /// Real WHOOP 5 MG (`WS50_r03`) replies to the three ECG/Labrador toggles, posted in #891.
+    ///
+    /// Committed because they are the only real 5/MG COMMAND_RESPONSE frames in the tree whose payload is
+    /// inert — `01 01 00 00` carries no device name, serial or session token — and because they exercise
+    /// the generic response path for commands NOOP does not send, which the battery / data-range / hello
+    /// fixtures above do not. The Kotlin twin asserts the identical values in `CommandCatalogueTest`; that
+    /// pairing is the point, since Android labelled these from its sender enum and rendered them as bare
+    /// hex until #891.
+    ///
+    /// Decode only. No claim is made here about what the strap did with the commands — all three answered
+    /// SUCCESS and produced no ECG data, which is the open question in #891, not something a test settles.
+    ///
+    /// Asserts `resp_cmd` and the envelope, which is what this decoder exposes. The Kotlin twin also
+    /// asserts `resp_seq` and `result` on these same bytes, because the Kotlin decoder publishes both and
+    /// this one publishes neither — on either family. That gap is real and pre-existing (every Swift probe
+    /// re-derives the result byte itself rather than reading a parsed field), but it is the opposite
+    /// divergence from the one this change fixes, so it is filed rather than folded in here.
+    private let mgToggleReplies: [(hex: String, cmd: String)] = [
+        ("aa010c000100271124148b2f01010000845a1705", "TOGGLE_LABRADOR_FILTERED(139)"),
+        ("aa010c000100271124157d300101000067ab1b82", "TOGGLE_LABRADOR_RAW_SAVE(125)"),
+        ("aa010c000100271124167c3101010000ef4bcf45", "TOGGLE_LABRADOR_DATA_GENERATION(124)"),
+    ]
+
+    func testMgToggleRepliesDecode() {
+        for reply in mgToggleReplies {
+            let f = parseFrame(bytes(reply.hex), family: .whoop5)
+            XCTAssertEqual(f.typeName, "COMMAND_RESPONSE", reply.cmd)
+            XCTAssertEqual(f.crcOK, true, reply.cmd)
+            XCTAssertEqual(f.parsed["resp_cmd"]?.stringValue, reply.cmd)
+        }
+    }
+
+    /// Byte 13 — the first response-payload byte, where `GET_BATTERY_LEVEL` returns its percent — is `0x01`
+    /// in all three replies. It is deliberately NOT decoded into a field: whether it echoes the value that
+    /// was written or reads back stored state is precisely what #891 cannot yet distinguish, and naming it
+    /// would put a guess in the log. Fail closed (#194).
+    func testNoValueIsInventedFromAToggleReply() {
+        let f = parseFrame(bytes(mgToggleReplies[0].hex), family: .whoop5)
+        XCTAssertNil(f.parsed["battery_pct"])
+    }
 }
