@@ -246,8 +246,24 @@ class FeatureFlagProbeReport(private val family: DeviceFamily) {
         r.resultCode?.let { line += " result=${FeatureFlagProbe.resultLabel(it)}($it)" }
         _trace.add(line)
         if (r.isExhausted) {
-            stopReason = if (r.index == 0xFF) "cursor exhausted (index 0xFF)"
-            else "firmware reported validKey=false"
+            if (r.index == 0xFF) {
+                stopReason = "cursor exhausted (index 0xFF)"
+            } else {
+                // `validKey = 0` is documented as an end marker alongside 0xFF, and it is the firmware's
+                // own flag, so it is trusted here. But nothing observed so far rules out the other
+                // reading — that it marks an EMPTY SLOT and the list continues past it. If so this stops
+                // on the first hole, which is the same truncation [isSkippable] exists to prevent, one
+                // condition over. It cannot be settled without a strap, so instead of guessing we make
+                // the discrepancy loud: stopping here well short of the announced count is exactly the
+                // evidence that would settle it.
+                stopReason = "firmware reported validKey=false"
+                val count = reportedCount
+                if (count != null && count > steps) {
+                    stopReason = "firmware reported validKey=false at index ${r.index} after $steps of " +
+                        "$count announced entries — if validKey=0 marks an empty slot rather than the " +
+                        "end of the list, the remainder was NOT walked (see #872 review)"
+                }
+            }
             return false
         }
         if (r.isSkippable) {

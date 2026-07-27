@@ -198,6 +198,32 @@ final class FeatureFlagProbeTests: XCTestCase {
                       "a dump with holes must describe itself rather than look complete")
     }
 
+    /// `validKey = 0` is trusted as an end marker, but the other reading — an EMPTY SLOT with the list
+    /// continuing past it — is not ruled out by anything observed so far. Stopping well short of the
+    /// announced count is the evidence that would settle it, so the report has to say so loudly rather
+    /// than reporting a confident short list.
+    func testStoppingOnValidKeyFalseShortOfTheAnnouncedCountIsFlagged() {
+        var report = FeatureFlagProbeReport(family: .whoop4)
+        report.noteStart(FeatureFlagProbe.StartResponse(resultCode: 1, revision: 1, count: 40))
+        XCTAssertTrue(report.noteNext(FeatureFlagProbe.NextResponse(
+            resultCode: 1, revision: 1, index: 0, validKey: true, key: "enable_r22_packets")))
+        XCTAssertFalse(report.noteNext(FeatureFlagProbe.NextResponse(
+            resultCode: 1, revision: 1, index: 1, validKey: false, key: nil)))
+
+        let why = try! XCTUnwrap(report.stopReason)
+        XCTAssertTrue(why.contains("2 of 40 announced entries"), why)
+        XCTAssertTrue(why.contains("the remainder was NOT walked"), why)
+    }
+
+    /// …and when the count was fully walked, the plain reason stands — no false alarm.
+    func testValidKeyFalseAtTheAnnouncedEndIsNotFlagged() {
+        var report = FeatureFlagProbeReport(family: .whoop4)
+        report.noteStart(FeatureFlagProbe.StartResponse(resultCode: 1, revision: 1, count: 1))
+        XCTAssertFalse(report.noteNext(FeatureFlagProbe.NextResponse(
+            resultCode: 1, revision: 1, index: 0, validKey: false, key: nil)))
+        XCTAssertEqual(report.stopReason, "firmware reported validKey=false")
+    }
+
     /// The skip cannot become an unbounded walk: `maxFlags` still terminates a firmware that answers
     /// forever with entries whose names never decode.
     func testEveryReplyUndecodableStillStopsAtTheSafetyCap() {

@@ -170,6 +170,31 @@ class FeatureFlagProbeTest {
     }
 
     /**
+     * `validKey = 0` is trusted as an end marker, but the other reading — an EMPTY SLOT with the list
+     * continuing past it — is not ruled out by anything observed so far. Stopping well short of the
+     * announced count is the evidence that would settle it, so the report has to say so loudly rather
+     * than reporting a confident short list.
+     */
+    @Test fun stoppingOnValidKeyFalseShortOfTheAnnouncedCountIsFlagged() {
+        val report = FeatureFlagProbeReport(DeviceFamily.WHOOP4)
+        report.noteStart(FeatureFlagProbe.StartResponse(1, 1, 40))
+        assertTrue(report.noteNext(FeatureFlagProbe.NextResponse(1, 1, 0, true, "enable_r22_packets")))
+        assertFalse(report.noteNext(FeatureFlagProbe.NextResponse(1, 1, 1, false, null)))
+
+        val why = report.stopReason!!
+        assertTrue(why, why.contains("2 of 40 announced entries"))
+        assertTrue(why, why.contains("the remainder was NOT walked"))
+    }
+
+    /** …and when the count was fully walked, the plain reason stands — no false alarm. */
+    @Test fun validKeyFalseAtTheAnnouncedEndIsNotFlagged() {
+        val report = FeatureFlagProbeReport(DeviceFamily.WHOOP4)
+        report.noteStart(FeatureFlagProbe.StartResponse(1, 1, 1))
+        assertFalse(report.noteNext(FeatureFlagProbe.NextResponse(1, 1, 0, false, null)))
+        assertEquals("firmware reported validKey=false", report.stopReason)
+    }
+
+    /**
      * The skip cannot become an unbounded walk: [FeatureFlagProbe.MAX_FLAGS] still terminates a firmware
      * that answers forever with entries whose names never decode.
      */
