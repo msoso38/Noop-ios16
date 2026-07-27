@@ -302,10 +302,21 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
         if (v != null && v != 0) rrVals.add(v)
     }
     out["rr_intervals"] = rrVals
-    // Bytes adjacent to the HR/R-R fields. @36/256 tracks hr@22 to sub-bpm (corr 0.989) — a
-    // higher-precision heart rate; the others are carried raw (meaning not pinned).
+    // Bytes adjacent to the HR/R-R fields: @36 is a FLAG byte and @37 a duplicate heart rate — not the
+    // two halves of one fixed-point HR; the others are carried raw (meaning not pinned).
     frame.histU8(33)?.let { out["cardiac_flags"] = it }
-    frame.histU16(36)?.let { out["hr_fixed_8_8"] = it }   // bpm = value / 256
+    // @36 was read as the low half of a u16 `hr_fixed_8_8` with bpm = value/256. Over 18,650 real v18
+    // records that model is false. Bit 4 is NEVER set (0/18,650 — a genuine 8.8 fraction sets it ~50% of
+    // the time, and it is the ONLY bit never set); 95.02% of values land in 0x80–0x8F where uniform would
+    // be 6.25%, over just 40 distinct values, sd 26.5 vs 73.9 for a uniform byte. The "corr 0.989 with
+    // hr@22" that justified the old name was circular — the u16 is literally hr@22 (carried at @37) plus
+    // this flag byte over 256, so the residual is a flat +0.504 ± 0.189. Bit 7 reads as a VALIDITY bit:
+    // with it clear (n=748) rr_count == 0 in 70.32% of records vs 19.82% with it set, and the @108/@109
+    // sentinel fires in 69.65% vs 1.32%. The remaining bits are unpinned, so the byte ships raw.
+    frame.histU8(36)?.let { out["hr_quality_flags"] = it }   // bit7 = valid, bit4 never set
+    // @37 duplicates heart_rate@22 — equal in 99.575% of records (18,523/18,602), differing only by
+    // -6…+2, and it only tracks HR while @36 bit7 is set (99.74% exact vs 94.12% when clear).
+    frame.histU8(37)?.let { out["heart_rate_alt"] = it }
     frame.histU16(38)?.let { out["rr_packed"] = it }
     frame.histU8(40)?.let { out["cardiac_status"] = it }
     frame.histF32(45)?.let { out["gravity_x"] = it }
@@ -366,15 +377,33 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
     }
     // ── The @82–119 "optical/tail" span, reverse-engineered over 18,602 real v18 records (a third strap's
     // overnight R22 stream) + cross-checked on two fixture devices: it is ~85% ZERO PADDING (83–103,
-    // 110–112, 117–119 constant 0x00; @104 a constant 0x01 marker). Only @106 (u16), @108/@109 (a paired
-    // channel) and the @113 float carry data, and none is physiologically ground-truth-named (no
+    // 110–112, 117–119 constant 0x00; @104 a constant 0x01 marker). Only the byte pairs @106/@107 and
+    // @108/@109 plus the @113 float carry data, and none is physiologically ground-truth-named (no
     // SpO2/respiratory reference), so each is carried RAW. Mirror of Swift decodeWhoop5Historical.
-    // @106 an analog u16 optical/ADC baseline: wanders overnight, reads 0 only off-wrist; raw, not pinned.
-    frame.histU16(106)?.let { out["optical_baseline_106"] = it }
-    // @108/@109 a tightly-coupled PAIR (equal ~24% of records, within ±2 ~80%). Both rise monotonically
-    // with HR/motion and read 128 as a per-CHANNEL invalid sentinel — seen off-wrist AND on worn records
-    // that still carry a valid HR. Amplitude/quality-like; carried raw, NOT named SpO2/perfusion without
-    // on-device ground truth.
+    //
+    // @106/@107 were read as ONE u16 LE. They cannot be: across 18,599 consecutive-second pairs the HIGH
+    // byte changed while the LOW byte stayed frozen in 3,514 of them (18.89%), and the corpus holds ZERO
+    // low-byte wrap events — a real u16 cannot step its high byte without a carry. The apparent u16 deltas
+    // are exactly 256·Δ@107 + Δ@106 (they cluster at 0, ±1, ±255, ±256, ±257, ±513). These are two
+    // correlated but independent u8 channels (corr +0.73; they move in OPPOSITE directions in 5.8% of the
+    // pairs where both move), structurally parallel to the @108/@109 pair. 0 — not 128 — is the off-wrist
+    // marker: both bytes read 0 in exactly the 8 records that also carry HR == 0, while 128 occurs
+    // unremarkably while worn (@106 in 10 records, @107 in 103). Magnitudes are device-specific (102–255 /
+    // 119–247 on the R22 strap vs 20–66 / 34–81 on another), so no scale is asserted.
+    frame.histU8(106)?.let { out["optical_baseline_a"] = it }
+    frame.histU8(107)?.let { out["optical_baseline_b"] = it }
+    // @108/@109 a tightly-coupled PAIR (equal ~24% of records, within ±2 ~80%). 128 is a RECORD-level
+    // sentinel, not a per-channel one: amp_a == 128 in 757 records and amp_b == 128 in 757 — the SAME 757,
+    // never one without the other. They do NOT rise with HR; that reading (~34 at HR 40–49 → ~58 at 80–89)
+    // was an averaging artifact of counting the 128 sentinel as a number, and with sentinels excluded the
+    // trend is flat-to-declining (32.45 → 29.52). The real monotone trend is with MOTION: ~32.7 while
+    // still (dyn_acc < 0.02 g) → 37.4 at 0.05–0.2 g. Amplitude/quality-like; carried raw, NOT named
+    // SpO2/perfusion without on-device ground truth.
+    //
+    // The sentinel itself is a usable per-second SIGNAL-QUALITY flag: it fires on 4.02% of worn seconds
+    // and predicts the band's own beat-detection failure (rr_count == 0) at 79.44% vs 19.40% — a 4.09×
+    // lift that SURVIVES holding motion constant (4.11× within dyn_acc < 0.009 g), where shuffled and
+    // circular-shift nulls all sit at ~1.0×. It is the same quality condition @36 bit7 reports.
     frame.histU8(108)?.let { out["optical_amp_a"] = it }
     frame.histU8(109)?.let { out["optical_amp_b"] = it }
     // @113 a float32 (observed range ~ -5.3..0, 0 = unset); purpose unknown, carried raw. EMPIRICAL.
