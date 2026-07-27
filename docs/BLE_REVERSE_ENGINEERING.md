@@ -861,6 +861,27 @@ output in `Tests/WhoopProtocolTests/Resources/` (`frames.json`, `golden.json`,
 decoder reproduces them byte-for-byte. Prefer real captures over invented offsets — unmapped regions
 are kept raw and labelled rather than guessed.
 
+**Check where a fixture came from before citing it as evidence.** A generated vector and a real
+capture are interchangeable for testing a decoder and are *not* interchangeable as evidence about
+firmware — once committed they look identical, and a CRC-valid synthetic frame is as convincing as a
+captured one.
+
+Provenance is generally declared, but **at the top of the file, not at each fixture**: `StreamsTests`
+and `FramingTests` both open by saying their frames are synthetic and that no real capture is
+embedded, the Kotlin `FramingTest` says its vectors were generated independently in Python, and
+`ExtendedBatteryProbeTests.realFrame` names the device it came off. Read that header before quoting a
+frame in an issue.
+
+This is not bookkeeping. #900 was filed against a decode that four in-tree fixtures appeared to
+contradict; three of the four declare themselves generated in exactly those headers, and the fourth
+shares a byte-identical envelope with one of them — a vector derived from another vector keeps its
+header, so a synthetic frame can read as corroboration of the original it was copied from. The issue
+went through two rounds of correction before anyone opened the files.
+
+Two habits follow: state provenance for a new fixture, at the fixture when the frame is the kind
+likely to be quoted outside its own file; and when a decode looks contradicted, check what the
+contradicting bytes actually are before changing the decoder.
+
 ### A note on whoop5 offsets
 
 If you map the WHOOP 5.0 biometric fields, do it in `parseFrameWhoop5` (inner record at offset 8) and
