@@ -145,9 +145,14 @@ final class Collector {
 
     /// Buffer one complete frame + its pre-parsed decode (synchronous: preserves delegate arrival order).
     /// Auto-flushes via a detached Task when the cadence threshold is hit (flush is async). (#47)
-    func ingest(frame: [UInt8], parsed: ParsedFrame) {
+    /// `collectFields` MUST match whatever the caller passed to its own `parseFrame` — the fresh
+    /// reparse below only re-derives byte-identical output when both calls agree on it. A caller that
+    /// built `parsed` with `collectFields: true` (raw-capture toggle on) and let this default to
+    /// `false` triggered a live-strap crash: `rawHex`/`fields` differ between the two decodes, so the
+    /// DEBUG assert saw two genuinely different `ParsedFrame`s and fired.
+    func ingest(frame: [UInt8], parsed: ParsedFrame, collectFields: Bool = false) {
         #if DEBUG
-        assert(parsed == parseFrame(frame, family: family),
+        assert(parsed == parseFrame(frame, family: family, collectFields: collectFields),
                "Collector.ingest: threaded ParsedFrame != fresh parse (#47 parse-once invariant)")
         #endif
         buffer.append((frame, parsed))

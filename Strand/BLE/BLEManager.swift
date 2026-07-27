@@ -4359,8 +4359,12 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 }
                 if !backfilling {
                     // Live path: synchronous ingest preserves delegate arrival order. #47: thread the
-                    // single parse so the collector's flush doesn't re-decode the batch.
-                    collector?.ingest(frame: frame, parsed: parsed)
+                    // single parse so the collector's flush doesn't re-decode the batch. Pass the same
+                    // collectFields this parse used (line above) — the DEBUG reparse-assert inside
+                    // ingest needs it to match, or it fires on a mismatched rawHex/fields (crashed a
+                    // real device when raw capture was toggled on: #47 assert saw collectFields:true
+                    // vs the old hardcoded false).
+                    collector?.ingest(frame: frame, parsed: parsed, collectFields: rawFrameRecorder.isEnabled)
                 }
                 // Raw capture for diagnostics (no-op unless the Settings toggle is on). Reuses the
                 // single parse above — no reparse (ticket 03).
