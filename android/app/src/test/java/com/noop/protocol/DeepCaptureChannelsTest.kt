@@ -99,35 +99,77 @@ class DeepCaptureChannelsTest {
     fun everyRemainingV18SlotIsCollected() {
         val a = extract(listOf(bytes(wornV18))).v18Aux.single()
         assertEquals(ts, a.ts)
-        assertEquals(25_443_699, a.recordIndex)     // @11  u32
-        assertEquals(2, a.rrCount)                  // @23  u8
-        assertEquals(0, a.cardiacFlags)             // @33  u8
-        assertEquals(25_997, a.hrFixed88)           // @36  u16 (bpm = /256 ≈ 101.6 vs hr 102)
-        assertEquals(25_444, a.rrPacked)            // @38  u16
-        assertEquals(255, a.cardiacStatus)          // @40  u8
-        assertEquals(170, a.stepCadence)            // @59  u8
-        assertEquals(1_792, a.statusWord)           // @75  u16
-        assertEquals(3_073, a.statusWord1)          // @77  u16
-        assertEquals(3_074, a.statusWord2)          // @79  u16
-        assertEquals(0, a.auxByte82)                // @82  u8 (raw; the gated 70-100 view is derived)
-        assertEquals(28_517, a.opticalBaseline106)  // @106 u16
-        assertEquals(30, a.opticalAmpA)             // @108 u8
-        assertEquals(30, a.opticalAmpB)             // @109 u8
-        assertEquals(0xC0A7619D.toInt(), a.unknownF32Bits)   // @113 raw 32-bit pattern
+        assertEquals(25_443_699L, a.recordIndex)     // @11  u32
+        assertEquals(2L, a.rrCount)                  // @23  u8
+        assertEquals(0L, a.cardiacFlags)             // @33  u8
+        assertEquals(25_997L, a.rawU16At36)          // @36  u16 raw (see rawU16At36IsNotASubBpmHR)
+        assertEquals(25_444L, a.rrPacked)            // @38  u16
+        assertEquals(255L, a.cardiacStatus)          // @40  u8
+        assertEquals(170L, a.stepCadence)            // @59  u8
+        assertEquals(1_792L, a.statusWord)           // @75  u16
+        assertEquals(3_073L, a.statusWord1)          // @77  u16
+        assertEquals(3_074L, a.statusWord2)          // @79  u16
+        assertEquals(0L, a.auxByte82)                // @82  u8 (raw; the gated 70-100 view is derived)
+        assertEquals(28_517L, a.opticalBaseline106)  // @106 u16
+        assertEquals(30L, a.opticalAmpA)             // @108 u8
+        assertEquals(30L, a.opticalAmpB)             // @109 u8
+        // The SAME decimal literal the Swift suite asserts. 0xC0A7619D has bit 31 set, so a 32-bit
+        // decoded domain reads it as -1_062_772_323 while Swift's 64-bit Int reads it positive, from
+        // byte-identical blobs — the whole reason every slot here is a Long.
+        assertEquals(3_232_194_973L, a.unknownF32Bits)  // @113 raw 32-bit pattern, unsigned domain
         assertEquals(-5.2307, a.unknownF32At113!!, 0.001)
+    }
+
+    /**
+     * `@36` is banked RAW, under a name that makes no claim, because the "higher-precision HR" reading
+     * the decoder key still carries is arithmetically empty (#845).
+     *
+     * A LE u16 at 36 is `frame[37] shl 8 or frame[36]`, so `value / 256` is exactly
+     * `frame[37] + frame[36]/256`. The integer part IS the HR-like byte at `@37` — the entire source of
+     * the 0.989 correlation with `heart_rate@22` — and the "sub-bpm fraction" is the unpinned byte at
+     * `@36` over 256. Twin of the Swift `testRawU16At36IsNotASubBpmHR`.
+     */
+    @Test
+    fun rawU16At36IsNotASubBpmHR() {
+        val a = extract(listOf(bytes(wornV18))).v18Aux.single()
+        val v = a.rawU16At36!!
+        assertEquals(25_997L, v)
+        assertEquals(141L, a.byteAt36)                   // the unpinned low byte
+        assertEquals(101L, a.byteAt37)                   // the HR-like high byte
+        assertEquals(101L * 256 + 141, v)
+        // "101.55 bpm" is 101 (the @37 byte) + 141/256 (an unrelated byte read as a fraction).
+        assertEquals(101.0 + 141.0 / 256.0, v.toDouble() / 256.0, 1e-12)
+        // And it is not even the measured HR: @22 reads 102 while @37 reads 101, so the high byte is
+        // HR-LIKE, not a copy — which is why it is banked raw and named for nothing.
+        val p = decodeHistorical(bytes(wornV18), DeviceFamily.WHOOP5)!!
+        assertEquals(102, p["heart_rate"])
+        assertEquals("hr_fixed_8_8", V18AuxSlot.RAW_U16_AT_36.decoderKey)
+    }
+
+    /**
+     * The decoded domain must hold an unsigned 32-bit slot. Kotlin's `Int` is 32-bit, so slot values are
+     * `Long`; Swift's `Int` is 64-bit and needs no widening. A 32-bit domain on either side silently
+     * flips a bit-31 slot negative while the stored bytes stay identical.
+     */
+    @Test
+    fun decodedDomainHoldsAFullU32() {
+        assertEquals(4, V18AuxSlot.entries.maxOf { it.width })
+        val r = V18AuxRow(ts = 0, recordIndex = 0xFFFF_FFFFL, unknownF32Bits = 0xC0A7_619DL)
+        assertEquals(4_294_967_295L, r.recordIndex)
+        assertEquals(3_232_194_973L, r.unknownF32Bits)
     }
 
     @Test
     fun slotValuesOrderMatchesTheSlotEnum() {
         val a = V18AuxRow(
-            ts = 1, recordIndex = 10, rrCount = 11, cardiacFlags = 12, hrFixed88 = 13, rrPacked = 14,
-            cardiacStatus = 15, stepCadence = 16, statusWord = 17, statusWord1 = 18, statusWord2 = 19,
-            auxByte82 = 20, opticalBaseline106 = 21, opticalAmpA = 22, opticalAmpB = 23,
-            unknownF32Bits = 24,
+            ts = 1, recordIndex = 10L, rrCount = 11L, cardiacFlags = 12L, rawU16At36 = 13L,
+            rrPacked = 14L, cardiacStatus = 15L, stepCadence = 16L, statusWord = 17L,
+            statusWord1 = 18L, statusWord2 = 19L, auxByte82 = 20L, opticalBaseline106 = 21L,
+            opticalAmpA = 22L, opticalAmpB = 23L, unknownF32Bits = 24L,
         )
         assertEquals(V18AuxSlot.entries.size, a.slotValues.size)
         // Slot i must round-trip to position i — this is what makes the persisted bitmap meaningful.
-        assertEquals((10..24).toList(), a.slotValues)
+        assertEquals((10L..24L).toList(), a.slotValues)
         assertEquals(a, V18AuxRow.fromSlotValues(1, a.slotValues))
         // Indices must be a dense 0..<n range in declaration order (bitmap bit positions).
         assertEquals(V18AuxSlot.entries.indices.toList(), V18AuxSlot.entries.map { it.index })
@@ -135,9 +177,9 @@ class DeepCaptureChannelsTest {
 
     @Test
     fun shortSlotListLeavesTheTailAbsent() {
-        val a = V18AuxRow.fromSlotValues(1, listOf(7, 8))
-        assertEquals(7, a.recordIndex)
-        assertEquals(8, a.rrCount)
+        val a = V18AuxRow.fromSlotValues(1, listOf(7L, 8L))
+        assertEquals(7L, a.recordIndex)
+        assertEquals(8L, a.rrCount)
         assertNull(a.unknownF32Bits)
         assertNull(a.opticalAmpA)
     }
@@ -194,10 +236,10 @@ class DeepCaptureChannelsTest {
     @Test
     fun codecHeaderShapeAndSize() {
         val full = V18AuxRow(
-            ts = 0, recordIndex = 1, rrCount = 2, cardiacFlags = 3, hrFixed88 = 4, rrPacked = 5,
-            cardiacStatus = 6, stepCadence = 7, statusWord = 8, statusWord1 = 9, statusWord2 = 10,
-            auxByte82 = 11, opticalBaseline106 = 12, opticalAmpA = 13, opticalAmpB = 14,
-            unknownF32Bits = 15,
+            ts = 0, recordIndex = 1L, rrCount = 2L, cardiacFlags = 3L, rawU16At36 = 4L, rrPacked = 5L,
+            cardiacStatus = 6L, stepCadence = 7L, statusWord = 8L, statusWord1 = 9L, statusWord2 = 10L,
+            auxByte82 = 11L, opticalBaseline106 = 12L, opticalAmpA = 13L, opticalAmpB = 14L,
+            unknownF32Bits = 15L,
         )
         val blob = V18AuxCodec.pack(full)
         assertEquals(V18AuxCodec.FORMAT_VERSION, blob[0].toInt() and 0xFF)
@@ -223,17 +265,23 @@ class DeepCaptureChannelsTest {
         // Truncated body: bitmap 0b0110 claims slots 1 and 2 (1 byte each) but only one body byte
         // follows — slot 1 decodes and slot 2 must read absent rather than borrowing a byte.
         val partial = V18AuxCodec.unpack(byteArrayOf(1, 0b0000_0110, 0, 42), 5)
-        assertEquals(42, partial.rrCount)
+        assertEquals(42L, partial.rrCount)
         assertNull(partial.cardiacFlags)
         assertEquals(5L, partial.ts)
     }
 
+    /**
+     * A 4-byte slot must survive at full width AND decode to the same NUMBER Swift decodes. Both fixtures
+     * have bit 31 set, which is the case a 32-bit decoded domain gets wrong — the literals below are the
+     * Swift suite's, verbatim.
+     */
     @Test
     fun wideSlotsSurviveAtFullWidth() {
-        val r = V18AuxRow(ts = 0, recordIndex = 0xFEDCBA98.toInt(), unknownF32Bits = 0xC0A7619D.toInt())
+        val r = V18AuxRow(ts = 0, recordIndex = 4_275_878_552L, unknownF32Bits = 3_232_194_973L)
         val back = V18AuxCodec.unpack(V18AuxCodec.pack(r), 0)
-        assertEquals(0xFEDCBA98.toInt(), back.recordIndex)
-        assertEquals(0xC0A7619D.toInt(), back.unknownF32Bits)
+        assertEquals(4_275_878_552L, back.recordIndex)   // 0xFEDCBA98
+        assertEquals(3_232_194_973L, back.unknownF32Bits) // 0xC0A7619D
+        assertTrue("both fixtures must exercise bit 31", back.recordIndex!! > Int.MAX_VALUE)
     }
 
     /**
@@ -244,10 +292,10 @@ class DeepCaptureChannelsTest {
     @Test
     fun fixtureRowPacksToTheExactCrossPlatformBytes() {
         val a = V18AuxRow(
-            ts = ts, recordIndex = 25_443_699, rrCount = 2, cardiacFlags = 0, hrFixed88 = 25_997,
-            rrPacked = 25_444, cardiacStatus = 255, stepCadence = 170, statusWord = 1_792,
-            statusWord1 = 3_073, statusWord2 = 3_074, auxByte82 = 0, opticalBaseline106 = 28_517,
-            opticalAmpA = 30, opticalAmpB = 30, unknownF32Bits = 0xC0A7619D.toInt(),
+            ts = ts, recordIndex = 25_443_699L, rrCount = 2L, cardiacFlags = 0L, rawU16At36 = 25_997L,
+            rrPacked = 25_444L, cardiacStatus = 255L, stepCadence = 170L, statusWord = 1_792L,
+            statusWord1 = 3_073L, statusWord2 = 3_074L, auxByte82 = 0L, opticalBaseline106 = 28_517L,
+            opticalAmpA = 30L, opticalAmpB = 30L, unknownF32Bits = 3_232_194_973L,
         )
         val hex = V18AuxCodec.pack(a).joinToString("") { "%02x".format(it) }
         assertEquals(
@@ -255,7 +303,7 @@ class DeepCaptureChannelsTest {
                 "733d8401" +    // record_index  25443699 u32 LE
                 "02" +          // rr_count      2
                 "00" +          // cardiac_flags 0
-                "8d65" +        // hr_fixed_8_8  25997 u16 LE
+                "8d65" +        // raw u16 @36   25997 u16 LE (decoder key hr_fixed_8_8)
                 "6463" +        // rr_packed     25444 u16 LE
                 "ff" +          // cardiac_status 255
                 "aa" +          // step_cadence  170

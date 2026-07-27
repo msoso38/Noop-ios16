@@ -97,7 +97,7 @@ final class DeepCaptureChannelsTests: XCTestCase {
         XCTAssertEqual(a.recordIndex, 25_443_699)     // @11  u32
         XCTAssertEqual(a.rrCount, 2)                  // @23  u8
         XCTAssertEqual(a.cardiacFlags, 0)             // @33  u8
-        XCTAssertEqual(a.hrFixed88, 25_997)           // @36  u16 (bpm = /256 ≈ 101.6 vs hr 102)
+        XCTAssertEqual(a.rawU16At36, 25_997)          // @36  u16 raw (see testRawU16At36IsNotASubBpmHR)
         XCTAssertEqual(a.rrPacked, 25_444)            // @38  u16
         XCTAssertEqual(a.cardiacStatus, 255)          // @40  u8
         XCTAssertEqual(a.stepCadence, 170)            // @59  u8
@@ -108,13 +108,54 @@ final class DeepCaptureChannelsTests: XCTestCase {
         XCTAssertEqual(a.opticalBaseline106, 28_517)  // @106 u16
         XCTAssertEqual(a.opticalAmpA, 30)             // @108 u8
         XCTAssertEqual(a.opticalAmpB, 30)             // @109 u8
-        XCTAssertEqual(a.unknownF32Bits, 0xC0A7_619D) // @113 raw 32-bit pattern
+        // The SAME decimal literal the Kotlin suite asserts. 0xC0A7619D has bit 31 set, so a 32-bit
+        // decoded domain reads it as -1_062_772_323 — this is the value, not the blob, that has to match.
+        XCTAssertEqual(a.unknownF32Bits, 3_232_194_973)  // @113 raw 32-bit pattern, unsigned domain
         XCTAssertEqual(a.unknownF32At113 ?? .nan, -5.2307, accuracy: 0.001)
+    }
+
+    /// `@36` is banked RAW, under a name that makes no claim, because the "higher-precision HR" reading
+    /// the decoder key still carries is arithmetically empty (#845).
+    ///
+    /// A LE u16 at 36 is `frame[37] << 8 | frame[36]`, so `value / 256` is exactly
+    /// `frame[37] + frame[36]/256`. The integer part IS the HR-like byte at @37 — the entire source of
+    /// the 0.989 correlation with `heart_rate@22` — and the "sub-bpm fraction" is the unpinned byte at
+    /// @36 over 256. This test pins that decomposition on the same fixture the old claim was read off, so
+    /// the disproof is enforced rather than merely written down.
+    func testRawU16At36IsNotASubBpmHR() throws {
+        let f = parseFrame(v18Frame(), family: .whoop5)
+        let a = try XCTUnwrap(extract([v18Frame()]).v18Aux.first)
+        let v = try XCTUnwrap(a.rawU16At36)
+        XCTAssertEqual(v, 25_997)
+        // The two bytes, apart.
+        XCTAssertEqual(a.byteAt36, 141)                       // the unpinned low byte
+        XCTAssertEqual(a.byteAt37, 101)                       // the HR-like high byte
+        XCTAssertEqual(v, 101 * 256 + 141)
+        // "101.55 bpm" is 101 (the @37 byte) + 141/256 (an unrelated byte read as a fraction).
+        XCTAssertEqual(Double(v) / 256.0, 101.0 + 141.0 / 256.0, accuracy: 1e-12)
+        // And it is not even the measured HR: @22 reads 102 on this frame while @37 reads 101, so the
+        // high byte is HR-LIKE, not a copy — which is exactly why it is banked raw and named for nothing.
+        XCTAssertEqual(f.parsed["heart_rate"]?.intValue, 102)
+        XCTAssertNotEqual(a.byteAt37, f.parsed["heart_rate"]?.intValue)
+        // The slot's own name must stay claim-free even though the decoder key it reads is not.
+        XCTAssertEqual(V18AuxSlot.rawU16At36.decoderKey, "hr_fixed_8_8")
+    }
+
+    /// The decoded domain must hold an unsigned 32-bit slot. Swift's `Int` is 64-bit on every supported
+    /// target and the Kotlin twin carries `Long` for exactly this reason; a 32-bit domain on either side
+    /// silently flips a bit-31 slot negative while the stored bytes stay identical.
+    func testDecodedDomainHoldsAFullU32() {
+        XCTAssertGreaterThanOrEqual(Int.bitWidth, 64)
+        let widest = V18AuxSlot.allCases.map(\.width).max() ?? 0
+        XCTAssertEqual(widest, 4)
+        let s = V18AuxSample(ts: 0, recordIndex: 0xFFFF_FFFF, unknownF32Bits: 0xC0A7_619D)
+        XCTAssertEqual(s.recordIndex, 4_294_967_295)
+        XCTAssertEqual(s.unknownF32Bits, 3_232_194_973)
     }
 
     /// The slot enum and the struct's ordered view cannot drift: the codec indexes one by the other.
     func testSlotValuesOrderMatchesTheSlotEnum() {
-        let a = V18AuxSample(ts: 1, recordIndex: 10, rrCount: 11, cardiacFlags: 12, hrFixed88: 13,
+        let a = V18AuxSample(ts: 1, recordIndex: 10, rrCount: 11, cardiacFlags: 12, rawU16At36: 13,
                              rrPacked: 14, cardiacStatus: 15, stepCadence: 16, statusWord: 17,
                              statusWord1: 18, statusWord2: 19, auxByte82: 20, opticalBaseline106: 21,
                              opticalAmpA: 22, opticalAmpB: 23, unknownF32Bits: 24)

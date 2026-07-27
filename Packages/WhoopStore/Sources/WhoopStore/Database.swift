@@ -667,10 +667,13 @@ extension WhoopStore {
         // `fields` is NOT NULL because a row is only written when at least one slot is present — absence is
         // encoded as "no row", and within a row as a clear bitmap bit, never as a fabricated 0.
         //
-        // Retention: none, matching every other durable decoded per-second table (`ppgWaveformSample`,
-        // `hrSample`, …). `PrunePolicy`'s ~50 MB cap governs only `rawBatch`. Growth is ~30 bytes of blob
-        // plus row overhead per v18 strap-second — the same order as the ppgWaveform table already banked
-        // beside it — and is surfaced in the storage-stats diagnostic so it is visible rather than silent.
+        // Retention: `v18AuxSample` is CAPPED, `rawImuSample`-style, at `WhoopStore.v18AuxRetentionRows`
+        // rows per device (rolling, newest-first). It is the only genuinely new row growth here — the four
+        // named columns widen rows that were already being written (~14 B on a gravity/skinTemp/sleepState
+        // row that exists either way) and add no rows at all, so they inherit whatever retention their
+        // tables have. `PrunePolicy`'s ~50 MB cap governs only `rawBatch`. The table is also added to the
+        // storage-stats readout, because visible growth and bounded growth are different guarantees and
+        // an instrumentation table nothing reads should have both.
         //
         // Twin of Room MIGRATION_24_25.
         migrator.registerMigration("v31-deep-capture-channels") { db in

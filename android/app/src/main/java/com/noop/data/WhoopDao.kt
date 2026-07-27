@@ -99,6 +99,17 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertV18Aux(rows: List<V18AuxSampleEntity>): List<Long>
 
+    /**
+     * Bound the v18 aux table to the newest [keep] rows for [deviceId] (rolling retention, v31). Same
+     * shape as [pruneRawImu] — this is instrumentation nothing reads yet, so it is capped rather than
+     * unbounded. Swift twin: the DELETE at the end of `WhoopStore.insert`.
+     */
+    @Query(
+        "DELETE FROM v18AuxSample WHERE deviceId = :deviceId AND ts < " +
+            "(SELECT MIN(ts) FROM (SELECT ts FROM v18AuxSample WHERE deviceId = :deviceId ORDER BY ts DESC LIMIT :keep))"
+    )
+    suspend fun pruneV18Aux(deviceId: String, keep: Int)
+
     /** Bound the raw-IMU table to the newest [keep] rows for [deviceId] (rolling retention, #423). */
     @Query(
         "DELETE FROM rawImuSample WHERE deviceId = :deviceId AND ts < " +

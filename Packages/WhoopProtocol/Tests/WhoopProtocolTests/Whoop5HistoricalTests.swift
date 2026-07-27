@@ -107,7 +107,8 @@ final class Whoop5HistoricalTests: XCTestCase {
     func testHistoricalV18ObservedFields() {
         // Fields read off this same real worn frame and justified by their observed behaviour:
         //  @11 record_index — a per-record counter (+1/record, independent of unix; seen on two straps)
-        //  @36 hr_fixed_8_8 — value/256 tracks hr@22 to sub-bpm (here 25997/256 ≈ 101.55 ≈ HR 102)
+        //  @36 hr_fixed_8_8 — a RAW u16, not sub-bpm HR: 25997 = @37 (101) << 8 | @36 (141), so the
+        //      "101.55" this used to be read as is just 101 + 141/256 (#845; see DeepCaptureChannelsTests)
         //  @59 step_cadence — a cadence-like byte (never 0; lower when moving faster)
         //  @75 status_word — a 16-bit word that is NOT a deep-sleep marker
         //  @81 sleep_state — high nibble = band state (worn daytime frame = wake)
@@ -115,7 +116,8 @@ final class Whoop5HistoricalTests: XCTestCase {
         let p = parseFrame(bytes(historicalHex), family: .whoop5).parsed
         XCTAssertEqual(p["record_index"]?.intValue, 25443699)
         XCTAssertEqual(p["hr_fixed_8_8"]?.intValue, 25997)
-        XCTAssertEqual((p["hr_fixed_8_8"]?.intValue ?? 0) / 256, 101)   // ≈ hr@22 (102)
+        // /256 is the @37 byte, nothing more — kept as a regression pin on the raw u16's byte order.
+        XCTAssertEqual((p["hr_fixed_8_8"]?.intValue ?? 0) / 256, 101)   // = @37, NOT a bpm (hr@22 = 102)
         XCTAssertEqual(p["step_cadence"]?.intValue, 170)
         XCTAssertEqual(p["status_word"]?.intValue, 1792)
         XCTAssertEqual(p["sleep_state"]?.intValue, 0)

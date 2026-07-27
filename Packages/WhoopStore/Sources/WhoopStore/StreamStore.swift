@@ -62,6 +62,25 @@ extension WhoopStore {
     /// ~1 h at 1 row/strap-second (~4 MB) hard-caps the table during a multi-day offload replay.
     public static let rawImuRetentionRows = 3600
 
+    /// v31 rolling retention for the v18 aux-slot table (twin of Kotlin `V18_AUX_RETENTION_ROWS`).
+    ///
+    /// `rawImuSample` is the closest precedent — raw instrumentation banked as a blob, capped rather than
+    /// unbounded — and the same reasoning applies here: nothing reads these rows yet, so a cap is far
+    /// cheaper to RELAX later than to impose once users have a year of history. Unbounded, this table is
+    /// the one genuinely new source of row growth in v31 (the four named channels only WIDEN rows that
+    /// were already being written: ~14 bytes on a `gravitySample`/`skinTempSample`/`sleepStateSample` row
+    /// that exists either way, adding no rows at all).
+    ///
+    /// 604,800 = 7 × 86,400, i.e. a week of strap-seconds if the strap emitted v18 every second of every
+    /// day. At ~85 B/row (a ≤30 B blob plus row and primary-key-index overhead) that is a **~50 MB hard
+    /// ceiling**; in practice v18 seconds are a fraction of a day, so the same cap spans considerably
+    /// longer in wall-clock terms. Per device, newest-first — a multi-device store gets the cap each.
+    ///
+    /// This does re-introduce a bounded version of the loss this migration exists to stop: a slot older
+    /// than the window is gone again. That is the deliberate trade — a census needs weeks of records, not
+    /// years, and the alternative is an invisible table that can outgrow everything a user actually reads.
+    public static let v18AuxRetentionRows = 604_800
+
     /// Insert or update a device row (natural key = id).
     public func upsertDevice(id: String, mac: String?, name: String?) async throws {
         let now = Int(Date().timeIntervalSince1970)
@@ -106,6 +125,19 @@ extension WhoopStore {
     /// schema to avoid a DROP COLUMN migration over existing data; nothing reads it.
     @discardableResult
     public func insert(_ streams: Streams, deviceId: String) async throws
+        -> (hr: Int, rr: Int, events: Int, battery: Int,
+            spo2: Int, skinTemp: Int, resp: Int, gravity: Int) {
+        try await insert(streams, deviceId: deviceId,
+                         v18AuxRetentionRows: WhoopStore.v18AuxRetentionRows)
+    }
+
+    /// `insert(_:deviceId:)` with the v31 aux-table cap made explicit. Internal and a SEPARATE overload
+    /// rather than a defaulted parameter on the public entry point: `StoreWriting` / `BackfillStoreWriting`
+    /// require `insert(_:deviceId:)` exactly, and a Swift witness must match the requirement's parameter
+    /// list — a default argument does not satisfy it. Exists so a test can prove the rolling delete with a
+    /// small cap instead of writing 600k rows; every production caller goes through the wrapper above.
+    @discardableResult
+    func insert(_ streams: Streams, deviceId: String, v18AuxRetentionRows: Int) async throws
         -> (hr: Int, rr: Int, events: Int, battery: Int,
             spo2: Int, skinTemp: Int, resp: Int, gravity: Int) {
         return try syncWrite { db in
@@ -286,10 +318,23 @@ extension WhoopStore {
                     INSERT INTO v18AuxSample (deviceId, ts, fields) VALUES (?, ?, ?)
                     ON CONFLICT(deviceId, ts) DO NOTHING
                     """)
+                var wrote = false
                 for s in streams.v18Aux {
                     let blob = V18AuxCodec.pack(s)
                     if blob.isEmpty { continue }
                     try stmt.execute(arguments: [deviceId, s.ts, blob])
+                    wrote = true
+                }
+                // Rolling retention, the same shape as `insertRawImu` (#423): keep the newest
+                // `v18AuxRetentionRows` for THIS device and drop anything older. Only runs when the batch
+                // actually wrote a row, so a WHOOP 4.0 offload (or any non-v18 second) never pays for the
+                // index scan. Twin of Kotlin `WhoopRepository.insert`'s `pruneV18Aux`.
+                if wrote {
+                    try db.execute(sql: """
+                        DELETE FROM v18AuxSample WHERE deviceId = ? AND ts < (
+                            SELECT MIN(ts) FROM (
+                                SELECT ts FROM v18AuxSample WHERE deviceId = ? ORDER BY ts DESC LIMIT ?))
+                        """, arguments: [deviceId, deviceId, v18AuxRetentionRows])
                 }
             }
             return (hr, rr, ev, bat, spo2, skin, resp, grav)

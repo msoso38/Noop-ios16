@@ -74,10 +74,14 @@ data class StreamBatch(
      */
     val dynAccel: DynAccelDiag = DynAccelDiag(),
 ) {
+    // [v18Aux] counts here, and it is load-bearing rather than cosmetic: `insert` early-returns on
+    // `isEmpty`, so a batch carrying ONLY aux rows would silently bank nothing. Swift's `Streams.isEmpty`
+    // lists it too — the two must agree or the same offload drops rows on one platform only.
     val isEmpty: Boolean
         get() = hr.isEmpty() && rr.isEmpty() && events.isEmpty() && battery.isEmpty() &&
             spo2.isEmpty() && skinTemp.isEmpty() && resp.isEmpty() && gravity.isEmpty() &&
-            steps.isEmpty() && sleepState.isEmpty() && ppgHr.isEmpty() && ppgWaveform.isEmpty()
+            steps.isEmpty() && sleepState.isEmpty() && ppgHr.isEmpty() && ppgWaveform.isEmpty() &&
+            v18Aux.isEmpty()
 }
 
 /**
@@ -432,7 +436,13 @@ class WhoopRepository(private val dao: WhoopDao) {
                 val blob = V18AuxCodec.pack(it)
                 if (blob.isEmpty()) null else V18AuxSampleEntity(deviceId, it.ts, blob)
             }
-            if (rows.isNotEmpty()) dao.insertV18Aux(rows)
+            if (rows.isNotEmpty()) {
+                dao.insertV18Aux(rows)
+                // Rolling retention, the same shape as insertRawImu (#423): keep the newest
+                // [V18_AUX_RETENTION_ROWS] for THIS device and drop anything older. Only runs when the
+                // batch actually wrote a row, so a WHOOP 4.0 offload never pays for the index scan.
+                dao.pruneV18Aux(deviceId, V18_AUX_RETENTION_ROWS)
+            }
         }
 
         // OnConflictStrategy.IGNORE returns -1 for skipped (already-present) rows; count the inserts.
@@ -1672,6 +1682,23 @@ class WhoopRepository(private val dao: WhoopDao) {
          *  hour ≈ 3600 rows ≈ 4 MB caps the table hard, so an enabled capture can never balloon the DB
          *  during a multi-day offload replay. Instrument-first bounded window; nothing consumes it yet. */
         const val RAW_IMU_RETENTION_ROWS = 3600
+
+        /**
+         * v31: rolling retention for the v18 aux-slot table (Swift twin `WhoopStore.v18AuxRetentionRows`).
+         *
+         * [RAW_IMU_RETENTION_ROWS] is the closest precedent — raw instrumentation banked as a blob, capped
+         * rather than unbounded — and the same reasoning applies: nothing reads these rows yet, so a cap
+         * is far cheaper to RELAX later than to impose once users have a year of history. Unbounded, this
+         * table is the one genuinely new source of row growth in v31; the four named columns only WIDEN
+         * rows that were already being written (~14 B on a gravity/skinTemp/sleepState row that exists
+         * either way) and add no rows at all.
+         *
+         * 604,800 = 7 × 86,400, a week of strap-seconds if the strap emitted v18 every second of every
+         * day. At ~85 B/row (a ≤30 B blob plus row and primary-key-index overhead) that is a ~50 MB hard
+         * ceiling; in practice v18 seconds are a fraction of a day, so the cap spans considerably longer
+         * in wall-clock terms. Applied per device, newest-first.
+         */
+        const val V18_AUX_RETENTION_ROWS = 604_800
 
         /** #797: dashboard merge window cap (days). The bounded [recentDaysMergedFlow] keeps at most this
          *  many most-recent days per source, so a years-deep import stops re-merging the whole history on

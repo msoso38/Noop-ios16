@@ -639,6 +639,10 @@ data class LiveSessionRow(
  * The BLOB format is byte-identical to the Swift GRDB `V18AuxCodec` so a `.noopbak` round-trips. PK
  * (deviceId, ts) and field order (deviceId, ts, fields) mirror the GRDB schema.
  *
+ * CAPPED, not unbounded: [WhoopRepository.V18_AUX_RETENTION_ROWS] rolling rows per device, the same shape
+ * `rawImuSample` uses. This is the only NEW row growth v31 introduces — the columns added to the three
+ * existing per-second tables widen rows that were already being written.
+ *
  * INSTRUMENTATION ONLY: nothing reads these rows.
  */
 @Entity(tableName = "v18AuxSample", primaryKeys = ["deviceId", "ts"])

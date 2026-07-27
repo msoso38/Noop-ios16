@@ -1,9 +1,11 @@
 package com.noop.data
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.lang.reflect.Proxy
 
 /**
  * MIGRATION_24_25 — the additive shape that lets the four named v18 channels and the fifteen leftover
@@ -78,5 +80,73 @@ class DeepCaptureMigrationTest {
             val e = SleepStateSampleEntity("d", 1L, (raw shr 4) and 3, rawByte = raw)
             assertEquals((e.rawByte!! shr 4) and 3, e.state)
         }
+    }
+
+    // MARK: - Rolling retention (insert plumbing through a Proxy DAO, the RawImuMigrationTest pattern)
+
+    /**
+     * `v18AuxSample` is CAPPED, not unbounded — the insert must follow the write with the rolling prune,
+     * passing the shipped constant. Twin of the Swift `testAuxRowsAreCappedNewestFirst`; the DELETE's own
+     * semantics are proved end-to-end there (no SQLite driver on this classpath).
+     */
+    @Test
+    fun repositoryInsertV18Aux_insertsThenPrunes() = runBlocking {
+        var inserted: List<V18AuxSampleEntity>? = null
+        var prunedDevice: String? = null
+        var prunedKeep = -1
+        val dao = Proxy.newProxyInstance(
+            WhoopDao::class.java.classLoader,
+            arrayOf(WhoopDao::class.java),
+        ) { _, method, args ->
+            when (method.name) {
+                "insertV18Aux" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    inserted = args[0] as List<V18AuxSampleEntity>
+                    listOf(1L)
+                }
+                "pruneV18Aux" -> { prunedDevice = args[0] as String; prunedKeep = args[1] as Int; Unit }
+                else -> throw UnsupportedOperationException("v18-aux insert must not call ${method.name}")
+            }
+        } as WhoopDao
+
+        WhoopRepository(dao).insert(
+            StreamBatch(v18Aux = listOf(V18AuxRow(ts = 1_780_916_150L, statusWord = 1_792L))),
+            "my-whoop",
+        )
+
+        assertEquals(1, inserted!!.size)
+        assertEquals("my-whoop", prunedDevice)
+        assertEquals(WhoopRepository.V18_AUX_RETENTION_ROWS, prunedKeep)
+    }
+
+    /** A batch whose aux rows all pack to nothing writes no row, so it must not sweep either. */
+    @Test
+    fun repositoryInsertV18Aux_allAbsentTouchesNoDao(): Unit = runBlocking {
+        val dao = Proxy.newProxyInstance(
+            WhoopDao::class.java.classLoader,
+            arrayOf(WhoopDao::class.java),
+        ) { _, method, _ ->
+            throw AssertionError("an all-absent aux batch must not touch the DAO (${method.name})")
+        } as WhoopDao
+        WhoopRepository(dao).insert(StreamBatch(v18Aux = listOf(V18AuxRow(ts = 1L))), "my-whoop")
+        Unit
+    }
+
+    /**
+     * A batch of ONLY aux rows must not read as empty. `insert` early-returns on [StreamBatch.isEmpty],
+     * so leaving `v18Aux` out of it silently banks nothing — and Swift's `Streams.isEmpty` counts it, so
+     * the same offload would drop rows on Android alone.
+     */
+    @Test
+    fun auxOnlyBatchIsNotEmpty() {
+        assertFalse(StreamBatch(v18Aux = listOf(V18AuxRow(ts = 1L, statusWord = 7L))).isEmpty)
+        assertTrue(StreamBatch().isEmpty)
+    }
+
+    /** The shipped cap is a real bound, matching the Swift constant. */
+    @Test
+    fun shippedRetentionConstant() {
+        assertEquals(604_800, WhoopRepository.V18_AUX_RETENTION_ROWS)   // 7 x 86_400 strap-seconds
+        assertTrue(WhoopRepository.V18_AUX_RETENTION_ROWS > WhoopRepository.RAW_IMU_RETENTION_ROWS)
     }
 }

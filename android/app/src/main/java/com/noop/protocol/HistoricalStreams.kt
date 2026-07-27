@@ -104,6 +104,16 @@ private fun ByteArray.histU32(off: Int): Long? {
 }
 
 /**
+ * Re-widen a 32-bit value that was narrowed to `Int` back into the UNSIGNED 0..4294967295 domain.
+ *
+ * Kotlin's `Int` is 32-bit and Swift's is 64-bit, so any u32 with bit 31 set (`record_index` late in a
+ * strap's life, `unknown_f32_113` whenever the float is negative) reads NEGATIVE on this side and
+ * POSITIVE on Swift's from byte-identical input. Anywhere such a value crosses into a stored or compared
+ * number rather than staying as raw bytes, it goes through here first so the two platforms agree.
+ */
+private fun Int?.asU32(): Long? = this?.toLong()?.and(0xFFFF_FFFFL)
+
+/**
  * IEEE-754 float32 LE -> Double (exact, NO rounding). null when out of range.
  * Port of PostHooks.swift `f32`: read the 4 bytes as a u32 bit-pattern, reinterpret as Float,
  * then widen to Double. Kotlin's `Float.fromBits(Int)` is the exact analog of
@@ -303,10 +313,17 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
         if (v != null && v != 0) rrVals.add(v)
     }
     out["rr_intervals"] = rrVals
-    // Bytes adjacent to the HR/R-R fields. @36/256 tracks hr@22 to sub-bpm (corr 0.989) — a
-    // higher-precision heart rate; the others are carried raw (meaning not pinned).
+    // Bytes adjacent to the HR/R-R fields — all carried RAW, none pinned.
+    //
+    // @36 was long described here as a higher-precision heart rate (`value/256`, corr 0.989 with the
+    // integer `hr@22`). The #845 census disproved it: a LE u16 at 36 is `frame[37] shl 8 or frame[36]`,
+    // so `value/256` is exactly `frame[37] + frame[36]/256`. The integer part IS the HR-like byte at
+    // @37 — the entire source of the correlation — and the "sub-bpm fraction" is the unpinned byte at
+    // @36 over 256. There is no sub-bpm HR in v18. The key stays `hr_fixed_8_8` (pinned by
+    // `decoder_oracle.json` and the CLI on both platforms); storage banks it as
+    // [com.noop.data.V18AuxSlot.RAW_U16_AT_36]. Swift twin: `Interpreter.decodeWhoop5Historical`.
     frame.histU8(33)?.let { out["cardiac_flags"] = it }
-    frame.histU16(36)?.let { out["hr_fixed_8_8"] = it }   // bpm = value / 256
+    frame.histU16(36)?.let { out["hr_fixed_8_8"] = it }   // raw u16 (@36 low, @37 high)
     frame.histU16(38)?.let { out["rr_packed"] = it }
     frame.histU8(40)?.let { out["cardiac_status"] = it }
     frame.histF32(45)?.let { out["gravity_x"] = it }
@@ -754,27 +771,33 @@ fun extractHistoricalStreams(
                 // untouched. The gate is explicit rather than implied by which keys happen to be present,
                 // because `rr_count` IS shared with the 4.0 schema and a presence-based test would start
                 // banking a near-empty row for every WHOOP 4.0 second.
+                // Every slot is carried as a Long in the UNSIGNED domain, matching Swift's 64-bit Int.
+                // The 1- and 2-byte slots are already non-negative, but the two 4-byte ones are not: the
+                // decoder narrows `record_index` to an Int (`histU32(11)!!.toInt()`) and `toRawBits`
+                // yields an Int, so a u32 with bit 31 set arrives NEGATIVE here while Swift reads it
+                // positive. `asU32` puts both back in the 0..4294967295 domain, so the two platforms
+                // agree on the NUMBER and not merely on the blob bytes.
                 if (p.intOrNull("hist_version") == 18) {
                     val aux = V18AuxRow(
                         ts = ts,
-                        recordIndex = p.intOrNull("record_index"),
-                        rrCount = p.intOrNull("rr_count"),
-                        cardiacFlags = p.intOrNull("cardiac_flags"),
-                        hrFixed88 = p.intOrNull("hr_fixed_8_8"),
-                        rrPacked = p.intOrNull("rr_packed"),
-                        cardiacStatus = p.intOrNull("cardiac_status"),
-                        stepCadence = p.intOrNull("step_cadence"),
-                        statusWord = p.intOrNull("status_word"),
-                        statusWord1 = p.intOrNull("status_word_1"),
-                        statusWord2 = p.intOrNull("status_word_2"),
-                        auxByte82 = p.intOrNull("aux_byte_82"),
-                        opticalBaseline106 = p.intOrNull("optical_baseline_106"),
-                        opticalAmpA = p.intOrNull("optical_amp_a"),
-                        opticalAmpB = p.intOrNull("optical_amp_b"),
+                        recordIndex = p.intOrNull("record_index").asU32(),
+                        rrCount = p.intOrNull("rr_count")?.toLong(),
+                        cardiacFlags = p.intOrNull("cardiac_flags")?.toLong(),
+                        rawU16At36 = p.intOrNull("hr_fixed_8_8")?.toLong(),
+                        rrPacked = p.intOrNull("rr_packed")?.toLong(),
+                        cardiacStatus = p.intOrNull("cardiac_status")?.toLong(),
+                        stepCadence = p.intOrNull("step_cadence")?.toLong(),
+                        statusWord = p.intOrNull("status_word")?.toLong(),
+                        statusWord1 = p.intOrNull("status_word_1")?.toLong(),
+                        statusWord2 = p.intOrNull("status_word_2")?.toLong(),
+                        auxByte82 = p.intOrNull("aux_byte_82")?.toLong(),
+                        opticalBaseline106 = p.intOrNull("optical_baseline_106")?.toLong(),
+                        opticalAmpA = p.intOrNull("optical_amp_a")?.toLong(),
+                        opticalAmpB = p.intOrNull("optical_amp_b")?.toLong(),
                         // Banked as the float's raw 32-bit pattern, not a decoded value — the decoder
                         // gates this field to finite floats, which round-trip Double->Float exactly.
                         unknownF32Bits = p.doubleOrNull("unknown_f32_113")
-                            ?.let { f -> f.toFloat().toRawBits() },
+                            ?.let { f -> f.toFloat().toRawBits() }.asU32(),
                     )
                     // A record that decoded none of the slots banks no row at all — absence stays absence.
                     if (!aux.isEmpty) v18Aux.add(aux)

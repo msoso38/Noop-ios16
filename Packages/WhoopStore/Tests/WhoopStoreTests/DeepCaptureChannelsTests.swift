@@ -93,7 +93,7 @@ final class DeepCaptureChannelsTests: XCTestCase {
     func testAuxSlotsRoundTripThroughTheBlob() async throws {
         let s = try await store()
         let sample = V18AuxSample(ts: 100, recordIndex: 25_443_699, rrCount: 2, cardiacFlags: 0,
-                                  hrFixed88: 25_997, rrPacked: 25_444, cardiacStatus: 255,
+                                  rawU16At36: 25_997, rrPacked: 25_444, cardiacStatus: 255,
                                   stepCadence: 170, statusWord: 1_792, statusWord1: 3_073,
                                   statusWord2: 3_074, auxByte82: 0, opticalBaseline106: 28_517,
                                   opticalAmpA: 30, opticalAmpB: 30, unknownF32Bits: 0xC0A7_619D)
@@ -147,7 +147,7 @@ final class DeepCaptureChannelsTests: XCTestCase {
     // MARK: - Codec
 
     func testCodecHeaderShapeAndSize() {
-        let full = V18AuxSample(ts: 0, recordIndex: 1, rrCount: 2, cardiacFlags: 3, hrFixed88: 4,
+        let full = V18AuxSample(ts: 0, recordIndex: 1, rrCount: 2, cardiacFlags: 3, rawU16At36: 4,
                                 rrPacked: 5, cardiacStatus: 6, stepCadence: 7, statusWord: 8,
                                 statusWord1: 9, statusWord2: 10, auxByte82: 11, opticalBaseline106: 12,
                                 opticalAmpA: 13, opticalAmpB: 14, unknownF32Bits: 15)
@@ -197,7 +197,7 @@ final class DeepCaptureChannelsTests: XCTestCase {
     /// out of a `.noopbak`.
     func testFixtureRowPacksToTheExactCrossPlatformBytes() {
         let a = V18AuxSample(ts: 1_780_916_150, recordIndex: 25_443_699, rrCount: 2, cardiacFlags: 0,
-                             hrFixed88: 25_997, rrPacked: 25_444, cardiacStatus: 255, stepCadence: 170,
+                             rawU16At36: 25_997, rrPacked: 25_444, cardiacStatus: 255, stepCadence: 170,
                              statusWord: 1_792, statusWord1: 3_073, statusWord2: 3_074, auxByte82: 0,
                              opticalBaseline106: 28_517, opticalAmpA: 30, opticalAmpB: 30,
                              unknownF32Bits: 0xC0A7_619D)
@@ -207,7 +207,7 @@ final class DeepCaptureChannelsTests: XCTestCase {
             "733d8401" +        // record_index  25443699 u32 LE
             "02" +              // rr_count      2
             "00" +              // cardiac_flags 0
-            "8d65" +            // hr_fixed_8_8  25997 u16 LE
+            "8d65" +            // raw u16 @36   25997 u16 LE (decoder key hr_fixed_8_8)
             "6463" +            // rr_packed     25444 u16 LE
             "ff" +              // cardiac_status 255
             "aa" +              // step_cadence  170
@@ -219,6 +219,58 @@ final class DeepCaptureChannelsTests: XCTestCase {
             "1e" +              // optical_amp_a 30
             "1e" +              // optical_amp_b 30
             "9d61a7c0")         // unknown_f32_113 bits 0xC0A7619D u32 LE
+    }
+
+    // MARK: - Rolling retention
+
+    /// `v18AuxSample` is CAPPED, not unbounded — the same rolling shape `rawImuSample` uses (#423).
+    /// Driven with a tiny cap so the SQL itself is proved rather than 600k rows written.
+    func testAuxRowsAreCappedNewestFirst() async throws {
+        let s = try await store()
+        for ts in 100...109 {
+            _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: ts, statusWord: ts)]),
+                                   deviceId: "dev1", v18AuxRetentionRows: 3)
+        }
+        let rows = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
+        XCTAssertEqual(rows.count, 3, "the cap must bound the table")
+        XCTAssertEqual(rows.map(\.ts), [107, 108, 109], "the NEWEST rows survive")
+        XCTAssertEqual(rows.last?.statusWord, 109, "and they keep their slots")
+    }
+
+    /// The cap is per DEVICE: one strap's history must not evict another's.
+    func testRetentionIsScopedToTheDevice() async throws {
+        let s = try await store()
+        try await s.upsertDevice(id: "dev2", mac: nil, name: nil)
+        for ts in 100...104 {
+            _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: ts, statusWord: 1)]),
+                                   deviceId: "dev1", v18AuxRetentionRows: 2)
+        }
+        _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: 100, statusWord: 1)]),
+                               deviceId: "dev2", v18AuxRetentionRows: 2)
+        let d1 = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
+        let d2 = try await s.v18AuxSamples(deviceId: "dev2", from: 0, to: 1_000)
+        XCTAssertEqual(d1.map(\.ts), [103, 104])
+        XCTAssertEqual(d2.map(\.ts), [100], "dev2's single old row must survive dev1's eviction")
+    }
+
+    /// A batch that banks no aux row must not run the retention delete at all — a WHOOP 4.0 offload
+    /// (or any non-v18 second) never pays for the index scan, and never evicts.
+    func testNoAuxRowsMeansNoRetentionSweep() async throws {
+        let s = try await store()
+        _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: 100, statusWord: 1),
+                                                V18AuxSample(ts: 101, statusWord: 2)]),
+                               deviceId: "dev1", v18AuxRetentionRows: 5)
+        // An all-absent sample packs to nothing, so this batch writes no row and must sweep nothing.
+        _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: 200)]),
+                               deviceId: "dev1", v18AuxRetentionRows: 1)
+        let rows = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
+        XCTAssertEqual(rows.map(\.ts), [100, 101])
+    }
+
+    /// The shipped cap is a real bound, and documented in row terms.
+    func testShippedRetentionConstant() {
+        XCTAssertEqual(WhoopStore.v18AuxRetentionRows, 604_800)   // 7 x 86_400 strap-seconds
+        XCTAssertGreaterThan(WhoopStore.v18AuxRetentionRows, WhoopStore.rawImuRetentionRows)
     }
 
     /// Deleting a device's data must clear the aux rows too — the same privacy rule every other

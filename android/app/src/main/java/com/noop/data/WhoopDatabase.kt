@@ -661,6 +661,10 @@ abstract class WhoopDatabase : RoomDatabase() {
          *
          * INSTRUMENTATION ONLY. Nothing reads these: no analytic, no score, no gate, no UI.
          *
+         * Retention: `v18AuxSample` is CAPPED at [WhoopRepository.V18_AUX_RETENTION_ROWS] rolling rows per
+         * device, the same shape `rawImuSample` uses — it is the only genuinely new row growth here. The
+         * three added columns widen rows that were already being written and add no rows at all.
+         *
          * Exposed as [DEEP_CAPTURE_MIGRATION_SQL] so a plain-JVM unit test can assert its shape without
          * an emulator, like the migrations above.
          */
