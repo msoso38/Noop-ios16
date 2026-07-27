@@ -8,12 +8,19 @@ import androidx.room.Index
  * Room entities mirroring the verified GRDB schema in
  * Packages/WhoopStore/Sources/WhoopStore/Database.swift (+ MetricsCache.swift).
  *
+ * That mirroring is CHECKED, not just described: `SchemaOracleTest` compares the schema Room's processor
+ * generates from these entities against the shared `schema_oracle.json`, and the Swift `SchemaOracleTests`
+ * compares GRDB's `PRAGMA table_info` against the same file. Editing an entity here — adding a column,
+ * reordering fields, changing a type or nullability — fails that test until the GRDB twin lands with it or
+ * the difference is written into the fixture's `divergenceReasons`. The notes below are a reader's summary
+ * of what the oracle enforces.
+ *
  * Natural keys mirror the Swift `ON CONFLICT(...) DO NOTHING` upserts so insert dedupe behaves identically,
  * with ONE deliberate exception noted inline:
  *   - hrSample        PK (deviceId, ts)
  *   - rrInterval      PK (deviceId, ts, rrMs, seq)  // v18: `seq` tiebreaks EQUAL same-second beats.
- *                                                   // Diverges from Swift (still deviceId, ts, rrMs) — see
- *                                                   // the RrInterval doc + PR; Swift needs the same fix.
+ *                                                   // Swift matches since WhoopStore `v24-rr-seq`; this
+ *                                                   // note used to say the fix was still pending there.
  *   - event           PK (deviceId, ts, kind)
  *   - battery         PK (deviceId, ts)
  *   - spo2Sample      PK (deviceId, ts)
