@@ -301,25 +301,31 @@ public struct PpgWaveformSample: Equatable, Codable, Sendable {
 /// routinely has). Swift's `Int` is 64-bit on every supported target; the Kotlin twin therefore carries
 /// `Long`, not `Int`. `V18AuxCodecParityTests` pins the same decimal literal on both sides.
 ///
-/// Names are the DECODER's own names, verbatim (`decoderKey`), with ONE deliberate exception: `@36` is
-/// carried as `rawU16At36`, not under the decoder's `hr_fixed_8_8`. Several slots are frankly unpinned
-/// bytes — `cardiac_flags`/`cardiac_status` are outside-report names for bytes that sit near the HR fields
-/// and do not decode consistently across firmwares, and `optical_amp_a`/`_b` are optical channel
+/// Names are the DECODER's own names, verbatim (`decoderKey`) — no exceptions. Several slots are frankly
+/// unpinned bytes: `cardiac_flags`/`cardiac_status` are outside-report names for bytes that sit near the
+/// HR fields and do not decode consistently across firmwares, and `optical_amp_a`/`_b` are optical channel
 /// amplitudes, not a named physiological quantity. Nothing here is renamed to imply a meaning it has not
-/// earned, and where a decoder name ALREADY implies one the census disproved, the slot does not repeat it.
+/// earned — but nothing is renamed AWAY from the decoder either, because `decoderKey` is a string lookup
+/// into the parsed dictionary and a slot whose key does not exist banks silence, not an error. See
+/// `testEverySlotDecoderKeyExistsInARealV18Decode`, which is the tripwire for exactly that.
+///
+/// `@36`/`@37` and `@106`/`@107` are each TWO one-byte slots rather than one u16, because the decoder
+/// reads them as two u8 channels: #861 showed `@36` is a flag byte with `@37` a duplicate HR beside it,
+/// and that `@106`/`@107` cannot be a u16 at all (the high byte steps without a low-byte carry). Storage
+/// mirrors the wire shape the decoder actually pins — the bytes on the wire are the same either way, but
+/// the slot boundary is where a reader learns which channel is which.
 public enum V18AuxSlot: Int, CaseIterable, Sendable {
     case recordIndex = 0        // @11  u32 — per-record counter, +1 per record, advances across gaps
     case rrCount                // @23  u8  — the strap's OWN R-R count (the stream itself caps at 4)
     case cardiacFlags           // @33  u8  — raw byte near the HR fields; meaning not pinned
-    // @36 u16 LE — the RAW two bytes, no interpretation. The decoder calls this `hr_fixed_8_8` and the
-    // protocol notes called it "higher-precision HR, bpm = value/256"; the #845 census DISPROVED that.
-    // A LE u16 at 36 is `frame[37] << 8 | frame[36]`, so `value / 256` is just `frame[37] +
-    // frame[36]/256` — the integer part IS the HR-like byte at @37 and the "sub-bpm fraction" is the
-    // unpinned byte at @36 divided by 256. That is where the 0.989 correlation with `heart_rate@22` came
-    // from, and it is why there is no sub-bpm HR in v18. Both bytes are still banked (a u16 keeps them),
-    // but the slot name is a STORAGE CONTRACT — `rawValue` is the wire ordering — so it must not carry a
-    // claim the data does not support. `V18AuxSample.byteAt36` / `.byteAt37` split it for a reader.
-    case rawU16At36             // @36  u16 — raw LE pair (@36 low, @37 high); NOT a sub-bpm heart rate
+    // @36/@37 were banked as ONE u16 (`hr_fixed_8_8`, "higher-precision HR, bpm = value/256"). #861
+    // retired that: over 18,650 real v18 records bit 4 of @36 is NEVER set (a genuine 8.8 fraction sets it
+    // ~50% of the time), 95.02% of values land in 0x80-0x8F, and the "corr 0.989 with heart_rate@22" was
+    // circular — the u16 is literally the duplicate HR at @37 plus the @36 flag byte over 256. They are
+    // two independent bytes, so they are two slots. Both are still carried RAW: bit 7 of @36 reads as a
+    // validity bit and @37 tracks HR only while it is set, but storage asserts neither.
+    case hrQualityFlags         // @36  u8  — flag byte (bit7 = HR/R-R valid); NOT a fixed-point HR
+    case heartRateAlt           // @37  u8  — duplicate of heart_rate@22 (99.6% exact); raw, ungated
     case rrPacked               // @38  u16 — raw u16 near the R-R fields; meaning not pinned
     case cardiacStatus          // @40  u8  — raw status-like byte near the HR fields
     case stepCadence            // @59  u8  — cadence-like byte (never 0; lower when moving faster)
@@ -327,7 +333,12 @@ public enum V18AuxSlot: Int, CaseIterable, Sendable {
     case statusWord1            // @77  u16 — near-static sibling of @75 (low nibble 1)
     case statusWord2            // @79  u16 — sibling of @75 (low nibble 2)
     case auxByte82              // @82  u8  — RAW byte; `spo2_candidate_82` is the gated 70-100 view of it
-    case opticalBaseline106     // @106 u16 — analog optical/ADC baseline; reads 0 only off-wrist
+    // @106/@107 were banked as one u16 optical baseline. #861 showed a u16 is structurally impossible
+    // there: across 18,599 consecutive-second pairs the HIGH byte moved while the LOW byte stayed frozen
+    // in 3,514 of them, with ZERO low-byte wrap events in the corpus. Two correlated but independent u8
+    // channels, so two slots — and `0`, not `128`, is the off-wrist reading on both.
+    case opticalBaselineA       // @106 u8  — optical/ADC baseline channel; wanders overnight, 0 = off-wrist
+    case opticalBaselineB       // @107 u8  — the other baseline channel (see @106)
     // @108/@109 are a pair and 128 is a RECORD-level marker, not a per-channel invalid sentinel: in the
     // #845 census `optical_amp_a == 128` and `optical_amp_b == 128` co-occur 757/757 and never
     // independently, so one channel reading 128 while the other does not has never been observed. Banked
@@ -340,24 +351,27 @@ public enum V18AuxSlot: Int, CaseIterable, Sendable {
     public var width: Int {
         switch self {
         case .recordIndex, .unknownF32At113: return 4
-        case .rawU16At36, .rrPacked, .statusWord, .statusWord1, .statusWord2, .opticalBaseline106:
+        case .rrPacked, .statusWord, .statusWord1, .statusWord2:
             return 2
-        case .rrCount, .cardiacFlags, .cardiacStatus, .stepCadence, .auxByte82,
-             .opticalAmpA, .opticalAmpB:
+        case .rrCount, .cardiacFlags, .hrQualityFlags, .heartRateAlt, .cardiacStatus, .stepCadence,
+             .auxByte82, .opticalBaselineA, .opticalBaselineB, .opticalAmpA, .opticalAmpB:
             return 1
         }
     }
 
-    /// The Interpreter's own key for this slot, verbatim — this is the LOOKUP key, so it stays exactly
-    /// what the decoder emits even where the case name deliberately differs (`rawU16At36` reads
-    /// `hr_fixed_8_8`; see that case's note). Renaming the decoder key itself is a separate change: it is
-    /// pinned by `decoder_oracle.json` and the `whoop-decode` CLI on both platforms.
+    /// The Interpreter's own key for this slot, verbatim — this is the LOOKUP key `extractHistoricalStreams`
+    /// reads the parsed dictionary with, so it MUST be exactly what the decoder emits today. A key the
+    /// decoder no longer produces does not fail to compile (the lookup is `Int?`) and does not fail at
+    /// runtime (absence is a first-class state in this format); it just banks nothing, forever, for a
+    /// field the strap has already trimmed. `testEverySlotDecoderKeyExistsInARealV18Decode` is what turns
+    /// that into a test failure.
     public var decoderKey: String {
         switch self {
         case .recordIndex: return "record_index"
         case .rrCount: return "rr_count"
         case .cardiacFlags: return "cardiac_flags"
-        case .rawU16At36: return "hr_fixed_8_8"
+        case .hrQualityFlags: return "hr_quality_flags"
+        case .heartRateAlt: return "heart_rate_alt"
         case .rrPacked: return "rr_packed"
         case .cardiacStatus: return "cardiac_status"
         case .stepCadence: return "step_cadence"
@@ -365,7 +379,8 @@ public enum V18AuxSlot: Int, CaseIterable, Sendable {
         case .statusWord1: return "status_word_1"
         case .statusWord2: return "status_word_2"
         case .auxByte82: return "aux_byte_82"
-        case .opticalBaseline106: return "optical_baseline_106"
+        case .opticalBaselineA: return "optical_baseline_a"
+        case .opticalBaselineB: return "optical_baseline_b"
         case .opticalAmpA: return "optical_amp_a"
         case .opticalAmpB: return "optical_amp_b"
         case .unknownF32At113: return "unknown_f32_113"
@@ -395,10 +410,13 @@ public struct V18AuxSample: Equatable, Codable, Sendable {
     public let recordIndex: Int?
     public let rrCount: Int?
     public let cardiacFlags: Int?
-    /// The RAW `@36` u16 (LE: `@36` low byte, `@37` high byte). NOT a sub-bpm heart rate — see
-    /// `V18AuxSlot.rawU16At36` for why `value/256` only looked like one, and `byteAt36`/`byteAt37` to
-    /// read the two bytes apart.
-    public let rawU16At36: Int?
+    /// The `@36` flag byte, raw. Bit 7 reads as an HR/R-R validity bit and bit 4 is never set (#861);
+    /// storage carries all 8 bits and interprets none of them.
+    public let hrQualityFlags: Int?
+    /// The `@37` duplicate heart rate, raw and UNGATED — it equals `heart_rate@22` in 99.6% of records
+    /// but only tracks HR while `hrQualityFlags` bit 7 is set, so it is banked as the byte it is rather
+    /// than as a bpm. Reading it as one is a consumer's decision, made against the flag byte beside it.
+    public let heartRateAlt: Int?
     public let rrPacked: Int?
     public let cardiacStatus: Int?
     public let stepCadence: Int?
@@ -406,22 +424,28 @@ public struct V18AuxSample: Equatable, Codable, Sendable {
     public let statusWord1: Int?
     public let statusWord2: Int?
     public let auxByte82: Int?
-    public let opticalBaseline106: Int?
+    /// The two `@106`/`@107` optical/ADC baseline channels, raw. Independent bytes, NOT a u16 — see
+    /// `V18AuxSlot.opticalBaselineA`. `0` on both is the off-wrist reading; `128` is unremarkable here.
+    public let opticalBaselineA: Int?
+    public let opticalBaselineB: Int?
     public let opticalAmpA: Int?
     public let opticalAmpB: Int?
     /// The raw 32-bit pattern of `unknown_f32_113`, NOT a decoded float. See `unknownF32At113`.
     public let unknownF32Bits: Int?
 
     public init(ts: Int, recordIndex: Int? = nil, rrCount: Int? = nil, cardiacFlags: Int? = nil,
-                rawU16At36: Int? = nil, rrPacked: Int? = nil, cardiacStatus: Int? = nil,
-                stepCadence: Int? = nil, statusWord: Int? = nil, statusWord1: Int? = nil,
-                statusWord2: Int? = nil, auxByte82: Int? = nil, opticalBaseline106: Int? = nil,
+                hrQualityFlags: Int? = nil, heartRateAlt: Int? = nil, rrPacked: Int? = nil,
+                cardiacStatus: Int? = nil, stepCadence: Int? = nil, statusWord: Int? = nil,
+                statusWord1: Int? = nil, statusWord2: Int? = nil, auxByte82: Int? = nil,
+                opticalBaselineA: Int? = nil, opticalBaselineB: Int? = nil,
                 opticalAmpA: Int? = nil, opticalAmpB: Int? = nil, unknownF32Bits: Int? = nil) {
         self.ts = ts; self.recordIndex = recordIndex; self.rrCount = rrCount
-        self.cardiacFlags = cardiacFlags; self.rawU16At36 = rawU16At36; self.rrPacked = rrPacked
+        self.cardiacFlags = cardiacFlags; self.hrQualityFlags = hrQualityFlags
+        self.heartRateAlt = heartRateAlt; self.rrPacked = rrPacked
         self.cardiacStatus = cardiacStatus; self.stepCadence = stepCadence
         self.statusWord = statusWord; self.statusWord1 = statusWord1; self.statusWord2 = statusWord2
-        self.auxByte82 = auxByte82; self.opticalBaseline106 = opticalBaseline106
+        self.auxByte82 = auxByte82; self.opticalBaselineA = opticalBaselineA
+        self.opticalBaselineB = opticalBaselineB
         self.opticalAmpA = opticalAmpA; self.opticalAmpB = opticalAmpB
         self.unknownF32Bits = unknownF32Bits
     }
@@ -431,32 +455,23 @@ public struct V18AuxSample: Equatable, Codable, Sendable {
     public init(ts: Int, slotValues values: [Int?]) {
         func v(_ s: V18AuxSlot) -> Int? { s.rawValue < values.count ? values[s.rawValue] : nil }
         self.init(ts: ts, recordIndex: v(.recordIndex), rrCount: v(.rrCount),
-                  cardiacFlags: v(.cardiacFlags), rawU16At36: v(.rawU16At36), rrPacked: v(.rrPacked),
+                  cardiacFlags: v(.cardiacFlags), hrQualityFlags: v(.hrQualityFlags),
+                  heartRateAlt: v(.heartRateAlt), rrPacked: v(.rrPacked),
                   cardiacStatus: v(.cardiacStatus), stepCadence: v(.stepCadence),
                   statusWord: v(.statusWord), statusWord1: v(.statusWord1),
                   statusWord2: v(.statusWord2), auxByte82: v(.auxByte82),
-                  opticalBaseline106: v(.opticalBaseline106), opticalAmpA: v(.opticalAmpA),
-                  opticalAmpB: v(.opticalAmpB), unknownF32Bits: v(.unknownF32At113))
+                  opticalBaselineA: v(.opticalBaselineA), opticalBaselineB: v(.opticalBaselineB),
+                  opticalAmpA: v(.opticalAmpA), opticalAmpB: v(.opticalAmpB),
+                  unknownF32Bits: v(.unknownF32At113))
     }
 
     /// The slot values in wire order — index == `V18AuxSlot.rawValue`. The storage codec's only view of
     /// this struct, so the field order lives in exactly one place on each platform.
     public var slotValues: [Int?] {
-        [recordIndex, rrCount, cardiacFlags, rawU16At36, rrPacked, cardiacStatus, stepCadence,
-         statusWord, statusWord1, statusWord2, auxByte82, opticalBaseline106, opticalAmpA,
-         opticalAmpB, unknownF32Bits]
+        [recordIndex, rrCount, cardiacFlags, hrQualityFlags, heartRateAlt, rrPacked, cardiacStatus,
+         stepCadence, statusWord, statusWord1, statusWord2, auxByte82, opticalBaselineA,
+         opticalBaselineB, opticalAmpA, opticalAmpB, unknownF32Bits]
     }
-
-    /// The low byte of `rawU16At36` — the raw, unpinned byte at frame offset 36. Reading `rawU16At36 /
-    /// 256` as a "sub-bpm HR fraction" is reading THIS byte over 256; the #845 census disproved that
-    /// interpretation, so it is exposed as a byte and nothing more.
-    public var byteAt36: Int? { rawU16At36.map { $0 & 0xFF } }
-
-    /// The high byte of `rawU16At36` — the HR-like byte at frame offset 37, which is the entire integer
-    /// part of `rawU16At36 / 256` and the entire source of that value's correlation with `heart_rate@22`.
-    /// It is NOT asserted to equal the measured HR: on the pinned fixture it reads 101 against `@22`'s
-    /// 102. Banked because it is a byte the funnel used to drop, not because its meaning is settled.
-    public var byteAt37: Int? { rawU16At36.map { ($0 >> 8) & 0xFF } }
 
     /// `unknown_f32_113` re-read as the float the decoder saw. The BITS are what is stored; this is a
     /// convenience view, and it is the only place the four bytes are interpreted as a number at all.

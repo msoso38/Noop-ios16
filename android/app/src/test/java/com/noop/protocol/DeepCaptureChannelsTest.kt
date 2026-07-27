@@ -102,7 +102,8 @@ class DeepCaptureChannelsTest {
         assertEquals(25_443_699L, a.recordIndex)     // @11  u32
         assertEquals(2L, a.rrCount)                  // @23  u8
         assertEquals(0L, a.cardiacFlags)             // @33  u8
-        assertEquals(25_997L, a.rawU16At36)          // @36  u16 raw (see rawU16At36IsNotASubBpmHR)
+        assertEquals(141L, a.hrQualityFlags)         // @36  u8 flag byte (0x8D)
+        assertEquals(101L, a.heartRateAlt)           // @37  u8 duplicate HR (hr@22 = 102)
         assertEquals(25_444L, a.rrPacked)            // @38  u16
         assertEquals(255L, a.cardiacStatus)          // @40  u8
         assertEquals(170L, a.stepCadence)            // @59  u8
@@ -110,7 +111,8 @@ class DeepCaptureChannelsTest {
         assertEquals(3_073L, a.statusWord1)          // @77  u16
         assertEquals(3_074L, a.statusWord2)          // @79  u16
         assertEquals(0L, a.auxByte82)                // @82  u8 (raw; the gated 70-100 view is derived)
-        assertEquals(28_517L, a.opticalBaseline106)  // @106 u16
+        assertEquals(101L, a.opticalBaselineA)       // @106 u8
+        assertEquals(111L, a.opticalBaselineB)       // @107 u8
         assertEquals(30L, a.opticalAmpA)             // @108 u8
         assertEquals(30L, a.opticalAmpB)             // @109 u8
         // The SAME decimal literal the Swift suite asserts. 0xC0A7619D has bit 31 set, so a 32-bit
@@ -121,29 +123,109 @@ class DeepCaptureChannelsTest {
     }
 
     /**
-     * `@36` is banked RAW, under a name that makes no claim, because the "higher-precision HR" reading
-     * the decoder key still carries is arithmetically empty (#845).
+     * EVERY slot's [V18AuxSlot.decoderKey] must exist in a decode of a REAL v18 frame.
      *
-     * A LE u16 at 36 is `frame[37] shl 8 or frame[36]`, so `value / 256` is exactly
-     * `frame[37] + frame[36]/256`. The integer part IS the HR-like byte at `@37` — the entire source of
-     * the 0.989 correlation with `heart_rate@22` — and the "sub-bpm fraction" is the unpinned byte at
-     * `@36` over 256. Twin of the Swift `testRawU16At36IsNotASubBpmHR`.
+     * This is the durable guard, and it exists because of a near-miss. Each slot is extracted with a
+     * NULLABLE map lookup — `p.intOrNull(slot.decoderKey)`. If the decoder renames or retires a key, that
+     * lookup returns null and the slot banks NOTHING: no compile error, and no visible symptom (absence is
+     * a first-class state in the aux format, so an empty slot is indistinguishable from "the strap did not
+     * send it"). The result is permanent, silent data loss in a capture format whose entire purpose is
+     * preserving fields BEFORE the strap trims them on ack.
+     *
+     * That is not hypothetical: #861 retired `hr_fixed_8_8` and `optical_baseline_106` — the two keys four
+     * of these slots used to read — and nothing in this suite would have failed. This test would have.
+     *
+     * Twin of the Swift `testEverySlotDecoderKeyExistsInARealV18Decode`.
      */
     @Test
-    fun rawU16At36IsNotASubBpmHR() {
+    fun everySlotDecoderKeyExistsInARealV18Decode() {
+        val p = decodeHistorical(bytes(wornV18), DeviceFamily.WHOOP5)!!
+        assertEquals(18, p["hist_version"])   // the guard must run against a v18 decode
+        val missing = V18AuxSlot.entries.filter { p[it.decoderKey] == null }
+        assertEquals(
+            "${missing.size} aux slot(s) read a decoder key the v18 decoder does not emit: " +
+                missing.joinToString(", ") { "$it -> \"${it.decoderKey}\"" } +
+                ". Those slots bank NOTHING, silently, for every strap-second. Repoint " +
+                "V18AuxSlot.decoderKey (and the matching literal in extractHistoricalStreams).",
+            emptyList<String>(), missing.map { it.decoderKey },
+        )
+    }
+
+    /**
+     * The same guard one level down: a key that exists is not enough, the value has to REACH the row.
+     * [V18AuxSlot.decoderKey] and the extractor's literal are two separate strings that must agree.
+     */
+    @Test
+    fun everySlotIsPopulatedFromARealV18Frame() {
         val a = extract(listOf(bytes(wornV18))).v18Aux.single()
-        val v = a.rawU16At36!!
-        assertEquals(25_997L, v)
-        assertEquals(141L, a.byteAt36)                   // the unpinned low byte
-        assertEquals(101L, a.byteAt37)                   // the HR-like high byte
-        assertEquals(101L * 256 + 141, v)
-        // "101.55 bpm" is 101 (the @37 byte) + 141/256 (an unrelated byte read as a fraction).
-        assertEquals(101.0 + 141.0 / 256.0, v.toDouble() / 256.0, 1e-12)
-        // And it is not even the measured HR: @22 reads 102 while @37 reads 101, so the high byte is
-        // HR-LIKE, not a copy — which is why it is banked raw and named for nothing.
+        val values = a.slotValues
+        assertEquals(V18AuxSlot.entries.size, values.size)
+        val unbanked = V18AuxSlot.entries.filter { values[it.index] == null }
+        assertEquals(
+            "these slots decoded but never reached V18AuxRow — the extractor's lookup key and " +
+                "V18AuxSlot.decoderKey have drifted apart",
+            emptyList<String>(), unbanked.map { it.decoderKey },
+        )
+    }
+
+    /**
+     * `@36`/`@37` are TWO bytes, not one u16 — the reading #861 retired. They were banked as a single u16
+     * `hr_fixed_8_8` slot ("higher-precision HR, bpm = value/256"). #861 disproved that over 18,650
+     * records: bit 4 of `@36` is never set, 95% of its values sit in 0x80-0x8F, and the famous 0.989
+     * correlation with `heart_rate@22` was circular — the u16 is just the duplicate HR at `@37` plus a flag
+     * byte over 256. Twin of the Swift `testByte36AndByte37AreTwoIndependentSlots`.
+     */
+    @Test
+    fun byte36AndByte37AreTwoIndependentSlots() {
+        val a = extract(listOf(bytes(wornV18))).v18Aux.single()
+        assertEquals(141L, a.hrQualityFlags)             // 0x8D — the flag byte
+        assertEquals(101L, a.heartRateAlt)               // the duplicate HR
+        assertEquals(1, V18AuxSlot.HR_QUALITY_FLAGS.width)
+        assertEquals(1, V18AuxSlot.HEART_RATE_ALT.width)
+        // Bit 7 set = the strap called this second's HR/R-R valid; bit 4 is never set on a real record.
+        assertEquals(0x80L, a.hrQualityFlags!! and 0x80L)
+        assertEquals(0L, a.hrQualityFlags!! and 0x10L)
+        // Independence, proved by moving one byte: under the retired u16 model @37 was worth 256.
+        val m = extract(listOf(mutated(37, 0xFF))).v18Aux.single()
+        assertEquals(255L, m.heartRateAlt)
+        assertEquals("@36 must not move when @37 does", 141L, m.hrQualityFlags)
+        // And @37 is not the measured HR: @22 reads 102 while @37 reads 101.
         val p = decodeHistorical(bytes(wornV18), DeviceFamily.WHOOP5)!!
         assertEquals(102, p["heart_rate"])
-        assertEquals("hr_fixed_8_8", V18AuxSlot.RAW_U16_AT_36.decoderKey)
+    }
+
+    /**
+     * `@106`/`@107` are likewise TWO bytes. #861 showed a u16 there is structurally impossible: across
+     * 18,599 consecutive-second pairs the high byte moved while the low byte stayed frozen 3,514 times,
+     * with zero low-byte wraps in the corpus. Twin of `testOpticalBaselineIsTwoIndependentSlots`.
+     */
+    @Test
+    fun opticalBaselineIsTwoIndependentSlots() {
+        val a = extract(listOf(bytes(wornV18))).v18Aux.single()
+        assertEquals(101L, a.opticalBaselineA)           // @106
+        assertEquals(111L, a.opticalBaselineB)           // @107
+        assertEquals(1, V18AuxSlot.OPTICAL_BASELINE_A.width)
+        assertEquals(1, V18AuxSlot.OPTICAL_BASELINE_B.width)
+        // Moving @107 must leave @106 alone — under the u16 model that byte was worth 256.
+        val m = extract(listOf(mutated(107, 0xFF))).v18Aux.single()
+        assertEquals(255L, m.opticalBaselineB)
+        assertEquals("@106 must not move when @107 does", 101L, m.opticalBaselineA)
+    }
+
+    /**
+     * The retired keys must not come back by accident: nothing may read `hr_fixed_8_8` or
+     * `optical_baseline_106`, and no slot may re-fuse a byte pair into a 2-byte field.
+     */
+    @Test
+    fun retiredU16ReadingsAreNotResurrected() {
+        val retired = setOf("hr_fixed_8_8", "optical_baseline_106")
+        for (slot in V18AuxSlot.entries) {
+            assertFalse("$slot reads ${slot.decoderKey}, a key #861 retired", slot.decoderKey in retired)
+        }
+        for (slot in listOf(V18AuxSlot.HR_QUALITY_FLAGS, V18AuxSlot.HEART_RATE_ALT,
+                            V18AuxSlot.OPTICAL_BASELINE_A, V18AuxSlot.OPTICAL_BASELINE_B)) {
+            assertEquals("$slot is a single wire byte, never half of a u16", 1, slot.width)
+        }
     }
 
     /**
@@ -162,14 +244,15 @@ class DeepCaptureChannelsTest {
     @Test
     fun slotValuesOrderMatchesTheSlotEnum() {
         val a = V18AuxRow(
-            ts = 1, recordIndex = 10L, rrCount = 11L, cardiacFlags = 12L, rawU16At36 = 13L,
-            rrPacked = 14L, cardiacStatus = 15L, stepCadence = 16L, statusWord = 17L,
-            statusWord1 = 18L, statusWord2 = 19L, auxByte82 = 20L, opticalBaseline106 = 21L,
-            opticalAmpA = 22L, opticalAmpB = 23L, unknownF32Bits = 24L,
+            ts = 1, recordIndex = 10L, rrCount = 11L, cardiacFlags = 12L, hrQualityFlags = 13L,
+            heartRateAlt = 14L, rrPacked = 15L, cardiacStatus = 16L, stepCadence = 17L,
+            statusWord = 18L, statusWord1 = 19L, statusWord2 = 20L, auxByte82 = 21L,
+            opticalBaselineA = 22L, opticalBaselineB = 23L, opticalAmpA = 24L, opticalAmpB = 25L,
+            unknownF32Bits = 26L,
         )
         assertEquals(V18AuxSlot.entries.size, a.slotValues.size)
         // Slot i must round-trip to position i — this is what makes the persisted bitmap meaningful.
-        assertEquals((10L..24L).toList(), a.slotValues)
+        assertEquals((10L..26L).toList(), a.slotValues)
         assertEquals(a, V18AuxRow.fromSlotValues(1, a.slotValues))
         // Indices must be a dense 0..<n range in declaration order (bitmap bit positions).
         assertEquals(V18AuxSlot.entries.indices.toList(), V18AuxSlot.entries.map { it.index })
@@ -236,18 +319,23 @@ class DeepCaptureChannelsTest {
     @Test
     fun codecHeaderShapeAndSize() {
         val full = V18AuxRow(
-            ts = 0, recordIndex = 1L, rrCount = 2L, cardiacFlags = 3L, rawU16At36 = 4L, rrPacked = 5L,
-            cardiacStatus = 6L, stepCadence = 7L, statusWord = 8L, statusWord1 = 9L, statusWord2 = 10L,
-            auxByte82 = 11L, opticalBaseline106 = 12L, opticalAmpA = 13L, opticalAmpB = 14L,
-            unknownF32Bits = 15L,
+            ts = 0, recordIndex = 1L, rrCount = 2L, cardiacFlags = 3L, hrQualityFlags = 4L,
+            heartRateAlt = 5L, rrPacked = 6L, cardiacStatus = 7L, stepCadence = 8L, statusWord = 9L,
+            statusWord1 = 10L, statusWord2 = 11L, auxByte82 = 12L, opticalBaselineA = 13L,
+            opticalBaselineB = 14L, opticalAmpA = 15L, opticalAmpB = 16L, unknownF32Bits = 17L,
         )
         val blob = V18AuxCodec.pack(full)
         assertEquals(V18AuxCodec.FORMAT_VERSION, blob[0].toInt() and 0xFF)
-        val bitmap = (blob[1].toInt() and 0xFF) or ((blob[2].toInt() and 0xFF) shl 8)
+        // Bitmap is a u32 LE with every slot's bit set. It is a u32 and not a u16 because there are 17
+        // slots: bit 16 has nowhere to live in two bytes, and a bitmap that silently dropped it would
+        // stop banking `unknown_f32_113` on both platforms at once.
+        var bitmap = 0
+        for (b in 0 until 4) bitmap = bitmap or ((blob[1 + b].toInt() and 0xFF) shl (8 * b))
         assertEquals((1 shl V18AuxSlot.entries.size) - 1, bitmap)
-        // 3-byte header + the sum of the declared slot widths — a full row is 30 bytes.
-        assertEquals(3 + V18AuxSlot.entries.sumOf { it.width }, blob.size)
-        assertEquals(30, blob.size)
+        assertTrue("a u16 bitmap would no longer fit", V18AuxSlot.entries.size > 16)
+        // 5-byte header + the sum of the declared slot widths — a full row is 32 bytes.
+        assertEquals(5 + V18AuxSlot.entries.sumOf { it.width }, blob.size)
+        assertEquals(32, blob.size)
         assertEquals(full, V18AuxCodec.unpack(blob, 0))
     }
 
@@ -260,11 +348,15 @@ class DeepCaptureChannelsTest {
     @Test
     fun malformedBlobsDegradeToAbsentRatherThanThrow() {
         assertTrue(V18AuxCodec.unpack(ByteArray(0), 5).isEmpty)
-        assertTrue(V18AuxCodec.unpack(byteArrayOf(1, 0xFF.toByte()), 5).isEmpty)          // header cut short
-        assertTrue(V18AuxCodec.unpack(byteArrayOf(99, -1, -1, 1, 2, 3, 4), 5).isEmpty)    // future version
+        assertTrue(V18AuxCodec.unpack(byteArrayOf(2, -1, -1), 5).isEmpty)                // header cut short
+        assertTrue(V18AuxCodec.unpack(byteArrayOf(99, -1, -1, -1, -1, 1, 2), 5).isEmpty)  // future version
+        // A v1 blob (the pre-#861 layout, u16 bitmap and fused @36/@106 u16 slots) is an UNKNOWN version
+        // to a v2 reader, so it reads back as "nothing known" instead of being sliced against the wrong
+        // slot table. The format never shipped, so the only such rows possible are on a local build.
+        assertTrue(V18AuxCodec.unpack(byteArrayOf(1, -1, 0x7F, 1, 2, 3, 4), 5).isEmpty)
         // Truncated body: bitmap 0b0110 claims slots 1 and 2 (1 byte each) but only one body byte
         // follows — slot 1 decodes and slot 2 must read absent rather than borrowing a byte.
-        val partial = V18AuxCodec.unpack(byteArrayOf(1, 0b0000_0110, 0, 42), 5)
+        val partial = V18AuxCodec.unpack(byteArrayOf(2, 0b0000_0110, 0, 0, 0, 42), 5)
         assertEquals(42L, partial.rrCount)
         assertNull(partial.cardiacFlags)
         assertEquals(5L, partial.ts)
@@ -292,28 +384,34 @@ class DeepCaptureChannelsTest {
     @Test
     fun fixtureRowPacksToTheExactCrossPlatformBytes() {
         val a = V18AuxRow(
-            ts = ts, recordIndex = 25_443_699L, rrCount = 2L, cardiacFlags = 0L, rawU16At36 = 25_997L,
-            rrPacked = 25_444L, cardiacStatus = 255L, stepCadence = 170L, statusWord = 1_792L,
-            statusWord1 = 3_073L, statusWord2 = 3_074L, auxByte82 = 0L, opticalBaseline106 = 28_517L,
-            opticalAmpA = 30L, opticalAmpB = 30L, unknownF32Bits = 3_232_194_973L,
+            ts = ts, recordIndex = 25_443_699L, rrCount = 2L, cardiacFlags = 0L, hrQualityFlags = 141L,
+            heartRateAlt = 101L, rrPacked = 25_444L, cardiacStatus = 255L, stepCadence = 170L,
+            statusWord = 1_792L, statusWord1 = 3_073L, statusWord2 = 3_074L, auxByte82 = 0L,
+            opticalBaselineA = 101L, opticalBaselineB = 111L, opticalAmpA = 30L, opticalAmpB = 30L,
+            unknownF32Bits = 3_232_194_973L,
         )
         val hex = V18AuxCodec.pack(a).joinToString("") { "%02x".format(it) }
+        // The BODY is byte-for-byte what v1 wrote: splitting @36/@37 and @106/@107 out of their fused u16
+        // slots emits the same two bytes in the same order (a LE u16 is its low byte then its high byte).
+        // Only the header moved — version 1 -> 2, and a u16 bitmap -> u32 because 17 slots need 17 bits.
         assertEquals(
-            "01ff7f" +          // version 1, bitmap 0x7FFF (all 15 slots present)
-                "733d8401" +    // record_index  25443699 u32 LE
-                "02" +          // rr_count      2
-                "00" +          // cardiac_flags 0
-                "8d65" +        // raw u16 @36   25997 u16 LE (decoder key hr_fixed_8_8)
-                "6463" +        // rr_packed     25444 u16 LE
-                "ff" +          // cardiac_status 255
-                "aa" +          // step_cadence  170
-                "0007" +        // status_word   1792 u16 LE
-                "010c" +        // status_word_1 3073 u16 LE
-                "020c" +        // status_word_2 3074 u16 LE
-                "00" +          // aux_byte_82   0
-                "656f" +        // optical_baseline_106 28517 u16 LE
-                "1e" +          // optical_amp_a 30
-                "1e" +          // optical_amp_b 30
+            "02ffff0100" +      // version 2, bitmap 0x0001FFFF u32 LE (all 17 slots present)
+                "733d8401" +    // record_index      25443699 u32 LE
+                "02" +          // rr_count          2
+                "00" +          // cardiac_flags     0
+                "8d" +          // hr_quality_flags  141 (0x8D) @36
+                "65" +          // heart_rate_alt    101        @37
+                "6463" +        // rr_packed         25444 u16 LE
+                "ff" +          // cardiac_status    255
+                "aa" +          // step_cadence      170
+                "0007" +        // status_word       1792 u16 LE
+                "010c" +        // status_word_1     3073 u16 LE
+                "020c" +        // status_word_2     3074 u16 LE
+                "00" +          // aux_byte_82       0
+                "65" +          // optical_baseline_a 101       @106
+                "6f" +          // optical_baseline_b 111       @107
+                "1e" +          // optical_amp_a     30
+                "1e" +          // optical_amp_b     30
                 "9d61a7c0",     // unknown_f32_113 bits 0xC0A7619D u32 LE
             hex,
         )

@@ -388,22 +388,13 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
         }
     }
     fb.parsed["rr_intervals"] = .intArray(rrs)
-    // Bytes adjacent to the HR/R-R fields, read off real frames — all carried RAW, none pinned.
-    //
-    // @36 was long described here as a higher-precision heart rate (`value/256`, corr 0.989 with the
-    // integer `hr@22` over ~258k records). The #845 census disproved it: a LE u16 at 36 is
-    // `frame[37] << 8 | frame[36]`, so `value/256` is exactly `frame[37] + frame[36]/256`. The integer
-    // part IS the HR-like byte at @37 — which is where all of the correlation comes from — and the
-    // "sub-bpm fraction" is the unpinned byte at @36 over 256. There is no sub-bpm HR in v18. The key
-    // stays `hr_fixed_8_8` (it is pinned by `decoder_oracle.json` and the `whoop-decode` CLI on both
-    // platforms; renaming it is a separate change), but nothing downstream repeats the claim: storage
-    // banks it as `V18AuxSlot.rawU16At36`.
+    // Bytes adjacent to the HR/R-R fields, read off real frames. @36 / 256 tracks the integer hr@22 to
+    // sub-bpm (corr 0.989 over ~258k records) — a higher-precision heart rate; the others are raw.
     if let v = readDType(frame, 33, "u8") {
         fb.add(33, 1, "cardiac_flags", "cardiac", value: .int(v), note: "raw byte near the HR fields")
     }
     if let v = readDType(frame, 36, "u16") {
-        fb.add(36, 2, "hr_fixed_8_8", "hr", value: .int(v),
-               note: "raw u16 (@36 low, @37 high); NOT sub-bpm HR — value/256 is just @37 + @36/256")
+        fb.add(36, 2, "hr_fixed_8_8", "hr", value: .int(v), note: "higher-precision HR: bpm = value/256")
     }
     if let v = readDType(frame, 38, "u16") {
         fb.add(38, 2, "rr_packed", "rr", value: .int(v), note: "raw u16 near the R-R fields; meaning not pinned")

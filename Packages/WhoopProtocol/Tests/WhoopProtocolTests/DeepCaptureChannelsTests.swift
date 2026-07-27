@@ -97,7 +97,8 @@ final class DeepCaptureChannelsTests: XCTestCase {
         XCTAssertEqual(a.recordIndex, 25_443_699)     // @11  u32
         XCTAssertEqual(a.rrCount, 2)                  // @23  u8
         XCTAssertEqual(a.cardiacFlags, 0)             // @33  u8
-        XCTAssertEqual(a.rawU16At36, 25_997)          // @36  u16 raw (see testRawU16At36IsNotASubBpmHR)
+        XCTAssertEqual(a.hrQualityFlags, 141)         // @36  u8 flag byte (0x8D)
+        XCTAssertEqual(a.heartRateAlt, 101)           // @37  u8 duplicate HR (hr@22 = 102)
         XCTAssertEqual(a.rrPacked, 25_444)            // @38  u16
         XCTAssertEqual(a.cardiacStatus, 255)          // @40  u8
         XCTAssertEqual(a.stepCadence, 170)            // @59  u8
@@ -105,7 +106,8 @@ final class DeepCaptureChannelsTests: XCTestCase {
         XCTAssertEqual(a.statusWord1, 3_073)          // @77  u16
         XCTAssertEqual(a.statusWord2, 3_074)          // @79  u16
         XCTAssertEqual(a.auxByte82, 0)                // @82  u8 (raw; the gated 70-100 view is derived)
-        XCTAssertEqual(a.opticalBaseline106, 28_517)  // @106 u16
+        XCTAssertEqual(a.opticalBaselineA, 101)       // @106 u8
+        XCTAssertEqual(a.opticalBaselineB, 111)       // @107 u8
         XCTAssertEqual(a.opticalAmpA, 30)             // @108 u8
         XCTAssertEqual(a.opticalAmpB, 30)             // @109 u8
         // The SAME decimal literal the Kotlin suite asserts. 0xC0A7619D has bit 31 set, so a 32-bit
@@ -114,31 +116,101 @@ final class DeepCaptureChannelsTests: XCTestCase {
         XCTAssertEqual(a.unknownF32At113 ?? .nan, -5.2307, accuracy: 0.001)
     }
 
-    /// `@36` is banked RAW, under a name that makes no claim, because the "higher-precision HR" reading
-    /// the decoder key still carries is arithmetically empty (#845).
+    /// EVERY slot's `decoderKey` must exist in a decode of a REAL v18 frame.
     ///
-    /// A LE u16 at 36 is `frame[37] << 8 | frame[36]`, so `value / 256` is exactly
-    /// `frame[37] + frame[36]/256`. The integer part IS the HR-like byte at @37 — the entire source of
-    /// the 0.989 correlation with `heart_rate@22` — and the "sub-bpm fraction" is the unpinned byte at
-    /// @36 over 256. This test pins that decomposition on the same fixture the old claim was read off, so
-    /// the disproof is enforced rather than merely written down.
-    func testRawU16At36IsNotASubBpmHR() throws {
+    /// This is the durable guard, and it exists because of a near-miss. Each slot is extracted with an
+    /// OPTIONAL dictionary lookup — `p[slot.decoderKey]?.intValue`. If the decoder renames or retires a
+    /// key, that lookup returns nil and the slot banks NOTHING: no compile error (the type is `Int?`),
+    /// and no visible symptom (absence is a first-class state in the aux format, so an empty slot is
+    /// indistinguishable from "the strap did not send it"). The result is permanent, silent data loss in
+    /// a capture format whose entire purpose is preserving fields BEFORE the strap trims them on ack.
+    ///
+    /// That is not hypothetical: #861 retired `hr_fixed_8_8` and `optical_baseline_106` — the two keys
+    /// four of these slots used to read — and nothing in this suite would have failed. This test would
+    /// have.
+    ///
+    /// Asserted against the real worn fixture, which carries every v18 field, so it also proves the keys
+    /// are spelled the way the decoder actually emits them rather than the way this file believes.
+    func testEverySlotDecoderKeyExistsInARealV18Decode() {
+        let parsed = parseFrame(v18Frame(), family: .whoop5).parsed
+        XCTAssertEqual(parsed["hist_version"]?.intValue, 18, "the guard must run against a v18 decode")
+        let missing = V18AuxSlot.allCases.filter { parsed[$0.decoderKey] == nil }
+        XCTAssertEqual(missing.map(\.decoderKey), [], """
+            \(missing.count) aux slot(s) read a decoder key the v18 decoder does not emit: \
+            \(missing.map { "\($0) -> \"\($0.decoderKey)\"" }.joined(separator: ", ")). \
+            Those slots bank NOTHING, silently, for every strap-second — no compile error, no runtime \
+            error, just a channel that is gone once the strap trims its history. Repoint \
+            `V18AuxSlot.decoderKey` (and the matching literal in `extractHistoricalStreams`) at the key \
+            the decoder emits today.
+            """)
+    }
+
+    /// The same guard one level down: a key that exists is not enough, the value has to REACH the sample.
+    /// `decoderKey` and the extractor's literal are two separate strings that must agree, so this asserts
+    /// the real frame populates every slot rather than just decoding one.
+    func testEverySlotIsPopulatedFromARealV18Frame() throws {
+        let a = try XCTUnwrap(extract([v18Frame()]).v18Aux.first)
+        let values = a.slotValues
+        XCTAssertEqual(values.count, V18AuxSlot.allCases.count)
+        let unbanked = V18AuxSlot.allCases.filter { values[$0.rawValue] == nil }
+        XCTAssertEqual(unbanked.map(\.decoderKey), [],
+                       "these slots decoded but never reached V18AuxSample — the extractor's lookup key "
+                       + "and V18AuxSlot.decoderKey have drifted apart")
+    }
+
+    /// `@36`/`@37` are TWO bytes, not one u16 — the reading #861 retired.
+    ///
+    /// They were banked as a single u16 `hr_fixed_8_8` slot ("higher-precision HR, bpm = value/256").
+    /// #861 disproved that over 18,650 records: bit 4 of `@36` is never set, 95% of its values sit in
+    /// 0x80–0x8F, and the famous 0.989 correlation with `heart_rate@22` was circular — the u16 is just
+    /// the duplicate HR at `@37` plus a flag byte over 256. Storage now mirrors the wire: two u8 slots.
+    func testByte36AndByte37AreTwoIndependentSlots() throws {
         let f = parseFrame(v18Frame(), family: .whoop5)
         let a = try XCTUnwrap(extract([v18Frame()]).v18Aux.first)
-        let v = try XCTUnwrap(a.rawU16At36)
-        XCTAssertEqual(v, 25_997)
-        // The two bytes, apart.
-        XCTAssertEqual(a.byteAt36, 141)                       // the unpinned low byte
-        XCTAssertEqual(a.byteAt37, 101)                       // the HR-like high byte
-        XCTAssertEqual(v, 101 * 256 + 141)
-        // "101.55 bpm" is 101 (the @37 byte) + 141/256 (an unrelated byte read as a fraction).
-        XCTAssertEqual(Double(v) / 256.0, 101.0 + 141.0 / 256.0, accuracy: 1e-12)
-        // And it is not even the measured HR: @22 reads 102 on this frame while @37 reads 101, so the
-        // high byte is HR-LIKE, not a copy — which is exactly why it is banked raw and named for nothing.
+        XCTAssertEqual(a.hrQualityFlags, 141)                 // 0x8D — the flag byte
+        XCTAssertEqual(a.heartRateAlt, 101)                   // the duplicate HR
+        XCTAssertEqual(V18AuxSlot.hrQualityFlags.width, 1)
+        XCTAssertEqual(V18AuxSlot.heartRateAlt.width, 1)
+        // Bit 7 set = the strap called this second's HR/R-R valid; bit 4 is never set on any real record.
+        XCTAssertEqual((a.hrQualityFlags ?? 0) & 0x80, 0x80)
+        XCTAssertEqual((a.hrQualityFlags ?? 0) & 0x10, 0)
+        // Independence, proved by moving one byte: under the retired u16 model @37 was worth 256, so a
+        // change there moved the "bpm". Now it moves exactly one slot and leaves the other alone.
+        let m = try XCTUnwrap(extract([v18Frame(mutating: 37, to: 0xFF)]).v18Aux.first)
+        XCTAssertEqual(m.heartRateAlt, 255)
+        XCTAssertEqual(m.hrQualityFlags, 141, "@36 must not move when @37 does")
+        // And @37 is not the measured HR: @22 reads 102 here while @37 reads 101, which is why it is
+        // banked as a raw byte rather than promoted to a bpm.
         XCTAssertEqual(f.parsed["heart_rate"]?.intValue, 102)
-        XCTAssertNotEqual(a.byteAt37, f.parsed["heart_rate"]?.intValue)
-        // The slot's own name must stay claim-free even though the decoder key it reads is not.
-        XCTAssertEqual(V18AuxSlot.rawU16At36.decoderKey, "hr_fixed_8_8")
+        XCTAssertNotEqual(a.heartRateAlt, f.parsed["heart_rate"]?.intValue)
+    }
+
+    /// `@106`/`@107` are likewise TWO bytes. #861 showed a u16 there is structurally impossible: across
+    /// 18,599 consecutive-second pairs the high byte moved while the low byte stayed frozen 3,514 times,
+    /// with zero low-byte wraps in the corpus. Banking them as one u16 fused two independent channels.
+    func testOpticalBaselineIsTwoIndependentSlots() throws {
+        let a = try XCTUnwrap(extract([v18Frame()]).v18Aux.first)
+        XCTAssertEqual(a.opticalBaselineA, 101)               // @106
+        XCTAssertEqual(a.opticalBaselineB, 111)               // @107
+        XCTAssertEqual(V18AuxSlot.opticalBaselineA.width, 1)
+        XCTAssertEqual(V18AuxSlot.opticalBaselineB.width, 1)
+        // Moving @107 must leave @106 alone — under the u16 model that byte was worth 256.
+        let m = try XCTUnwrap(extract([v18Frame(mutating: 107, to: 0xFF)]).v18Aux.first)
+        XCTAssertEqual(m.opticalBaselineB, 255)
+        XCTAssertEqual(m.opticalBaselineA, 101, "@106 must not move when @107 does")
+    }
+
+    /// The retired keys must not come back by accident: nothing may read `hr_fixed_8_8` or
+    /// `optical_baseline_106`, and no slot may re-fuse a byte pair into a 2-byte field.
+    func testRetiredU16ReadingsAreNotResurrected() {
+        let retired: Set<String> = ["hr_fixed_8_8", "optical_baseline_106"]
+        for slot in V18AuxSlot.allCases {
+            XCTAssertFalse(retired.contains(slot.decoderKey),
+                           "\(slot) reads \(slot.decoderKey), a key #861 retired")
+        }
+        for slot in [V18AuxSlot.hrQualityFlags, .heartRateAlt, .opticalBaselineA, .opticalBaselineB] {
+            XCTAssertEqual(slot.width, 1, "\(slot) is a single wire byte, never half of a u16")
+        }
     }
 
     /// The decoded domain must hold an unsigned 32-bit slot. Swift's `Int` is 64-bit on every supported
@@ -155,13 +227,14 @@ final class DeepCaptureChannelsTests: XCTestCase {
 
     /// The slot enum and the struct's ordered view cannot drift: the codec indexes one by the other.
     func testSlotValuesOrderMatchesTheSlotEnum() {
-        let a = V18AuxSample(ts: 1, recordIndex: 10, rrCount: 11, cardiacFlags: 12, rawU16At36: 13,
-                             rrPacked: 14, cardiacStatus: 15, stepCadence: 16, statusWord: 17,
-                             statusWord1: 18, statusWord2: 19, auxByte82: 20, opticalBaseline106: 21,
-                             opticalAmpA: 22, opticalAmpB: 23, unknownF32Bits: 24)
+        let a = V18AuxSample(ts: 1, recordIndex: 10, rrCount: 11, cardiacFlags: 12, hrQualityFlags: 13,
+                             heartRateAlt: 14, rrPacked: 15, cardiacStatus: 16, stepCadence: 17,
+                             statusWord: 18, statusWord1: 19, statusWord2: 20, auxByte82: 21,
+                             opticalBaselineA: 22, opticalBaselineB: 23, opticalAmpA: 24,
+                             opticalAmpB: 25, unknownF32Bits: 26)
         XCTAssertEqual(a.slotValues.count, V18AuxSlot.allCases.count)
         // Slot i must round-trip to position i — this is what makes the persisted bitmap meaningful.
-        XCTAssertEqual(a.slotValues, Array(10...24).map { Optional($0) })
+        XCTAssertEqual(a.slotValues, Array(10...26).map { Optional($0) })
         XCTAssertEqual(V18AuxSample(ts: 1, slotValues: a.slotValues), a)
         // Enum raw values must be a dense 0..<n range in declaration order (bitmap bit positions).
         XCTAssertEqual(V18AuxSlot.allCases.map(\.rawValue), Array(0..<V18AuxSlot.allCases.count))

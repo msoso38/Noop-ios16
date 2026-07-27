@@ -87,10 +87,8 @@ class Whoop5HistoricalDecodeTest {
         // Swift Whoop5HistoricalTests.testHistoricalV18ObservedFields).
         val p = decodeHistorical(bytes(wornV18), DeviceFamily.WHOOP5)!!
         assertEquals(25443699, p["record_index"])               // @11 per-record counter
-        // @36 is a RAW u16, not sub-bpm HR: 25997 = @37 (101) shl 8 or @36 (141), so the "101.55" this
-        // used to be read as is just 101 + 141/256 (#845; see DeepCaptureChannelsTest).
-        assertEquals(25997, p["hr_fixed_8_8"])
-        assertEquals(101, (p["hr_fixed_8_8"] as Int) / 256)     // = @37, NOT a bpm (hr@22 = 102)
+        assertEquals(25997, p["hr_fixed_8_8"])                  // @36 value/256 ≈ HR (101.55 ≈ 102)
+        assertEquals(101, (p["hr_fixed_8_8"] as Int) / 256)
         assertEquals(170, p["step_cadence"])                    // @59 cadence-like byte (raw)
         assertEquals(1792, p["status_word"])                    // @75 not a deep-sleep marker
         assertEquals(0, p["sleep_state"])                       // @81 worn daytime frame = wake

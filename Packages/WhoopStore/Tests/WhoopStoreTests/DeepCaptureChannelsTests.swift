@@ -93,9 +93,10 @@ final class DeepCaptureChannelsTests: XCTestCase {
     func testAuxSlotsRoundTripThroughTheBlob() async throws {
         let s = try await store()
         let sample = V18AuxSample(ts: 100, recordIndex: 25_443_699, rrCount: 2, cardiacFlags: 0,
-                                  rawU16At36: 25_997, rrPacked: 25_444, cardiacStatus: 255,
-                                  stepCadence: 170, statusWord: 1_792, statusWord1: 3_073,
-                                  statusWord2: 3_074, auxByte82: 0, opticalBaseline106: 28_517,
+                                  hrQualityFlags: 141, heartRateAlt: 101, rrPacked: 25_444,
+                                  cardiacStatus: 255, stepCadence: 170, statusWord: 1_792,
+                                  statusWord1: 3_073, statusWord2: 3_074, auxByte82: 0,
+                                  opticalBaselineA: 101, opticalBaselineB: 111,
                                   opticalAmpA: 30, opticalAmpB: 30, unknownF32Bits: 0xC0A7_619D)
         _ = try await s.insert(Streams(v18Aux: [sample]), deviceId: "dev1")
         let n = try await s.v18AuxCountForTest()
@@ -147,18 +148,23 @@ final class DeepCaptureChannelsTests: XCTestCase {
     // MARK: - Codec
 
     func testCodecHeaderShapeAndSize() {
-        let full = V18AuxSample(ts: 0, recordIndex: 1, rrCount: 2, cardiacFlags: 3, rawU16At36: 4,
-                                rrPacked: 5, cardiacStatus: 6, stepCadence: 7, statusWord: 8,
-                                statusWord1: 9, statusWord2: 10, auxByte82: 11, opticalBaseline106: 12,
-                                opticalAmpA: 13, opticalAmpB: 14, unknownF32Bits: 15)
+        let full = V18AuxSample(ts: 0, recordIndex: 1, rrCount: 2, cardiacFlags: 3, hrQualityFlags: 4,
+                                heartRateAlt: 5, rrPacked: 6, cardiacStatus: 7, stepCadence: 8,
+                                statusWord: 9, statusWord1: 10, statusWord2: 11, auxByte82: 12,
+                                opticalBaselineA: 13, opticalBaselineB: 14, opticalAmpA: 15,
+                                opticalAmpB: 16, unknownF32Bits: 17)
         let blob = [UInt8](V18AuxCodec.pack(full))
         XCTAssertEqual(blob[0], UInt8(V18AuxCodec.formatVersion))
-        // Bitmap is a u16 LE with every slot's bit set.
-        let bitmap = Int(blob[1]) | (Int(blob[2]) << 8)
+        // Bitmap is a u32 LE with every slot's bit set. It is a u32 and not a u16 because there are 17
+        // slots: bit 16 has nowhere to live in two bytes, and a bitmap that silently dropped it would
+        // stop banking `unknown_f32_113` on both platforms at once.
+        var bitmap = 0
+        for byte in 0..<4 { bitmap |= Int(blob[1 + byte]) << (8 * byte) }
         XCTAssertEqual(bitmap, (1 << V18AuxSlot.allCases.count) - 1)
-        // 3-byte header + the sum of the declared slot widths — a full row is 30 bytes.
-        XCTAssertEqual(blob.count, 3 + V18AuxSlot.allCases.reduce(0) { $0 + $1.width })
-        XCTAssertEqual(blob.count, 30)
+        XCTAssertGreaterThan(V18AuxSlot.allCases.count, 16, "a u16 bitmap would no longer fit")
+        // 5-byte header + the sum of the declared slot widths — a full row is 32 bytes.
+        XCTAssertEqual(blob.count, 5 + V18AuxSlot.allCases.reduce(0) { $0 + $1.width })
+        XCTAssertEqual(blob.count, 32)
         XCTAssertEqual(V18AuxCodec.unpack(V18AuxCodec.pack(full), ts: 0), full)
     }
 
@@ -171,12 +177,16 @@ final class DeepCaptureChannelsTests: XCTestCase {
     /// unknown-version record degrades to "nothing known about this second".
     func testMalformedBlobsDegradeToAbsentRatherThanThrow() {
         XCTAssertTrue(V18AuxCodec.unpack(Data(), ts: 5).isEmpty)
-        XCTAssertTrue(V18AuxCodec.unpack(Data([1, 0xFF]), ts: 5).isEmpty)                 // header cut short
-        XCTAssertTrue(V18AuxCodec.unpack(Data([99, 0xFF, 0xFF, 1, 2, 3, 4]), ts: 5).isEmpty) // future version
+        XCTAssertTrue(V18AuxCodec.unpack(Data([2, 0xFF, 0xFF]), ts: 5).isEmpty)           // header cut short
+        XCTAssertTrue(V18AuxCodec.unpack(Data([99, 0xFF, 0xFF, 0xFF, 0xFF, 1, 2]), ts: 5).isEmpty) // future
+        // A v1 blob (the pre-#861 layout, u16 bitmap and fused @36/@106 u16 slots) is an UNKNOWN version
+        // to a v2 reader, so it reads back as "nothing known" instead of being sliced against the wrong
+        // slot table. The format never shipped, so the only such rows possible are on a local build.
+        XCTAssertTrue(V18AuxCodec.unpack(Data([1, 0xFF, 0x7F, 1, 2, 3, 4]), ts: 5).isEmpty)
         // Truncated body: the slots that fit are kept, the rest stay absent (never invented). Bitmap
         // 0b0110 claims slots 1 (rrCount, 1 byte) and 2 (cardiacFlags, 1 byte), but only one body byte
         // follows — so slot 1 decodes and slot 2 must read absent rather than borrowing a byte.
-        let partial = V18AuxCodec.unpack(Data([1, 0b0000_0110, 0, 42]), ts: 5)
+        let partial = V18AuxCodec.unpack(Data([2, 0b0000_0110, 0, 0, 0, 42]), ts: 5)
         XCTAssertEqual(partial.rrCount, 42)
         XCTAssertNil(partial.cardiacFlags)
         XCTAssertEqual(partial.ts, 5)
@@ -197,27 +207,33 @@ final class DeepCaptureChannelsTests: XCTestCase {
     /// out of a `.noopbak`.
     func testFixtureRowPacksToTheExactCrossPlatformBytes() {
         let a = V18AuxSample(ts: 1_780_916_150, recordIndex: 25_443_699, rrCount: 2, cardiacFlags: 0,
-                             rawU16At36: 25_997, rrPacked: 25_444, cardiacStatus: 255, stepCadence: 170,
-                             statusWord: 1_792, statusWord1: 3_073, statusWord2: 3_074, auxByte82: 0,
-                             opticalBaseline106: 28_517, opticalAmpA: 30, opticalAmpB: 30,
+                             hrQualityFlags: 141, heartRateAlt: 101, rrPacked: 25_444,
+                             cardiacStatus: 255, stepCadence: 170, statusWord: 1_792, statusWord1: 3_073,
+                             statusWord2: 3_074, auxByte82: 0, opticalBaselineA: 101,
+                             opticalBaselineB: 111, opticalAmpA: 30, opticalAmpB: 30,
                              unknownF32Bits: 0xC0A7_619D)
         let hex = V18AuxCodec.pack(a).map { String(format: "%02x", $0) }.joined()
+        // The BODY is byte-for-byte what v1 wrote: splitting @36/@37 and @106/@107 out of their fused u16
+        // slots emits the same two bytes in the same order (a LE u16 is its low byte then its high byte).
+        // Only the header moved — version 1 -> 2, and a u16 bitmap -> u32 because 17 slots need 17 bits.
         XCTAssertEqual(hex,
-            "01ff7f" +          // version 1, bitmap 0x7FFF (all 15 slots present)
-            "733d8401" +        // record_index  25443699 u32 LE
-            "02" +              // rr_count      2
-            "00" +              // cardiac_flags 0
-            "8d65" +            // raw u16 @36   25997 u16 LE (decoder key hr_fixed_8_8)
-            "6463" +            // rr_packed     25444 u16 LE
-            "ff" +              // cardiac_status 255
-            "aa" +              // step_cadence  170
-            "0007" +            // status_word   1792 u16 LE
-            "010c" +            // status_word_1 3073 u16 LE
-            "020c" +            // status_word_2 3074 u16 LE
-            "00" +              // aux_byte_82   0
-            "656f" +            // optical_baseline_106 28517 u16 LE
-            "1e" +              // optical_amp_a 30
-            "1e" +              // optical_amp_b 30
+            "02ffff0100" +      // version 2, bitmap 0x0001FFFF u32 LE (all 17 slots present)
+            "733d8401" +        // record_index      25443699 u32 LE
+            "02" +              // rr_count          2
+            "00" +              // cardiac_flags     0
+            "8d" +              // hr_quality_flags  141 (0x8D) @36
+            "65" +              // heart_rate_alt    101        @37
+            "6463" +            // rr_packed         25444 u16 LE
+            "ff" +              // cardiac_status    255
+            "aa" +              // step_cadence      170
+            "0007" +            // status_word       1792 u16 LE
+            "010c" +            // status_word_1     3073 u16 LE
+            "020c" +            // status_word_2     3074 u16 LE
+            "00" +              // aux_byte_82       0
+            "65" +              // optical_baseline_a 101       @106
+            "6f" +              // optical_baseline_b 111       @107
+            "1e" +              // optical_amp_a     30
+            "1e" +              // optical_amp_b     30
             "9d61a7c0")         // unknown_f32_113 bits 0xC0A7619D u32 LE
     }
 

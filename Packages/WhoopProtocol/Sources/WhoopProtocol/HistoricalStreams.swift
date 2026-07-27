@@ -275,6 +275,14 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
             // acked, so an unbanked field is unrecoverable and can never be censused. Carried verbatim
             // under the decoder's own names, no scaling and no interpretation.
             //
+            // Every lookup below is BY DECODER KEY, and every one is optional. That makes a decoder
+            // rename silent: the key stops existing, the slot banks nothing, and neither the compiler
+            // (the type is `Int?`) nor a runtime check (absence is a legal state here) says a word — in a
+            // capture format whose only job is preserving fields before the strap trims them. Each key
+            // below is also declared as `V18AuxSlot.decoderKey`, and
+            // `testEverySlotDecoderKeyExistsInARealV18Decode` asserts every one of those still decodes
+            // off a real v18 frame, so a future rename fails a test instead of quietly losing a channel.
+            //
             // Gated on `hist_version == 18` — the exact layout these offsets were read off. Every other
             // layout adds NOTHING: a WHOOP 4.0 v24/v25 record and a 5/MG v20/v21/v26 record are untouched.
             // The gate is explicit rather than implied by which keys happen to be present, because
@@ -286,7 +294,8 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
                     recordIndex: p["record_index"]?.intValue,
                     rrCount: p["rr_count"]?.intValue,
                     cardiacFlags: p["cardiac_flags"]?.intValue,
-                    rawU16At36: p["hr_fixed_8_8"]?.intValue,
+                    hrQualityFlags: p["hr_quality_flags"]?.intValue,
+                    heartRateAlt: p["heart_rate_alt"]?.intValue,
                     rrPacked: p["rr_packed"]?.intValue,
                     cardiacStatus: p["cardiac_status"]?.intValue,
                     stepCadence: p["step_cadence"]?.intValue,
@@ -294,7 +303,8 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
                     statusWord1: p["status_word_1"]?.intValue,
                     statusWord2: p["status_word_2"]?.intValue,
                     auxByte82: p["aux_byte_82"]?.intValue,
-                    opticalBaseline106: p["optical_baseline_106"]?.intValue,
+                    opticalBaselineA: p["optical_baseline_a"]?.intValue,
+                    opticalBaselineB: p["optical_baseline_b"]?.intValue,
                     opticalAmpA: p["optical_amp_a"]?.intValue,
                     opticalAmpB: p["optical_amp_b"]?.intValue,
                     // Banked as the float's raw 32-bit pattern, not a decoded value — the decoder gates this

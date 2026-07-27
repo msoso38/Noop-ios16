@@ -313,17 +313,10 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
         if (v != null && v != 0) rrVals.add(v)
     }
     out["rr_intervals"] = rrVals
-    // Bytes adjacent to the HR/R-R fields — all carried RAW, none pinned.
-    //
-    // @36 was long described here as a higher-precision heart rate (`value/256`, corr 0.989 with the
-    // integer `hr@22`). The #845 census disproved it: a LE u16 at 36 is `frame[37] shl 8 or frame[36]`,
-    // so `value/256` is exactly `frame[37] + frame[36]/256`. The integer part IS the HR-like byte at
-    // @37 — the entire source of the correlation — and the "sub-bpm fraction" is the unpinned byte at
-    // @36 over 256. There is no sub-bpm HR in v18. The key stays `hr_fixed_8_8` (pinned by
-    // `decoder_oracle.json` and the CLI on both platforms); storage banks it as
-    // [com.noop.data.V18AuxSlot.RAW_U16_AT_36]. Swift twin: `Interpreter.decodeWhoop5Historical`.
+    // Bytes adjacent to the HR/R-R fields. @36/256 tracks hr@22 to sub-bpm (corr 0.989) — a
+    // higher-precision heart rate; the others are carried raw (meaning not pinned).
     frame.histU8(33)?.let { out["cardiac_flags"] = it }
-    frame.histU16(36)?.let { out["hr_fixed_8_8"] = it }   // raw u16 (@36 low, @37 high)
+    frame.histU16(36)?.let { out["hr_fixed_8_8"] = it }   // bpm = value / 256
     frame.histU16(38)?.let { out["rr_packed"] = it }
     frame.histU8(40)?.let { out["cardiac_status"] = it }
     frame.histF32(45)?.let { out["gravity_x"] = it }
@@ -771,6 +764,14 @@ fun extractHistoricalStreams(
                 // untouched. The gate is explicit rather than implied by which keys happen to be present,
                 // because `rr_count` IS shared with the 4.0 schema and a presence-based test would start
                 // banking a near-empty row for every WHOOP 4.0 second.
+                //
+                // Every lookup below is BY DECODER KEY, and every one is nullable. That makes a decoder
+                // rename silent: the key stops existing, the slot banks nothing, and neither the compiler
+                // nor a runtime check says a word (absence is a legal state here). Each key is also
+                // declared as `V18AuxSlot.decoderKey`, and
+                // `DeepCaptureChannelsTest.everySlotDecoderKeyExistsInARealV18Decode` asserts every one
+                // still decodes off a real v18 frame, so a rename fails a test instead of losing a
+                // channel. Swift twin: `extractHistoricalStreams`.
                 // Every slot is carried as a Long in the UNSIGNED domain, matching Swift's 64-bit Int.
                 // The 1- and 2-byte slots are already non-negative, but the two 4-byte ones are not: the
                 // decoder narrows `record_index` to an Int (`histU32(11)!!.toInt()`) and `toRawBits`
@@ -783,7 +784,8 @@ fun extractHistoricalStreams(
                         recordIndex = p.intOrNull("record_index").asU32(),
                         rrCount = p.intOrNull("rr_count")?.toLong(),
                         cardiacFlags = p.intOrNull("cardiac_flags")?.toLong(),
-                        rawU16At36 = p.intOrNull("hr_fixed_8_8")?.toLong(),
+                        hrQualityFlags = p.intOrNull("hr_quality_flags")?.toLong(),
+                        heartRateAlt = p.intOrNull("heart_rate_alt")?.toLong(),
                         rrPacked = p.intOrNull("rr_packed")?.toLong(),
                         cardiacStatus = p.intOrNull("cardiac_status")?.toLong(),
                         stepCadence = p.intOrNull("step_cadence")?.toLong(),
@@ -791,7 +793,8 @@ fun extractHistoricalStreams(
                         statusWord1 = p.intOrNull("status_word_1")?.toLong(),
                         statusWord2 = p.intOrNull("status_word_2")?.toLong(),
                         auxByte82 = p.intOrNull("aux_byte_82")?.toLong(),
-                        opticalBaseline106 = p.intOrNull("optical_baseline_106")?.toLong(),
+                        opticalBaselineA = p.intOrNull("optical_baseline_a")?.toLong(),
+                        opticalBaselineB = p.intOrNull("optical_baseline_b")?.toLong(),
                         opticalAmpA = p.intOrNull("optical_amp_a")?.toLong(),
                         opticalAmpB = p.intOrNull("optical_amp_b")?.toLong(),
                         // Banked as the float's raw 32-bit pattern, not a decoded value — the decoder
