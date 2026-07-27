@@ -107,7 +107,7 @@ struct WorkoutDetailView: View {
 
         // HR curve over the exact session window — a finer bucket than the 24h chart so a short run
         // still reads as a curve, not a handful of points.
-        let buckets = await repo.workoutHrBuckets(from: row.startTs, to: row.endTs)
+        let buckets = await repo.workoutHrBuckets(from: row.startTs, to: row.endTs, source: row.source)
         let points = buckets.map { TrendPoint(date: Date(timeIntervalSince1970: TimeInterval($0.ts)), value: $0.bpm) }
 
         // Zones: prefer the imported per-workout percentages (a WHOOP-computed split), and only fall

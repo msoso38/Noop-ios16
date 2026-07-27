@@ -1651,11 +1651,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  HR-curve. A short session wants a finer bucket than the Today 24h chart (300 s would flatten a
      *  30-min run to ~6 points), so the bucket scales with duration: ~120 buckets across the window,
      *  floored at 15 s and capped at 300 s. Mirrors macOS Repository.workoutHrBuckets. */
-    suspend fun workoutHrBuckets(from: Long, to: Long): List<com.noop.data.HrBucket> {
+    suspend fun workoutHrBuckets(
+        from: Long,
+        to: Long,
+        source: String = "",
+        rowDeviceId: String = deviceId,
+    ): List<com.noop.data.HrBucket> {
         if (to <= from) return emptyList()
         val span = to - from
         val bucket = (span / 120).coerceIn(15L, 300L)
-        return runCatching { repository.hrBuckets(deviceId, from, to, bucket) }.getOrDefault(emptyList())
+        // #856: read the ids this row actually belongs to. A bout detected on a SECOND WHOOP charts
+        // from the strap that recorded it; an imported row gets the active ∪ canonical union, since it
+        // has no strap of its own and the worn strap may bank under either after a re-add. Previously
+        // this read the single active id, so both cases could chart the wrong data — and disagree with
+        // the Avg HR on the same card. Defaults keep any caller without a row on today's behaviour.
+        val ids = WhoopRepository.workoutHrDeviceIds(source, rowDeviceId, deviceId)
+        return runCatching { repository.hrBucketsFor(ids, from, to, bucket) }.getOrDefault(emptyList())
     }
 
     /** Per-zone MINUTES for a workout window, binning the strap's raw HR samples into the age-derived

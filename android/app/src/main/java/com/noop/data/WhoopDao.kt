@@ -299,16 +299,30 @@ interface WhoopDao : DeviceRegistryDao {
      *  it: its twin reduces `store.hrSamples`, the coalescing read. Same anti-join as [hrSamples], so a
      *  measured second is never double-counted by its PPG estimate. */
     @Query(
+        // #856: up to TWO ids, :primaryId winning per second. A naive `deviceId IN (…)` would count a
+        // second banked under BOTH ids twice after a strap re-add, inflating n and skewing avg — and
+        // both numbers would stay plausible, so nothing would look wrong. GROUP BY ts with MIN(pri)
+        // keeps one row per second and takes the primary's, matching the dedup the chart already does.
+        // Passing the same id for both is byte-identical to the old single-id read.
         "SELECT COUNT(*) AS n, AVG(bpm) AS avg, MAX(bpm) AS max FROM (" +
-            "SELECT bpm FROM hrSample " +
-            "WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
+            "SELECT ts, MIN(pri), bpm FROM (" +
+            "SELECT ts, bpm, 0 AS pri FROM hrSample " +
+            "WHERE deviceId = :primaryId AND ts >= :from AND ts <= :to " +
             "UNION ALL " +
-            "SELECT p.bpm AS bpm FROM ppgHrSample p " +
-            "WHERE p.deviceId = :deviceId AND p.ts >= :from AND p.ts <= :to " +
-            "AND NOT EXISTS (SELECT 1 FROM hrSample h WHERE h.deviceId = p.deviceId AND h.ts = p.ts)" +
+            "SELECT p.ts AS ts, p.bpm AS bpm, 0 AS pri FROM ppgHrSample p " +
+            "WHERE p.deviceId = :primaryId AND p.ts >= :from AND p.ts <= :to " +
+            "AND NOT EXISTS (SELECT 1 FROM hrSample h WHERE h.deviceId = p.deviceId AND h.ts = p.ts) " +
+            "UNION ALL " +
+            "SELECT ts, bpm, 1 AS pri FROM hrSample " +
+            "WHERE deviceId = :secondaryId AND ts >= :from AND ts <= :to " +
+            "UNION ALL " +
+            "SELECT p.ts AS ts, p.bpm AS bpm, 1 AS pri FROM ppgHrSample p " +
+            "WHERE p.deviceId = :secondaryId AND p.ts >= :from AND p.ts <= :to " +
+            "AND NOT EXISTS (SELECT 1 FROM hrSample h WHERE h.deviceId = p.deviceId AND h.ts = p.ts) " +
+            ") GROUP BY ts" +
             ")"
     )
-    suspend fun hrWindowStats(deviceId: String, from: Long, to: Long): HrWindowStats
+    suspend fun hrWindowStats(primaryId: String, secondaryId: String, from: Long, to: Long): HrWindowStats
 
     @Query(
         // #823: `ord` FIRST, so same-second beats come back in EMISSION order. Ordering by rrMs made
