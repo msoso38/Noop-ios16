@@ -206,6 +206,18 @@ enum class CommandNumber(val rawValue: Int) {
     // #690: read-only body-location/status probe. Documented in the WHOOP protocol; driven only by the
     // user-triggered, Test-Centre-gated probeBodyLocationAndStatus(). Decoded to a diagnostic report only.
     GET_BODY_LOCATION_AND_STATUS(84),
+    // START_FF_KEY_EXCHANGE (117 / 0x75) — READ-ONLY: ask the strap how many feature flags its firmware
+    // knows. The READ half of the flag surface NOOP has only ever written (SET_CONFIG/120): the protocol's
+    // own CommandNumber table names 117/118 alongside 119/120, and only the SET pair was implemented.
+    // Driven ONLY by probeFeatureFlags() (user-initiated, Test Centre → Connection gated); parsing lives in
+    // the pure com.noop.protocol.FeatureFlagProbe. Mirrors Swift WhoopCommand.startFeatureFlagKeyExchange.
+    // (#761, and #103 which it exists to answer.)
+    START_FF_KEY_EXCHANGE(117),
+    // SEND_NEXT_FF (118 / 0x76) — READ-ONLY: advance the strap's own key cursor and report one flag NAME.
+    // Names only, no values, nothing written. Its body is a CURSOR, not an index, so the same frame is
+    // repeated to walk the list; bounded by FeatureFlagProbe.MAX_FLAGS and the strap's own end marker.
+    // Mirrors Swift WhoopCommand.sendNextFeatureFlag. (#761)
+    SEND_NEXT_FF(118),
     STOP_HAPTICS(122),
     SELECT_WRIST(123);
 

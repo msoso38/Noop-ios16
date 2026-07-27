@@ -1873,6 +1873,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearBodyLocationProbe() = ble.clearBodyLocationProbe()
 
+    /** #761: READ-ONLY feature-flag ENUMERATION probe (117 then repeated 118) — reads the flag NAMES the
+     *  strap's own firmware knows and writes nothing (no SET_FF_VALUE, no value of any kind).
+     *  User-initiated, Test-Centre-gated in DevicesScreen; the report goes to the dialog + strap log. */
+    fun probeFeatureFlags() = ble.probeFeatureFlags()
+
+    /** #761 probe report text (null until the walk finishes; waiting sentinel while it runs). */
+    val featureFlagProbe = ble.featureFlagProbe
+
+    fun clearFeatureFlagProbe() = ble.clearFeatureFlagProbe()
+
     /**
      * Flip the "keep connected in the background" preference (driven by Settings). Turning it on
      * while a strap is live promotes to the foreground immediately; turning it off drops the

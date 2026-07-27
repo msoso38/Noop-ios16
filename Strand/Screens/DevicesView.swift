@@ -63,6 +63,8 @@ private struct DevicesContent: View {
     @State private var batteryProbeTarget: PairedDevice?
     /// #690 body-location probe (Test Centre → Connection) — the device whose confirm dialog is open.
     @State private var bodyLocationProbeTarget: PairedDevice?
+    /// #761 feature-flag enumeration probe (Test Centre → Connection) — the device whose dialog is open.
+    @State private var featureFlagProbeTarget: PairedDevice?
     /// After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     @State private var pickNewActive = false
 
@@ -184,7 +186,10 @@ private struct DevicesContent: View {
                     // Same Test Centre → Connection gate as the reboot probe, minus the 4.0-only clause.
                     onExtendedBatteryProbe: probeGate ? { batteryProbeTarget = device } : nil,
                     // #690 body-location probe: read-only, both families. Same Test Centre → Connection gate.
-                    onBodyLocationProbe: probeGate ? { bodyLocationProbeTarget = device } : nil)
+                    onBodyLocationProbe: probeGate ? { bodyLocationProbeTarget = device } : nil,
+                    // #761 feature-flag ENUMERATION probe: read-only (names only, nothing written), both
+                    // families. Same Test Centre → Connection gate.
+                    onFeatureFlagProbe: probeGate ? { featureFlagProbeTarget = device } : nil)
                     .staggeredAppear(index: idx)
             }
 
@@ -287,6 +292,8 @@ private struct DevicesContent: View {
         // iOS Swift type-checker's budget, and inlining a 6th/7th modifier here tips it over ("unable to
         // type-check in reasonable time"). macOS tolerates the inline form; iOS's type-inference is stricter.
         .modifier(BodyLocationProbeSheets(target: $bodyLocationProbeTarget))
+        // #761 feature-flag enumeration probe (confirm + result) — same ViewModifier isolation.
+        .modifier(FeatureFlagProbeSheets(target: $featureFlagProbeTarget))
         // Second, strongly-worded delete-data confirm (reached from the Remove card's secondary control)
         .alert("Delete all of this device's data?",
                isPresented: Binding(get: { deleteDataTarget != nil },
@@ -473,6 +480,9 @@ private struct DeviceCard: View {
     /// #592 extended-battery opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
     var onExtendedBatteryProbe: (() -> Void)? = nil
     var onBodyLocationProbe: (() -> Void)? = nil
+    /// #761 feature-flag ENUMERATION probe (Test Centre → Connection, both WHOOP families). Read-only:
+    /// it reads the flag NAMES the strap's firmware knows and writes nothing.
+    var onFeatureFlagProbe: (() -> Void)? = nil
     /// Removed-section affordances (re-add as active / delete its data).
     var onReAdd: (() -> Void)? = nil
     var onDeleteData: (() -> Void)? = nil
@@ -723,6 +733,11 @@ private struct DeviceCard: View {
                 // #690 body-location opcode probe (RE): read-only, both families. Test Centre → Connection.
                 if let onBodyLocationProbe {
                     Button { onBodyLocationProbe() } label: { Label("Body-location probe (#690 RE)…", systemImage: "ladybug") }
+                }
+                // #761 feature-flag ENUMERATION probe (RE): read-only key-name listing, both families.
+                // Test Centre → Connection.
+                if let onFeatureFlagProbe {
+                    Button { onFeatureFlagProbe() } label: { Label("Feature-flag probe (#761 RE)…", systemImage: "ladybug") }
                 }
                 if let onRemove {
                     Divider()
@@ -1037,6 +1052,77 @@ private struct BodyLocationProbeResultView: View {
                 .font(StrandFont.title2)
                 .foregroundStyle(StrandPalette.textPrimary)
             if waiting {
+                Text("Waiting for the strap's reply…")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            } else {
+                ScrollView {
+                    Text(text)
+                        .font(StrandFont.mono)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                if !waiting {
+                    Button("Copy") { PlatformPasteboard.copy(text) }
+                }
+                Spacer()
+                Button("Close") { onClose() }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 340, minHeight: 260)
+        .background(StrandPalette.surfaceOverlay)
+    }
+}
+
+/// #761: the READ-ONLY feature-flag enumeration probe's confirm + result dialogs, isolated into a
+/// ViewModifier for the same reason `BodyLocationProbeSheets` is — keeping the DevicesView
+/// `.confirmationDialog`/`.sheet` chain inside the iOS Swift type-checker's budget.
+private struct FeatureFlagProbeSheets: ViewModifier {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var live: LiveState
+    @Binding var target: PairedDevice?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Feature-flag probe (#761 RE)",
+                                isPresented: Binding(get: { target != nil },
+                                                     set: { if !$0 { target = nil } }),
+                                titleVisibility: .visible,
+                                presenting: target) { _ in
+                Button("Send probe (read-only)") { model.probeFeatureFlags(); target = nil }
+                Button("Cancel", role: .cancel) { target = nil }
+            } message: { _ in
+                Text("Asks the strap to list the feature-flag NAMES its own firmware knows: START_FF_KEY_EXCHANGE (0x75) then SEND_NEXT_FF (0x76) until the strap says it's done. Read-only — no flag value is written, and the SET commands are never sent from this probe. The list is shown here and written to the strap log.")
+            }
+            .sheet(isPresented: Binding(get: { live.featureFlagProbe != nil },
+                                        set: { if !$0 { model.clearFeatureFlagProbe() } })) {
+                FeatureFlagProbeResultView(
+                    text: live.featureFlagProbe ?? "",
+                    onClose: { model.clearFeatureFlagProbe() })
+            }
+    }
+}
+
+/// The #761 enumeration report (the strap's own flag-name list + the exchange trace), or a "waiting…"
+/// state while the walk runs. Selectable text + a Copy button, structurally identical to the #592/#690
+/// result views. Twin of the Android feature-flag probe result dialog.
+private struct FeatureFlagProbeResultView: View {
+    let text: String
+    let onClose: () -> Void
+    private var waiting: Bool { text == BLEManager.featureFlagProbeWaiting }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Feature-flag probe result (#761)")
+                .font(StrandFont.title2)
+                .foregroundStyle(StrandPalette.textPrimary)
+            if waiting {
+                // Reuses the #592/#690 waiting copy — the walk sends one 118 per reply, so at any moment
+                // it is waiting on exactly one strap reply, and the catalog keeps a single translation.
                 Text("Waiting for the strap's reply…")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)

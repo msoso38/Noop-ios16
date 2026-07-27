@@ -82,6 +82,19 @@ public enum WhoopCommand: UInt8, CaseIterable {
     /// #690: read-only body-location/status probe. Documented in the WHOOP protocol; driven only by the
     /// user-triggered, Test-Centre-gated probeBodyLocationAndStatus(). Decoded to a diagnostic report only.
     case getBodyLocationAndStatus = 84
+    /// START_FF_KEY_EXCHANGE (117 / 0x75) — ask the strap how many feature flags its firmware knows.
+    /// READ-ONLY: the reply carries a count, and nothing on the strap changes. Payload `[0x01]` (the
+    /// inner b3 byte the SET_CONFIG family and GET_HELLO use). This is the READ half of the flag surface
+    /// NOOP has only ever written (`setConfig`/120): the protocol's own `CommandNumber` table names
+    /// 117/118 alongside 119/120, and only the SET pair was implemented. Driven ONLY by
+    /// `BLEManager.probeFeatureFlags()` — user-initiated, Test Centre → Connection gated. Parsing lives in
+    /// `FeatureFlagProbe` (pure, unit-tested). (#761, and #103 which it exists to answer.)
+    case startFeatureFlagKeyExchange = 117
+    /// SEND_NEXT_FF (118 / 0x76) — advance the strap's own key cursor and report one flag NAME.
+    /// READ-ONLY: names only, no values, nothing written. Payload `[0x01]`; the body is a CURSOR, not an
+    /// index, so the same frame is repeated to walk the list. Bounded by `FeatureFlagProbe.maxFlags` and
+    /// by the strap's own end marker. Driven ONLY by `BLEManager.probeFeatureFlags()`. (#761)
+    case sendNextFeatureFlag = 118
     case toggleIMUMode         = 106
     case enableOpticalData     = 107
     /// SET_CONFIG / SET_FF_VALUE (0x78) — write one persistent device feature-flag. Used by the
@@ -149,6 +162,8 @@ public enum WhoopCommand: UInt8, CaseIterable {
         case .exitHighFreqSync:      return "Exit High-Freq Sync"
         case .getExtendedBatteryInfo:return "Get Extended Battery Info"
         case .getBodyLocationAndStatus:return "Get Body Location And Status"
+        case .startFeatureFlagKeyExchange: return "Start Feature-Flag Key Exchange"
+        case .sendNextFeatureFlag:   return "Send Next Feature Flag"
         case .toggleIMUMode:         return "Toggle IMU Mode"
         case .enableOpticalData:     return "Enable Optical Data"
         case .setConfig:             return "Set Config (R22 feature flag)"

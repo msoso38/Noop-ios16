@@ -380,6 +380,8 @@ public func frame(seq: UInt8, payload: [UInt8] = [0x00]) -> [UInt8] {
 | 100 | `CALIBRATE_CAPSENSE` | — | recalibrate cap-touch |
 | 105 / 106 | `TOGGLE_IMU_MODE_HISTORICAL` / `TOGGLE_IMU_MODE` | `[0x01]` | IMU stream mode |
 | 107 | `ENABLE_OPTICAL_DATA` | — | optical (PPG) data |
+| 117 | `START_FF_KEY_EXCHANGE` | `[0x01]` | how many feature flags the firmware knows (read-only enumeration probe, #761 — below) |
+| 118 | `SEND_NEXT_FF` | `[0x01]` | next feature-flag NAME (cursor, not index; read-only, #761 — below) |
 | 122 | `STOP_HAPTICS` | `[0x00]` | stop an in-progress haptic |
 | 123 | `SELECT_WRIST` | — | set strap wrist |
 
@@ -462,6 +464,38 @@ Driven by `BLEManager.probeBodyLocationAndStatus()` / `WhoopBleClient.probeBodyL
 formatted by the pure `BodyLocationProbe` twin (Swift↔Kotlin byte-parity locked by a golden test). The
 layout + enum facts are reverse-engineered from the WHOOP app and reimplemented in NOOP's own code
 (facts, not copied expression — see [`ATTRIBUTION.md`](../ATTRIBUTION.md)).
+
+**Feature-flag enumeration probe (#761, read-only).** NOOP has always been able to WRITE a feature flag
+(`SET_FF_VALUE` / 120, the R22 unlock in `Whoop5Config`) but never to ASK a strap which flags it knows.
+The `CommandNumber` table names a full symmetric read side that was never implemented — 117
+`START_FF_KEY_EXCHANGE` / 118 `SEND_NEXT_FF` for feature flags, 115 / 116 for device config — and this
+probe uses the enumerate pair only: **names, no values, nothing written.** `GET_FF_VALUE` (128) is
+deliberately not sent: the only hands-on report of it (`johnmiddleton12/wearable`, run on the author's
+own WHOOP 4.0 on fw 41.16.6.0) states its reply's value field is contaminated by a stale shared buffer,
+so an on/off read is unreliable; the same session ran the 117→118 loop and got a complete key dump.
+
+Request bodies are `[0x01]` (the inner b3 byte the SET_CONFIG family and `GET_HELLO` use); 118's body is
+a **cursor, not an index**, so the same frame is repeated to walk the list. The reply is an ordinary
+COMMAND_RESPONSE whose record sits behind the 2-byte response header (`pay[1]` is the 5/MG result code) —
+the same `pay[2]` record start `GET_BATTERY_LEVEL` and `GET_CLOCK` already decode from:
+
+| Command | Record (from `pay[2]`) |
+|---|---|
+| 117 `START_FF_KEY_EXCHANGE` | `revision u8` · `numberOfFeatureFlags u16 LE` · padding |
+| 118 `SEND_NEXT_FF` | `revision u8` · `index u8` · `validKey u8` · `key` (ASCII, NUL-terminated) · padding |
+
+The walk stops on the strap's own end marker (`validKey = 0`, or `index = 0xFF`), on the announced count,
+or on a hard cap of 128 replies — and each 118 is only sent after the previous reply lands. Both CRCs are
+verified before any field is read; a failed CRC, a non-COMMAND_RESPONSE type, or a short record ends the
+walk with a named reason instead of a decode. Driven by `BLEManager.probeFeatureFlags()` /
+`WhoopBleClient.probeFeatureFlags()` (user-triggered, Test Centre → Connection, both families) and
+allowlisted for 5/MG framing **only while a probe is in flight**; parsed + rendered by the pure
+`FeatureFlagProbe` / `FeatureFlagProbeReport` twins (Swift↔Kotlin byte-parity, unit-tested on synthetic
+frames). Result goes to a copyable dialog + the strap log; no storage. The field order and opcode numbers
+are facts read off a decompiled official client's response types and corroborated by that 4.0 dump,
+reimplemented in NOOP's own code — facts, not copied expression (see [`ATTRIBUTION.md`](../ATTRIBUTION.md)).
+**Unverified on 5/MG:** the published key dump is a 4.0's R19-era list; whether a 5/MG answers 117 at all
+is what the probe exists to establish (§10).
 
 **GET_DATA_RANGE ring backlog (#689, diagnostic only).** Beyond the oldest/newest timestamps NOOP already
 scans from a `GET_DATA_RANGE` reply, the app computes a ring-buffer page backlog from three u32s in the
@@ -645,6 +679,12 @@ Recorded because "why is there no blood oxygen?" is a recurring question with a 
 - **A night with no export value is a real gap**, not a NOOP bug — naps and incomplete nights are
   reported to carry none. (Contributor observation from #807, not something this repo can verify from
   the wire; recorded because "my SpO₂ is missing" reads as a decode failure otherwise.)
+
+- **Whether a firmware FLAG gates it is now answerable from the strap itself.** The read-only
+  feature-flag enumeration probe (§6, #761) asks the strap to list the flag names its own firmware
+  knows. A 5/MG list with no oxygen-related key is evidence Blood Oxygen is not client-writable at all;
+  a list containing one is the answer outright. That is a direct read, not an inference from a byte that
+  happens to be zero — the same move the Oura `spo2_status` probe already makes for the ring.
 
 So the research target is finding the banked on-device sample in the historical type-47 record — not
 inventing a red/IR ratio or reversing a calibration curve. The v18 `@82` candidate and its split

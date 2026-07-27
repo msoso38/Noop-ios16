@@ -390,6 +390,9 @@
     <string name="l10n_devices_screen_body_location_probe_690_re_7def8c39">Körperpositions-Test (#690 RE)…</string>
     <string name="l10n_devices_screen_body_location_probe_result_690_60c5ee79">Ergebnis des Körperpositions-Tests (#690)</string>
     <string name="l10n_devices_screen_body_location_probe_explainer_a9363239">Sendet den nur lesenden Körperpositions-Befehl (0x54) und schreibt die vollständige Rohantwort des Bands ins Strap-Log, wobei der Datensatz (Revision / Position / Konfidenz / Status) auf der WHOOP 4.0 dekodiert wird. Es wird nichts auf das Band geschrieben, und Trageerkennung oder Bewertung werden nie verändert.</string>
+    <string name="l10n_devices_screen_feature_flag_probe_761_re_21241d68">Feature-Flag-Test (#761 RE)…</string>
+    <string name="l10n_devices_screen_feature_flag_probe_result_761_c50ef4d4">Ergebnis des Feature-Flag-Tests (#761)</string>
+    <string name="l10n_devices_screen_feature_flag_probe_explainer_58eec30f">Fragt das Band nach den NAMEN der Feature-Flags, die seine eigene Firmware kennt: START_FF_KEY_EXCHANGE (0x75), dann SEND_NEXT_FF (0x76), bis das Band das Ende meldet. Nur lesend — es wird kein Flag-Wert geschrieben, und die SET-Befehle werden von diesem Test nie gesendet. Die Liste wird hier angezeigt und ins Strap-Log geschrieben.</string>
     <string name="l10n_devices_screen_battery_probe_explainer_2858bb6a">Zwei unabhängige Protokolltabellen widersprechen sich beim Extended-Battery-Opcode (98 vs. 87). Dies sendet das kuratierte, nur lesende 98 und schreibt die vollständige Rohantwort des Bands ins Strap-Log. Eine batterieartige Nutzlast bestätigt 98 auf deiner Firmware; ein kurzer Stub bleibt mehrdeutig. Es wird nichts auf das Band geschrieben. Bitte exportiere und teile danach das Strap-Log.</string>
     <string name="l10n_devices_screen_cancel_77dfd213">Abbrechen</string>
     <string name="l10n_devices_screen_clamped_1f39cebb">%1$s%%</string>

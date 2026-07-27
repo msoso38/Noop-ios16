@@ -115,6 +115,8 @@ fun DevicesScreen(
     val batteryProbeResult by viewModel.extendedBatteryProbe.collectAsStateWithLifecycle()
     // #690 body-location probe result — same non-null-shows-the-dialog contract.
     val bodyLocationProbeResult by viewModel.bodyLocationProbe.collectAsStateWithLifecycle()
+    // #761: the read-only feature-flag ENUMERATION report (or the waiting sentinel while it walks).
+    val featureFlagProbeResult by viewModel.featureFlagProbe.collectAsStateWithLifecycle()
 
     // Liquid sky backdrop gate — the SAME "Day-cycle background" preference the liquid Today honours (#698,
     // default ON). Off falls back to the flat dark canvas, so the setting governs every liquid screen alike.
@@ -140,6 +142,7 @@ fun DevicesScreen(
     var probeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var batteryProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var bodyLocationProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
+    var featureFlagProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     // After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     var pickNewActive by remember { mutableStateOf(false) }
 
@@ -266,6 +269,12 @@ fun DevicesScreen(
                     SourceCoordinator.isWhoop(device) &&
                     TestCentre.from(context).active(TestDomain.CONNECTION)
                 ) { { bodyLocationProbeTarget = device } } else null,
+                // #761 feature-flag ENUMERATION probe: read-only (names only, nothing written), both
+                // families. Same Test Centre gate.
+                onFeatureFlagProbe = if (device.status == DeviceStatus.active.name && live.connected &&
+                    SourceCoordinator.isWhoop(device) &&
+                    TestCentre.from(context).active(TestDomain.CONNECTION)
+                ) { { featureFlagProbeTarget = device } } else null,
             )
         }
 
@@ -407,6 +416,20 @@ fun DevicesScreen(
             onDismiss = { viewModel.clearBodyLocationProbe() },
         )
     }
+    // #761 feature-flag ENUMERATION probe: read-only key-name listing (117 then repeated 118); no value
+    // is written to the strap.
+    featureFlagProbeTarget?.let {
+        FeatureFlagProbeDialog(
+            onSend = { viewModel.probeFeatureFlags(); featureFlagProbeTarget = null },
+            onDismiss = { featureFlagProbeTarget = null },
+        )
+    }
+    featureFlagProbeResult?.let { result ->
+        FeatureFlagProbeResultDialog(
+            text = result,
+            onDismiss = { viewModel.clearFeatureFlagProbe() },
+        )
+    }
 
     // --- Second, strongly-worded delete-data confirm (from the Removed card's secondary control) ---
     deleteDataTarget?.let { device ->
@@ -482,6 +505,9 @@ private fun DeviceCard(
     onBatteryProbe: (() -> Unit)? = null,
     // #690 body-location opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
     onBodyLocationProbe: (() -> Unit)? = null,
+    /** #761 feature-flag ENUMERATION probe (Test Centre → Connection, both WHOOP families). Read-only:
+     *  it reads the flag NAMES the strap's firmware knows and writes nothing. */
+    onFeatureFlagProbe: (() -> Unit)? = null,
 ) {
     val profile = deviceProfile(device)
     // The per-device actions menu's open state is hoisted here so the WHOLE card is a tap target that opens
@@ -598,6 +624,7 @@ private fun DeviceCard(
                     onRebootProbe = onRebootProbe,
                     onBatteryProbe = onBatteryProbe,
                     onBodyLocationProbe = onBodyLocationProbe,
+                    onFeatureFlagProbe = onFeatureFlagProbe,
                 )
             }
         }
@@ -718,6 +745,9 @@ private fun DeviceActionsMenu(
     onRebootProbe: (() -> Unit)? = null,
     onBatteryProbe: (() -> Unit)? = null,
     onBodyLocationProbe: (() -> Unit)? = null,
+    /** #761 feature-flag ENUMERATION probe (Test Centre → Connection, both WHOOP families). Read-only:
+     *  it reads the flag NAMES the strap's firmware knows and writes nothing. */
+    onFeatureFlagProbe: (() -> Unit)? = null,
 ) {
     Box {
         IconButton(
@@ -774,6 +804,10 @@ private fun DeviceActionsMenu(
                 // #690: read-only body-location opcode probe — decodes revision/location/confidence/status.
                 if (onBodyLocationProbe != null) {
                     MenuItem(uiString(R.string.l10n_devices_screen_body_location_probe_690_re_7def8c39), Icons.Filled.BugReport) { onOpenChange(false); onBodyLocationProbe() }
+                }
+                // #761 feature-flag ENUMERATION probe (RE): read-only key-name listing, both families.
+                if (onFeatureFlagProbe != null) {
+                    MenuItem(uiString(R.string.l10n_devices_screen_feature_flag_probe_761_re_21241d68), Icons.Filled.BugReport) { onOpenChange(false); onFeatureFlagProbe() }
                 }
                 if (onRemove != null) {
                     HorizontalDivider(color = Palette.hairline)
@@ -1034,6 +1068,74 @@ private fun BodyLocationProbeResultDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.surfaceOverlay,
         title = { Text(uiString(R.string.l10n_devices_screen_body_location_probe_result_690_60c5ee79), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                SelectionContainer {
+                    Text(shown, style = if (waiting) NoopType.subhead else NoopType.mono, color = Palette.textSecondary)
+                }
+            }
+        },
+        confirmButton = {
+            if (!waiting) {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(text)) }) {
+                    Text(uiString(R.string.l10n_devices_screen_copy_af74f7c5), style = NoopType.body, color = Palette.accent)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_close_bbfa773e), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #761 feature-flag ENUMERATION probe: a read-only walk of the strap's own flag-name list (117 then
+ *  repeated 118). Nothing is written to the strap. Gated to Test Centre → Connection + a live WHOOP at
+ *  the call site. Twin of the Swift FeatureFlagProbeSheets confirm dialog. */
+@Composable
+private fun FeatureFlagProbeDialog(
+    onSend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_feature_flag_probe_761_re_21241d68), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Text(
+                uiString(R.string.l10n_devices_screen_feature_flag_probe_explainer_58eec30f),
+                style = NoopType.subhead,
+                color = Palette.textSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onSend) {
+                Text(uiString(R.string.l10n_devices_screen_send_probe_read_only_36b318bc), style = NoopType.body, color = Palette.accent)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #761 probe result: the strap's own flag-name list + the exchange trace (or a "waiting…" state), with
+ *  a Copy button. Read-only; dismiss clears the result. Twin of the Swift FeatureFlagProbeResultView. */
+@Composable
+private fun FeatureFlagProbeResultDialog(
+    text: String,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val waiting = text == WhoopBleClient.WAITING_FEATURE_FLAG_PROBE
+    val shown = if (waiting) uiString(R.string.l10n_devices_screen_waiting_for_the_straps_reply_5a06e7ac) else text
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_feature_flag_probe_result_761_c50ef4d4), style = NoopType.title2, color = Palette.textPrimary) },
         text = {
             Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
                 SelectionContainer {

@@ -205,6 +205,18 @@ object Framing {
         return FrameCheck(ok = headerOk && (crc32Ok == true), length = declaredLength, headerCrcOk = headerOk, crc32Ok = crc32Ok)
     }
 
+    /**
+     * Family-aware envelope + CRC check — true only when the envelope and BOTH CRCs verify. The Kotlin
+     * twin of Swift's `verifyFrame(_:family:).ok`. Exposed so a decoder outside this object can CRC-gate
+     * a frame before reading any field (the BLE safety contract's "bad bytes never drive state");
+     * [parseFrame] uses the same two private validators internally.
+     */
+    fun frameCrcOk(frame: ByteArray, family: DeviceFamily): Boolean =
+        when (family) {
+            DeviceFamily.WHOOP4 -> verifyWhoop4(frame).ok
+            DeviceFamily.WHOOP5 -> verifyWhoop5(frame).ok
+        }
+
     // MARK: - type / enum naming
 
     /** Canonical packet-type name, aliasing the Whoop 5.0 "puffin" types onto their base names. */
