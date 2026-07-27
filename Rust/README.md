@@ -78,7 +78,32 @@ cargo update -p liters-ffi     # then commit the Cargo.lock change
 
 `Cargo.lock` is committed on purpose: it records the exact liters commit this
 tree builds against, so a checkout is reproducible even though the dependency
-tracks a branch.
+tracks a branch. As of this commit the pin is
+`liters-mobile@6835f9f9`, and the four commits between it and `liters-mobile`
+`main` are documentation and test-harness changes only.
+
+### What the pin does NOT contain
+
+There are **two** liters repos, and only one of them is pinned here:
+
+| repo | role |
+|---|---|
+| `vishk23/liters-mobile` | public, MIT, **what `Cargo.toml` pins** |
+| `vishk23/liters` | the working clone; carries `fix/replica-lock-deadlock` |
+
+`fix(replica): bound and cancel the replica-file lock instead of blocking
+forever` — the F_SETLKW fix that replaces a kernel-blocking `fcntl(F_SETLKW)`
+with a bounded `F_SETLK` poll so `CancelToken` can interrupt it — exists only in
+`vishk23/liters`. It has **not** been merged to `liters-mobile` `main`, so it is
+**not** in the archive this directory builds. Check before assuming otherwise:
+
+```sh
+git -C <liters-mobile> log --all --oneline --grep="bound and cancel"   # currently empty
+```
+
+Like the integrity-check gotcha above, it is a Replica-side fix and so does not
+affect the phone, which is a Writer. Both should be landed on `liters-mobile`
+before anything runs a Replica against a system-SQLite build.
 
 ## Build time, and the one thing that would fix it
 
