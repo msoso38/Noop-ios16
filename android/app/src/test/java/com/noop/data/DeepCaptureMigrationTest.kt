@@ -3,6 +3,7 @@ package com.noop.data
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.lang.reflect.Proxy
@@ -84,39 +85,108 @@ class DeepCaptureMigrationTest {
 
     // MARK: - Rolling retention (insert plumbing through a Proxy DAO, the RawImuMigrationTest pattern)
 
-    /**
-     * `v18AuxSample` is CAPPED, not unbounded — the insert must follow the write with the rolling prune,
-     * passing the shipped constant. Twin of the Swift `testAuxRowsAreCappedNewestFirst`; the DELETE's own
-     * semantics are proved end-to-end there (no SQLite driver on this classpath).
-     */
-    @Test
-    fun repositoryInsertV18Aux_insertsThenPrunes() = runBlocking {
-        var inserted: List<V18AuxSampleEntity>? = null
+    /** One aux row banked, and the device+keep the repository passed to the sweep (null = never swept). */
+    private class AuxSweepRecorder {
+        var insertedBatches = 0
+        var insertedRows = 0
         var prunedDevice: String? = null
         var prunedKeep = -1
-        val dao = Proxy.newProxyInstance(
+        var sweeps = 0
+
+        val dao: WhoopDao = Proxy.newProxyInstance(
             WhoopDao::class.java.classLoader,
             arrayOf(WhoopDao::class.java),
         ) { _, method, args ->
             when (method.name) {
                 "insertV18Aux" -> {
                     @Suppress("UNCHECKED_CAST")
-                    inserted = args[0] as List<V18AuxSampleEntity>
-                    listOf(1L)
+                    val rows = args[0] as List<V18AuxSampleEntity>
+                    insertedBatches += 1
+                    insertedRows += rows.size
+                    List(rows.size) { 1L }
                 }
-                "pruneV18Aux" -> { prunedDevice = args[0] as String; prunedKeep = args[1] as Int; Unit }
+                "pruneV18Aux" -> {
+                    prunedDevice = args[0] as String; prunedKeep = args[1] as Int; sweeps += 1; Unit
+                }
                 else -> throw UnsupportedOperationException("v18-aux insert must not call ${method.name}")
             }
         } as WhoopDao
+    }
 
-        WhoopRepository(dao).insert(
-            StreamBatch(v18Aux = listOf(V18AuxRow(ts = 1_780_916_150L, statusWord = 1_792L))),
+    /** [n] aux rows that each pack to a non-empty blob, at distinct timestamps from [firstTs]. */
+    private fun auxRows(n: Int, firstTs: Long = 1_780_916_150L) =
+        StreamBatch(v18Aux = (0 until n).map { V18AuxRow(ts = firstTs + it, statusWord = 1_792L) })
+
+    /**
+     * `v18AuxSample` is CAPPED, not unbounded — the insert must follow the write with the rolling prune,
+     * passing the shipped retention constant. Twin of the Swift `testAuxRowsAreCappedNewestFirst`; the
+     * DELETE's own semantics are proved end-to-end there (no SQLite driver on this classpath).
+     *
+     * Passes `v18AuxPruneEveryRows = 1` for the same reason the Swift retention tests do since #888:
+     * the sweep is amortised in production, so a one-row batch would otherwise bank its row and defer.
+     */
+    @Test
+    fun repositoryInsertV18Aux_insertsThenPrunes() = runBlocking {
+        val rec = AuxSweepRecorder()
+
+        WhoopRepository(rec.dao).insert(
+            auxRows(1),
             "my-whoop",
+            v18AuxPruneEveryRows = 1,
         )
 
-        assertEquals(1, inserted!!.size)
-        assertEquals("my-whoop", prunedDevice)
-        assertEquals(WhoopRepository.V18_AUX_RETENTION_ROWS, prunedKeep)
+        assertEquals(1, rec.insertedRows)
+        assertEquals("my-whoop", rec.prunedDevice)
+        assertEquals(WhoopRepository.V18_AUX_RETENTION_ROWS, rec.prunedKeep)
+    }
+
+    // MARK: - Amortisation (#888) — Kotlin twins of the Swift DeepCaptureChannelsTests cases
+
+    /** Below the threshold the rows are banked and the walk is deferred: written, but never swept. */
+    @Test
+    fun repositoryInsertV18Aux_belowThresholdDefersTheSweep() = runBlocking {
+        val rec = AuxSweepRecorder()
+        WhoopRepository(rec.dao).insert(auxRows(3), "dev1", v18AuxPruneEveryRows = 5_000)
+        assertEquals(3, rec.insertedRows)
+        assertEquals(0, rec.sweeps)
+        assertNull(rec.prunedDevice)
+    }
+
+    /** Crossing the threshold — across batches, since the counter accumulates — sweeps exactly once. */
+    @Test
+    fun repositoryInsertV18Aux_sweepsOnceTheThresholdIsCrossed() = runBlocking {
+        val rec = AuxSweepRecorder()
+        val repo = WhoopRepository(rec.dao)
+        repo.insert(auxRows(3, firstTs = 1_000L), "dev1", v18AuxPruneEveryRows = 7)
+        assertEquals(0, rec.sweeps)
+        repo.insert(auxRows(3, firstTs = 2_000L), "dev1", v18AuxPruneEveryRows = 7)
+        assertEquals(0, rec.sweeps)
+        repo.insert(auxRows(3, firstTs = 3_000L), "dev1", v18AuxPruneEveryRows = 7)
+        assertEquals(1, rec.sweeps)
+        assertEquals("dev1", rec.prunedDevice)
+    }
+
+    /** The counter resets on a successful sweep, so a long offload sweeps repeatedly rather than once. */
+    @Test
+    fun repositoryInsertV18Aux_theAmortisationCounterResetsAfterEachSweep() = runBlocking {
+        val rec = AuxSweepRecorder()
+        val repo = WhoopRepository(rec.dao)
+        repeat(4) { repo.insert(auxRows(4, firstTs = 1_000L * (it + 1)), "dev1", v18AuxPruneEveryRows = 4) }
+        assertEquals(4, rec.sweeps)
+    }
+
+    /** The budget is per device — one strap's inserts must not spend another's. Fails on a shared counter. */
+    @Test
+    fun repositoryInsertV18Aux_theAmortisationBudgetIsNotSharedBetweenDevices() = runBlocking {
+        val rec = AuxSweepRecorder()
+        val repo = WhoopRepository(rec.dao)
+        repo.insert(auxRows(2, firstTs = 1_000L), "dev1", v18AuxPruneEveryRows = 4)
+        repo.insert(auxRows(2, firstTs = 2_000L), "dev2", v18AuxPruneEveryRows = 4)
+        // A shared counter would now stand at 4 and sweep here on dev1's second batch.
+        assertEquals(0, rec.sweeps)
+        repo.insert(auxRows(2, firstTs = 3_000L), "dev1", v18AuxPruneEveryRows = 4)
+        assertEquals(1, rec.sweeps)
+        assertEquals("dev1", rec.prunedDevice)
     }
 
     /** A batch whose aux rows all pack to nothing writes no row, so it must not sweep either. */

@@ -374,8 +374,17 @@ class WhoopRepository(private val dao: WhoopDao) {
      * Persist one decoded batch under [deviceId]. Returns the number of rows actually inserted
      * per stream (0 for rows that already existed). Empty sub-lists compile/run nothing.
      * Port of WhoopStore.insert(_:deviceId:).
+     *
+     * [v18AuxRetentionRows] and [v18AuxPruneEveryRows] exist so the retention tests can pin the sweep's
+     * behaviour without banking 10,000 rows first; production callers take the shipped constants. Twin of
+     * the Swift `insert(_:deviceId:v18AuxRetentionRows:v18AuxPruneEveryRows:)` overload added in #888.
      */
-    suspend fun insert(streams: StreamBatch, deviceId: String): InsertCounts {
+    suspend fun insert(
+        streams: StreamBatch,
+        deviceId: String,
+        v18AuxRetentionRows: Int = V18_AUX_RETENTION_ROWS,
+        v18AuxPruneEveryRows: Int = V18_AUX_PRUNE_EVERY_ROWS,
+    ): InsertCounts {
         if (streams.isEmpty) return InsertCounts()
 
         val hrIds = if (streams.hr.isEmpty()) emptyList() else
@@ -455,8 +464,8 @@ class WhoopRepository(private val dao: WhoopDao) {
                 // Best-effort: the rows above are already committed, so a sweep failure must not surface
                 // as an insert failure and make Backfiller re-send a chunk it has already banked. Leaving
                 // the budget unspent means the next batch retries the sweep.
-                if (banked >= V18_AUX_PRUNE_EVERY_ROWS) {
-                    runCatching { dao.pruneV18Aux(deviceId, V18_AUX_RETENTION_ROWS) }
+                if (banked >= v18AuxPruneEveryRows) {
+                    runCatching { dao.pruneV18Aux(deviceId, v18AuxRetentionRows) }
                         .onSuccess { v18AuxRowsSincePrune[deviceId] = 0 }
                         // pruneV18Aux is a suspend call, so a scope cancellation arrives here as a
                         // CancellationException that runCatching would otherwise swallow — the caller would
