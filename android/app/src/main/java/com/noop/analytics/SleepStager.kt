@@ -1576,6 +1576,16 @@ object SleepStager {
     private const val rsaMinBreathIntervalS: Double = 2.5  // 24 bpm
     private const val rsaMaxBreathIntervalS: Double = 10.0 // 6 bpm
 
+    // Beat-accuracy gate for RSA (see respRateFromRR). RSA is a FREQUENCY-domain method: it recovers the
+    // ~0.2–0.3 Hz breathing oscillation from beat TIMING, so it needs a per-beat-accurate R-R stream (each
+    // row's wall-clock gap ≈ its own R-R value). Time-domain HRV (RMSSD) is order-only and does NOT need
+    // this. A banked/batched stream — an Oura overnight IBI stamps many beats at one coarse ring-time
+    // (validated: only ~2% of beats are time-accurate) — cannot support RSA; the estimate collapses to a
+    // confidently-wrong ~7–10 bpm. Gate: if fewer than beatAccuracyMinFraction of beats have a wall-clock
+    // gap within beatAccuracyToleranceS of their R-R value, return NaN. Byte-identical twin of Swift.
+    private const val beatAccuracyToleranceS: Double = 0.5
+    private const val beatAccuracyMinFraction: Double = 0.5
+
     /**
      * THE canonical plausible sleeping-respiratory-rate band (bpm). The RSA peak-pick above can yield
      * 6–8 bpm at its noise floor, but every consumer (ReadinessEngine illness/readiness) only acts on
@@ -1611,11 +1621,22 @@ object SleepStager {
         if (end <= start) return nan
 
         // 1. In-bed RR rows in chronological order, range-filtered.
-        val inBed = rr.asSequence()
-            .filter { it.ts in start..end }
-            .sortedBy { it.ts }
-            .map { it.rrMs.toDouble() }
-            .toList()
+        val inBedRows = rr.filter { it.ts in start..end }.sortedBy { it.ts }
+
+        // Beat-accuracy gate: RSA needs per-beat-accurate TIMING (each row's wall-clock gap ≈ its own R-R
+        // value). A banked/batched stream (an Oura overnight IBI stamps many beats at one coarse ring-time)
+        // fails this and yields a confidently-wrong ~7–10 bpm; return NaN instead. Beat-accurate callers
+        // (WHOOP R-R, the synthetic RSA fixtures) are ~100% accurate and pass unchanged.
+        if (inBedRows.size >= 30) {
+            var accurate = 0
+            for (i in 1 until inBedRows.size) {
+                val gapS = (inBedRows[i].ts - inBedRows[i - 1].ts).toDouble()
+                if (kotlin.math.abs(gapS - inBedRows[i].rrMs.toDouble() / 1000.0) <= beatAccuracyToleranceS) accurate++
+            }
+            if (accurate.toDouble() / (inBedRows.size - 1).toDouble() < beatAccuracyMinFraction) return nan
+        }
+
+        val inBed = inBedRows.map { it.rrMs.toDouble() }
         val filtered = HrvAnalyzer.rangeFilter(inBed)
         if (filtered.size < 30) return nan // need enough beats for any RSA estimate
 

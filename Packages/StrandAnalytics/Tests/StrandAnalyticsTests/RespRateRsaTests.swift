@@ -57,6 +57,29 @@ final class RespRateRsaTests: XCTestCase {
         XCTAssertLessThan(est, 16.0, "resp estimate must not be doubled toward ~22 (#958)")
     }
 
+    /// A banked/batched R-R stream whose timestamps are NOT beat-accurate (an Oura overnight IBI stamps
+    /// many beats at one coarse ring-time) must return NaN — RSA is a frequency-domain method and cannot
+    /// recover breathing from a corrupted time axis, so the honest answer is no-data, not a wrong ~8 bpm.
+    /// Same R-R VALUES as the recovering test, only the TIMESTAMPS are batched.
+    func testRespRateFromRRBatchedTimestampsIsNaN() {
+        let breathHz = 0.25
+        let baseRrMs = 1000.0, ampMs = 40.0
+        let start = 1_700_000_000
+        var rows: [RRInterval] = []
+        var tSec = 0.0
+        var beat = 0
+        while tSec < 600.0 {
+            let rrMs = baseRrMs + ampMs * sin(2.0 * Double.pi * breathHz * tSec)
+            tSec += rrMs / 1000.0
+            // Batched stamp: 6 beats share one coarse second, then jump — like a banked-IBI record.
+            // The wall-clock gap (mostly 0) no longer matches the ~1 s R-R value.
+            rows.append(RRInterval(ts: start + (beat / 6), rrMs: Int(rrMs)))
+            beat += 1
+        }
+        let est = SleepStager.respRateFromRR(rows, start: start, end: start + 600)
+        XCTAssertTrue(est.isNaN, "batched (non-beat-accurate) timestamps must gate to NaN, got \(est)")
+    }
+
     func testRespRateFromRRTooFewBeatsIsNaN() {
         let start = 1_700_000_000
         let rows = [

@@ -72,6 +72,29 @@ class RespRateRsaTest {
     }
 
     @Test
+    fun respRateFromRR_batchedTimestampsIsNaN() {
+        // A banked/batched R-R stream whose timestamps are NOT beat-accurate (an Oura overnight IBI stamps
+        // many beats at one coarse ring-time) must return NaN — RSA cannot recover breathing from a
+        // corrupted time axis. Same R-R VALUES as the recovering test, only the TIMESTAMPS are batched.
+        val breathHz = 0.25
+        val baseRrMs = 1000.0
+        val ampMs = 40.0
+        val start = 1_700_000_000L
+        val rows = ArrayList<RrInterval>()
+        var tSec = 0.0
+        var beat = 0
+        while (tSec < 600.0) {
+            val rrMs = baseRrMs + ampMs * Math.sin(2.0 * Math.PI * breathHz * tSec)
+            tSec += rrMs / 1000.0
+            // Batched stamp: 6 beats share one coarse second, then jump — like a banked-IBI record.
+            rows.add(RrInterval(deviceId = "test", ts = start + (beat / 6).toLong(), rrMs = rrMs.toInt()))
+            beat++
+        }
+        val est = SleepStager.respRateFromRR(rows, start, start + 600)
+        assertTrue("batched (non-beat-accurate) timestamps must gate to NaN, got $est", est.isNaN())
+    }
+
+    @Test
     fun respRateFromRR_tooFewBeatsIsNaN() {
         val start = 1_700_000_000L
         val rows = listOf(
