@@ -455,9 +455,6 @@ private fun SkinTempSuiteSection(
             CycleAwarenessOptInCard(onEnable = onEnableCycle)
         }
 
-        // Body clock: only when the engine produced an estimate (no faked card while the input pipe is empty).
-        signals?.bodyClock?.let { BodyClockCard(estimate = it) }
-
         Text(
             uiString(R.string.l10n_health_screen_cycle_phase_body_clock_and_illness_59e2d9a4) +
                 "your own nightly temperature, heart rate and HRV: observations about your own numbers, " +

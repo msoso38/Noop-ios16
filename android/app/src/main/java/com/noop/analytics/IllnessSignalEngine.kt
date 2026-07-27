@@ -46,7 +46,7 @@ object IllnessSignalEngine {
 
     /**
      * Same-day behaviour context that can explain an anomaly away. [travelPhaseJump] is the cross-feature
-     * hook — CircadianEngine can flag a detected body-clock jump (jet lag). [baselineTrusted] = false →
+     * hook — a body-clock jump (jet lag) would flag here if a phase estimator existed. [baselineTrusted] = false →
      * the engine stays silent (don't warn off a cold-start baseline).
      */
     data class Context(

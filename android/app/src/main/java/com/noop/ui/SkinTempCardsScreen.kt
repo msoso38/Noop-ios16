@@ -43,7 +43,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import com.noop.analytics.CircadianEngine
 import com.noop.analytics.CyclePhaseEngine
 import com.noop.analytics.IllnessDistance
 import com.noop.analytics.IllnessSignalEngine
@@ -60,8 +59,6 @@ import kotlin.math.roundToInt
 //                            preference). Awareness only — NOT contraception, NOT a fertility/
 //                            ovulation predictor, NOT a diagnosis. Phase + cycle-day RANGE +
 //                            probabilistic next-period WINDOW (never a hard date).
-//   • BodyClockCard        — CircadianEngine.PhaseEstimate (+ optional JetLagPlan). LIGHT +
-//                            SLEEP TIMING only, never a supplement/drug.
 //   • HeadsUpCard          — IllnessSignalEngine.Result. Confounder-suppressed illness
 //                            "heads-up". On-device estimate — not a diagnosis.
 //
@@ -223,65 +220,6 @@ fun CycleAwarenessOptInCard(onEnable: () -> Unit) {
 
 // MARK: - 2. Body Clock card
 
-/**
- * Estimated body-clock phase + an optional jet-lag / shift plan. LIGHT + SLEEP TIMING only —
- * never a supplement. Behavioural awareness, approximate.
- */
-@Composable
-fun BodyClockCard(
-    estimate: CircadianEngine.PhaseEstimate,
-    plan: CircadianEngine.JetLagPlan? = null,
-    onOpenPlanner: (() -> Unit)? = null,
-) {
-    val hue = Palette.restColor
-    NoopCard(tint = hue) {
-        Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Overline("Body clock")
-                    Text(uiString(R.string.l10n_skin_temp_cards_screen_light_sleep_timing_only_df2a1552), style = NoopType.footnote, color = Palette.textTertiary)
-                }
-                StatePill(bodyClockConfidenceLabel(estimate.confidence), tone = bodyClockConfidenceTone(estimate.confidence))
-            }
-
-            Text(bodyClockOffsetTitle(estimate), style = NoopType.title2, color = Palette.textPrimary)
-
-            Text(estimate.note, style = NoopType.subhead, color = Palette.textSecondary)
-
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Filled.NightsStay, contentDescription = null, tint = hue, modifier = Modifier.size(14.dp))
-                Text(
-                    uiString(R.string.l10n_skin_temp_cards_screen_estimated_body_clock_low_around_clockstring_fb0f0790, clockString(estimate.tempMinHour)),
-                    style = NoopType.footnote,
-                    color = Palette.textTertiary,
-                )
-            }
-
-            val firstDay = plan?.days?.firstOrNull()
-            if (plan != null && plan.direction != CircadianEngine.ShiftDirection.NONE && firstDay != null) {
-                HorizontalDivider(color = Palette.hairline)
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Overline("Plan · ${plan.estimatedDays}-day shift")
-                    Text(
-                        uiString(R.string.l10n_skin_temp_cards_screen_day_1_bright_light_clockstring_firstday_43b5fe87, clockString(firstDay.brightLightStartHour)) +
-                            "${clockString(firstDay.brightLightEndHour)}, lights-out around " +
-                            "${clockString(firstDay.targetSleepHour)}.",
-                        style = NoopType.subhead,
-                        color = Palette.textSecondary,
-                    )
-                    Text(plan.note, style = NoopType.footnote, color = Palette.textTertiary)
-                }
-            }
-
-            if (onOpenPlanner != null) {
-                OutlinedButton(
-                    onClick = onOpenPlanner,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Palette.accent),
-                ) { Text(if (plan == null) "Plan a trip or shift" else "View the full plan") }
-            }
-        }
-    }
-}
 
 // MARK: - 3. Heads-Up card (illness early-warning, confounder-suppressed)
 
@@ -415,26 +353,8 @@ private fun cycleConfidenceTone(c: CyclePhaseEngine.Confidence): StrandTone = wh
     CyclePhaseEngine.Confidence.SOLID -> StrandTone.Accent
 }
 
-/** "About 25 min later than your schedule" — a plain, skimmable headline. */
-private fun bodyClockOffsetTitle(e: CircadianEngine.PhaseEstimate): String {
-    if (e.confidence == CircadianEngine.PhaseConfidence.UNREADABLE) return "Hard to read right now"
-    val mins = abs(e.offsetVsScheduleMinutes).roundToInt()
-    if (mins <= 20) return "About in sync with your schedule"
-    val dir = if (e.offsetVsScheduleMinutes > 0) "later" else "earlier"
-    return "About $mins min $dir than your schedule"
-}
 
-private fun bodyClockConfidenceLabel(c: CircadianEngine.PhaseConfidence): String = when (c) {
-    CircadianEngine.PhaseConfidence.UNREADABLE -> "Calibrating"
-    CircadianEngine.PhaseConfidence.WIDE -> "Building"
-    CircadianEngine.PhaseConfidence.SOLID -> "Solid"
-}
 
-private fun bodyClockConfidenceTone(c: CircadianEngine.PhaseConfidence): StrandTone = when (c) {
-    CircadianEngine.PhaseConfidence.UNREADABLE -> StrandTone.Neutral
-    CircadianEngine.PhaseConfidence.WIDE -> StrandTone.Accent
-    CircadianEngine.PhaseConfidence.SOLID -> StrandTone.Accent
-}
 
 /** Card hue follows the level: raised / already-unwell = amber warning (matches the shipped
  *  banner); suppressed / mild = a calmer neutral so it never scares. */

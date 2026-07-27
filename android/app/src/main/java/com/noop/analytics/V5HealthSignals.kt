@@ -13,7 +13,7 @@ import kotlin.math.sqrt
  * own-recent-range read ("further from your baseline than usual"), and the cached daily columns already
  * carry RHR / HRV / skin-temp-deviation / respiration. A rolling mean+SD over the trailing window is the
  * honest, transparent statistic the spec asks for (an observation about your own number) and keeps this
- * pass cheap + DB-free. The engines themselves (CyclePhaseEngine / CircadianEngine / IllnessSignalEngine)
+ * pass cheap + DB-free. The engines themselves (CyclePhaseEngine / IllnessSignalEngine)
  * are the byte-for-byte cross-platform maths; this file is only the Android-side input plumbing.
  *
  * NON-CLINICAL: every output is an approximation about the user's own series — never a diagnosis. Cycle
@@ -32,7 +32,6 @@ object V5HealthSignals {
     /** The published engine results for the Health hub's skin-temp suite, all already decided. */
     data class Snapshot(
         val cycle: CyclePhaseEngine.Result,
-        val bodyClock: CircadianEngine.PhaseEstimate?,
         val illness: IllnessSignalEngine.Result,
         /**
          * Parallel Mahalanobis illness-distance read (IllnessDistance), computed on the SAME illness-ward
@@ -126,12 +125,8 @@ object V5HealthSignals {
             correlation = null,
         )
 
-        // ── Body clock: needs per-hour rest-activity bins we don't bank here; the planner is on-demand.
-        //    Leave null so the BodyClockCard reads its honest "Calibrating" empty state until a future
-        //    activity-bin source lands (the engine is wired + ready, the input pipe is the gap). ──
-        val bodyClock: CircadianEngine.PhaseEstimate? = null
 
-        return Snapshot(cycle = cycle, bodyClock = bodyClock, illness = illness,
+        return Snapshot(cycle = cycle, illness = illness,
             illnessDistance = illnessDistance, baselineTrusted = baselineTrusted)
     }
 

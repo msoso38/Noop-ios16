@@ -1352,10 +1352,7 @@
     <string name="l10n_settings_screen_working_13b7bfca">Trabajando…</string>
     <string name="l10n_settings_screen_you_re_on_the_latest_r_027a82be">Estás en el último (%1$s).</string>
     <string name="l10n_skin_temp_cards_screen_a_period_is_likely_between_prettyday_bc501b32">Un período es probable entre %1$s y</string>
-    <string name="l10n_skin_temp_cards_screen_day_1_bright_light_clockstring_firstday_43b5fe87">Día 1: luz brillante %1$s -</string>
-    <string name="l10n_skin_temp_cards_screen_estimated_body_clock_low_around_clockstring_fb0f0790">Estimación de la duración del cuerpo alrededor de %1$s</string>
     <string name="l10n_skin_temp_cards_screen_from_your_nightly_temperature_ff8cca1a">Desde tu temperatura nocturna</string>
-    <string name="l10n_skin_temp_cards_screen_light_sleep_timing_only_df2a1552">Solo luz + horarios de sueño</string>
     <string name="l10n_skin_temp_cards_screen_log_period_start_c97241d0">Registrar inicio del período</string>
     <string name="l10n_skin_temp_cards_screen_turn_off_8807c2b3">Desactivar</string>
     <string name="l10n_skin_temp_cards_screen_view_detail_27af4b67">Ver detalle</string>

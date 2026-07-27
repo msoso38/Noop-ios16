@@ -1521,10 +1521,7 @@
     <string name="l10n_settings_screen_working_13b7bfca">Working…</string>
     <string name="l10n_settings_screen_you_re_on_the_latest_r_027a82be">You\'re on the latest (%1$s).</string>
     <string name="l10n_skin_temp_cards_screen_a_period_is_likely_between_prettyday_bc501b32">A period is likely between %1$s and </string>
-    <string name="l10n_skin_temp_cards_screen_day_1_bright_light_clockstring_firstday_43b5fe87">Day 1: bright light %1$s - </string>
-    <string name="l10n_skin_temp_cards_screen_estimated_body_clock_low_around_clockstring_fb0f0790">Estimated body-clock low around %1$s</string>
     <string name="l10n_skin_temp_cards_screen_from_your_nightly_temperature_ff8cca1a">From your nightly temperature</string>
-    <string name="l10n_skin_temp_cards_screen_light_sleep_timing_only_df2a1552">Light + sleep timing only</string>
     <string name="l10n_skin_temp_cards_screen_log_period_start_c97241d0">Log period start</string>
     <string name="l10n_skin_temp_cards_screen_turn_off_8807c2b3">Turn off</string>
     <string name="l10n_skin_temp_cards_screen_view_detail_27af4b67">View detail</string>
