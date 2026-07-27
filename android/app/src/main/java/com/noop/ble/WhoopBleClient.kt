@@ -6951,12 +6951,15 @@ internal fun whoop4AlarmReadbackPayloadHex(frame: ByteArray): String? =
 internal fun isPlausibleAlarmEpoch(epoch: Long): Boolean = epoch in 1_500_000_000L..4_102_444_800L
 
 /**
- * Extract the armed-alarm epoch from a GET_ALARM_TIME (cmd 67) COMMAND_RESPONSE, defensively (#401
- * close-out). The WHOOP 4.0 response layout is UNDOCUMENTED, so this tries the two shapes the firmware
- * could plausibly answer with - the SET_ALARM_TIME mirror (`[form 0x01][u32 LE epoch]…`, matching the
- * 9-byte payload we arm with) first, then a bare leading u32 LE - and accepts a candidate only when it
- * passes [isPlausibleAlarmEpoch]. Anything else returns null and the caller logs raw hex instead.
- * Pinned by `AlarmReadbackDecodeTest`; twin of the Swift `FrameRouter.armedAlarmEpoch`.
+ * Extract the armed-alarm epoch from a GET_ALARM_TIME (cmd 67) COMMAND_RESPONSE. CONFIRMED on WHOOP
+ * 4.0 (2026-07-27 close-out): a real strap capture armed for epoch 1785176100 and read back payload
+ * `01 01 24 a0 67 6a 00 00 04 00 20` — bytes 2..6 (`24 a0 67 6a` LE) are an exact byte-for-byte match,
+ * proving the real shape is a TWO-byte form prefix (`[0x01, 0x01][u32 LE epoch]…`), not the single-byte
+ * prefix originally guessed by mirroring the SET_ALARM_TIME send payload (#401). Tries, in order: the
+ * confirmed two-byte-prefix shape, then the old single-byte-prefix guess, then a bare leading u32 LE -
+ * each candidate accepted only when it passes [isPlausibleAlarmEpoch]. Anything else returns null and
+ * the caller logs raw hex instead. Pinned by `AlarmReadbackDecodeTest`; twin of the Swift
+ * `FrameRouter.armedAlarmEpoch`.
  */
 internal fun whoop4ArmedAlarmEpoch(frame: ByteArray): Long? {
     val payload = whoop4CommandResponsePayload(frame) ?: return null
@@ -6967,6 +6970,9 @@ internal fun whoop4ArmedAlarmEpoch(frame: ByteArray): Long? {
             ((payload[at + 2].toLong() and 0xFFL) shl 16) or
             ((payload[at + 3].toLong() and 0xFFL) shl 24)
     }
+    if (payload.size >= 2 && payload[0] == 0x01.toByte() && payload[1] == 0x01.toByte()) {
+        u32le(2)?.takeIf { isPlausibleAlarmEpoch(it) }?.let { return it }
+    }
     if (payload.isNotEmpty() && payload[0] == 0x01.toByte()) {
         u32le(1)?.takeIf { isPlausibleAlarmEpoch(it) }?.let { return it }
     }
@@ -6975,11 +6981,12 @@ internal fun whoop4ArmedAlarmEpoch(frame: ByteArray): Long? {
 
 /**
  * True when a GET_ALARM_TIME readback explicitly reports NO alarm stored — the epoch field decodes to
- * 0 in the same shapes [whoop4ArmedAlarmEpoch] reads (SET-mirror `[0x01][u32=0]` first, then a bare
- * leading `u32=0`). This is the strap's "nothing armed" sentinel, distinct from a genuinely unparseable
- * payload: an arm the strap silently dropped reads back as epoch 0, so labelling it "unrecognised" hid
- * the real signal (#34). Only consulted AFTER [whoop4ArmedAlarmEpoch] returns null. Twin of the Swift
- * `FrameRouter.readbackReportsNoAlarm`; pinned by `AlarmReadbackDecodeTest`.
+ * 0 in the same shapes [whoop4ArmedAlarmEpoch] reads (confirmed two-byte-prefix `[0x01, 0x01][u32=0]`
+ * first, then the single-byte-prefix guess, then a bare leading `u32=0`). This is the strap's "nothing
+ * armed" sentinel, distinct from a genuinely unparseable payload: an arm the strap silently dropped
+ * reads back as epoch 0, so labelling it "unrecognised" hid the real signal (#34). Only consulted AFTER
+ * [whoop4ArmedAlarmEpoch] returns null. Twin of the Swift `FrameRouter.readbackReportsNoAlarm`; pinned
+ * by `AlarmReadbackDecodeTest`.
  */
 internal fun whoop4ReadbackReportsNoAlarm(frame: ByteArray): Boolean {
     val payload = whoop4CommandResponsePayload(frame) ?: return false
@@ -6989,6 +6996,9 @@ internal fun whoop4ReadbackReportsNoAlarm(frame: ByteArray): Boolean {
             ((payload[at + 1].toLong() and 0xFFL) shl 8) or
             ((payload[at + 2].toLong() and 0xFFL) shl 16) or
             ((payload[at + 3].toLong() and 0xFFL) shl 24)
+    }
+    if (payload.size >= 2 && payload[0] == 0x01.toByte() && payload[1] == 0x01.toByte()) {
+        u32le(2)?.let { return it == 0L }
     }
     if (payload.isNotEmpty() && payload[0] == 0x01.toByte()) {
         return u32le(1)?.let { it == 0L } ?: false

@@ -7,15 +7,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pins the WHOOP 4.0 GET_ALARM_TIME (cmd 67) arm-readback decode (#401 close-out), twin of the Swift
- * `AlarmReadbackDecodeTests`.
+ * Pins the WHOOP 4.0 GET_ALARM_TIME (cmd 67) arm-readback decode (#401 close-out; two-byte prefix
+ * confirmed against real hardware, 2026-07-27), twin of the Swift `AlarmReadbackDecodeTests`.
  *
  * armStrapAlarm follows every 4.0 arm with GET_ALARM_TIME so the strap log proves what the STRAP
- * believes is armed. The response layout is UNDOCUMENTED, so [whoop4ArmedAlarmEpoch] is deliberately
- * defensive: it accepts the SET_ALARM_TIME-mirror shape (`[form 0x01][u32 LE epoch]…`) or a bare
- * leading u32 LE, plausibility-gated to a real wall-clock window; everything else decodes to null and
- * handleFrame logs raw hex instead. These tests pin BOTH the accepted shapes and the fail-to-hex
- * behaviour so a firmware variant can never silently log a misleading date.
+ * believes is armed. [whoop4ArmedAlarmEpoch] tries, in priority order: the CONFIRMED two-byte
+ * SET_ALARM_TIME-mirror shape (`[0x01, 0x01][u32 LE epoch]…`, proven by a real capture whose readback
+ * byte-for-byte matched the epoch just armed), the older single-byte-prefix guess
+ * (`[0x01][u32 LE epoch]…`) kept as a fallback for payloads that don't match the confirmed shape, then
+ * a bare leading u32 LE — each candidate plausibility-gated to a real wall-clock window; everything
+ * else decodes to null and handleFrame logs raw hex instead. These tests pin all three accepted shapes
+ * and the fail-to-hex behaviour so a firmware variant can never silently log a misleading date.
  */
 class AlarmReadbackDecodeTest {
 
@@ -135,6 +137,37 @@ class AlarmReadbackDecodeTest {
     @Test
     fun shortGarbage_isNotReportedAsNoAlarm() {
         assertFalse(whoop4ReadbackReportsNoAlarm(responseFrame(payload = bytes(0x03))))
+    }
+
+    // Real WHOOP 4.0 capture (2026-07-27 close-out): confirms the two-byte SET-mirror prefix
+
+    /**
+     * The strap was armed for epoch 1785176100 (`Set Alarm Time payload=0124a0676a00000000`) and read
+     * back payload `01 01 24 a0 67 6a 00 00 04 00 20` — an exact byte-for-byte match at offset 2, not
+     * offset 1. The old single-byte-prefix guess would have misdecoded this as 1738548225 (2025-02-03,
+     * a full year and a half off the real armed date) instead of falling through correctly; this test
+     * pins the two-byte-prefix shape winning first so that regression can't return silently.
+     */
+    @Test
+    fun realWhoop4Capture_twoBytePrefixDecodesExactArmedEpoch() {
+        val frame = responseFrame(
+            payload = bytes(0x01, 0x01, 0x24, 0xa0, 0x67, 0x6a, 0x00, 0x00, 0x04, 0x00, 0x20)
+        )
+        assertEquals(1_785_176_100L, whoop4ArmedAlarmEpoch(frame))
+    }
+
+    /**
+     * A second readback from the same session (captured before bonding completed) — payload
+     * `01 01 38 17 48 68 00 00 04 00 20` — decodes to a different, still-plausible epoch (2025-06-10),
+     * a genuinely stale alarm rather than the one just armed. Pins that the two-byte-prefix shape isn't
+     * a one-off fluke: it decodes consistently across independent real captures in the same trace.
+     */
+    @Test
+    fun realWhoop4Capture_twoBytePrefixDecodesStalePreBondEpoch() {
+        val frame = responseFrame(
+            payload = bytes(0x01, 0x01, 0x38, 0x17, 0x48, 0x68, 0x00, 0x00, 0x04, 0x00, 0x20)
+        )
+        assertEquals(1_749_555_000L, whoop4ArmedAlarmEpoch(frame))
     }
 
     // MARK: - WHOOP 5.0/MG (#864 close-out) — envelope offset confirmed, GET_ALARM_TIME body still guessed

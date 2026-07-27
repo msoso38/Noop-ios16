@@ -350,14 +350,19 @@ public final class FrameRouter {
         (1_500_000_000...4_102_444_800).contains(epoch)
     }
 
-    /// Extract the armed-alarm epoch from a GET_ALARM_TIME (cmd 67) COMMAND_RESPONSE, defensively.
-    /// The WHOOP 4.0 response layout is UNDOCUMENTED, so this tries the two shapes the firmware could
-    /// plausibly answer with - the SET_ALARM_TIME mirror (`[form 0x01][u32 LE epoch]…`, matching the
-    /// 9-byte payload we arm with) first, then a bare leading u32 LE - and accepts a candidate only when
-    /// it passes `isPlausibleAlarmEpoch`. Anything else returns nil and the caller logs raw hex instead.
-    /// `family: .whoop5` reads the SAME two candidate shapes at the 5/MG envelope offset — a mirrored
-    /// GUESS (the envelope offset is confirmed via the SET_ALARM_TIME ack, but no real GET_ALARM_TIME
-    /// response has been captured on 5/MG, so the body shape itself is unverified there).
+    /// Extract the armed-alarm epoch from a GET_ALARM_TIME (cmd 67) COMMAND_RESPONSE. CONFIRMED on
+    /// WHOOP 4.0 (2026-07-27 close-out): a real strap capture armed for epoch 1785176100 and read back
+    /// payload `01 01 24 a0 67 6a 00 00 04 00 20` — bytes 2..6 (`24 a0 67 6a` LE) are an exact byte-for-
+    /// byte match, proving the real shape is a TWO-byte form prefix (`[0x01, 0x01][u32 LE epoch]…`), not
+    /// the single-byte prefix originally guessed by mirroring the SET_ALARM_TIME send payload. Tries,
+    /// in order: the confirmed two-byte-prefix shape, then the old single-byte-prefix guess, then a bare
+    /// leading u32 LE — each candidate accepted only when it passes `isPlausibleAlarmEpoch`. Anything
+    /// else returns nil and the caller logs raw hex instead.
+    /// `family: .whoop5` reads the SAME candidate shapes at the 5/MG envelope offset — still a mirrored
+    /// GUESS there (the envelope offset is confirmed via the SET_ALARM_TIME ack, but no real
+    /// GET_ALARM_TIME response has been captured on 5/MG, and it currently always answers FAILURE
+    /// before this decode is even reached — see the result-byte gate in FrameRouter's COMMAND_RESPONSE
+    /// handling).
     /// Pure and CoreBluetooth-free so golden tests pin it (AlarmReadbackDecodeTests).
     nonisolated static func armedAlarmEpoch(in frame: [UInt8], family: DeviceFamily = .whoop4) -> UInt32? {
         guard let payload = commandResponsePayload(in: frame, family: family) else { return nil }
@@ -368,17 +373,20 @@ public final class FrameRouter {
                 | (UInt32(payload[i + 2]) << 16)
                 | (UInt32(payload[i + 3]) << 24)
         }
+        if payload.count >= 2, payload[0] == 0x01, payload[1] == 0x01,
+           let e = u32le(at: 2), isPlausibleAlarmEpoch(e) { return e }
         if payload.first == 0x01, let e = u32le(at: 1), isPlausibleAlarmEpoch(e) { return e }
         if let e = u32le(at: 0), isPlausibleAlarmEpoch(e) { return e }
         return nil
     }
 
     /// True when a GET_ALARM_TIME readback explicitly reports NO alarm stored — the epoch field decodes
-    /// to 0 in the same shapes `armedAlarmEpoch` reads (SET-mirror `[0x01][u32=0]` first, then a bare
-    /// leading `u32=0`). This is the strap's "nothing armed" sentinel, distinct from a genuinely
-    /// unparseable payload: an arm the strap silently dropped reads back as epoch 0, so labelling it
-    /// "unrecognised" hid the real signal (#34). Only consulted AFTER `armedAlarmEpoch` returns nil, so a
-    /// plausible armed epoch never reaches here. Pure/CoreBluetooth-free so AlarmReadbackDecodeTests pin it.
+    /// to 0 in the same shapes `armedAlarmEpoch` reads (confirmed two-byte-prefix `[0x01, 0x01][u32=0]`
+    /// first, then the single-byte-prefix guess, then a bare leading `u32=0`). This is the strap's
+    /// "nothing armed" sentinel, distinct from a genuinely unparseable payload: an arm the strap
+    /// silently dropped reads back as epoch 0, so labelling it "unrecognised" hid the real signal (#34).
+    /// Only consulted AFTER `armedAlarmEpoch` returns nil, so a plausible armed epoch never reaches
+    /// here. Pure/CoreBluetooth-free so AlarmReadbackDecodeTests pin it.
     nonisolated static func readbackReportsNoAlarm(in frame: [UInt8], family: DeviceFamily = .whoop4) -> Bool {
         guard let payload = commandResponsePayload(in: frame, family: family) else { return false }
         func u32le(at i: Int) -> UInt32? {
@@ -388,6 +396,7 @@ public final class FrameRouter {
                 | (UInt32(payload[i + 2]) << 16)
                 | (UInt32(payload[i + 3]) << 24)
         }
+        if payload.count >= 2, payload[0] == 0x01, payload[1] == 0x01, let e = u32le(at: 2) { return e == 0 }
         if payload.first == 0x01, let e = u32le(at: 1) { return e == 0 }
         if let e = u32le(at: 0) { return e == 0 }
         return false
