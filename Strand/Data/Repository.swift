@@ -59,6 +59,14 @@ struct MetricSeriesResolution: Equatable, Sendable {
     }
 }
 
+/// The sensor/import provider whose inputs produced a resolved Today score. `sourceId` is durable and
+/// `brand` comes from the paired-device registry when available, so UI code can name every supported
+/// provider without guessing from opaque device ids.
+struct ScoreInputProvider: Equatable, Sendable {
+    let sourceId: String
+    let brand: String?
+}
+
 /// Source provenance for daily rows before product surfaces merge them. The UI uses this to say
 /// where a vital came from without changing the stored data.
 enum DailyMetricSource: Equatable {
@@ -148,14 +156,22 @@ final class Repository: ObservableObject {
     /// The distinct IMPORTED/MEASURED source ids to union for a dashboard read: the active strap (live raw,
     /// #814) and the canonical imported id. Active strap FIRST so per-day dedup lets the measured/live row
     /// win over the imported one. Deduped, so a single-device install (active id == canonical) reads one id.
-    private var importedReadIds: [String] {
+    var importedReadIds: [String] {
         deviceId == canonicalDeviceId ? [deviceId] : [deviceId, canonicalDeviceId]
     }
     /// The distinct COMPUTED ("-noop") source ids to union: the active strap's computed sibling and the
     /// canonical computed sibling. Same dedup rule as `importedReadIds`.
-    private var computedReadIds: [String] {
+    var computedReadIds: [String] {
         computedDeviceId == canonicalComputedId ? [computedDeviceId] : [computedDeviceId, canonicalComputedId]
     }
+
+    /// True when the ACTIVE strap is an Oura ring, resolved from its registry id prefix against the canonical
+    /// brand table (`DeviceBrandCatalog.idPrefix`) rather than an ad-hoc "oura" literal. The device registry
+    /// mints every non-WHOOP id as "<idPrefix>-<uuid>", so the stored id's prefix IS its brand key. Read/UI
+    /// side only — it lets the sleep surfaces name an Oura night's provenance "Oura" (a ring-PROVIDED
+    /// hypnogram) instead of the generic "On-device", and flag the split as the ring's RAW on-device stages.
+    /// Not a stored value and never crosses `.noopbak`, so no Android twin is required.
+    var activeDeviceIsOura: Bool { DeviceBrandCatalog.isOura(deviceId) }
     private var store: WhoopStore?
 
     /// Daily metrics (recovery/strain/sleep/HRV/RHR…) over the recent window, oldest→newest.
@@ -457,6 +473,7 @@ final class Repository: ObservableObject {
     static let whoopSource = "my-whoop"
     static let appleHealthSource = "apple-health"
     static let healthConnectSource = "health-connect"
+    static let activityFileSource = "activity-file"
 
     /// Imported wearable-export sources whose DAILY aggregates (HRV / resting HR / sleep) can be scored
     /// for a NOOP Charge/Rest on an import-only day, exactly like a live day (#823). These carry no raw HR
@@ -694,6 +711,7 @@ final class Repository: ObservableObject {
         let imported = await unionDailyMetrics(store: store, from: fromDay, to: toDay)
         let computed = await unionComputedDailyMetrics(store: store, from: fromDay, to: toDay)
         let apple = (try? await store.dailyMetrics(deviceId: Self.appleHealthSource, from: fromDay, to: toDay)) ?? []
+        let activityFile = (try? await store.dailyMetrics(deviceId: Self.activityFileSource, from: fromDay, to: toDay)) ?? []
         let impSleep = await unionSleepSessions(store: store, from: lo, to: hi)
         let compSleep = await unionComputedSleepSessions(store: store, from: lo, to: hi)
 
@@ -720,7 +738,10 @@ final class Repository: ObservableObject {
             let editedDays = Self.userEditedDays(compSleep)
             return MergedCaches(
                 importedSleep: fig,
-                days: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
+                days: Self.mergeActivityFileSteps(
+                    into: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
+                    activityFile
+                ),
                 sleeps: Self.mergeSleep(imported: impSleep, computed: compSleep),
                 vitalRows: Self.sourceRows(imported: imported, computed: computed, apple: apple),
                 freshness: Self.computeFreshness(imported: imported, computed: computed, apple: apple,
@@ -792,6 +813,46 @@ final class Repository: ObservableObject {
                     : merged
             } else {
                 byDay[d.day] = d
+            }
+        }
+        return byDay.values.sorted { $0.day < $1.day }
+    }
+
+    nonisolated static func mergeActivityFileSteps(into base: [DailyMetric],
+                                                   _ activityFile: [DailyMetric]) -> [DailyMetric] {
+        guard !activityFile.isEmpty else { return base }
+        // Last-wins on a duplicate day rather than `uniqueKeysWithValues`, which TRAPS (crashes) if `base`
+        // ever carries two rows for one day. Matches the Kotlin twin's graceful merge and this file's own
+        // safe convention (the other `Dictionary(…, uniquingKeysWith:)` builders here).
+        var byDay = Dictionary(base.map { ($0.day, $0) }, uniquingKeysWith: { _, last in last })
+        for row in activityFile {
+            guard let steps = row.steps, steps > 0 else { continue }
+            if let existing = byDay[row.day] {
+                if existing.steps == nil {
+                    byDay[row.day] = DailyMetric(
+                        day: existing.day,
+                        totalSleepMin: existing.totalSleepMin,
+                        efficiency: existing.efficiency,
+                        deepMin: existing.deepMin,
+                        remMin: existing.remMin,
+                        lightMin: existing.lightMin,
+                        disturbances: existing.disturbances,
+                        restingHr: existing.restingHr,
+                        avgHrv: existing.avgHrv,
+                        recovery: existing.recovery,
+                        strain: existing.strain,
+                        exerciseCount: existing.exerciseCount,
+                        spo2Pct: existing.spo2Pct,
+                        skinTempDevC: existing.skinTempDevC,
+                        respRateBpm: existing.respRateBpm,
+                        steps: steps,
+                        activeKcalEst: existing.activeKcalEst,
+                        spo2Red: existing.spo2Red,
+                        spo2Ir: existing.spo2Ir
+                    )
+                }
+            } else {
+                byDay[row.day] = row
             }
         }
         return byDay.values.sorted { $0.day < $1.day }
@@ -1353,7 +1414,7 @@ final class Repository: ObservableObject {
     /// A metric the Deep Timeline can plot. HR is the always-present hero (adaptively downsampled);
     /// the rest are lower-frequency raw-sample streams shown where the strap offloaded them.
     enum TimelineMetric: String, CaseIterable, Identifiable, Sendable {
-        case hr, hrv, spo2, skinTemp, respiration, motion, bandSleepState
+        case hr, hrv, spo2, skinTemp, respiration, motion, bandSleepState, ouraMovement
         var id: String { rawValue }
 
         /// User-facing pill label.
@@ -1373,6 +1434,11 @@ final class Repository: ObservableObject {
             // NOT a stage NOOP trusts as truth — the pill names it "Band Sleep State" so it can't be
             // mistaken for the derived stages.
             case .bandSleepState: return String(localized: "Band Sleep State")
+            // The Oura ring's OWN per-window motion: seconds of movement in each ~30 s window (0x47,
+            // OURA_MOTION events). An honest ACTIVITY signal — NOT gravity magnitude (the ring sends no
+            // continuous gravity) and NEVER a step count. Empty for a WHOOP strap. Labelled "Movement" so
+            // it can't be mistaken for the derived stages or for steps.
+            case .ouraMovement: return String(localized: "Movement")
             }
         }
     }
@@ -1491,6 +1557,32 @@ final class Repository: ObservableObject {
         return out
     }
 
+    /// Family of the ACTIVE strap (#623), for the deep timeline's family-specific empty-state copy. Reuses
+    /// the canonical `DeviceFamily.forRegistryModel` (#171) with its `.whoop5` fallback for nil/unknown/
+    /// ambiguous, matching Android's `FullDayChartScreen`. Best-effort: no store / unreadable registry → `.whoop5`.
+    func activeStrapFamily() -> DeviceFamily {
+        guard let store else { return .whoop5 }
+        let devices = (try? DeviceRegistryStore(dbQueue: store.registryWriter).all()) ?? []
+        return DeviceFamily.forRegistryModel(devices.first(where: { $0.id == deviceId })?.model)
+    }
+
+    /// Whether the active strap has EVER banked a sample of `metric` (#623) — distinguishes a strap that
+    /// never produces it (honest "not supported on this strap" copy) from one with just an unsynced window.
+    /// Only SpO₂/respiration are asked; any other metric returns true so the generic empty copy stands.
+    /// Twin of the Android `FullDayChartScreen` `everSpo2`/`everResp` reads. Best-effort.
+    func strapHasEverProduced(_ metric: TimelineMetric) async -> Bool {
+        guard let store else { return true }
+        let now = Int(Date().timeIntervalSince1970)
+        switch metric {
+        case .spo2:
+            return !(((try? await store.spo2Samples(deviceId: deviceId, from: 0, to: now, limit: 1)) ?? []).isEmpty)
+        case .respiration:
+            return !(((try? await store.respSamples(deviceId: deviceId, from: 0, to: now, limit: 1)) ?? []).isEmpty)
+        default:
+            return true
+        }
+    }
+
     /// Raw points for a non-HR timeline metric, mapped to display units (skin temp → °C DEVICE-FAMILY-AWARE
     /// via `skinTempCelsius`: 5/MG centidegrees (#156), WHOOP 4.0 v24 raw ADC (#938); HRV → per-RR
     /// instantaneous from RR ms; respiration/SpO₂/motion as the stored signal). Empty when the strap
@@ -1549,6 +1641,18 @@ final class Repository: ObservableObject {
             let s = (try? await store.sleepStateSamples(deviceId: source, from: from, to: to)) ?? []
             return await Task.detached(priority: .utility) {
                 s.map { Self.timelinePoint($0.ts, Double($0.state)) }
+            }.value
+        case .ouraMovement:
+            // The ring's OWN per-window motion from OURA_MOTION events (0x47, movement-gated): plot
+            // `motion_seconds` (0 when still, up to 31 s of movement in the ~30 s window). An honest
+            // activity track, NEVER scored and NEVER a step count; empty for a WHOOP strap (no such events).
+            let evs = (try? await store.events(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
+            return await Task.detached(priority: .utility) {
+                evs.compactMap { e -> TrendPoint? in
+                    guard e.kind == OuraStreamMapping.motionEventKind,
+                          let ms = e.payload["motion_seconds"]?.intValue else { return nil }
+                    return Self.timelinePoint(e.ts, Double(ms))
+                }
             }.value
         }
     }
@@ -1624,14 +1728,26 @@ final class Repository: ObservableObject {
     /// regardless of `days`; false (the default) honours `days` exactly as before, so existing callers are
     /// byte-identical.
     func resolvedSeries(key: String, source preferredSource: String, days: Int = 4000, fullHistory: Bool = false) async -> MetricSeriesResolution {
+        let now = Date()
+        let from = fullHistory ? "0000-01-01" : Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
+        let to = fullHistory ? "9999-12-31" : Self.dayString(now.addingTimeInterval(86_400))
+        return await resolvedSeries(key: key, source: preferredSource, from: from, to: to)
+    }
+
+    /// Exact-window variant used when a UI needs a known historical day (for example Charge carry).
+    /// This avoids guessing a relative lookback and keeps the same source precedence as the public
+    /// trailing-window resolver.
+    func resolvedSeries(
+        key: String,
+        source preferredSource: String,
+        from: String,
+        to: String
+    ) async -> MetricSeriesResolution {
         let candidates = Self.sourceCandidates(forKey: key, preferredSource: preferredSource,
                                                actualWhoopSource: deviceId)
         guard let store = await ensureStore() else {
             return MetricSeriesResolution(requestedSource: preferredSource, candidates: candidates, points: [])
         }
-        let now = Date()
-        let from = fullHistory ? "0000-01-01" : Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
-        let to = fullHistory ? "9999-12-31" : Self.dayString(now.addingTimeInterval(86_400))
 
         // First candidate wins per day; later candidates only fill days no earlier one covered.
         var byDay: [String: ResolvedMetricPoint] = [:]
@@ -1644,6 +1760,31 @@ final class Repository: ObservableObject {
         }
         let points = byDay.values.sorted { $0.day < $1.day }
         return MetricSeriesResolution(requestedSource: preferredSource, candidates: candidates, points: points)
+    }
+
+    /// Resolve a displayed score back to the provider that supplied its inputs. Direct imported points
+    /// already name their provider. A `-noop` point is looked up in the dedicated metric-level provenance
+    /// cache; missing legacy metadata returns nil rather than falsely claiming its parent device.
+    func scoreInputProvider(
+        resolvedSource: String,
+        day: String,
+        metricKey: String
+    ) async -> ScoreInputProvider? {
+        guard let store = await ensureStore() else { return nil }
+        let registry = DeviceRegistryStore(dbQueue: store.registryWriter)
+        let sourceId: String
+        if resolvedSource.hasSuffix("-noop") {
+            guard let cached = try? await store.scoreInputSource(
+                deviceId: resolvedSource,
+                day: day,
+                key: metricKey
+            ) else { return nil }
+            sourceId = cached
+        } else {
+            sourceId = resolvedSource
+        }
+        let brand = (try? registry.all())?.first(where: { $0.id == sourceId })?.brand
+        return ScoreInputProvider(sourceId: sourceId, brand: brand)
     }
 
     /// Read one candidate's rows for the window: its metricSeries, plus the matching DailyMetric column
@@ -1900,6 +2041,17 @@ final class Repository: ObservableObject {
         return out
     }
 
+    /// Distinct local-day keys (yyyy-MM-dd) in the inclusive range [from, to] that carry at least one
+    /// NATIVE journal entry (the "noop-journal" device id only — matching the Android widget's
+    /// `repo.journal(JOURNAL_DEVICE_ID, from, to)`). Backs the #627 Today journal widget's completion
+    /// strip. Read-only.
+    func nativeJournalDays(from: String, to: String) async -> Set<String> {
+        guard let store = await ensureStore() else { return [] }
+        let rows = (try? await store.journalEntries(deviceId: Self.journalDeviceId,
+                                                    from: from, to: to)) ?? []
+        return Set(rows.map { $0.day })
+    }
+
     /// Union; the NATIVE row wins per (day, question) , the in-app answer is the user's most recent
     /// explicit action and stays editable, unlike the immutable imported history.
     nonisolated static func mergeJournal(imported: [JournalEntry], native: [JournalEntry]) -> [JournalEntry] {
@@ -2016,12 +2168,15 @@ final class Repository: ObservableObject {
                                              minSamples: Int = 60, cap: Int = 300) async -> [WorkoutRow] {
         // #833 (on-open freeze): this used to run a SEQUENTIAL per-row loop, each awaiting one
         // `store.hrSamples(.., limit: 8000)` then reducing up to 8000 ints SYNCHRONOUSLY on the @MainActor
-        // (sum + max), for up to `cap` rows. On a deep history that beach-balled first paint. Two changes,
-        // both output-preserving: (1) the eligible rows' reads run with BOUNDED concurrency (chunks of
-        // `readChunk`) so the single-connection store isn't swamped, and (2) the per-row sum/max moved OFF
-        // the main actor into the `nonisolated static` `reduceWorkoutHr`. Eligibility + the `cap` budget are
-        // resolved FIRST in row order (identical to the old loop: budget is spent on eligible rows top-down
-        // and reads stop once it hits 0), so exactly the same rows are read and the result is byte-identical.
+        // (sum + max), for up to `cap` rows. On a deep history that beach-balled first paint. The eligible
+        // rows' reads run with BOUNDED concurrency (chunks of `readChunk`) so the single-connection store
+        // isn't swamped, and eligibility + the `cap` budget are resolved FIRST in row order (identical to
+        // the old loop: budget is spent on eligible rows top-down and reads stop once it hits 0), so exactly
+        // the same rows are read.
+        //
+        // #836 went further: the mean/peak is now a SQLite aggregate (`store.hrWindowStats`), so the common
+        // path materialises no rows at all and there is nothing left to reduce off-main — which retired the
+        // `reduceWorkoutHr` helper this comment used to describe. Rows are read only for a strain fill.
         let readChunk = 8
 
         // Phase 1 , resolve eligibility + spend the `cap` budget in ORIGINAL row order, exactly as the old
@@ -2064,18 +2219,33 @@ final class Repository: ObservableObject {
                     // so the child task crosses only Sendable scalars.
                     let cls = WorkoutSource.classify(rows[idx].source)
                     let wantStrain = (cls == .manual || cls == .detected) && rows[idx].strain == nil
-                    group.addTask { [deviceId] in
-                        let samples = (try? await store.hrSamples(deviceId: deviceId,
-                                                                  from: startTs, to: endTs,
-                                                                  limit: 8000)) ?? []
-                        guard samples.count >= minSamples else { return nil }
-                        // Sum + max over up to 8000 ints , off the @MainActor (the freeze fix).
-                        let (avg, peak) = Repository.reduceWorkoutHr(samples)
+                    // #510: read HR under the workout's OWN recording strap, not a single active id. A detected
+                    // row's `source` IS its computed strap id ("<base>-noop"), so a bout auto-detected on a 2nd
+                    // WHOOP reads "<base>" instead of the active strap's empty window. Resolved on the main actor;
+                    // only the resulting Sendable String crosses into the task.
+                    let hrDeviceId = Self.workoutHrDeviceId(source: rows[idx].source, activeStrapId: deviceId)
+                    group.addTask { [hrDeviceId] in
+                        // #836: aggregate in SQLite over the WHOLE window instead of reducing up to 8000
+                        // materialised rows. The old read capped at 8000, so a workout longer than ~2h13m
+                        // at 1 Hz reported the mean of its FIRST 8000 samples as the session average — wrong
+                        // on its own terms, and divergent from Kotlin, which aggregates the lot. This also
+                        // makes the common path (no strain fill) read no rows at all, which is strictly
+                        // better for the #833 freeze this function exists to avoid.
+                        guard let stats = try? await store.hrWindowStats(deviceId: hrDeviceId,
+                                                                         from: startTs, to: endTs),
+                              stats.n >= minSamples,
+                              let mean = stats.avg, let peak = stats.max else { return nil }
+                        let avg = Int(mean.rounded())
                         // #961: recompute Effort from the SAME samples the graph/zones use, off-main. Uses the
                         // app's StrainScorer with the injected HRmax + sex so it matches endWorkout's own score;
                         // StrainScorer returns nil on a still-too-thin window (never a fabricated number).
+                        // Reads rows ONLY for this — StrainScorer needs the series, not an aggregate. The 8000
+                        // cap stays here: it bounds the strain window, not the average. (Kotlin does the same.)
                         let strain: Double?
                         if wantStrain, let p = strainProfile {
+                            let samples = (try? await store.hrSamples(deviceId: hrDeviceId,
+                                                                      from: startTs, to: endTs,
+                                                                      limit: 8000)) ?? []
                             strain = StrainScorer.strain(samples, maxHR: p.hrMax, sex: p.sex)
                         } else {
                             strain = nil
@@ -2108,20 +2278,18 @@ final class Repository: ObservableObject {
         }
     }
 
-    /// #833: the per-workout HR reduction (mean bpm → rounded Int, peak bpm), pulled OUT of the @MainActor
-    /// reconcile loop. `nonisolated static` so a `withTaskGroup` child task runs it OFF the main actor , a
-    /// dense workout's up-to-8000 1 Hz samples no longer sum/max on the actor that drives SwiftUI. Pure +
-    /// unit-testable. Byte-identical to the old inline `reduce(0,+)` / `max()`: same rounding, same peak.
-    /// Caller guarantees `samples` is non-empty (the `minSamples` gate), so the mean divisor is never zero.
-    nonisolated static func reduceWorkoutHr(_ samples: [HRSample]) -> (avg: Int, peak: Int) {
-        var sum = 0
-        var peak = 0
-        for s in samples {
-            sum += s.bpm
-            if s.bpm > peak { peak = s.bpm }
-        }
-        let avg = Int((Double(sum) / Double(samples.count)).rounded())
-        return (avg, peak)
+    /// #510 (Kotlin twin: `WhoopRepository.workoutHrDeviceId`). The device id whose `hrSample` rows back a
+    /// workout's Avg HR / Effort reconcile. A DETECTED row's own `source` IS its computed strap id
+    /// ("<base>-noop"), so strip the suffix to read HR under the raw "<base>" — a bout auto-detected on a
+    /// SECOND WHOOP no longer reads the active strap's empty window (which blanked its reconcile). MANUAL and
+    /// IMPORTED rows carry no strap id in `source`, so they reconcile against the active strap [activeStrapId]
+    /// as before; on a single-device install a detected "<base>-noop" strips to the active id, so the read is
+    /// byte-identical. (The Kotlin twin also keys MANUAL rows on their stored deviceId; the Swift read-model
+    /// `WorkoutRow` carries no deviceId, so a manual session created on a NON-active strap reconciles here
+    /// against the active strap instead — a minor, display-only divergence, never persisted.)
+    nonisolated static func workoutHrDeviceId(source: String, activeStrapId: String) -> String {
+        guard WorkoutSource.classify(source) == .detected else { return activeStrapId }
+        return source.hasSuffix("-noop") ? String(source.dropLast(5)) : source
     }
 
     // MARK: - Workout editing (manual add/edit · relabel · dismiss · delete)
@@ -2421,6 +2589,19 @@ final class Repository: ObservableObject {
         let tiz = HRZones.timeInZone(samples, zoneSet: zoneSet)
         let minutes = tiz.seconds.map { $0 / 60.0 }
         return minutes.contains(where: { $0 > 0 }) ? minutes : nil
+    }
+
+    /// HRR for one workout (#516), derived from the final five minutes of recorded effort plus the five
+    /// post-workout minutes. This is a narrow read (at most ~10 minutes), not a whole-workout scan, and the
+    /// pure engine owns every eligibility/coverage guard. Missing post-workout HR therefore returns nil
+    /// instead of fabricating a recovery value. Kotlin twin: `AppViewModel.workoutHeartRateRecovery`.
+    func workoutHeartRateRecovery(from: Int, to: Int, maxHR: Double) async -> HeartRateRecovery.Result? {
+        guard to > from, maxHR > 0 else { return nil }
+        let readFrom = max(from, to - HeartRateRecovery.eligibilityLookbackSeconds)
+        let readTo = to + 5 * 60 + HeartRateRecovery.measurementToleranceSeconds
+        let samples = await hrSamples(from: readFrom, to: readTo, limit: 2_000)
+        return HeartRateRecovery.calculate(samples: samples, workoutStart: from, workoutEnd: to,
+                                           maxHR: maxHR)
     }
 
     /// Apple Health daily aggregates (steps/energy/vo2/hr).

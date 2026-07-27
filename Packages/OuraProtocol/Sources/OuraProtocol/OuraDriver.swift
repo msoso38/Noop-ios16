@@ -159,8 +159,11 @@ public final class OuraDriver {
                 phase = .streaming
                 return []
             }
-            // Ack-fetch (max=0) at the new cursor advances without re-pulling data (s5.3 step 4).
-            return [OuraCommands.getEvents(cursor: cursor, maxEvents: 0)]
+            // Continuation fetch at the ADVANCED cursor (max seen ring-time + 1), same shape as the
+            // initial request — open_oura `drain_events` re-issues `req_get_event(start, 255, -1)` every
+            // batch. The old open_ring "ack-fetch" (max=0 at a non-advancing cursor) made the ring
+            // RESTART serving from that cursor: the observed same-window re-serve loop (s5.3).
+            return [OuraCommands.getEvents(cursor: cursor, maxEvents: 255)]
         }
     }
 
@@ -226,6 +229,35 @@ public final class OuraDriver {
         let seconds = ms / 1000
         guard seconds >= Self.minPlausibleEpochSeconds, seconds <= Self.maxPlausibleEpochSeconds else { return nil }
         return Int(seconds)
+    }
+
+    /// Resolve the 0x13 SyncTime-response device timestamp into ring TICKS, or nil when no unambiguous
+    /// reading exists. ringverse BLE.md labels the field "seconds" but the ring's record clock runs in
+    /// 100 ms ticks, so both readings are tried: the raw value (already ticks) and value×10 (seconds→
+    /// ticks). The ring's clock at connect must sit shortly AFTER where the last drain ended, so a
+    /// candidate is plausible iff it falls in `[historyCursor, historyCursor + 7 days]`; exactly one
+    /// must fit (ambiguity or a fresh/reset cursor → nil → the caller logs raw instead of guessing).
+    /// Pure and testable; the honest-data invariant is "no anchor beats a wrong anchor".
+    public static func syncTimeAnchorCandidate(responseValue: UInt32, historyCursor: UInt32) -> UInt32? {
+        guard historyCursor > 0 else { return nil }
+        let lower = Int64(historyCursor)
+        let upper = lower + 6_048_000   // 7 days of 100 ms ticks
+        let readings = [Int64(responseValue), Int64(responseValue) * 10]
+        let fits = readings.filter { $0 >= lower && $0 <= upper && $0 <= Int64(UInt32.max) }
+        guard fits.count == 1 else { return nil }
+        return UInt32(fits[0])
+    }
+
+    /// Adopt a ring-time→UTC anchor from the 0x13 SyncTime response pair (`rt` = the ring's clock counter
+    /// in ticks when it processed our SyncTime, `unixSeconds` = host wall-clock at receipt). Same
+    /// plausibility gate as the 0x42/0x85 paths; returns whether the anchor was set. The freshest
+    /// possible pair, so it overwrites any earlier anchor (an in-log 0x42 from the same clock domain
+    /// yields the same mapping anyway).
+    public func adoptSyncTimeAnchor(ringTimestamp rt: UInt32, unixSeconds: Int64) -> Bool {
+        guard let ms = Self.plausibleAnchorMs(fromEpochSeconds: unixSeconds) else { return false }
+        anchorUtcMs = ms
+        anchorRingTime = rt
+        return true
     }
 
     /// Bounds for a plausible anchor epoch (unix seconds): 2020-01-01 to 2035-01-01. A decoded 0x42/0x85
@@ -301,9 +333,10 @@ public final class OuraDriver {
         case .motionPeriod:
             return (OuraDecoders.decodeMotionPeriod(record) ?? []).map { OuraEvent.motion($0) }
         case .motion:
-            // 0x47 motion_events: surfaced as state-free motion is out of v1 scope; decode to nothing
-            // rather than guess the partial layout. Per OURA_PROTOCOL.md s6.13.
-            return []
+            // 0x47 motion_events: the ring's averaged accel vector (orientation + avg x/y/z ×8 +
+            // high_intensity), the same shape as a WHOOP 4.0 gravity sample. open_oura `decode_motion`,
+            // OURA_PROTOCOL.md s6.13. Tier-A.
+            return OuraDecoders.decodeMotionEvents(record).map { [OuraEvent.motionEvent($0)] } ?? []
 
         // --- Tier A: Sleep phase (2-bit codes are verified) ---
         // 0x4B/0x4E/0x5A are the three hypnogram aliases (open_oura decode_sleep_phases); 0x4B was
@@ -420,7 +453,17 @@ public final class OuraDriver {
         // Live-HR enable ACKs advance the triplet (s5.6): 0x21 is the dhr_read feature-read ACK from
         // step 1 (`2f 06 21 02 01 11 02 00`), 0x23 acks the enable write (step 2), 0x27 acks the
         // subscribe write (step 3). All three must be recognised or the sequencer stalls at step 0.
-        if frame.subop == 0x21 || frame.subop == 0x23 || frame.subop == 0x27 {
+        if frame.subop == 0x21 {
+            // A 0x21 is a feature-status read reply. The daytime-HR read (feature 0x02) is step 1 of the
+            // live-HR triplet and MUST advance it; a diagnostic read (SpO2 0x04 / real_steps 0x0b) instead
+            // surfaces the ring's own feature report so a capture can confirm the server-flag gate.
+            if let st = OuraDecoders.decodeFeatureStatus(frame.subBody),
+               st.feature != Int(OuraCommands.featureDaytimeHR) {
+                return .featureStatus(st)
+            }
+            return .enableAck
+        }
+        if frame.subop == 0x23 || frame.subop == 0x27 {
             return .enableAck
         }
         return .unhandled
@@ -432,6 +475,7 @@ public final class OuraDriver {
         case authStatus(OuraAuthStatus)
         case liveHRPush([UInt8])
         case enableAck
+        case featureStatus(OuraFeatureStatus)
         case unhandled
     }
 }

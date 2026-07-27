@@ -55,6 +55,7 @@ struct AutomationsView: View {
             illnessCard
             healthInsightsCard
             batteryCard
+            strainTargetCard
         }
     }
 
@@ -172,15 +173,11 @@ struct AutomationsView: View {
     private var coachingCard: some View {
         Section2(icon: "bolt.heart.fill", title: String(localized: "Haptic coaching"),
                  blurb: String(localized: "Train by feel. The strap buzzes so you don't have to watch a screen."),
-                 active: behavior.zoneCoaching || behavior.stressNudge || behavior.stressCheckIn) {
+                 active: behavior.zoneCoaching || behavior.stressCheckIn) {
             VStack(spacing: 0) {
                 ToggleRow(label: String(localized: "HR-zone coaching"),
                           help: String(localized: "Buzz when you hit your top zone (ease off) and again when you recover. Uses your max HR from Settings."),
                           isOn: $behavior.zoneCoaching)
-                rowDivider
-                ToggleRow(label: String(localized: "Resting stress nudge (experimental)"),
-                          help: String(localized: "A gentle buzz when your HRV drops while your heart rate is calm, a cue to take a paced breath. Rate-limited to once every 15 minutes; off by default."),
-                          isOn: $behavior.stressNudge)
                 rowDivider
                 // v5 L3 closed-loop check-in (master + sub toggles). Default OFF, manual-first. The keys
                 // mirror BiofeedbackPrefs, which the central detector (AppModel.evaluateStress) reads.
@@ -361,6 +358,27 @@ struct AutomationsView: View {
                           help: String(localized: "An early \"recharge tonight\" heads-up when the strap has about a day of estimated runtime left, at most once per discharge cycle. Turn off to keep only the 15% warning."),
                           isOn: $behavior.batteryPredictiveAlerts)
             }
+        }
+    }
+
+    // MARK: - Strain target nudge (#593)
+
+    private var strainTargetCard: some View {
+        Section2(icon: "flame", title: String(localized: "Strain target"),
+                 blurb: String(localized: "A once-a-day nudge when your Effort reaches the low end of today's optimal strain range, worked out from your recovery."),
+                 active: behavior.strainTargetNudge) {
+            ToggleRow(label: String(localized: "Notify when optimal strain is reached"),
+                      help: String(localized: "Posts after your strap syncs and NOOP scores the day — not the exact second you cross it. At most once per day."),
+                      isOn: $behavior.strainTargetNudge)
+                .onChangeCompat(of: behavior.strainTargetNudge) { on in
+                    if on {
+                        StrainTargetNotifier.requestAuthorization()
+                        // The repo.$days sink only fires on data changes, so if today's target is
+                        // already reached, evaluate now rather than waiting for the next refresh
+                        // (the reevaluateIllness idiom).
+                        model.evaluateStrainTarget()
+                    }
+                }
         }
     }
 
