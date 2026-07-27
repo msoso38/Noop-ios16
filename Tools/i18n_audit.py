@@ -1038,11 +1038,18 @@ def ci_check(base_ref: str) -> int:
     # tolerance; these carry real pre-existing debt (StrandDesign ships 14 of 95 Italian), so the gate
     # blocks GROWTH rather than demanding the backlog be cleared before anyone can merge.
     print("\n--- Locales beyond the focus set: no NEW gaps (ratcheting allowance) ---")
+    # Local, NOT the global `failed`: an earlier section failing (a German string, an un-extracted
+    # literal) must not silence this section's own verdict. Reporting nothing here reads as "did not
+    # run", which is the worst thing a gate can say to someone trying to understand a red build.
+    locale_failed = False
     improved: list[str] = []
+    seen_targets: set[str] = set()
     for target, missing in sorted(extra_apple_gaps.items()):
+        seen_targets.add(target)
         allowed = allowance.get(target, 0)
         if missing > allowed:
             failed = True
+            locale_failed = True
             print(f"FAIL {target}: missing={missing} exceeds the allowance of {allowed}")
         elif missing < allowed:
             improved.append(f"{target}: {allowed} -> {missing}")
@@ -1055,15 +1062,21 @@ def ci_check(base_ref: str) -> int:
         lang_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', lang_path.read_text(encoding="utf-8")))
         missing = len((base_keys - ANDROID_EXEMPT_KEYS) - lang_keys)
         target = f"{locale_dir}/strings.xml"
+        seen_targets.add(target)
         allowed = allowance.get(target, 0)
         if missing > allowed:
             failed = True
+            locale_failed = True
             print(f"FAIL {target}: missing={missing} exceeds the allowance of {allowed}")
         elif missing < allowed:
             improved.append(f"{target}: {allowed} -> {missing}")
+    # An allowance for a target that no longer exists (locale removed, catalog dropped) can never be
+    # satisfied and silently inflates the tracked total, so surface it rather than let it rot.
+    for stale in sorted(set(allowance) - seen_targets):
+        print(f"  STALE {stale} is no longer present — drop it from {EXTRA_LOCALE_BASELINE_PATH.name}.")
     for line in improved:
         print(f"  IMPROVED {line}. Lower it in {EXTRA_LOCALE_BASELINE_PATH.name}.")
-    if not failed:
+    if not locale_failed:
         tracked = sum(allowance.values())
         print(f"  OK no new gaps in the non-focus locales ({tracked} tracked, ratcheting down)")
 
