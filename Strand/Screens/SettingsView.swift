@@ -52,6 +52,12 @@ struct SettingsView: View {
     /// See [PuffinExperiment.continuousHrvOvernightOnlyKey].
     @AppStorage(PuffinExperiment.continuousHrvOvernightOnlyKey) private var continuousHrvOvernightOnly = false
 
+    // #477 Power saving (parity with Android). Battery-adaptive sync cadence + an HRV-pause sub-option.
+    @AppStorage(PuffinExperiment.powerSavingKey) private var powerSavingEnabled = false
+    @AppStorage(PuffinExperiment.powerSavingBatteryPctKey) private var powerSavingPct = 20
+    /// Stored INVERTED so the default (absent = false) reads as "HRV pause on". The toggle shows `!this`.
+    @AppStorage(PuffinExperiment.pauseHrvDisabledKey) private var pauseHrvDisabled = false
+
     /// "Experimental sleep staging (V2)" (ON by default, promoted after the 44-subject cross-subject
     /// benchmark). When on, detected nights are re-staged with `SleepStagerV2` (the transparent
     /// cardiorespiratory recipe) instead of the older V1 stager. Read at the staging call site in
@@ -87,9 +93,9 @@ struct SettingsView: View {
     // Day-cycle scene backdrop behind Today (#698). Default ON. Off swaps the scene for a plain dark
     // canvas. TodayView reads the same key to gate its SceneScreenBackground.
     @AppStorage(SceneBackgroundPrefs.enabledKey) private var showDayCycleBackground = true
-    // "Sky behind cards" (opt-in, default OFF): extend the day-cycle sky behind the whole Today scroll so
-    // Card transparency reveals it under every card. Mirrors Kotlin NoopPrefs.skyBehindCards.
-    @AppStorage(SkyBehindCardsPrefs.enabledKey) private var skyBehindCards = false
+    // "Sky behind cards" (default ON): extend the day-cycle sky behind the whole Today scroll so
+    // Card transparency reveals it under every card. User-toggleable below. Mirrors Kotlin NoopPrefs.skyBehindCards.
+    @AppStorage(SkyBehindCardsPrefs.enabledKey) private var skyBehindCards = true
     // Card-surface opacity percent (100 = solid). Reactive — moving the slider live-updates every card.
     @AppStorage(CardAppearancePrefs.opacityKey) private var cardOpacityPercent = CardAppearancePrefs.defaultPercent
     // Hydration tracker (opt-in, MVP). Default OFF — when off the hydration dashboard card + detail are
@@ -100,6 +106,10 @@ struct SettingsView: View {
     /// sustained-elevated window and offers — via a single dismissible card — to save it as a workout.
     /// Nothing is ever created automatically. Mirrors the Android `NoopPrefs.KEY_AUTO_DETECT_WORKOUTS`.
     @AppStorage(PuffinExperiment.autoDetectWorkoutsKey) private var autoDetectWorkoutsEnabled = false
+
+    /// "Journal reminder" (#627, default ON). When ON, Today shows the persistent journal widget
+    /// (last-7-days strip + tap-through). Mirrors the Android `NoopPrefs.KEY_JOURNAL_REMINDER_ENABLED`.
+    @AppStorage(PuffinExperiment.journalReminderKey) private var journalReminderEnabled = true
 
     /// Opt-in "Keep screen on during a workout" (default OFF, #703). When ON, the live-workout view
     /// holds the screen awake while a manual recording is running so you can glance at your live HR
@@ -189,7 +199,9 @@ struct SettingsView: View {
                 unitsCard.staggeredAppear(index: 2)
                 appearanceCard.staggeredAppear(index: 3)
                 strapCard.staggeredAppear(index: 4)
-                featuresCard.staggeredAppear(index: 5)
+                powerSavingCard.staggeredAppear(index: 5)
+                streakCard.staggeredAppear(index: 6)
+                featuresCard.staggeredAppear(index: 7)
 
                 // Lower-frequency sections collapse behind a single default-closed disclosure so the
                 // screen opens at ~6 sections instead of 11. Nothing is removed; every section here
@@ -654,6 +666,34 @@ struct SettingsView: View {
     /// Theme (System / Light / Dark) on every platform, plus the iOS app-icon choice. The Theme picker
     /// writes `AppearanceMode.storageKey`, which both app roots read via `.preferredColorScheme`; because
     /// every palette token is a dynamic `Color(light:dark:)`, the whole UI re-resolves on change.
+    /// Day streak (#569): consecutive days with a Charge score, computed on-device from the merged
+    /// daily metrics. A day qualifies when its `DailyMetric` has a `recovery` value. The math is the
+    /// pure `StreakCalculator` (Swift/Kotlin twin).
+    private var streakCard: some View {
+        let days = model.repo.days
+        let today = AnalyticsEngine.dayString(Int(Date().timeIntervalSince1970),
+                                              offsetSec: TimeZone.current.secondsFromGMT())
+        let s = StreakCalculator.streaks(dayKeys: days.map { $0.day },
+                                         qualified: days.map { $0.recovery != nil },
+                                         today: today)
+        return NoopCard(tint: StrandPalette.accent) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Streak").strandOverline()
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(verbatim: "\(s.current)")
+                        .font(StrandFont.number(30))
+                        .foregroundStyle(StrandPalette.accent)
+                    Text(s.current == 1 ? "day in a row" : "days in a row")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+                Text(s.longest == 1 ? "Longest: 1 day" : "Longest: \(s.longest) days")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+        }
+    }
+
     private var appearanceCard: some View {
         SettingsSection(
             icon: "circle.lefthalf.filled",
@@ -950,6 +990,64 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Power saving (#477)
+    private var powerSavingCard: some View {
+        SettingsSection(
+            icon: "battery.25",
+            title: "Power saving",
+            blurb: "Ease the load on your strap when its battery is running low. The strap keeps banking data on its own, so nothing is lost — NOOP just talks to it less often to help it last until you can charge it."
+        ) {
+            VStack(alignment: .leading, spacing: 16) {
+                Toggle(isOn: $powerSavingEnabled) {
+                    Text("Power saving mode")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                .onChangeCompat(of: powerSavingEnabled) { _ in model.applyPowerSaving() }
+                Text("Slows background strap-sync (every 45 min instead of 15) while your strap's battery is low. No data loss — the strap banks everything, so sync just batches into larger, less frequent pulls.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if powerSavingEnabled {
+                    Divider().overlay(StrandPalette.hairline)
+                    HStack {
+                        Text("Kick in at (strap battery)")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Spacer()
+                        Text(verbatim: "\(powerSavingPct)%")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.accent)
+                    }
+                    Slider(
+                        value: Binding(get: { Double(powerSavingPct) }, set: { powerSavingPct = Int($0) }),
+                        in: 10...30, step: 5,
+                        onEditingChanged: { editing in if !editing { model.applyPowerSaving() } }
+                    )
+                    .tint(StrandPalette.accent)
+
+                    Divider().overlay(StrandPalette.hairline)
+                    // HRV pause: a sub-option, ON by default when the master is on (stored inverted).
+                    Toggle(isOn: Binding(get: { !pauseHrvDisabled }, set: { pauseHrvDisabled = !$0 })) {
+                        Text("Pause HRV capture")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                    }
+                    .toggleStyle(.switch)
+                    .tint(StrandPalette.accent)
+                    .onChangeCompat(of: pauseHrvDisabled) { _ in model.applyPowerSaving() }
+                    Text("While your strap's battery is low, stop the always-on background HRV stream — the biggest continuous drain on the strap. A Live screen still shows heart rate, and it re-arms automatically once the strap is charged.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
     /// Rename the WHOOP 4.0's BLE advertising name. Shows the current name (read back from firmware in
     /// the connect handshake → `LiveState.advertisingName`) and writes a new one via `renameStrap`. The
     /// strap reboots to apply, so the new name lands on the next connect. WHOOP 4.0 only (Harvard).
@@ -1121,6 +1219,22 @@ struct SettingsView: View {
                 .accessibilityHint("Offers to save a workout when it spots sustained elevated heart rate")
 
                 Text("After a sync, NOOP looks over your recent heart rate for a sustained, raised stretch that looks like exercise and offers to save it. It only ever suggests. Nothing is saved until you tap Save, and you can dismiss any suggestion. Deliberately conservative, so the odd workout may be missed. On \(Platform.deviceNounPhrase) only.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Divider().overlay(StrandPalette.hairline)
+
+                Toggle(isOn: $journalReminderEnabled) {
+                    Text("Journal reminder")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                .accessibilityHint("Show a Today card reminding you to log your journal")
+
+                Text("Show a Today card reminding you to log your journal")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)

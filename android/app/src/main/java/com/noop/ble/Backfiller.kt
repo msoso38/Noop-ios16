@@ -1,6 +1,7 @@
 package com.noop.ble
 
 import android.content.Context
+import com.noop.data.DynAccelDiag
 import com.noop.data.InsertCounts
 import com.noop.data.StreamBatch
 import com.noop.data.WhoopRepository
@@ -256,6 +257,14 @@ class Backfiller(
      * build whose gate was weaker. Reset in [begin]. Mirrors Swift `Backfiller.sessionDroppedImplausible`.
      */
     var sessionDroppedImplausible = 0
+
+    /**
+     * #520 diagnostic: `dynamic_acceleration` folded across every batch of this session, logged once at the
+     * session boundary. Session-scoped rather than per-batch because a batch is an arbitrary slice of an
+     * offload — a still-fraction only means something over a whole night's worth of records. Twin of Swift
+     * `Backfiller.sessionDynAccel`.
+     */
+    var sessionDynAccel = DynAccelDiag()
         private set
 
     /**
@@ -279,6 +288,7 @@ class Backfiller(
         spo2Dumped = 0
         loggedImplausibleClock = false
         sessionDroppedImplausible = 0
+        sessionDynAccel = DynAccelDiag()
         // #547: the range markers belong to a connection's GET_DATA_RANGE, which the client re-sets per
         // connect; clear them so a fresh session never reuses a previous strap's window (the client
         // re-publishes them as soon as the range reply arrives).
@@ -405,6 +415,9 @@ class Backfiller(
                     spo2Dumped++
                 }
             }
+            // #520: accumulate the motion-magnitude diagnostic across the session; logged once at the
+            // session boundary, never per batch.
+            sessionDynAccel.merge(decoded.dynAccel)
             // #547: the strap is emitting records with implausible timestamps (a bad clock/flash —
             // far-past, a year-2027 spike, or future-dated `unix`). The ingest gate dropped them so they
             // can't pollute the day-windowed analytics; surface it ONCE per session so a bad-clock strap
