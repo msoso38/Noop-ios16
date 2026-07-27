@@ -397,7 +397,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Last (bins, daysObserved) computed on the collector pass. Reused by the SYNCHRONOUS settings
      *  re-evaluate below, which has no coroutine to read the store from — without this, flipping the
-     *  cycle-tracking toggle would blank the body clock until the next collector tick. */
+     *  cycle-tracking toggle would blank the body clock until the next collector tick.
+     *
+     *  Not volatile and not synchronised, deliberately: the write resumes on `viewModelScope`
+     *  (Dispatchers.Main.immediate) and the read is a UI-thread settings callback, so both touch it on
+     *  the main thread. The Swift twin gets the same guarantee from `@MainActor` on AppModel. */
     private var lastCircadianBins: Pair<List<CircadianEngine.ActivityBin>, Int> =
         emptyList<CircadianEngine.ActivityBin>() to 0
 
