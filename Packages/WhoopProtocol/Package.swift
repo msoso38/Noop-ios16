@@ -8,9 +8,13 @@ let package = Package(
         .library(name: "WhoopProtocol", targets: ["WhoopProtocol"]),
         .executable(name: "whoop-decode", targets: ["whoop-decode"]),
     ],
+    dependencies: [
+        .package(path: "../RawCapture"),
+    ],
     targets: [
         .target(
             name: "WhoopProtocol",
+            dependencies: ["RawCapture"],
             resources: [.process("Resources/whoop_protocol.json")]
         ),
         .executableTarget(
@@ -19,7 +23,7 @@ let package = Package(
         ),
         .testTarget(
             name: "WhoopProtocolTests",
-            dependencies: ["WhoopProtocol"],
+            dependencies: ["WhoopProtocol", "RawCapture"],
             resources: [.process("Resources")]
         ),
     ]

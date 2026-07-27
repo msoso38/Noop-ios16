@@ -1,5 +1,13 @@
 import Foundation
+import RawCapture
 
+/// Thin WHOOP5-only shim over `RawCaptureRecord` (`Packages/RawCapture`), kept only because the
+/// app-target caller (`Strand/BLE/PuffinFrameRecorder.swift`) still constructs a `PuffinCapture`
+/// directly with the raw-bytes `record(frame:char:tsMs:hr:)` signature; retire this type once that
+/// caller migrates onto the shared package + `rawCaptureRecord(for:char:tsMs:hr:)` directly
+/// (tracked separately — the app-layer rewire). All storage/serialisation logic below now lives in
+/// `RawCapture`; this type only converts to/from its brand-neutral record shape.
+///
 /// One captured WHOOP 5.0 / MG ("puffin") frame plus the provenance a protocol mapper needs to
 /// correlate raw bytes against ground truth.
 ///
@@ -37,19 +45,28 @@ public struct PuffinCaptureRecord: Codable, Equatable {
     }
 }
 
+private extension PuffinCaptureRecord {
+    init(_ rec: RawCaptureRecord) {
+        self.init(hex: rec.hex, char: rec.char, tsMs: rec.tsMs, hr: rec.hr,
+                   typeName: rec.typeName, seq: rec.seq, crcOK: rec.crcOK, ok: rec.ok)
+    }
+}
+
 /// Accumulates captured puffin frames and serialises them in a fixture-compatible JSON shape.
 ///
 /// Pure (no CoreBluetooth, no file IO) so it unit-tests in the `WhoopProtocol` package. The app's
 /// `PuffinFrameRecorder` owns one of these, feeds it frames off `fd4b0003/0004/0005/0007`, and
 /// persists `encodedJSON()` to disk.
 public final class PuffinCapture {
-    public private(set) var records: [PuffinCaptureRecord] = []
+    private let buffer = RawCapture()
 
     public init() {}
 
-    public var count: Int { records.count }
+    public var records: [PuffinCaptureRecord] { buffer.records.map(PuffinCaptureRecord.init) }
 
-    public func reset() { records.removeAll() }
+    public var count: Int { buffer.count }
+
+    public func reset() { buffer.reset() }
 
     /// Decode `frame` as a puffin envelope and append a record with the given provenance.
     /// The stored `hex` is the decoder's canonical `rawHex`, so it always round-trips through parsing.
@@ -58,33 +75,15 @@ public final class PuffinCapture {
         // D#969: rawHex is only built when collectFields is true; PuffinCapture is the one production
         // consumer that stores it, so opt in here (this diagnostic path is off by default anyway).
         let parsed = parseFrame(frame, family: .whoop5, collectFields: true)
-        let rec = PuffinCaptureRecord(
-            hex: parsed.rawHex,
-            char: char,
-            tsMs: tsMs,
-            hr: hr,
-            typeName: parsed.ok ? parsed.typeName : nil,
-            seq: parsed.seq,
-            crcOK: parsed.crcOK,
-            ok: parsed.ok
-        )
-        records.append(rec)
-        return rec
+        let rec = rawCaptureRecord(for: parsed, char: char, tsMs: tsMs, hr: hr)
+        buffer.record(rec)
+        return PuffinCaptureRecord(rec)
     }
 
     /// The full capture (provenance + decode hints), pretty-printed with stable key order.
-    public func encodedJSON() throws -> Data {
-        let enc = JSONEncoder()
-        enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        return try enc.encode(records)
-    }
+    public func encodedJSON() throws -> Data { try buffer.encodedJSON() }
 
     /// The `[{"hex": …}]` subset — byte-for-byte the shape `Tests/.../Resources/frames.json` expects,
     /// so a capture can be dropped straight into the parity suite.
-    public func framesFixtureJSON() throws -> Data {
-        struct HexOnly: Encodable { let hex: String }
-        let enc = JSONEncoder()
-        enc.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-        return try enc.encode(records.map { HexOnly(hex: $0.hex) })
-    }
+    public func framesFixtureJSON() throws -> Data { try buffer.framesFixtureJSON() }
 }
