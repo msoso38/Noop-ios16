@@ -64,6 +64,10 @@ final class DecoderOracleTests: XCTestCase {
         let wallClockRef: Int
         let sessionOldestUnix: Int?
         let sessionNewestUnix: Int?
+        /// Optional #547 future-bound override. Absent → the production default (the live clock).
+        /// A batch whose records are post-2038 MUST set it, or the live clock rejects them for an
+        /// unrelated reason and the batch asserts nothing. Kotlin passes the same value.
+        let wallNow: Int?
         let expect: BatchExpect
         private enum CodingKeys: String, CodingKey {
             case name, family, frames, expect
@@ -71,6 +75,7 @@ final class DecoderOracleTests: XCTestCase {
             case wallClockRef = "wall_clock_ref"
             case sessionOldestUnix = "session_oldest_unix"
             case sessionNewestUnix = "session_newest_unix"
+            case wallNow = "wall_now"
         }
     }
     private struct BatchExpect: Decodable {
@@ -191,7 +196,8 @@ final class DecoderOracleTests: XCTestCase {
             let s = extractHistoricalStreams(parsed, deviceClockRef: batch.deviceClockRef,
                                              wallClockRef: batch.wallClockRef,
                                              sessionOldestUnix: batch.sessionOldestUnix,
-                                             sessionNewestUnix: batch.sessionNewestUnix)
+                                             sessionNewestUnix: batch.sessionNewestUnix,
+                                             wallNow: batch.wallNow)
             let got = Self.streamCounts(s)
             for (stream, want) in batch.expect.counts {
                 let have = try XCTUnwrap(got[stream], "\(batch.name): unknown stream '\(stream)'")

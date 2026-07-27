@@ -150,11 +150,18 @@ class DecoderOracleTest {
                 val f = framesByName[fname] ?: throw AssertionError("$name: unknown fixture frame '$fname'")
                 hexToBytes(f.getString("hex"))
             }
+            val wallClockRef = spec.getInt("wall_clock_ref")
             val batch = extractHistoricalStreams(
                 rawFrames = raw,
                 deviceClockRef = spec.getInt("device_clock_ref"),
-                wallClockRef = spec.getInt("wall_clock_ref"),
+                wallClockRef = wallClockRef,
                 family = family,
+                // Optional #547 future-bound override. Absent → reproduce the production default
+                // verbatim, so the batches that don't set it behave exactly as before. A batch whose
+                // records are post-2038 MUST set it, or the live clock rejects them for an unrelated
+                // reason and the batch asserts nothing. Swift passes the same value.
+                wallNow = if (spec.has("wall_now")) spec.getLong("wall_now")
+                          else maxOf(wallClockRef.toLong(), System.currentTimeMillis() / 1000L),
                 sessionOldestUnix = if (spec.has("session_oldest_unix")) spec.getLong("session_oldest_unix") else null,
                 sessionNewestUnix = if (spec.has("session_newest_unix")) spec.getLong("session_newest_unix") else null,
             )

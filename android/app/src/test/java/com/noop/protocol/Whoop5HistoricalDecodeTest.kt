@@ -32,7 +32,9 @@ class Whoop5HistoricalDecodeTest {
         assertNotNull(p)
         p!!
         assertEquals(18, p["hist_version"])
-        assertEquals(1780916150, p["unix"])
+        // Long, not Int: `unix` is an unsigned u32 kept in the unsigned domain so a post-2038 value
+        // cannot go negative on Kotlin's 32-bit Int and get dropped by the #547 gate (see `histU32`).
+        assertEquals(1780916150L, p["unix"])
         assertEquals(102, p["heart_rate"])
         assertEquals(2, p["rr_count"])
         assertEquals(listOf(602, 613), p["rr_intervals"])
@@ -236,7 +238,7 @@ class Whoop5HistoricalDecodeTest {
         assertNotNull(p)
         p!!
         assertEquals(18, p["hist_version"])
-        assertEquals(1781047486, p["unix"])
+        assertEquals(1781047486L, p["unix"])
         assertEquals(66, p["heart_rate"])
         assertEquals(3238, p["skin_temp_raw"]) // 32.38 °C on the wrist
         val gx = p["gravity_x"] as Double
@@ -256,8 +258,8 @@ class Whoop5HistoricalDecodeTest {
     @Test
     fun decodesV18FromASecondDevice() {
         for ((hex, expectHR, expectUnix) in listOf(
-            Triple(secondDeviceHR57, 57, 1781120109),
-            Triple(secondDeviceHR63, 63, 1781124622),
+            Triple(secondDeviceHR57, 57, 1781120109L),
+            Triple(secondDeviceHR63, 63, 1781124622L),
         )) {
             val p = decodeHistorical(bytes(hex), DeviceFamily.WHOOP5)
             assertNotNull(p); p!!
