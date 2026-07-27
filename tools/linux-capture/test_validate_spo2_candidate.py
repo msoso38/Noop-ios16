@@ -722,6 +722,47 @@ class FeatureAbsentClassificationTests(unittest.TestCase):
         self.assertLessEqual(res["duty"]["record_interval_s"], vs.NOMINAL_DUTY_WINDOW_S)  # cadence too
         self.assertEqual(res["classification"], "fail")
 
+    def _asleep_device(self, td, label, stamps):
+        frames = [
+            {"hex": make_v18(unix=u, sleep_state=st, hr=52, aux_byte_82=0).hex()} for u, st in stamps
+        ]
+        cap = os.path.join(td, f"{label}.json")
+        with open(cap, "w") as f:
+            json.dump(frames, f)
+        exp_dir = os.path.join(td, label)
+        os.makedirs(exp_dir)
+        t0 = min(u for u, _ in stamps)
+        t1 = max(u for u, _ in stamps)
+        start = datetime.fromtimestamp(t0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        _write_export(exp_dir, [(start, 96.0, t0, t1)])
+        return vs.validate_device(cap, exp_dir, device=label)
+
+    def test_repeated_timestamps_do_not_inflate_observed_sleep(self):
+        """A resume/reconnect in whoop_sync.py can re-deliver the same historical rows. Counting
+        records rather than distinct seconds turns 200 s of sleep repeated twenty times into 4000 s of
+        'observation' — enough to clear the bar off 200 s of real data."""
+        t0 = _utc(2026, 6, 1, 22, 0, 0)
+        dupes = [(t0 + i, 2) for i in range(200) for _ in range(20)]
+        with tempfile.TemporaryDirectory() as td:
+            res = self._asleep_device(td, "dupes", dupes)
+        self.assertEqual(res["duty"]["mode"], "absent")
+        self.assertEqual(res["observed_asleep_s"], 200)      # distinct seconds, not 4000 records
+        self.assertEqual(res["classification"], "fail")
+
+    def test_a_dense_awake_stretch_cannot_hide_an_aliasing_sleep_cadence(self):
+        """The gate has to read the ASLEEP cadence. A capture that is 1 Hz awake and 300 s asleep has
+        a 1 s whole-capture median, which would sail through the window gate while the only part that
+        matters aliases against the duty period."""
+        t0 = _utc(2026, 6, 1, 22, 0, 0)
+        awake = [(t0 + i, 0) for i in range(5000)]
+        asleep = [(t0 + 5000 + i * 300, 2) for i in range(4000)]
+        with tempfile.TemporaryDirectory() as td:
+            res = self._asleep_device(td, "mixed", awake + asleep)
+        self.assertEqual(res["duty"]["record_interval_s"], 1.0)   # whole-capture median says 1 Hz…
+        self.assertEqual(res["asleep_interval_s"], 300.0)         # …the part that matters does not
+        self.assertEqual(res["classification"], "fail")
+        self.assertIn("asleep cadence", vs.format_duty_line(res))
+
     def test_a_cadence_at_the_window_length_can_still_claim_absence(self):
         """Boundary: a cadence at or below the window length cannot skip a window whatever the phase,
         so a flat-zero capture there IS evidence. Guards the gate against being over-tightened."""

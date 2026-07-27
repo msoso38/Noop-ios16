@@ -704,11 +704,23 @@ def validate_device(
     # Both failures produce the same wrong answer — a working strap reported as lacking the feature —
     # and that error is asymmetric, because feature_absent REMOVES a device from the multi-device gate
     # rather than failing it. Over-claiming absence loosens the promote bar.
-    asleep_stamps = [r["unix"] for r in records if r.get("sleep_state") == SLEEP_ASLEEP]
-    asleep_span = (max(asleep_stamps) - min(asleep_stamps)) if len(asleep_stamps) >= 2 else 0
-    interval = duty.get("record_interval_s")
-    observed_asleep_s = len(asleep_stamps) * interval if interval else 0
-    cadence_could_see_window = interval is not None and interval <= NOMINAL_DUTY_WINDOW_S
+    #
+    # Both are therefore measured over the ASLEEP records only, on DISTINCT timestamps. Two ways that
+    # bites if you take the whole-capture figures instead:
+    #   • The global median cadence is set by whichever state has more records. A capture that is 1 Hz
+    #     awake and 300 s asleep reports a 1 s cadence and sails through the window gate, while the
+    #     part that matters aliases.
+    #   • Counting records rather than distinct seconds over-counts a capture that re-delivers the
+    #     same historical rows — a resume/reconnect in whoop_sync.py does exactly that — so 200 s of
+    #     sleep repeated twenty times scores as 4000 s of observation.
+    asleep_records = [r for r in records if r.get("sleep_state") == SLEEP_ASLEEP]
+    asleep_stamps = sorted({r["unix"] for r in asleep_records})
+    asleep_span = (asleep_stamps[-1] - asleep_stamps[0]) if len(asleep_stamps) >= 2 else 0
+    asleep_interval = _median_record_interval(asleep_records) if len(asleep_stamps) >= 2 else None
+    observed_asleep_s = len(asleep_stamps) * asleep_interval if asleep_interval else 0
+    cadence_could_see_window = (
+        asleep_interval is not None and asleep_interval <= NOMINAL_DUTY_WINDOW_S
+    )
     feature_absent = (
         duty["mode"] == "absent"
         and len(records) >= ABSENT_MIN_RECORDS
@@ -738,8 +750,11 @@ def validate_device(
         "low_coverage_nights": low_cov_nights,
         "asleep_span_s": asleep_span,
         # Reported beside the span on purpose: the two diverging is the signature of a capture with
-        # gaps, and it is the observed figure the absence claim is gated on.
+        # gaps, and it is the observed figure the absence claim is gated on. `asleep_interval_s` is
+        # the cadence of the ASLEEP records specifically — the whole-capture median in `duty` can be
+        # set by a dense awake stretch and hide an aliasing sleep cadence.
         "observed_asleep_s": observed_asleep_s,
+        "asleep_interval_s": asleep_interval,
         "classification": classification,
         "checklist": checklist,
         "nights": nights,
@@ -840,12 +855,22 @@ def format_duty_line(result: dict) -> str:
     if mode == "absent":
         # Say WHY an all-zero capture was not allowed to claim absence, rather than letting it read as
         # a plain FAIL for no stated reason. Same principle as reporting rejected offsets.
-        interval = d.get("record_interval_s")
+        #
+        # Reads the ASLEEP cadence, not `duty.record_interval_s` — the whole-capture median is what
+        # the gate deliberately does not trust, so quoting it here would print a reassuring number
+        # while the claim was refused on a different one.
+        interval = result.get("asleep_interval_s")
+        observed = result.get("observed_asleep_s") or 0
         if interval is not None and interval > NOMINAL_DUTY_WINDOW_S:
             head += (
-                f"\n    NOT claiming feature_absent: {interval:g}s cadence is coarser than a nominal "
-                f"{NOMINAL_DUTY_WINDOW_S}s window, so an aliased capture could read 0x00 off a working "
-                f"strap. Recapture at ≤{NOMINAL_DUTY_WINDOW_S}s to make an absence claim."
+                f"\n    NOT claiming feature_absent: {interval:g}s asleep cadence is coarser than a "
+                f"nominal {NOMINAL_DUTY_WINDOW_S}s window, so an aliased capture could read 0x00 off a "
+                f"working strap. Recapture at ≤{NOMINAL_DUTY_WINDOW_S}s to make an absence claim."
+            )
+        elif observed < ABSENT_MIN_ASLEEP_SPAN_S:
+            head += (
+                f"\n    NOT claiming feature_absent: only {observed:.0f}s of sleep actually observed "
+                f"(need {ABSENT_MIN_ASLEEP_SPAN_S}s). Wall-clock span counts gaps; this counts samples."
             )
         return head
     if mode != "duty_cycled":
