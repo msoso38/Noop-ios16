@@ -64,8 +64,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.roundToInt
 import java.util.TimeZone
+import kotlin.math.roundToInt
 
 /**
  * The single app-wide view model. Holds the BLE client and the Room-backed
@@ -417,7 +417,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Returns an empty list when there is too little to read; the caller treats that as "no estimate".
      */
     private suspend fun circadianActivityBins(): Pair<List<CircadianEngine.ActivityBin>, Int> {
-        val now = System.currentTimeMillis() / 1000L
+        val nowMs = System.currentTimeMillis()
+        val now = nowMs / 1000L
         val from = now - 14L * 86_400L
         // hrBucketsUnion, not hrBuckets: the Swift twin's `repo.hrBuckets(from:to:)` UNIONs the active
         // strap with the canonical "my-whoop" (#814 read spine). Reading one id here would give Android
@@ -425,7 +426,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // render no estimate where Swift renders one. Single-WHOOP install resolves to one id either way.
         val buckets = runCatching { repository.hrBucketsUnion(deviceId, from, now, 3_600L) }
             .getOrDefault(emptyList())
-        val tz = TimeZone.getDefault().getOffset(now * 1000L) / 1000L
+        val tz = TimeZone.getDefault().getOffset(nowMs) / 1000L
         return circadianBinsFrom(buckets, tz)
     }
 
