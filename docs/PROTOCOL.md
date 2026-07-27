@@ -528,41 +528,70 @@ sixteen R22 feature flags in `Whoop5Config.enableR22Sequence`, `SET_DEVICE_CONFI
 Broadcast-HR key, #181) and has never read either. The `CommandNumber` table names the read side of both:
 121 `GET_DEVICE_CONFIG_VALUE` and 128 `GET_FF_VALUE`.
 
-**Both opcodes may simply not be implemented.** A number in the table is not a served verb — opcode 96
-(`ENTER_HIGH_FREQ_HISTORICAL_MODE`) is the standing example of one nothing in the wild sends. So the
-probe's primary deliverable is a per-verb verdict — **answered**, **rejected as UNSUPPORTED**, or
-**silent** — and a clean "neither verb is served" is a useful result, not a failure. It spends exactly one
-round-trip per verb establishing that (128 against a flag NOOP writes, 121 against the known-good
-Broadcast-HR key) before doing anything else; a verb that is refused, silent or undecodable is **retired**,
-so a dead verb costs one 8 s window rather than one per key.
+**Confirmed on a WHOOP 5 MG (WS50_r03): both verbs answer** — and the reply is an **existence oracle**.
+A key name the firmware knows answers `result = SUCCESS(1)` and carries a value byte; a name it does not
+know answers `result = FAILURE(0)`. One round-trip therefore settles whether a config key NAME exists,
+read-only, which turns "does a config key gate SpO2?" from an unanswerable question into a finite search.
+`ConfigKeySweep.Existence` is that mapping, and it reads the RESULT CODE only: `UNSUPPORTED(3)`, any other
+code, and WHOOP 4.0's unlabelled result byte are all `inconclusive`, never folded into either answer.
 
-Only a verb that answers goes on to read values: the sixteen known flag names (whose values NOOP has only
-ever written, never read), then a short list of **guessed** oxygen-related key names against the
-device-config namespace — `DeviceConfigReadProbe.oxygenCandidateKeys`, the one constant to extend, and
-labelled as guesses everywhere they surface. That list is the #103 question in probe form: the byte at
-deep-record offset 82 reads as real SpO2 on some straps and flat `0x00` on others, which is what a
-subscription gate would look like, and a config key governing it would sit in the device-config namespace.
+**Config key probe (#103, read-only) — enumerate first, guess last.** The probe's plan is built around one
+principle: ask the strap before guessing. The `CommandNumber` table names a **device-config enumeration
+pair** nothing here had ever sent — 115 `START_DEVICE_CONFIG_KEY_EXCHANGE` and 116
+`SEND_NEXT_DEVICE_CONFIG` — the structural twin of the 117/118 feature-flag pair #872 built and a strap
+answered. If 115/116 answer, the strap hands over its own device-config key list and no name needs
+guessing at all: the candidate sweep is **skipped** and the report says so. A clean "115/116 are not
+served" is equally useful and publishable — it is what promotes the guessing fallback from a shortcut to
+the only available method.
 
-Request body is `[0x01]` (the inner b3 byte) + the key as ASCII NUL-padded to 32 bytes — the SET side's own
-name field minus its value byte. That shape is **inferred from the SET side, not observed**; if it is wrong
-the strap answers FAILURE or nothing, which the report says plainly. The reply is an ordinary
-COMMAND_RESPONSE whose record sits behind the 2-byte response header, and **beyond that offset no field
-layout is assumed**: the record is reported as raw hex. A value is only ever *claimed* when the reply
-echoes the requested key inside a 32-byte NUL-padded field, in which case the byte immediately after that
-field is the value — the SET layout, checked rather than assumed. (On 5/MG the puffin envelope pads the
-inner payload to a 4-byte boundary, so trailing NULs in a record are envelope padding; reading "the byte
-after the echoed field" rather than "the last byte" is what keeps that out of the answer.)
+115/116 are decoded by `FeatureFlagProbe.parseStart` / `parseNext` with the opcode passed in, i.e. on the
+**assumed-symmetric** 117/118 record layout. That is an inference from the naming symmetry in this repo's
+own table, not an observation, and it fails closed: a layout mismatch surfaces as a short record or an
+implausible count and retires the walk with a named reason rather than inventing key names. The walk
+inherits #874's discipline — the strap's own end marker terminates it, but an entry whose NAME does not
+decode is counted and stepped over rather than treated as the end.
 
-Read-only by construction. `DeviceConfigReadProbe.readOnlyOpcodes` is `{121, 128}` and
-`isReadOnlyOpcode` is the *same predicate* the 5/MG `send()` allowlist consults — admitting them only
-while a probe is in flight — so the "119/120 are never sent from this path" claim is a unit-tested property
-of the allowlist rather than a comment. The plan is capped at 64 round-trips. Driven by
-`BLEManager.probeDeviceConfigValues()` / `WhoopBleClient.probeDeviceConfigValues()` (user-triggered, Test
-Centre → Connection, both families); parsed + planned + rendered by the pure `DeviceConfigReadProbe` /
-`DeviceConfigReadProbeReport` twins (Swift↔Kotlin byte-parity, unit-tested on synthetic frames). Result
-goes to a copyable dialog + the strap log; no storage. The opcode numbers come from this repo's own
-protocol table (`Resources/whoop_protocol.json`). **Unverified on any strap:** nothing in this project has
-ever had 121 or 128 answered.
+The rest of the plan, in order: two **discovery** reads (128 against a flag NOOP writes, 121 against the
+Broadcast-HR key, so a FAILURE is evidence about the *verb*, not the key); two **cross-namespace** reads
+that ask each verb for the OTHER namespace's known-good key and settle in two round-trips whether the
+namespaces are really separate — if one verb turns out to serve both, everything afterwards goes through
+it; the **values** of keys already known to exist (the sixteen flags, plus anything enumeration returned);
+and finally, only when enumeration produced nothing, the **candidate sweep**. A verb that is refused,
+silent or undecodable is **retired**, so a dead verb costs one 8 s window rather than one per key.
+
+**The candidate catalogue is derived, not free-associated.** `ConfigKeySweep.catalogue` is the one place to
+extend, and every entry is a cross-product of two things already in this repo: (A) the *morphology* of the
+seventeen confirmed key names — `enable_<subsystem>_packets`, `enable_<rev>_v<N>_packets`,
+`make_<subsystem>_visible`, `<signal>_<domain>_switching`, `enable_sig<N>[_during_sleep]`,
+`whoop_<metric>_in_<transport>`, and four more; and (B) the *vocabulary* the firmware uses about itself —
+the `CommandNumber` table's `optical` (107/108), `labrador` (124/125/139), `research` (131/132), `afe`
+(61/62) and its revision tokens `r7` (16), `r10`/`r11` (63), `r20`/`r21` (153/154), plus the strap's own
+console-log subsystem tags, of which `SIGPROC: generated a valid SPO2 during sleep` is the one directly on
+point. That line pairs the firmware's SpO2 computation with the `SIGPROC` tag and with the same
+`during sleep` phrasing the confirmed key `enable_sig11_during_sleep` uses, which is why the `sig<N>`
+number line is the catalogue's largest family.
+
+They remain **guesses** and are labelled as such everywhere. `ConfigKeySweep.retiredKeys` holds the eight
+plain-English oxygen names a real MG already answered FAILURE — kept out of the sweep so nobody spends
+round-trips re-asking, and kept in the file so nobody proposes them again. That all eight are product
+English, and all eight wrong, is the argument for deriving names from the firmware's own words instead.
+
+One run is bounded: `ConfigKeySweep.maxKeysPerRun` names per run, resumed from a cursor and **reported**
+("N asked of M in the catalogue; K untested … run again to continue from entry X"), so a catalogue grown
+past the budget truncates visibly instead of silently. Today's catalogue is smaller than one run's budget,
+so a run asks all of it.
+
+Read-only by construction. `DeviceConfigReadProbe.readOnlyOpcodes` is `{115, 116, 121, 128}` and
+`isReadOnlyOpcode` is the *same predicate* the 5/MG `send()` allowlist consults — admitting them only while
+a probe is in flight — so the "119/120 are never sent from this path" claim is a unit-tested property of
+the allowlist rather than a comment (the tests assert 119, 120 and all 252 other opcodes are rejected). The
+plan is capped at 128 round-trips. Driven by `BLEManager.probeDeviceConfigValues()` /
+`WhoopBleClient.probeDeviceConfigValues()` (user-triggered, Test Centre → Connection, both families);
+parsed + planned + rendered by the pure `ConfigKeySweep` / `DeviceConfigReadProbe` /
+`DeviceConfigReadProbeReport` twins (Swift↔Kotlin byte-parity, unit-tested on synthetic frames, with a
+golden report asserted byte-for-byte both sides). Result goes to a copyable dialog + the strap log; no
+storage. The opcode numbers come from this repo's own protocol table (`Resources/whoop_protocol.json`).
+**Unverified on any strap:** nothing in this project has ever had 115 or 116 answered.
 
 **GET_DATA_RANGE ring backlog (#689, diagnostic only).** Beyond the oldest/newest timestamps NOOP already
 scans from a `GET_DATA_RANGE` reply, the app computes a ring-buffer page backlog from three u32s in the
