@@ -32,9 +32,8 @@ struct LiquidTodayView: View {
 
     // async-loaded via the confirmed Repository accessors
     @State private var restScore: Double?          // sleep_performance, day-keyed
-    /// Raw resolver source ids for the three scores, keyed by recovery / strain / sleep_performance.
-    /// Presentation uses Today's shared mapper so Liquid and Classic name a source consistently.
-    @State private var heroProvenanceByMetric: [String: String] = [:]
+    /// Input providers for the three scores, keyed by recovery / strain / sleep_performance.
+    @State private var heroProviderByMetric: [String: ScoreInputProvider] = [:]
     @State private var stress: Double?             // StressModel(...).score, 0–3
     @State private var fitnessAge: Double?         // exploreSeries("fitness_age").last
     @State private var vitality: Double?           // exploreSeries("vitality").last
@@ -434,6 +433,11 @@ struct LiquidTodayView: View {
                     .buttonStyle(LiquidPressStyle())
                     .accessibilityLabel("Profile and settings")
                     LiquidAddButton()
+                    // #245: the Liquid header shipped with no sync indication at all (B1) — add it next to
+                    // the battery button, matching the issue's own ask ("near the battery percentage") and
+                    // the layout Android already uses (its SyncStatusChip sits in the same row as the
+                    // battery ring).
+                    LiquidSyncChip()
                     LiquidBatteryButton()
                     // #today-layout: opens the Arrange sheet (drag rows to reorder the Today sections).
                     Button { showArrangeSheet = true } label: {
@@ -520,14 +524,10 @@ struct LiquidTodayView: View {
                 .overlay(alignment: .top) {
                     if let sourceLabel = heroSourceLabel {
                         SourceBadge("\(sourceLabel)", tint: StrandPalette.onDarkSecondary)
-                            // Match the badge's trailing edge to the fixed-width Rest vessel on every card
-                            // width, then lift by the space4 gap above the cells so the badge's TOP sits on
-                            // the card's top edge — tucked into the top-right corner. (#486: the old
-                            // "+ half the badge height" centred it ON the border, reading as a pill floating
-                            // detached above the card; two users flagged it. Twin of Android TodayScreen.)
+                            // Match the badge's trailing edge to the Rest vessel and centre it on the card border.
                             .fixedSize()
                             .frame(width: HeroScoreCell.vesselDiameter, alignment: .trailing)
-                            .offset(y: -NoopMetrics.space4)
+                            .offset(y: -(NoopMetrics.space4 + NoopMetrics.sourceBadgeHeight / 2))
                             .allowsHitTesting(false)
                             .accessibilityLabel(Text("Source: \(sourceLabel)"))
                     }
@@ -1076,12 +1076,15 @@ struct LiquidTodayView: View {
                                                dayKeys: repo.days.map(\.day),
                                                hasRecovery: day?.recovery != nil)
             : nil
+        let priorScored = TodayView.lastScoredRecoveryDay(
+            days: repo.days, selectedDayKey: tkey,
+            isToday: selectedDayOffset == 0,
+            todayScored: day?.recovery != nil,
+            isCalibrating: calNights != nil
+        )
         cachedChargeDisplay = ChargeDisplay.resolve(
             todayRecovery: day?.recovery,
-            priorScored: TodayView.lastScoredRecoveryDay(days: repo.days, selectedDayKey: tkey,
-                                                         isToday: selectedDayOffset == 0,
-                                                         todayScored: day?.recovery != nil,
-                                                         isCalibrating: calNights != nil),
+            priorScored: priorScored,
             calibrationNights: calNights,
             todayKey: tkey)
 
@@ -1102,15 +1105,16 @@ struct LiquidTodayView: View {
         async let hrA = repo.hrBuckets(from: from, to: to, bucketSeconds: 300)
         async let wkA = repo.workoutRows()
         // Ask the same cross-source resolver the Classic Today view uses which source actually won each
-        // displayed score. Limit the read to the selected-day window instead of scanning full history.
+        // displayed score. Include the exact carried-Charge day; a fixed relative lookback can miss a
+        // legitimately old carried score.
         let sourceDayKey = selectedDayKey
-        let sourceLookback = max(2, selectedDayOffset + 2)
+        let sourceFromDay = min(sourceDayKey, priorScored?.day ?? sourceDayKey)
         async let chargeSourceA = repo.resolvedSeries(key: "recovery", source: Repository.whoopSource,
-                                                      days: sourceLookback)
+                                                      from: sourceFromDay, to: sourceDayKey)
         async let effortSourceA = repo.resolvedSeries(key: "strain", source: Repository.whoopSource,
-                                                      days: sourceLookback)
+                                                      from: sourceDayKey, to: sourceDayKey)
         async let restSourceA = repo.resolvedSeries(key: "sleep_performance", source: Repository.whoopSource,
-                                                    days: sourceLookback)
+                                                    from: sourceDayKey, to: sourceDayKey)
 
         let restSeries = await restA
         let stepsSeries = await stepsA
@@ -1193,13 +1197,22 @@ struct LiquidTodayView: View {
             ("strain", effortSource),
             ("sleep_performance", restSource),
         ]
-        var provenance: [String: String] = [:]
+        var providers: [String: ScoreInputProvider] = [:]
         for (metric, resolution) in sourceResolutions {
-            if let winner = resolution.points.last(where: { $0.day == sourceDayKey })?.source {
-                provenance[metric] = winner
+            let selectedPoint = resolution.points.last(where: { $0.day == sourceDayKey })
+            let winner = selectedPoint
+                ?? (metric == "recovery"
+                    ? priorScored.flatMap { prior in resolution.points.last(where: { $0.day == prior.day }) }
+                    : nil)
+            if let winner {
+                providers[metric] = await repo.scoreInputProvider(
+                    resolvedSource: winner.source,
+                    day: winner.day,
+                    metricKey: metric
+                )
             }
         }
-        heroProvenanceByMetric = provenance
+        heroProviderByMetric = providers
 
         // First load done — bring the hero gauges + sky to life now the launch churn has settled.
         if !dataLoaded { withAnimation(.easeIn(duration: 0.4)) { dataLoaded = true } }
@@ -1218,18 +1231,19 @@ struct LiquidTodayView: View {
     /// two distinct winners in Charge / Effort / Rest order so the compact badge stays readable.
     private var heroSourceLabel: String? {
         Self.heroSourceLabel(
-            rawSources: ["recovery", "strain", "sleep_performance"].compactMap { heroProvenanceByMetric[$0] },
-            deviceId: repo.deviceId)
+            providers: ["recovery", "strain", "sleep_performance"].compactMap { heroProviderByMetric[$0] })
     }
 
-    /// Pure aggregation seam for the Liquid hero. The existing Today mapper turns computed siblings into
-    /// "On-device", the Apple Health source into "Apple Watch", and imported strap rows into "Whoop".
-    static func heroSourceLabel(rawSources: [String], deviceId: String) -> String? {
+    /// Pure aggregation seam for the Liquid hero. The provider mapper names the sensors/imports that
+    /// supplied the score inputs; identical names collapse and the compact badge is capped at two.
+    static func heroSourceLabel(providers: [ScoreInputProvider]) -> String? {
         var seen = Set<String>()
         var labels: [String] = []
-        for raw in rawSources {
-            let label = TodayView.todayProvenanceChipLabel(
-                rawSource: raw, deviceId: deviceId, appleHealthSource: Repository.appleHealthSource)
+        for provider in providers {
+            let label = TodayView.todayScoreProviderLabel(
+                sourceId: provider.sourceId,
+                brand: provider.brand
+            )
             if seen.insert(label).inserted { labels.append(label) }
             if labels.count == 2 { break }
         }
@@ -1920,6 +1934,49 @@ private struct LiquidBatteryButton: View {
     }
 }
 
+/// #245: the always-visible sync-status chip for the Liquid header, next to `LiquidBatteryButton`.
+///
+/// B1 (docs/bugs/2026-07-15-strap-battery-backfill-observability.md): the v8 Liquid redesign shipped no
+/// backfill indication AT ALL in the header, so a multi-hour history recovery was completely invisible —
+/// the wearer could not tell a working strap mid-drain from a dead one, only `LiquidSyncStatusRow` below
+/// (buried in the collapsible Data Sources card) said anything, and only once expanded. This closes that
+/// gap using the SAME state (`SyncChipState`, shared with the classic Today's `SyncStatusChip`) so the two
+/// headers can't disagree on when syncing is happening — restyled to this header's own dark-hero icon
+/// idiom (`.white.opacity(0.16)` fill, white content, matching `LiquidAddButton`) rather than reusing
+/// `SyncStatusChip`'s light-surface chrome, which would read poorly over the photo/gradient hero.
+private struct LiquidSyncChip: View {
+    @EnvironmentObject var live: LiveState
+
+    var body: some View {
+        switch SyncChipState.resolve(live: live) {
+        case .syncing(let chunks):
+            pill(system: "arrow.triangle.2.circlepath", text: "\(chunks)",
+                 a11y: String(localized: "Syncing strap history, \(chunks) chunks"))
+        case .synced(let agoText):
+            pill(system: "checkmark", text: agoText,
+                 a11y: String(localized: "Strap history synced \(agoText) ago"))
+        case .experimentalLive:
+            pill(system: "checkmark", text: String(localized: "live"),
+                 a11y: String(localized: "Connected; strap history sync is experimental on this strap"))
+        case .hidden:
+            EmptyView()
+        }
+    }
+
+    private func pill(system: String, text: String, a11y: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: system).font(.system(size: 11, weight: .bold))
+            Text(text).font(.system(size: 12, weight: .bold))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .frame(height: 34)
+        .background(Capsule().fill(.white.opacity(0.16)))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(a11y))
+    }
+}
+
 /// Strap-history sync state inside the Data Sources card. Owns LiveState; display-only.
 ///
 /// B1 (docs/bugs/2026-07-15-strap-battery-backfill-observability.md): the v8 Liquid redesign shipped no
@@ -1932,7 +1989,8 @@ private struct LiquidBatteryButton: View {
 /// Deliberately scoped to what LiveState can honestly answer: THAT a drain is running, how many chunks
 /// it has pulled, and when one last completed. It does NOT yet say "~15h behind" — that needs the
 /// persisted data frontier (max HR ts) compared against `strapRange.newestUnix`, and the frontier is a
-/// Repository read that LiveState does not carry. That remains open in B1.
+/// Repository read that LiveState does not carry. That remains open in B1. Kept here in the Data Sources
+/// card as the detailed view; `LiquidSyncChip` above is the header's ambient at-a-glance signal.
 private struct LiquidSyncStatusRow: View {
     @EnvironmentObject var live: LiveState
     var body: some View {

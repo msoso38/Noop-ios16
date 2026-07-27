@@ -1605,6 +1605,11 @@
     <string name="l10n_today_screen_pct_ee63e247">%1$s%%</string>
     <string name="l10n_today_screen_profile_and_settings_9b3d12f2">Profile and settings</string>
     <string name="l10n_today_screen_recovery_ea924f72">Recovery</string>
+    <string name="l10n_today_screen_sync_chip_now_c9bc849a">now</string>
+    <string name="l10n_today_screen_sync_chip_live_98aadb37">live</string>
+    <string name="l10n_today_screen_sync_chip_syncing_desc_bfc290e7">Syncing strap history, %1$d chunks</string>
+    <string name="l10n_today_screen_sync_chip_synced_desc_4d255944">Strap history synced %1$s ago</string>
+    <string name="l10n_today_screen_sync_chip_experimental_desc_3de06a70">Connected; strap history sync is experimental on this strap</string>
     <string name="l10n_today_screen_recovery_roundtoint_charge_92fbaa5e">%1$s%% Charge</string>
     <string name="l10n_today_screen_respiratory_1cd8c175">Respiratory</string>
     <string name="l10n_today_screen_rest_b79e5f48">Rest</string>
@@ -1657,6 +1662,7 @@
     <string name="timeline_metric_respiration">Respiration</string>
     <string name="timeline_metric_motion">Motion</string>
     <string name="timeline_metric_band_sleep_state">Band Sleep State</string>
+    <string name="timeline_metric_movement">Movement</string>
     <string name="explore_category_charge">Charge</string>
     <string name="explore_category_effort">Effort</string>
     <string name="explore_category_rest">Rest</string>
@@ -1716,4 +1722,13 @@
     <string name="l10n_data_sources_screen_last_shared_6bf8389c">"Last shared "</string>
     <string name="l10n_data_sources_screen_sharing_paused_health_connect_permission_was_e8950315">Sharing paused — Health Connect permission was revoked. Tap to re-grant.</string>
     <string name="l10n_data_sources_screen_last_share_didn_t_finish_noop_0d6c27f0">Last share didn’t finish — NOOP will retry automatically.</string>
+    <string name="settings_streak_title">Streak</string>
+    <plurals name="settings_streak_run">
+        <item quantity="one">%1$d day in a row</item>
+        <item quantity="other">%1$d days in a row</item>
+    </plurals>
+    <plurals name="settings_streak_longest">
+        <item quantity="one">Longest: %1$d day</item>
+        <item quantity="other">Longest: %1$d days</item>
+    </plurals>
 </resources>

@@ -2,6 +2,7 @@ package com.noop.analytics
 
 import com.noop.data.DailyMetric
 import com.noop.data.MetricSeriesRow
+import com.noop.data.ScoreInputProvenanceRow
 import com.noop.data.SleepSession
 import com.noop.data.WhoopRepository
 import com.noop.data.WorkoutRow
@@ -374,6 +375,7 @@ object IntelligenceEngine {
         // builds for daySourceToken, so there is no extra read). Only populated when the universal sink is
         // on. Keyed by the local day.
         val readOwnerByDay = LinkedHashMap<String, OwnerRead>()
+        val resolvedScoreOwnerByDay = LinkedHashMap<String, String>()
         // HRV baseline honours the manual "Recalibrate baseline" epoch (noop.hrvBaselineEpoch): pass the
         // per-value "yyyy-MM-dd" day keys (parallel to the values) so foldHistory drops every night before
         // the epoch. baselineEpoch is threaded down from the Context-aware caller (0.0 = no recalibration).
@@ -607,13 +609,24 @@ object IntelligenceEngine {
                 // R-R) + exact-duplicate beat count, so a "reads ~2x too high" report is self-diagnosing
                 // from the always-on log instead of hand-computing beat density.
                 val ts = sleepRrRows.map { it.ts }
-                val cov = String.format(java.util.Locale.US, "%.2f", HrvAnalyzer.rrCoverage(ts, sleepRr))
+                // Computed ONCE and reused for both the formatted field and the verdict below:
+                // collapsedCoverage sorts and de-dups the whole night's R-R (tens of thousands of rows on a
+                // dense capture), and this runs per day across a full re-score.
+                val covVal = HrvAnalyzer.rrCoverage(ts, sleepRr)
+                val cov = String.format(java.util.Locale.US, "%.2f", covVal)
                 // #550: collapsedCov previews a same-second R-R de-dup — well below `coverage` ⇒ the
                 // over-count is same-second (a dedup fix would work); still high ⇒ cross-second overlap.
-                val colCov = String.format(java.util.Locale.US, "%.2f", HrvAnalyzer.collapsedCoverage(ts, sleepRr))
+                val colCovVal = HrvAnalyzer.collapsedCoverage(ts, sleepRr)
+                val colCov = String.format(java.util.Locale.US, "%.2f", colCovVal)
                 val dup = HrvAnalyzer.duplicateBeatCount(ts, sleepRr)
+                // #550: state the CONCLUSION, not just the evidence. Reading coverage against collapsedCov
+                // is what distinguishes a same-second over-count (a de-dup would fix it) from a cross-second
+                // one (it would not) — a rule that lived only in the comments above, so triaging an
+                // "HRV reads ~2x high" report required knowing it. Now the line says which.
+                val verdict = HrvAnalyzer.classifyCoverage(covVal, colCovVal)
                 diag("hrv diag day=${res.daily.day} rmssd=${ms(h.rmssd)}ms sdnn=${ms(h.sdnn)}ms meanNN=${ms(h.meanNN)}ms " +
-                    "rr=${h.nInput}/${h.nClean} rejected=$rej% coverage=$cov collapsedCov=$colCov dupBeats=$dup")
+                    "rr=${h.nInput}/${h.nClean} rejected=$rej% coverage=$cov collapsedCov=$colCov dupBeats=$dup " +
+                    "rrIntegrity=${verdict.raw}")
             }
 
             // Steps test mode: emit the 5/MG raw-counter trace for this day (cumulative @57 series +
@@ -660,6 +673,7 @@ object IntelligenceEngine {
                 diag(rhrFloorMeanLogLine(day, rhrFloor, inBedBpms))
             }
             scoredNights.add(res)
+            resolvedScoreOwnerByDay[res.daily.day] = owner
         }
 
         // ── Seed the baseline from the UNION of imported nightly history + the nightly
@@ -976,6 +990,11 @@ object IntelligenceEngine {
         // ("my-whoop"), so importedDeviceId is included; a row already carrying its OWN recovery is left
         // alone. Mirrors the Swift fold.
         val importScoredDays = HashSet<String>().apply { addAll(dailies.map { it.day }) }
+        val healthConnectDays = repo.appleDaily(
+            WhoopRepository.HEALTH_CONNECT_SOURCE,
+            oldestDay,
+            newestDay,
+        ).mapTo(HashSet()) { it.day }
         val importSourceIds = buildList {
             add(importedDeviceId) // Health Connect imports its DailyMetric rows under the strap source.
             add(WhoopRepository.APPLE_HEALTH_SOURCE)
@@ -994,6 +1013,15 @@ object IntelligenceEngine {
                 val scored = row.copy(deviceId = computedId, recovery = recovery)
                 dailies.add(scored)
                 importScoredDays.add(w.day)
+                // Health Connect's compatibility DailyMetric row lives under `my-whoop`, while its
+                // AppleDaily row retains the real source. Preserve that provider fact without changing
+                // ingestion or score precedence.
+                resolvedScoreOwnerByDay[w.day] =
+                    if (source == importedDeviceId && w.day in healthConnectDays) {
+                        WhoopRepository.HEALTH_CONNECT_SOURCE
+                    } else {
+                        source
+                    }
                 RestScorer.restFromDaily(scored)?.let { rest ->
                     restRows.add(MetricSeriesRow(deviceId = computedId, day = w.day, key = "sleep_performance", value = rest))
                 }
@@ -1009,7 +1037,6 @@ object IntelligenceEngine {
                 )
             }
         }
-
         // Snapshot the persisted/merged daily history BEFORE the delete+re-upsert below rewrites the
         // computed window. This is the accumulated view the readiness card + dashboard read ("N of 7
         // nights"); captured here so the Fitness Age gate (further down) can't be undercut by this pass's
@@ -1018,14 +1045,37 @@ object IntelligenceEngine {
         // it stays bounded (daysMerged is full-history) and can't drag in stale nights older than the window.
         val faPriorDaily = repo.daysMerged(importedDeviceId).filter { it.day in oldestDay..newestDay }
 
-        repo.deleteComputedDailyInRange(computedId, oldestDay, newestDay)
-
         // Persist the computed scores under the dedicated "-noop" source so the WHOLE
         // dashboard (Today / Recovery / Strain / Sleep / Trends) reads them. The repository
         // merges these UNDER any imported "my-whoop" rows, so a real WHOOP import always wins;
         // this only fills the days the strap collected but no import covered.
-        if (dailies.isNotEmpty()) repo.upsertDailyMetrics(dailies)
-        if (restRows.isNotEmpty()) repo.upsertMetricSeries(restRows)
+        // Persist metric-level input provenance in the SAME Room transaction. dayOwnership remains
+        // exclusively a resolver override, and a failed write can never relabel an older score.
+        val provenanceByCell = LinkedHashMap<Pair<String, String>, ScoreInputProvenanceRow>()
+        for (daily in dailies) {
+            val source = resolvedScoreOwnerByDay[daily.day] ?: continue
+            if (daily.recovery != null) {
+                provenanceByCell[daily.day to "recovery"] =
+                    ScoreInputProvenanceRow(computedId, daily.day, "recovery", source)
+            }
+            if (daily.strain != null) {
+                provenanceByCell[daily.day to "strain"] =
+                    ScoreInputProvenanceRow(computedId, daily.day, "strain", source)
+            }
+        }
+        for (point in restRows) {
+            val source = resolvedScoreOwnerByDay[point.day] ?: continue
+            provenanceByCell[point.day to point.key] =
+                ScoreInputProvenanceRow(computedId, point.day, point.key, source)
+        }
+        repo.replaceComputedScoreWindow(
+            deviceId = computedId,
+            from = oldestDay,
+            to = newestDay,
+            dailyMetrics = dailies,
+            metricPoints = restRows,
+            provenance = provenanceByCell.values.toList(),
+        )
 
         // ── Fitness Age (Phase 2) , weekly, keyed to the week's Saturday ──
         val fa7 = dailies.sortedBy { it.day }.takeLast(7)

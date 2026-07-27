@@ -2,7 +2,9 @@ package com.noop.oura
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -137,18 +139,30 @@ class DecoderGoldenTest {
 
     @Test
     fun testSleepPhase0x4E() {
-        // header 0x00, phase byte 0x6C = bits 01 10 11 00 -> light, deep, rem, awake.
+        // header 0x00, phase byte 0x6C = bits 01 10 11 00 = codes 1,2,3,0. Per open_oura's VALIDATED
+        // mapping (0=deep, 1=light, 2=rem, 3=awake) -> light, rem, awake, deep. PARITY: byte-identical
+        // to the Swift golden (DecoderGoldenTests.testSleepPhase0x4E).
         val rec = record("4e0602000100006c")
         val phases = OuraDecoders.decodeSleepPhase(rec)
         assertEquals(
             listOf(
                 OuraSleepPhase(ringTimestamp = rt, index = 0, stage = OuraSleepStage.LIGHT),
-                OuraSleepPhase(ringTimestamp = rt, index = 1, stage = OuraSleepStage.DEEP),
-                OuraSleepPhase(ringTimestamp = rt, index = 2, stage = OuraSleepStage.REM),
-                OuraSleepPhase(ringTimestamp = rt, index = 3, stage = OuraSleepStage.AWAKE),
+                OuraSleepPhase(ringTimestamp = rt, index = 1, stage = OuraSleepStage.REM),
+                OuraSleepPhase(ringTimestamp = rt, index = 2, stage = OuraSleepStage.AWAKE),
+                OuraSleepPhase(ringTimestamp = rt, index = 3, stage = OuraSleepStage.DEEP),
             ),
             phases,
         )
+    }
+
+    @Test
+    fun testSleepStageRawValuesMatchOpenOura() {
+        // Pin the validated open_oura order (0=deep, 1=light, 2=rem, 3=awake) so a regression to the
+        // old unverified mapping (0=awake/2=deep/3=REM) breaks loudly. Twin of the Swift enum.
+        assertEquals(0, OuraSleepStage.DEEP.raw)
+        assertEquals(1, OuraSleepStage.LIGHT.raw)
+        assertEquals(2, OuraSleepStage.REM.raw)
+        assertEquals(3, OuraSleepStage.AWAKE.raw)
     }
 
     // MARK: - 0x6B motion period (2-bit MOTION_STATE codes; 2 header bytes skipped)
@@ -167,6 +181,57 @@ class DecoderGoldenTest {
             ),
             m,
         )
+    }
+
+    // MARK: - 0x47 motion events (averaged accel vector)
+
+    @Test
+    fun testMotionEvents0x47() {
+        // open_oura decode_motion vector [0x6f,0x0c,0x1d,0x07,0x0c,0x07]: orientation 0x6f>>5=3,
+        // motion_seconds 0x6f&0x1f=15, avg 96/232/56, low 12, high 7.
+        val rec = OuraRecord(type = 0x47, ringTimestamp = rt,
+            payload = intArrayOf(0x6f, 0x0c, 0x1d, 0x07, 0x0c, 0x07))
+        assertEquals(
+            OuraMotionEvent(ringTimestamp = rt, orientation = 3, motionSeconds = 15,
+                avgX = 96, avgY = 232, avgZ = 56, lowIntensity = 12, highIntensity = 7),
+            OuraDecoders.decodeMotionEvents(rec),
+        )
+    }
+
+    @Test
+    fun testMotionEvents0x47DiscriminatesOrientationFromMotionSeconds() {
+        // byte0 0xB5 = 1011_0101: orientation 0xB5>>5=5 (NOT &0x03=1), motion_seconds 0x15=21.
+        // Negative axes prove ×8 sign; byte4 0x2A → low 42; byte5 0x3F → high 63 (max valid).
+        val rec = OuraRecord(type = 0x47, ringTimestamp = rt,
+            payload = intArrayOf(0xB5, 0xF4, 0x00, 0x80, 0x2A, 0x3F))
+        assertEquals(
+            OuraMotionEvent(ringTimestamp = rt, orientation = 5, motionSeconds = 21,
+                avgX = -96, avgY = 0, avgZ = -1024, lowIntensity = 42, highIntensity = 63),
+            OuraDecoders.decodeMotionEvents(rec),
+        )
+    }
+
+    @Test
+    fun testMotionEvents0x47IntensityValidityBitRejectsRecord() {
+        // A set 0x40 bit in an intensity byte means INVALID per open_oura → whole record decodes null.
+        assertNull(OuraDecoders.decodeMotionEvents(
+            OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x00, 0, 0, 0, 0x00, 0x47))))
+        assertNull(OuraDecoders.decodeMotionEvents(
+            OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x00, 0, 0, 0, 0x40, 0x00))))
+    }
+
+    @Test
+    fun testMotionEvents0x47OptionalIntensityAndShortBody() {
+        // A 4-byte record is valid; intensities null.
+        assertEquals(
+            OuraMotionEvent(ringTimestamp = rt, orientation = 1, motionSeconds = 0,
+                avgX = 80, avgY = 0, avgZ = 0, lowIntensity = null, highIntensity = null),
+            OuraDecoders.decodeMotionEvents(
+                OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x20, 0x0a, 0x00, 0x00))),
+        )
+        // A 3-byte body is too short → null.
+        assertNull(OuraDecoders.decodeMotionEvents(
+            OuraRecord(type = 0x47, ringTimestamp = rt, payload = intArrayOf(0x6f, 0x0c, 0x1d))))
     }
 
     // MARK: - 0x85 RTC beacon (unix_s u32 LE)
@@ -242,6 +307,83 @@ class DecoderGoldenTest {
 
         val hr = OuraDecoders.decodeLiveHRPush(subBody, rt)
         assertEquals(OuraHR(ringTimestamp = rt, bpm = 59, ibiMs = 1025), hr)
+    }
+
+    // MARK: - 0x71 green_ibi_and_amp CANDIDATE decode (ringverse @0x503960, upstream #287)
+
+    /**
+     * Inverse of the firmware's scrambled packing (ringverse `p_green_ibi_and_amp`): middle-8 bytes
+     * at p[4..0] (ds0..ds4), amplitude bytes p[6..10] carry the mantissa in bits [7:1] and the
+     * PAIRED IBI's low bit in bit [0] (ds4..ds0 order), bits [2:1] of ds1..ds4 pack into p[12]
+     * two bits at a time, ds0's into p[13] bits [7:6] alongside the shift field. Twin of the Swift
+     * packGreenIBIAmp test helper.
+     */
+    private fun packGreenIBIAmp(ibis: IntArray, mants: IntArray, s: Int): IntArray {
+        val p = IntArray(14)
+        val mids = intArrayOf(4, 3, 2, 1, 0)
+        for (i in 0 until 5) p[mids[i]] = (ibis[i] shr 3) and 0xFF
+        val amps = intArrayOf(10, 9, 8, 7, 6)
+        for (i in 0 until 5) p[amps[i]] = ((mants[4 - i] shl 1) or (ibis[i] and 1)) and 0xFF
+        var pack12 = (ibis[1] shr 1) and 3
+        pack12 = pack12 or (((ibis[2] shr 1) and 3) shl 2)
+        pack12 = pack12 or (((ibis[3] shr 1) and 3) shl 4)
+        pack12 = pack12 or (((ibis[4] shr 1) and 3) shl 6)
+        p[12] = pack12
+        p[13] = (s and 7) or (((ibis[0] shr 1) and 3) shl 6)
+        return p
+    }
+
+    @Test
+    fun testGreenIBIAmpCandidateRoundTrip() {
+        // 11-bit IBIs exercising every packed bit field; 7-bit mantissas; s=3 -> shift 4.
+        val ibis = intArrayOf(1023, 800, 517, 2046, 901)
+        val mants = intArrayOf(1, 64, 100, 127, 33)
+        val p = packGreenIBIAmp(ibis, mants, s = 3)
+        val decoded = OuraDecoders.decodeGreenIBIAmpCandidate(p, rt)
+        assertNotNull(decoded)
+        assertEquals(4, decoded!!.shift)
+        val samples = decoded.samples
+        assertEquals(6, samples.size)
+        // First entry is amplitude-only (ibi 0, amp = as[0] = mantissa of p[6] << shift).
+        assertEquals(0, samples[0].ibiMs)
+        assertEquals(mants[0] shl 4, samples[0].amplitude)
+        // The five IBI entries recover the exact packed values; amps pair as[i] per the firmware order.
+        assertEquals(ibis.toList(), samples.drop(1).map { it.ibiMs })
+        assertEquals(mants.map { it shl 4 }, samples.drop(1).map { it.amplitude })
+    }
+
+    @Test
+    fun testGreenIBIAmpCandidateGates() {
+        // s == 7 means shift 0 (identity amplitudes).
+        val p7 = packGreenIBIAmp(intArrayOf(500, 500, 500, 500, 500), intArrayOf(10, 10, 10, 10, 10), s = 7)
+        assertEquals(0, OuraDecoders.decodeGreenIBIAmpCandidate(p7, rt)?.shift)
+        // Reserved bit [3] of p[13] set -> firmware mismatch -> null, never a guessed decode.
+        val bad = p7.copyOf()
+        bad[13] = bad[13] or 0x08
+        assertNull(OuraDecoders.decodeGreenIBIAmpCandidate(bad, rt))
+        // Strict 14-byte gate: any other length is a different firmware layout -> null.
+        assertNull(OuraDecoders.decodeGreenIBIAmpCandidate(p7.copyOfRange(0, 13), rt))
+        assertNull(OuraDecoders.decodeGreenIBIAmpCandidate(p7 + intArrayOf(0x00), rt))
+    }
+
+    // MARK: - 0x4B routes to the SAME validated phase decode as 0x4E/0x5A (parity with Swift dddbe952)
+
+    @Test
+    fun testSleepPhase4BDecodesAsHypnogramNotSummary() {
+        // 4b 07 <rt:4> <header> <1b = 00 01 10 11 MSB-first = deep,light,rem,awake>.
+        val rec = record("4b070200010000" + "1b")
+        assertEquals(OuraEventTag.SLEEP_PHASE_B, OuraEventTag.fromRaw(rec.type))
+        assertEquals(TrustTier.TIER_A, OuraEventTag.SLEEP_PHASE_B.tier)
+        val phases = OuraDecoders.decodeSleepPhase(rec)
+        assertEquals(
+            listOf(OuraSleepStage.DEEP, OuraSleepStage.LIGHT, OuraSleepStage.REM, OuraSleepStage.AWAKE),
+            phases?.map { it.stage },
+        )
+        // And the driver ingests it as SleepPhaseEvent(s), not a Tier-B summary wrapper.
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = null)
+        val events = d.ingest(rec)
+        assertEquals(4, events.size)
+        assertTrue(events.all { it is OuraEvent.SleepPhaseEvent })
     }
 
     // MARK: - Honest-data invariant: short / malformed records decode to null

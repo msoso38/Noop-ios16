@@ -134,6 +134,10 @@ fun SleepScreen(
     onOpenJournal: () -> Unit = {},
 ) {
     val days by vm.recentDays.collectAsStateWithLifecycle()
+    // Whether the ACTIVE strap is an Oura ring, off the canonical brand table (not an "oura" literal) — so
+    // the sleep surfaces name a ring-PROVIDED night's provenance "Oura" and flag its split as the ring's
+    // RAW on-device stages. Read/UI only, no stored value. Mirrors macOS Repository.activeDeviceIsOura.
+    val activeIsOura = com.noop.data.DeviceBrandCatalog.isOura(vm.activeStrapId)
 
     // PERF (#scroll-jank): the BLE live state ticks ~1Hz. This screen reads `live` ONLY for the
     // "syncing history" note (backfilling + the chunk count), so reading the whole `live` object at
@@ -494,7 +498,7 @@ fun SleepScreen(
                     score = if (night != null) heroPerformanceScore(night, days, imported)
                             else tilesModel?.performance?.latest,
                     asleepMin = model?.stages?.asleep,
-                    source = restHeroSource(imported, night?.dayKey ?: days.lastOrNull()?.day),
+                    source = restHeroSource(imported, night?.dayKey ?: days.lastOrNull()?.day, activeIsOura),
                     overline = nightRelativeLabel(nightOffset),
                 )
             }
@@ -521,6 +525,7 @@ fun SleepScreen(
             item {
             Hero(
                 display = display,
+                activeIsOura = activeIsOura,
                 clock = night?.clockLabel ?: model?.clockLabel,
                 nightOffset = nightOffset,
                 lastIndex = max(navDays.lastIndex, 0),
@@ -933,6 +938,9 @@ private fun SleepHeroVessel(fraction: Double, value: Double, tint: Color, diamet
 @Composable
 private fun Hero(
     display: HeroDisplay?,
+    // Whether the active strap is an Oura ring — names an Oura night's provenance and captions its split as
+    // the ring's RAW on-device stages. Read/UI only. Mirrors macOS Repository.activeDeviceIsOura.
+    activeIsOura: Boolean = false,
     clock: String?,
     nightOffset: Int,
     lastIndex: Int,
@@ -991,8 +999,12 @@ private fun Hero(
             val inBedMin = groupInBedMin
                 ?: session?.let { (it.endTs - it.effectiveStartTs) / 60.0 }
                 ?: s.total
+            // An Oura night's stages are the ring's RAW on-device SleepNet classification (decoded off the
+            // 0x49 phase stream), NOT a NOOP approximation — so it gets its own honest caption instead of the
+            // "approx. stages (on-device)" one that describes NOOP's own sparse-motion staging.
+            val stageCaption = if (activeIsOura) " · raw on-device stages" else " · approx. stages (on-device)"
             val subtitle = "${durationText(inBedMin)} in bed · ${display.efficiencyText} efficiency" +
-                (if (display.realSegments != null) " · approx. stages (on-device)" else "")
+                (if (display.realSegments != null) stageCaption else "")
             // iOS #988 port: true per-epoch segments (≥ 2 — a single run has no transitions to lay
             // out) get the per-stage timeline rows; the rows ARE the legend, so no footer. Anything
             // else keeps the honest proportional strip + StageBreakdownRows footer.
@@ -1043,6 +1055,10 @@ private fun Hero(
                     }
                 }
             }
+            // For an Oura-provided night, say plainly this split is the ring's RAW on-device classification —
+            // so the larger Awake / smaller Deep+REM here isn't misread as the polished numbers the Oura app
+            // shows for the same night (the app post-processes the same stream). Mirrors iOS ouraRawStagesNote.
+            if (activeIsOura) OuraRawStagesNote()
         }
         // Naps card (#508/#518): the day's blocks OTHER than the main night, each editable / deletable
         // with the SAME mechanism main sleep uses, plus a Main / Nap(s) / Total split so what drives the
@@ -1054,6 +1070,7 @@ private fun Hero(
                 onEditNapTimes = onUpdateTimes,
                 onDeleteNap = onDeleteSession,
                 habitualMidsleepSec = habitualMidsleepSec,
+                activeIsOura = activeIsOura,
             )
         }
     }
@@ -1076,6 +1093,8 @@ private fun NapsCard(
     // The LEARNED habitual midsleep, fed to the main-night selector so the "why this is your main sleep"
     // reason matches the block the hero shows. null = cold-start band. Mirrors iOS SleepView. (C1)
     habitualMidsleepSec: Long? = null,
+    // Active strap is an Oura ring → a computed night's provenance reads "Oura" not "On-device" (C4).
+    activeIsOura: Boolean = false,
 ) {
     val mainMin = (main.endTs - main.effectiveStartTs) / 60.0
     val napMin = naps.sumOf { (it.endTs - it.effectiveStartTs) / 60.0 }
@@ -1109,8 +1128,33 @@ private fun NapsCard(
             // per-day merge winner; the info affordance reveals the foundation reason for the pick. Mirrors
             // iOS SleepView.mainSleepFooter. (spec 2026-06-20 C1/C4)
             Box(Modifier.fillMaxWidth().height(Metrics.divider).background(Palette.hairline))
-            MainSleepFooter(main = main, naps = naps, habitualMidsleepSec = habitualMidsleepSec)
+            MainSleepFooter(main = main, naps = naps, habitualMidsleepSec = habitualMidsleepSec, activeIsOura = activeIsOura)
         }
+    }
+}
+
+/**
+ * Honest caveat for an Oura-provided night: the stage split shown is the ring's RAW on-device SleepNet
+ * classification read straight off the BLE phase stream — NOT the adjusted stages the Oura app displays.
+ * The app post-processes the same night, so its Deep/REM run higher and its Awake lower; cross-checks put
+ * our Awake well above the app's. Surfaced so the breakdown isn't taken for the app's. Mirrors iOS
+ * SleepView.ouraRawStagesNote. Copy + tint (design token [Palette.restColor]) match Swift.
+ */
+@Composable
+private fun OuraRawStagesNote() {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top,
+        modifier = Modifier.padding(horizontal = 2.dp),
+    ) {
+        SourceBadge(text = "Raw on-device stages", tint = Palette.restColor)
+        Text(
+            "This split is the ring's raw on-device classification read over Bluetooth, not the adjusted " +
+                "stages the Oura app shows. Expect more Awake and less Deep/REM here than in the Oura app " +
+                "for the same night.",
+            style = NoopType.caption,
+            color = Palette.textTertiary,
+        )
     }
 }
 
@@ -1127,11 +1171,16 @@ private fun MainSleepFooter(
     main: SleepSession,
     naps: List<SleepSession>,
     habitualMidsleepSec: Long?,
+    activeIsOura: Boolean = false,
 ) {
     val reason = mainSleepReasonText(listOf(main) + naps, habitualMidsleepSec)
-    // C4 — the real merge winner, the SAME wording the By-Day badge uses ("On-device" / "Whoop" /
-    // "Apple Health"), keyed on the main block's source. Mirrors iOS SleepView.nightSource.
-    val (sourceText, sourceTint) = daySourceBadge(main.deviceId)
+    // C4 — the real merge winner, the SAME wording the By-Day badge uses ("Oura" / "On-device" / "Whoop" /
+    // "Apple Health"), keyed on the main block's source. A persisted Oura night already carries the ring id
+    // (→ "Oura" from daySourceBadge); a night that merely COMPUTED under a live Oura strap reads "On-device"
+    // there, so flip it to "Oura" too, matching iOS SleepView.nightSource (WHOOP/Apple imports still win).
+    val base = daySourceBadge(main.deviceId)
+    val (sourceText, sourceTint) =
+        if (base.first == "On-device" && activeIsOura) "Oura" to Palette.restColor else base
     var showWhy by remember(main.startTs) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.space10)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1336,201 +1385,6 @@ private fun NapRow(
             dialog.show()
             onDispose { runCatching { dialog.dismiss() } }
         }
-    }
-}
-
-/**
- * The four WHOOP-style stage rows that replace the old "label · value" footer grid, read like WHOOP's
- * sleep detail: a colour swatch, the UPPERCASE stage name, the share-of-night % in the stage colour, a
- * segmented [PipBar] (the NOOP signature) tinted in the stage colour, and the right-aligned duration.
- * Same data as the prior footer (rem / deep / light / awake over total) — no new numbers. Mirrors the
- * macOS SleepView.stageBreakdownRows. (PipBar)
- */
-@Composable
-private fun StageBreakdownRows(s: Stages) {
-    Column(verticalArrangement = Arrangement.spacedBy(Metrics.space12)) {
-        StageBreakdownRow("REM", s.rem, s.total, Palette.sleepREM)
-        StageBreakdownRow("Deep", s.deep, s.total, Palette.sleepDeep)
-        StageBreakdownRow("Light", s.light, s.total, Palette.sleepLight)
-        StageBreakdownRow("Awake", s.awake, s.total, Palette.sleepAwake)
-    }
-}
-
-/**
- * One WHOOP-style stage row. `fraction = minutes / total` sets both the % and the PipBar fill, so the
- * coloured percent and the segmented bar always agree. Mirrors the macOS SleepView.stageBreakdownRow.
- */
-@Composable
-private fun StageBreakdownRow(stage: String, minutes: Double, total: Double, color: Color) {
-    val fraction = if (total > 0.0) (minutes / total).coerceIn(0.0, 1.0) else 0.0
-    val percent = (fraction * 100.0).roundToInt()
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Metrics.space10),
-        modifier = Modifier
-            .fillMaxWidth()
-            .semantics {
-                contentDescription =
-                    uiString(R.string.l10n_sleep_screen_stage_durationtext_minutes_percent_percent_of_477dbf14, stage, durationText(minutes), percent)
-            },
-    ) {
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(color),
-        )
-        Text(
-            stage.uppercase(Locale.getDefault()),
-            style = NoopType.overline,
-            color = Palette.textPrimary,
-            maxLines = 1,
-            modifier = Modifier.width(56.dp),
-        )
-        Text(
-            uiString(R.string.l10n_sleep_screen_percent_2281d326, percent),
-            style = NoopType.captionNumber,
-            color = color,
-            maxLines = 1,
-            modifier = Modifier.width(38.dp),
-        )
-        // The stage's share-of-night as a liquid TUBE tinted in the stage colour — a genuine single-value
-        // progress bar (minutes / total), so it liquid-ifies cleanly. Posed static (animated = false): a
-        // hero card carries many stage rows, so a per-frame slosh per row isn't worth the cost — the tube
-        // reads as a filled liquid level, matching the pilot's non-hero tubes. Same fraction the % + the
-        // duration carry, so all three agree.
-        LiquidTube(
-            frac = fraction,
-            tint = color,
-            animated = false,
-            height = 8.dp,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            durationText(minutes),
-            style = NoopType.captionNumber,
-            color = Palette.textPrimary,
-            textAlign = TextAlign.End,
-            maxLines = 1,
-            modifier = Modifier.width(60.dp),
-        )
-    }
-}
-
-/**
- * The hero hypnogram strip plus an optional onset · midpoint · wake time axis. Mirrors the Swift
- * Hypnogram(showsTimeAxis:): a proportional stage strip with a per-segment WIDTH floor (so a brief
- * stage — especially a short Awake blip — reads as a rounded block, not a hairline tick), three
- * faint vertical hairlines at frac 0 / 0.5 / 1.0, and a clock-label row underneath. The axis only
- * appears when the session supplies onset/wake timestamps; otherwise this is just the floored strip.
- * Presentation-only — the segment weights and stage→colour mapping are unchanged.
- */
-@Composable
-private fun HypnogramWithAxis(
-    stages: List<Pair<String, Float>>,
-    onsetTs: Long?,
-    wakeTs: Long?,
-) {
-    val showsAxis = onsetTs != null && wakeTs != null
-    Column(verticalArrangement = Arrangement.spacedBy(Metrics.space6)) {
-        Canvas(modifier = Modifier.fillMaxWidth().height(Metrics.stageStripHeight)) {
-            val w = size.width
-            val h = size.height
-            if (w <= 0f || h <= 0f) return@Canvas
-
-            // Inset well so the strip reads as a recessed track (matches the shared Hypnogram).
-            drawLine(
-                color = Palette.surfaceInset,
-                start = Offset(0f, h / 2f),
-                end = Offset(w, h / 2f),
-                strokeWidth = h,
-                cap = StrokeCap.Round,
-            )
-
-            val weights = stages.map { it.second }.map { if (it.isFinite() && it > 0f) it else 0f }
-            val total = weights.sum()
-            if (stages.isEmpty() || total <= 0f) return@Canvas
-
-            // WIDTH floor: a segment narrower than this reads as a hairline, so floor short stages to a
-            // legible block. But the FLOORED widths can sum past the canvas on a fragmented night (many
-            // short segments), and the old loop advanced `x` by the floored width — so the tail ran off
-            // the canvas and clipped, leaving only the first ~w/h segments visible as a row of circles
-            // (#36). Fix: floor every segment, then if the floored total overflows, scale them ALL to fit
-            // so the strip stays a continuous bar for the WHOLE night. Draw rounded RECTS (not round-capped
-            // lines, whose h-wide round cap turned any sub-h segment into a full circle) advancing by the
-            // SAME width we draw, so `x` can never exceed the canvas.
-            val minSegW = h / 2f
-            val floored = weights.map { wt -> if (wt > 0f) maxOf(w * (wt / total), minSegW) else 0f }
-            val flooredSum = floored.sum()
-            val scale = if (flooredSum > w) w / flooredSum else 1f
-            val radius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
-            var x = 0f
-            stages.forEachIndexed { i, (name, _) ->
-                val segW = floored[i] * scale
-                if (segW <= 0f) return@forEachIndexed
-                drawRoundRect(
-                    color = stageColorFor(name),
-                    topLeft = Offset(x, 0f),
-                    size = Size(segW.coerceAtMost(w - x), h),
-                    cornerRadius = radius,
-                )
-                x += segW
-            }
-
-            // Time-axis vertical hairlines: onset · midpoint · wake.
-            if (showsAxis) {
-                listOf(0f, 0.5f, 1f).forEach { frac ->
-                    val hx = w * frac
-                    drawLine(
-                        color = Palette.hairline,
-                        start = Offset(hx, 0f),
-                        end = Offset(hx, h),
-                        strokeWidth = 1f,
-                    )
-                }
-            }
-        }
-        if (showsAxis && onsetTs != null && wakeTs != null) {
-            ClockLabelRow(onsetTs, wakeTs)
-        }
-    }
-}
-
-/**
- * The onset · midpoint · wake clock-label row under a night timeline. Extracted from
- * [HypnogramWithAxis] so the #988 stage-timeline rows share the exact same axis rendering.
- */
-@Composable
-private fun ClockLabelRow(onsetTs: Long, wakeTs: Long) {
-    val onset = clockTimeLabel(onsetTs)
-    val mid = clockTimeLabel((onsetTs + wakeTs) / 2L)
-    val wake = clockTimeLabel(wakeTs)
-    Row(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            onset,
-            style = NoopType.footnote,
-            color = Palette.textTertiary,
-            textAlign = TextAlign.Start,
-            maxLines = 1,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            mid,
-            style = NoopType.footnote,
-            color = Palette.textTertiary,
-            textAlign = TextAlign.Center,
-            overflow = TextOverflow.Ellipsis,
-            maxLines = 1,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            wake,
-            style = NoopType.footnote,
-            color = Palette.textTertiary,
-            textAlign = TextAlign.End,
-            maxLines = 1,
-            modifier = Modifier.weight(1f),
-        )
     }
 }
 
@@ -1784,16 +1638,6 @@ private fun MotionStrip(epochs: List<Double>) {
         }
         drawPath(crest, color = tint.copy(alpha = 0.8f), style = Stroke(width = 1.5f))
     }
-}
-
-/** Map a stage name to its design-system sleep tone (case-insensitive) — local to this screen so the
- *  hero strip needn't reach into Charts.kt's private helper. */
-private fun stageColorFor(name: String): Color = when (name.trim().lowercase()) {
-    "deep" -> Palette.sleepDeep
-    "rem" -> Palette.sleepREM
-    "light" -> Palette.sleepLight
-    "awake", "wake" -> Palette.sleepAwake
-    else -> Palette.sleepLight
 }
 
 /**
@@ -2361,20 +2205,22 @@ private fun MetricGrid(m: SleepModel, onMetricClick: (String) -> Unit = {}) {
                 onClick = { onMetricClick("respiratory") },
             )
         },
-        { mod ->
-            SparkTile(
-                mod, "Sleep Debt",
-                value = m.sleepDebt.latest?.let { durationText(it) } ?: "—",
-                caption = debtCaption(m.sleepDebt.latest),
-                accent = debtColor(m.sleepDebt.latest),
-                spark = m.sleepDebt.series, sparkColor = Palette.metricRose,
-                onClick = { onMetricClick("sleep_debt") },
-            )
-        },
     )
 
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
         SectionHeader("Night detail", overline = "Metrics", trailing = "vs typical")
+
+        // Sleep Debt is the actionable summary for the section, so it leads at the full
+        // two-column width. The remaining six peer metrics keep the established 2 × 3 grid.
+        SparkTile(
+            Modifier.fillMaxWidth(), "Sleep Debt",
+            value = m.sleepDebt.latest?.let { durationText(it) } ?: "—",
+            caption = debtCaption(m.sleepDebt.latest),
+            accent = debtColor(m.sleepDebt.latest),
+            spark = m.sleepDebt.series, sparkColor = Palette.metricRose,
+            onClick = { onMetricClick("sleep_debt") },
+        )
+
         // Two-up rows; IntrinsicSize.Max + fillMaxHeight keep row neighbors equal height even when
         // large font scales grow one tile past the tileHeight floor. No empty cells.
         tiles.chunked(2).forEach { rowTiles ->
@@ -2383,7 +2229,6 @@ private fun MetricGrid(m: SleepModel, onMetricClick: (String) -> Unit = {}) {
                 horizontalArrangement = Arrangement.spacedBy(Metrics.gap),
             ) {
                 rowTiles.forEach { it(Modifier.weight(1f).fillMaxHeight()) }
-                if (rowTiles.size == 1) Spacer(Modifier.weight(1f))
             }
         }
     }

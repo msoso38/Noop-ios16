@@ -833,21 +833,24 @@ fun TodayScreen(
     // keyed by metric key ("recovery" / "strain" / "sleep_performance"); each value is the RAW source id the resolver
     // returned (e.g. "my-whoop", "my-whoop-noop", "apple-health"). resolvedSeries applies the SAME
     // imported-WHOOP > NOOP-computed > Apple-Health precedence the dashboard merge uses field-by-field
-    // (WhoopRepository.mergeDaily), so the card-level badge names the sources that ACTUALLY supplied
-    // that day's scores rather than making a blanket day-level claim. Mirrors the Swift Today lane's
-    // `provenanceByMetric` resolution exactly (the winner is the last resolved point on selectedDayKey).
-    var provenanceByMetric by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // (WhoopRepository.mergeDaily), then computed rows resolve through durable input provenance so the
+    // card-level badge names the sensor/import providers rather than where NOOP ran the math.
+    var providerByMetric by remember { mutableStateOf<Map<String, ScoreInputProvider>>(emptyMap()) }
     LaunchedEffect(days, selectedDayKey, viewModel.activeStrapId) {
-        val resolved = mutableMapOf<String, String>()
+        val resolved = mutableMapOf<String, ScoreInputProvider>()
         for (key in listOf("recovery", "strain", "sleep_performance")) {
             val win = runCatching {
                 viewModel.repo.resolvedSeries(key, "my-whoop", selectedDayKey, selectedDayKey,
                     strapDeviceId = viewModel.activeStrapId)
-                    .points.lastOrNull { it.day == selectedDayKey }?.source
+                    .points.lastOrNull { it.day == selectedDayKey }
             }.getOrNull()
-            if (win != null) resolved[key] = win
+            if (win != null) {
+                viewModel.scoreInputProvider(win.source, win.day, key)?.let {
+                    resolved[key] = it
+                }
+            }
         }
-        provenanceByMetric = resolved
+        providerByMetric = resolved
     }
 
     // LIVE in-progress Effort for TODAY (#402), mirrors the iOS TodayView live-Effort fix. The stored
@@ -958,17 +961,17 @@ fun TodayScreen(
             prior.recovery?.let { LastCharge(it, carriedCaption(prior.day, carryOverTodayKey)) }
         }
     }
-    var carriedRecoverySource by remember { mutableStateOf<String?>(null) }
+    var carriedRecoveryProvider by remember { mutableStateOf<ScoreInputProvider?>(null) }
     LaunchedEffect(lastScoredRecoveryDay?.day, viewModel.activeStrapId) {
         val carriedDay = lastScoredRecoveryDay?.day
-        carriedRecoverySource = if (carriedDay == null) {
+        carriedRecoveryProvider = if (carriedDay == null) {
             null
         } else {
             runCatching {
                 viewModel.repo.resolvedSeries("recovery", "my-whoop", carriedDay, carriedDay,
                     strapDeviceId = viewModel.activeStrapId)
                     .points.lastOrNull { it.day == carriedDay }
-                    ?.source
+                    ?.let { viewModel.scoreInputProvider(it.source, it.day, "recovery") }
             }.getOrNull()
         }
     }
@@ -991,12 +994,11 @@ fun TodayScreen(
 
     // One honest card-level badge, matching LiquidTodayView: identical winners collapse to one label;
     // mixed winners show at most two sources in Charge / Effort / Rest order so the pill stays compact.
-    val heroSourceLabel = remember(provenanceByMetric, carriedRecoverySource, displayMetric?.recovery, lastScoredCharge, viewModel.activeStrapId) {
+    val heroSourceLabel = remember(providerByMetric, carriedRecoveryProvider, displayMetric?.recovery, lastScoredCharge) {
         scoreHeroSourceLabel(
-            provenanceByMetric = provenanceByMetric,
-            carriedRecoverySource = carriedRecoverySource,
+            providerByMetric = providerByMetric,
+            carriedRecoveryProvider = carriedRecoveryProvider,
             usesCarriedRecovery = displayMetric?.recovery == null && lastScoredCharge != null,
-            deviceId = viewModel.activeStrapId,
         )
     }
 
@@ -1252,7 +1254,14 @@ fun TodayScreen(
             // Today" tap there flips calibratingDismissed back via the shared restore path above.
             if (selectedDayOffset == 0 && scoreState is ScoreState.Calibrating && !calibratingDismissed) {
                 Box(modifier = Modifier.fillMaxWidth()) {
-                    ScoreStateNote(scoreState)
+                    ScoreStateNote(
+                        scoreState,
+                        restartCause = ScoreState.calibrationRestartCause(
+                            ScoreState.recalibrationDay(
+                                NoopPrefs.of(context).getLong(Baselines.hrvBaselineEpochKey, 0L),
+                            ),
+                        ),
+                    )
                     if (updateStore != null) {
                         TodayCardDismissButton(
                             modifier = Modifier.align(Alignment.TopEnd),
@@ -2123,16 +2132,18 @@ private fun SyncStatusChip(
     lastSyncAt: Long?,
     historySyncExperimental: Boolean,
 ) {
-    when {
-        backfilling -> ChipCapsule(
-            Icons.Filled.Autorenew, "$chunks", Palette.accent, "Syncing strap history, $chunks chunks")
-        lastSyncAt != null -> ChipCapsule(
-            Icons.Filled.Check, shortSyncAgo(lastSyncAt), Palette.textSecondary,
-            "Strap history synced ${shortSyncAgo(lastSyncAt)} ago")
-        historySyncExperimental -> ChipCapsule(
-            Icons.Filled.Check, "live", Palette.textSecondary,
-            "Connected; strap history sync is experimental on this strap")
-        // else: cold start — render nothing; the building-scores note covers it.
+    when (val state = SyncChipState.resolve(backfilling, chunks, lastSyncAt, historySyncExperimental)) {
+        is SyncChipState.Syncing -> ChipCapsule(
+            Icons.Filled.Autorenew, "${state.chunks}", Palette.accent,
+            uiString(R.string.l10n_today_screen_sync_chip_syncing_desc_bfc290e7, state.chunks))
+        is SyncChipState.Synced -> ChipCapsule(
+            Icons.Filled.Check, state.agoText, Palette.textSecondary,
+            uiString(R.string.l10n_today_screen_sync_chip_synced_desc_4d255944, state.agoText))
+        SyncChipState.ExperimentalLive -> ChipCapsule(
+            Icons.Filled.Check, uiString(R.string.l10n_today_screen_sync_chip_live_98aadb37), Palette.textSecondary,
+            uiString(R.string.l10n_today_screen_sync_chip_experimental_desc_3de06a70))
+        SyncChipState.Hidden -> Unit
+        // cold start — render nothing; the building-scores note covers it.
     }
 }
 
@@ -2149,18 +2160,6 @@ private fun ChipCapsule(icon: ImageVector, text: String, tint: Color, desc: Stri
     ) {
         Icon(icon, contentDescription = desc, tint = tint, modifier = Modifier.size(14.dp))
         Text(text, style = NoopType.caption, color = tint)
-    }
-}
-
-/** Compact relative age for the header chip ("now" / "Nm" / "Nh" / "Nd") from a unix-SECONDS timestamp —
- *  deliberately terse. Twin of the iOS `SyncStatusChip.shortAgo`. */
-private fun shortSyncAgo(unixSec: Long): String {
-    val secs = (System.currentTimeMillis() / 1000L - unixSec).coerceAtLeast(0)
-    return when {
-        secs < 60 -> "now"
-        secs < 3600 -> "${secs / 60}m"
-        secs < 86_400 -> "${secs / 3600}h"
-        else -> "${secs / 86_400}d"
     }
 }
 
@@ -2456,12 +2455,8 @@ private fun ScoreHeroRow(
                                 // Measure the full label even when it is wider than the Rest vessel, then
                                 // let it overflow left while preserving the vessel-aligned trailing edge.
                                 .wrapContentWidth(unbounded = true, align = Alignment.End)
-                                // #486: the vessel row starts one space16 inside the card, so lifting by
-                                // exactly space16 puts the badge's TOP on the card's top edge — it tucks
-                                // into the top-right corner and hangs into the gap above the vessels. The
-                                // previous "+ half the badge height" centred it ON the border, where it read
-                                // as a pill floating detached above the card (two users flagged it).
-                                .offset(y = -Metrics.space16)
+                                // Match iOS: centre the pill on the card border, aligned with the Rest vessel.
+                                .offset(y = -(Metrics.space16 + Metrics.sourceBadgeHeight / 2))
                                 .semantics { contentDescription = uiString(R.string.l10n_today_screen_source_herosourcelabel_d3363687, heroSourceLabel) },
                         )
                     }
@@ -4132,7 +4127,7 @@ private fun ContributorBar(label: String, readout: String, fraction: Double?, co
  *  tiles carry the real number). The whole card is the spec's "never a bare blank". Mirrors the iOS
  *  ScoreStateNote. */
 @Composable
-private fun ScoreStateNote(state: ScoreState) {
+private fun ScoreStateNote(state: ScoreState, restartCause: String? = null) {
     if (state is ScoreState.Scored) return
     val icon = when (state) {
         is ScoreState.Calibrating -> Icons.Filled.Tune
@@ -4163,6 +4158,12 @@ private fun ScoreStateNote(state: ScoreState) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(state.title, style = NoopType.headline, color = Palette.textPrimary)
                 Text(state.detail, style = NoopType.subhead, color = Palette.textSecondary)
+                // #731: when the countdown restarted because the user tapped "Recalibrate
+                // baseline", say so - otherwise the natural response to a fresh countdown is to
+                // tap it again, resetting it once more. null (no line) if never recalibrated.
+                restartCause?.let {
+                    Text(it, style = NoopType.footnote, color = Palette.textTertiary)
+                }
             }
         }
     }

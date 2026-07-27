@@ -1436,6 +1436,11 @@
     <string name="l10n_today_screen_pct_ee63e247">%1$s%%</string>
     <string name="l10n_today_screen_profile_and_settings_9b3d12f2">Profil et réglages</string>
     <string name="l10n_today_screen_recovery_ea924f72">Récupération</string>
+    <string name="l10n_today_screen_sync_chip_now_c9bc849a">à l\'instant</string>
+    <string name="l10n_today_screen_sync_chip_live_98aadb37">en direct</string>
+    <string name="l10n_today_screen_sync_chip_syncing_desc_bfc290e7">Synchronisation de l\'historique du bracelet, %1$d blocs</string>
+    <string name="l10n_today_screen_sync_chip_synced_desc_4d255944">Historique du bracelet synchronisé il y a %1$s</string>
+    <string name="l10n_today_screen_sync_chip_experimental_desc_3de06a70">Connecté ; la synchronisation de l\'historique est expérimentale sur ce bracelet.</string>
     <string name="l10n_today_screen_recovery_roundtoint_charge_92fbaa5e">Charge %1$s%%</string>
     <string name="l10n_today_screen_respiratory_1cd8c175">Respiratoire</string>
     <string name="l10n_today_screen_rest_b79e5f48">Repos</string>
@@ -1633,6 +1638,7 @@
     <string name="timeline_metric_respiration">Respiration</string>
     <string name="timeline_metric_motion">Mouvement</string>
     <string name="timeline_metric_band_sleep_state">État de sommeil du bracelet</string>
+    <string name="timeline_metric_movement">Mouvement</string>
     <string name="explore_category_charge">Charge</string>
     <string name="explore_category_effort">Effort</string>
     <string name="explore_category_rest">Repos</string>
@@ -1692,4 +1698,13 @@
     <string name="l10n_data_sources_screen_last_shared_6bf8389c">"Dernier partage "</string>
     <string name="l10n_data_sources_screen_sharing_paused_health_connect_permission_was_e8950315">Partage en pause — l’autorisation Health Connect a été révoquée. Touchez pour l’accorder à nouveau.</string>
     <string name="l10n_data_sources_screen_last_share_didn_t_finish_noop_0d6c27f0">Le dernier partage n’a pas abouti — NOOP réessaiera automatiquement.</string>
+    <string name="settings_streak_title">Série</string>
+    <plurals name="settings_streak_run">
+        <item quantity="one">%1$d jour d\'affilée</item>
+        <item quantity="other">%1$d jours d\'affilée</item>
+    </plurals>
+    <plurals name="settings_streak_longest">
+        <item quantity="one">Record : %1$d jour</item>
+        <item quantity="other">Record : %1$d jours</item>
+    </plurals>
 </resources>

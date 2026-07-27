@@ -12,8 +12,8 @@ Two independent problems, both covered here:
    language's translation is missing from the String Catalog / strings.xml.
    Reported as MISSING_<LANG>.
 
-Target languages: de, es, fr (the focus set). English is the source language
-and is not checked for itself.
+Target languages: de, es, fr, pt-PT (the focus set). English is the source
+language and is not checked for itself.
 
 Read-only. Prints a report; does not modify any file. Re-runnable, and the
 same logic is meant to be wired into a CI check later (see i18n-coverage.yml)
@@ -31,7 +31,13 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LANGS = ["de", "es", "fr"]
+LANGS = ["de", "es", "fr", "pt-PT"]
+ANDROID_LOCALE_DIRS = {
+    "de": "values-de",
+    "es": "values-es",
+    "fr": "values-fr",
+    "pt-PT": "values-pt-rPT",
+}
 
 # Strings that are legitimately identical across all languages (symbols,
 # format-only placeholders, brand name, units) — mirrors the exclude
@@ -267,6 +273,8 @@ ANDROID_KWARG_PATTERN = re.compile(r"\b(?:title|label|text|contentDescription|pl
 # `_argument_span_end`, which stops at the enclosing `}`), so unrelated lambda content is never swept in.
 ANDROID_A11Y_ASSIGN_PATTERN = re.compile(r"(?<![.\w])contentDescription\s*=(?!=)\s*")
 _LOCAL_DECL_BEFORE = re.compile(r"\b(?:val|var)\s+\Z")
+_SIMPLE_IDENTIFIER = re.compile(r"[A-Za-z_]\w*\Z")
+_LOCAL_VAL_PATTERN = re.compile(r"\bval\s+([A-Za-z_]\w*)\s*=\s*")
 
 
 def _mask_comments(text: str) -> str:
@@ -304,6 +312,101 @@ def _mask_comments(text: str) -> str:
             continue
         i += 1
     return "".join(out)
+
+
+def _brace_stack_at(text: str, end: int) -> tuple[int, ...]:
+    """Opening `{` offsets whose scopes contain `end`, ignoring string
+    contents. Used for the deliberately small bit of Kotlin name resolution
+    below: a local `val` is visible only while its declaring brace is still
+    open at the use site."""
+    stack: list[int] = []
+    i = 0
+    while i < end:
+        ch = text[i]
+        if ch == '"':
+            i = _skip_string_literal(text, i)
+            continue
+        if ch == "{":
+            stack.append(i)
+        elif ch == "}" and stack:
+            stack.pop()
+        i += 1
+    return tuple(stack)
+
+
+def _statement_span_end(text: str, start: int) -> int:
+    """End of a Kotlin `val` initializer.
+
+    Newlines before the expression are allowed; once the expression starts, a
+    newline or semicolon at top level ends it unless Kotlin syntax clearly
+    continues on the next line (for example `"prefix" +` followed by an
+    `if`). Balanced calls and `when { }` / `if { }` expressions can span lines
+    without exposing the following statements to literal extraction.
+    """
+    depth = 0
+    saw_expression = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            saw_expression = True
+            i = _skip_string_literal(text, i)
+            continue
+        if ch in "({[":
+            depth += 1
+            saw_expression = True
+        elif ch in ")}]":
+            if depth == 0:
+                return i
+            depth -= 1
+        elif depth == 0 and ch == ";":
+            return i
+        elif depth == 0 and ch == "\n" and saw_expression:
+            previous = i - 1
+            while previous >= start and text[previous].isspace():
+                previous -= 1
+            following = i + 1
+            while following < len(text) and text[following].isspace():
+                following += 1
+            trails_operator = (
+                previous >= start and text[previous] in "+-*/%&|?:,.="
+            )
+            starts_continuation = (
+                text.startswith(".", following)
+                or text.startswith("?:", following)
+                or re.match(r"else\b", text[following:]) is not None
+            )
+            if not trails_operator and not starts_continuation:
+                return i
+        elif not ch.isspace():
+            saw_expression = True
+        i += 1
+    return i
+
+
+def _visible_val_initializer(
+    text: str, name: str, use_offset: int
+) -> tuple[int, int] | None:
+    """Initializer span for the nearest preceding `val name = ...` visible at
+    `use_offset`.
+
+    This is intentionally lexical rather than general Kotlin dataflow. It
+    covers the common Compose shape `val a11y = when { ... }; semantics {
+    contentDescription = a11y }`, while declining parameters, properties
+    outside a braced scope, computed references, and declarations in sibling
+    blocks. The nearest visible declaration wins, matching local shadowing.
+    """
+    use_scopes = set(_brace_stack_at(text, use_offset))
+    declarations = list(_LOCAL_VAL_PATTERN.finditer(text, 0, use_offset))
+    for declaration in reversed(declarations):
+        if declaration.group(1) != name:
+            continue
+        declaration_scopes = _brace_stack_at(text, declaration.start())
+        if not declaration_scopes or declaration_scopes[-1] not in use_scopes:
+            continue
+        start = declaration.end()
+        return start, _statement_span_end(text, start)
+    return None
 
 
 # Only an argument in actual call-argument position (right after `(` or `,`,
@@ -351,29 +454,47 @@ def scan_android() -> list[tuple[str, int, str]]:
             for m in ANDROID_A11Y_ASSIGN_PATTERN.finditer(text):
                 if _LOCAL_DECL_BEFORE.search(text, 0, m.start()):
                     continue
-                record(m.end(), _argument_span_end(text, m.end()))
+                span_end = _argument_span_end(text, m.end())
+                record(m.end(), span_end)
+
+                # The remaining #571 case: the assignment contains no literal
+                # because a local `val` launders it. Follow only a bare
+                # identifier to the nearest lexically-visible declaration;
+                # pass-through parameters and arbitrary expressions remain
+                # outside this targeted audit rule.
+                reference = text[m.end():span_end].strip()
+                if _SIMPLE_IDENTIFIER.fullmatch(reference):
+                    initializer = _visible_val_initializer(text, reference, m.start())
+                    if initializer is not None:
+                        record(*initializer)
 
     return findings
 
 
+# Keys that are deliberately identical in every language, so their absence from a locale file is not
+# a gap. ONE definition: both the hard-gated focus locales and the #844 discovered ones subtract this,
+# and a second copy would let the two paths disagree the moment anyone adds a key here.
+ANDROID_EXEMPT_KEYS = {"app_name"}  # brand name
+
+
 def android_strings_xml_gaps() -> dict[str, set[str]]:
     """Keys present in the base values/strings.xml but missing from an
-    existing values-<lang>/strings.xml. (Doesn't invent missing locale dirs —
+    existing values-<locale>/strings.xml. (Doesn't invent missing locale dirs —
     see the audit summary for languages with NO directory at all.)"""
     base_path = ROOT / "android/app/src/main/res/values/strings.xml"
     # <plurals> count too: converting a hand-rolled singular/plural PAIR into one <plurals> would
     # otherwise DROP those keys out of this gate's view entirely, so a locale could silently lose them —
     # fixing the plural model must not open a coverage hole (see #540 for the same class of blind spot).
     base_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', base_path.read_text(encoding="utf-8")))
-    exempt = {"app_name"}  # brand name, deliberately identical everywhere
     gaps: dict[str, set[str]] = {}
     for lang in LANGS:
-        lang_path = ROOT / f"android/app/src/main/res/values-{lang}/strings.xml"
+        locale_dir = ANDROID_LOCALE_DIRS[lang]
+        lang_path = ROOT / f"android/app/src/main/res/{locale_dir}/strings.xml"
         if not lang_path.exists():
-            gaps[lang] = {"<entire values-%s/ directory is missing>" % lang}
+            gaps[lang] = {"<entire %s/ directory is missing>" % locale_dir}
             continue
         lang_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', lang_path.read_text(encoding="utf-8")))
-        missing = (base_keys - exempt) - lang_keys
+        missing = (base_keys - ANDROID_EXEMPT_KEYS) - lang_keys
         if missing:
             gaps[lang] = missing
     return gaps
@@ -386,7 +507,10 @@ def android_format_gaps() -> dict[str, list[str]]:
     """Resource keys whose translated Formatter arguments differ from English."""
     paths = {
         "en": ROOT / "android/app/src/main/res/values/strings.xml",
-        **{lang: ROOT / f"android/app/src/main/res/values-{lang}/strings.xml" for lang in LANGS},
+        **{
+            lang: ROOT / f"android/app/src/main/res/{ANDROID_LOCALE_DIRS[lang]}/strings.xml"
+            for lang in LANGS
+        },
     }
     def signature(value: str) -> list[str]:
         return sorted(ANDROID_FORMAT_PATTERN.findall(value))
@@ -742,6 +866,55 @@ def scan_ios() -> tuple[list[tuple[str, int, str]], dict[str, list[str]]]:
     return hardcoded, lang_gaps
 
 
+# Languages the audit hard-gates at ZERO missing keys. Historically the ONLY languages it looked at
+# — which is why they sit at 100% while everything else drifted. Unchanged here: still zero tolerance.
+#
+# Every OTHER shipped locale is discovered below and gated against a ratcheting allowance instead, so
+# switching coverage on does not red-check every open PR with hundreds of pre-existing gaps (#844).
+EXTRA_LOCALE_BASELINE_PATH = ROOT / "Tools/i18n_extra_locale_baseline.txt"
+
+
+def shipped_apple_langs(cat: dict) -> set[str]:
+    """Every non-English localization the catalog actually carries.
+
+    Read from the catalog rather than a constant so a language is covered the day it appears. The
+    hardcoded LANGS is what let `it`, `ru`, `zh-Hans` and `zh-Hant` ship for months at up to 85%
+    untranslated while the audit reported green (#844).
+    """
+    langs: set[str] = set()
+    for v in cat.get("strings", {}).values():
+        langs |= set((v.get("localizations") or {}).keys())
+    return langs - {"en"}
+
+
+def shipped_android_locale_dirs() -> list[str]:
+    """Every `values-<locale>` directory on disk, not just the four in ANDROID_LOCALE_DIRS.
+
+    `values-zh` has existed and been unchecked long enough to fall 43 keys behind (#844).
+    """
+    res = ROOT / "android/app/src/main/res"
+    return sorted(d.name for d in res.glob("values-*") if (d / "strings.xml").exists())
+
+
+def extra_locale_allowance() -> dict[str, int]:
+    """`target -> allowed missing count` for the newly-covered locales.
+
+    Counts rather than key lists, for the same reason as Tools/doc_comment_lint_baseline.txt: a key
+    list goes stale on every edit and trains people to regenerate it unread, while a count moves only
+    when someone adds or removes a gap. Ratchets DOWN — closing gaps prints an IMPROVED line.
+    """
+    if not EXTRA_LOCALE_BASELINE_PATH.exists():
+        return {}
+    out: dict[str, int] = {}
+    for raw in EXTRA_LOCALE_BASELINE_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        target, _, count = line.rpartition(" ")
+        out[target.strip()] = int(count)
+    return out
+
+
 BASELINE_PATH = ROOT / "Tools/i18n_audit_baseline.json"
 
 
@@ -809,13 +982,16 @@ def ci_check(base_ref: str) -> int:
         gaps = android_gaps.get(lang)
         if gaps:
             failed = True
-            print(f"FAIL values-{lang}/strings.xml missing {len(gaps)} key(s): {sorted(gaps)[:30]}")
+            locale_dir = ANDROID_LOCALE_DIRS[lang]
+            print(f"FAIL {locale_dir}/strings.xml missing {len(gaps)} key(s): {sorted(gaps)[:30]}")
         else:
-            print(f"  OK values-{lang}/strings.xml")
+            locale_dir = ANDROID_LOCALE_DIRS[lang]
+            print(f"  OK {locale_dir}/strings.xml")
         format_gaps = android_formats.get(lang)
         if format_gaps:
             failed = True
-            print(f"FAIL values-{lang}/strings.xml has {len(format_gaps)} format mismatch(es): {format_gaps[:30]}")
+            locale_dir = ANDROID_LOCALE_DIRS[lang]
+            print(f"FAIL {locale_dir}/strings.xml has {len(format_gaps)} format mismatch(es): {format_gaps[:30]}")
 
     print("\n--- Apple: no NEW un-extracted UI copy, and complete focus locales ---")
     ios_literals, _source_gaps = scan_ios()
@@ -831,8 +1007,18 @@ def ci_check(base_ref: str) -> int:
     ios_fixed = baseline["ios"] - ios_found
     if ios_fixed:
         print(f"  {len(ios_fixed)} baseline entr(y/ies) no longer found — run --update-baseline to shrink the backlog")
+    allowance = extra_locale_allowance()
+    extra_apple_gaps: dict[str, int] = {}
     for _dirs, catalog_path in CATALOGS:
         cat = load_catalog(catalog_path)
+        # #844: count the shipped locales OUTSIDE the focus set while the catalog is already parsed,
+        # and gate them below. Reloading each catalog for a second pass wasted a full re-parse of a
+        # 3255-string file.
+        for extra in sorted(shipped_apple_langs(cat) - set(LANGS)):
+            extra_apple_gaps[f"{catalog_path.relative_to(ROOT)}:{extra}"] = sum(
+                1 for v in cat.get("strings", {}).values()
+                if v.get("shouldTranslate") is not False and not _is_translated(v, extra)
+            )
         for lang in LANGS:
             missing = sum(
                 1 for v in cat.get("strings", {}).values()
@@ -848,6 +1034,52 @@ def ci_check(base_ref: str) -> int:
                 failed = True
                 print(f"FAIL {catalog_path.relative_to(ROOT)} {lang}: {len(format_gaps)} format mismatch(es): {format_gaps[:10]}")
 
+    # #844: every OTHER shipped locale, gated against a ratcheting allowance. LANGS above stays at zero
+    # tolerance; these carry real pre-existing debt (StrandDesign ships 14 of 95 Italian), so the gate
+    # blocks GROWTH rather than demanding the backlog be cleared before anyone can merge.
+    print("\n--- Locales beyond the focus set: no NEW gaps (ratcheting allowance) ---")
+    # Local, NOT the global `failed`: an earlier section failing (a German string, an un-extracted
+    # literal) must not silence this section's own verdict. Reporting nothing here reads as "did not
+    # run", which is the worst thing a gate can say to someone trying to understand a red build.
+    locale_failed = False
+    improved: list[str] = []
+    seen_targets: set[str] = set()
+    for target, missing in sorted(extra_apple_gaps.items()):
+        seen_targets.add(target)
+        allowed = allowance.get(target, 0)
+        if missing > allowed:
+            failed = True
+            locale_failed = True
+            print(f"FAIL {target}: missing={missing} exceeds the allowance of {allowed}")
+        elif missing < allowed:
+            improved.append(f"{target}: {allowed} -> {missing}")
+    base_path = ROOT / "android/app/src/main/res/values/strings.xml"
+    base_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', base_path.read_text(encoding="utf-8")))
+    for locale_dir in shipped_android_locale_dirs():
+        if locale_dir in ANDROID_LOCALE_DIRS.values():
+            continue   # already hard-gated above
+        lang_path = ROOT / f"android/app/src/main/res/{locale_dir}/strings.xml"
+        lang_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', lang_path.read_text(encoding="utf-8")))
+        missing = len((base_keys - ANDROID_EXEMPT_KEYS) - lang_keys)
+        target = f"{locale_dir}/strings.xml"
+        seen_targets.add(target)
+        allowed = allowance.get(target, 0)
+        if missing > allowed:
+            failed = True
+            locale_failed = True
+            print(f"FAIL {target}: missing={missing} exceeds the allowance of {allowed}")
+        elif missing < allowed:
+            improved.append(f"{target}: {allowed} -> {missing}")
+    # An allowance for a target that no longer exists (locale removed, catalog dropped) can never be
+    # satisfied and silently inflates the tracked total, so surface it rather than let it rot.
+    for stale in sorted(set(allowance) - seen_targets):
+        print(f"  STALE {stale} is no longer present — drop it from {EXTRA_LOCALE_BASELINE_PATH.name}.")
+    for line in improved:
+        print(f"  IMPROVED {line}. Lower it in {EXTRA_LOCALE_BASELINE_PATH.name}.")
+    if not locale_failed:
+        tracked = sum(allowance.values())
+        print(f"  OK no new gaps in the non-focus locales ({tracked} tracked, ratcheting down)")
+
     return 1 if failed else 0
 
 
@@ -858,7 +1090,11 @@ def catalog_summary() -> None:
         strings = cat.get("strings", {})
         total = len(strings)
         line = f"{catalog_path.relative_to(ROOT)} ({total} keys):"
-        for lang in LANGS:
+        # #844: report every locale the catalog actually ships, not just the focus four. Showing only
+        # LANGS is very likely WHY the drift went unnoticed for so long — this summary read 100% across
+        # the board while `it` sat at 14 of 95. The gate and the human-readable view must see the same
+        # set, or the view quietly reassures you about languages nobody is checking.
+        for lang in sorted(set(LANGS) | shipped_apple_langs(cat)):
             missing = 0
             for v in strings.values():
                 if v.get("shouldTranslate") is False:
@@ -875,7 +1111,7 @@ def main() -> int:
     ap.add_argument("--platform", choices=["ios", "android", "all"], default="all")
     ap.add_argument("--full", action="store_true", help="print every finding, not just counts")
     ap.add_argument("--ci", metavar="BASE_REF", help="strict coverage gate (BASE_REF is retained for workflow compatibility); see ci_check() docstring")
-    ap.add_argument("--update-baseline", action="store_true", help="rewrite Tools/i18n_audit_baseline.json from the current hardcoded-literal scan (see load_baseline() docstring)")
+    ap.add_argument("--update-baseline", action="store_true", help="rewrite Tools/i18n_audit_baseline.json from the current hardcoded-literal scan (see load_baseline() docstring). Does NOT touch Tools/i18n_extra_locale_baseline.txt — that one is lowered by hand, so shrinking it stays a deliberate act")
     args = ap.parse_args()
 
     if args.update_baseline:
@@ -898,10 +1134,10 @@ def main() -> int:
             if len(findings) > 25:
                 print(f"  ... and {len(findings) - 25} more (use --full)")
 
-        print("\n=== Android: values-<lang>/strings.xml key gaps ===")
+        print("\n=== Android: values-<locale>/strings.xml key gaps ===")
         gaps = android_strings_xml_gaps()
         if not gaps:
-            print("  none (de/es/fr all present and complete, or no locale dir exists)")
+            print("  none (focus locales all present and complete, or no locale dir exists)")
         for lang, keys in gaps.items():
             print(f"  {lang}: {len(keys)} gap(s)")
             if args.full:

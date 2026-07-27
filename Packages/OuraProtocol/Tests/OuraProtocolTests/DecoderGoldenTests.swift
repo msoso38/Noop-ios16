@@ -122,14 +122,15 @@ final class DecoderGoldenTests: XCTestCase {
     // MARK: - 0x4E sleep phase (2-bit codes MSB-first; header byte skipped)
 
     func testSleepPhase0x4E() {
-        // header 0x00, phase byte 0x6C = bits 01 10 11 00 -> light, deep, rem, awake.
+        // header 0x00, phase byte 0x6C = bits 01 10 11 00 = codes 1,2,3,0. Per open_oura's VALIDATED
+        // mapping (0=deep, 1=light, 2=rem, 3=awake) -> light, rem, awake, deep.
         let rec = record("4e0602000100006c")
         let phases = OuraDecoders.decodeSleepPhase(rec)
         XCTAssertEqual(phases, [
             OuraSleepPhase(ringTimestamp: rt, index: 0, stage: .light),
-            OuraSleepPhase(ringTimestamp: rt, index: 1, stage: .deep),
-            OuraSleepPhase(ringTimestamp: rt, index: 2, stage: .rem),
-            OuraSleepPhase(ringTimestamp: rt, index: 3, stage: .awake),
+            OuraSleepPhase(ringTimestamp: rt, index: 1, stage: .rem),
+            OuraSleepPhase(ringTimestamp: rt, index: 2, stage: .awake),
+            OuraSleepPhase(ringTimestamp: rt, index: 3, stage: .deep),
         ])
     }
 
@@ -145,6 +146,49 @@ final class DecoderGoldenTests: XCTestCase {
             OuraMotion(ringTimestamp: rt, index: 2, state: .tossing),
             OuraMotion(ringTimestamp: rt, index: 3, state: .active),
         ])
+    }
+
+    // MARK: - 0x47 motion events (averaged accel vector)
+
+    func testMotionEvents0x47() {
+        // open_oura decode_motion vector: body [0x6f,0x0c,0x1d,0x07,0x0c,0x07].
+        // byte0 0x6f: orientation = 0x6f>>5 = 3, motion_seconds = 0x6f&0x1f = 15.
+        // avg x/y/z = 12/29/7 signed ×8 = 96/232/56. low=0x0c&0x3f=12, high=0x07&0x3f=7.
+        let rec = OuraRecord(type: OuraEventTag.motion.rawValue, ringTimestamp: rt,
+                             payload: [0x6f, 0x0c, 0x1d, 0x07, 0x0c, 0x07])
+        XCTAssertEqual(OuraDecoders.decodeMotionEvents(rec),
+                       OuraMotionEvent(ringTimestamp: rt, orientation: 3, motionSeconds: 15,
+                                       avgX: 96, avgY: 232, avgZ: 56, lowIntensity: 12, highIntensity: 7))
+    }
+
+    func testMotionEvents0x47DiscriminatesOrientationFromMotionSeconds() {
+        // byte0 0xB5 = 1011_0101: orientation = 0xB5>>5 = 5 (NOT 0xB5&0x03 = 1), motion_seconds = 0x15 = 21.
+        // This vector fails the old `& 0x03` orientation bug (would give 1). Negative axes prove ×8 sign.
+        // byte4 0x2A → low 42; byte5 0x3F → high 63 (max, still valid).
+        let rec = OuraRecord(type: OuraEventTag.motion.rawValue, ringTimestamp: rt,
+                             payload: [0xB5, 0xF4, 0x00, 0x80, 0x2A, 0x3F])
+        XCTAssertEqual(OuraDecoders.decodeMotionEvents(rec),
+                       OuraMotionEvent(ringTimestamp: rt, orientation: 5, motionSeconds: 21,
+                                       avgX: -96, avgY: 0, avgZ: -1024, lowIntensity: 42, highIntensity: 63))
+    }
+
+    func testMotionEvents0x47IntensityValidityBitRejectsRecord() {
+        // A set 0x40 bit in the intensity byte means INVALID per open_oura → the whole record decodes nil.
+        XCTAssertNil(OuraDecoders.decodeMotionEvents(   // byte5 0x47 has 0x40 set
+            OuraRecord(type: OuraEventTag.motion.rawValue, ringTimestamp: rt, payload: [0x00, 0, 0, 0, 0x00, 0x47])))
+        XCTAssertNil(OuraDecoders.decodeMotionEvents(   // byte4 0x40 set
+            OuraRecord(type: OuraEventTag.motion.rawValue, ringTimestamp: rt, payload: [0x00, 0, 0, 0, 0x40, 0x00])))
+    }
+
+    func testMotionEvents0x47OptionalIntensityAndShortBody() {
+        // A 4-byte record is valid (orientation/motion_seconds + 3 axes); intensities are nil.
+        let four = OuraDecoders.decodeMotionEvents(
+            OuraRecord(type: OuraEventTag.motion.rawValue, ringTimestamp: rt, payload: [0x20, 0x0a, 0x00, 0x00]))
+        XCTAssertEqual(four, OuraMotionEvent(ringTimestamp: rt, orientation: 1, motionSeconds: 0,
+                                             avgX: 80, avgY: 0, avgZ: 0, lowIntensity: nil, highIntensity: nil))
+        // A 3-byte body is too short → nil.
+        XCTAssertNil(OuraDecoders.decodeMotionEvents(
+            OuraRecord(type: OuraEventTag.motion.rawValue, ringTimestamp: rt, payload: [0x6f, 0x0c, 0x1d])))
     }
 
     // MARK: - 0x85 RTC beacon (unix_s u32 LE)
@@ -212,6 +256,58 @@ final class DecoderGoldenTests: XCTestCase {
 
         let hr = OuraDecoders.decodeLiveHRPush(subBody, ringTimestamp: rt)
         XCTAssertEqual(hr, OuraHR(ringTimestamp: rt, bpm: 59, ibiMs: 1025))
+    }
+
+    // MARK: - 0x71 green_ibi_and_amp CANDIDATE decode (ringverse @0x503960, upstream #287)
+
+    /// Inverse of the firmware's scrambled packing (ringverse `p_green_ibi_and_amp`): middle-8 bytes
+    /// at p[4..0] (ds0..ds4), amplitude bytes p[6..10] carry the mantissa in bits [7:1] and the
+    /// PAIRED IBI's low bit in bit [0] (ds4..ds0 order), bits [2:1] of ds1..ds4 pack into p[12]
+    /// two bits at a time, ds0's into p[13] bits [7:6] alongside the shift field.
+    private func packGreenIBIAmp(ibis: [Int], mants: [Int], s: Int) -> [UInt8] {
+        var p = [UInt8](repeating: 0, count: 14)
+        for (i, mid) in [4, 3, 2, 1, 0].enumerated() { p[mid] = UInt8((ibis[i] >> 3) & 0xFF) }
+        for (i, amp) in [10, 9, 8, 7, 6].enumerated() {
+            p[amp] = UInt8((mants[4 - i] << 1) | (ibis[i] & 1))
+        }
+        var pack12 = (ibis[1] >> 1) & 3
+        pack12 |= ((ibis[2] >> 1) & 3) << 2
+        pack12 |= ((ibis[3] >> 1) & 3) << 4
+        pack12 |= ((ibis[4] >> 1) & 3) << 6
+        p[12] = UInt8(pack12)
+        p[13] = UInt8((s & 7) | (((ibis[0] >> 1) & 3) << 6))
+        return p
+    }
+
+    func testGreenIBIAmpCandidateRoundTrip() {
+        // 11-bit IBIs exercising every packed bit field; 7-bit mantissas; s=3 -> shift 4.
+        let ibis = [1023, 800, 517, 2046, 901]
+        let mants = [1, 64, 100, 127, 33]
+        let p = packGreenIBIAmp(ibis: ibis, mants: mants, s: 3)
+        let decoded = OuraDecoders.decodeGreenIBIAmpCandidate(payload: p, ringTimestamp: rt)
+        XCTAssertNotNil(decoded)
+        XCTAssertEqual(decoded!.shift, 4)
+        let samples = decoded!.samples
+        XCTAssertEqual(samples.count, 6)
+        // First entry is amplitude-only (ibi 0, amp = as[0] = mantissa of p[6] << shift).
+        XCTAssertEqual(samples[0].ibiMs, 0)
+        XCTAssertEqual(samples[0].amplitude, mants[0] << 4)
+        // The five IBI entries recover the exact packed values; amps pair as[i] per the firmware order.
+        XCTAssertEqual(samples.dropFirst().map { $0.ibiMs }, ibis)
+        XCTAssertEqual(samples.dropFirst().map { $0.amplitude ?? -1 }, mants.map { $0 << 4 })
+    }
+
+    func testGreenIBIAmpCandidateGates() {
+        // s == 7 means shift 0 (identity amplitudes).
+        let p7 = packGreenIBIAmp(ibis: [500, 500, 500, 500, 500], mants: [10, 10, 10, 10, 10], s: 7)
+        XCTAssertEqual(OuraDecoders.decodeGreenIBIAmpCandidate(payload: p7, ringTimestamp: rt)?.shift, 0)
+        // Reserved bit [3] of p[13] set -> firmware mismatch -> nil, never a guessed decode.
+        var bad = p7
+        bad[13] |= 0x08
+        XCTAssertNil(OuraDecoders.decodeGreenIBIAmpCandidate(payload: bad, ringTimestamp: rt))
+        // Strict 14-byte gate: any other length is a different firmware layout -> nil.
+        XCTAssertNil(OuraDecoders.decodeGreenIBIAmpCandidate(payload: Array(p7.dropLast()), ringTimestamp: rt))
+        XCTAssertNil(OuraDecoders.decodeGreenIBIAmpCandidate(payload: p7 + [0x00], ringTimestamp: rt))
     }
 
     // MARK: - Honest-data invariant: short / malformed records decode to nil

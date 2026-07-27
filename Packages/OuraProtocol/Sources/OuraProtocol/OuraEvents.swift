@@ -73,12 +73,18 @@ public struct OuraBattery: Equatable, Sendable, Codable {
     }
 }
 
-/// Sleep phase code (OURA_PROTOCOL.md s6.12): 2-bit codes 0=awake, 1=light, 2=deep, 3=REM.
+/// The 2-bit sleep-phase code values, per open_oura's VALIDATED `decode_sleep_phases` mapping
+/// (events.rs `PHASE = ["deep", "light", "rem", "awake"]`): 0=deep, 1=light, 2=rem, 3=awake.
+///
+/// CORRECTION (2026-07-11): NOOP previously mapped 0=awake/2=deep/3=rem from the same unverified doc
+/// as the rest of s6.12. Two live captures contradict that: phase records decoded AT WAKE (wearer
+/// demonstrably awake) carry code 3 — awake under open_oura's mapping, "REM" under the old one. The
+/// raw code is what persists (`stage.rawValue`); only these LABELS changed, so stored rows are stable.
 public enum OuraSleepStage: Int, Sendable, Equatable, Codable {
-    case awake = 0
+    case deep  = 0
     case light = 1
-    case deep = 2
-    case rem = 3
+    case rem   = 2
+    case awake = 3
 }
 
 /// One decoded sleep-phase code in order within a 0x4E/0x5A record (OURA_PROTOCOL.md s6.12).
@@ -106,6 +112,36 @@ public struct OuraMotion: Equatable, Sendable, Codable {
     public let state: OuraMotionState
     public init(ringTimestamp: UInt32, index: Int, state: OuraMotionState) {
         self.ringTimestamp = ringTimestamp; self.index = index; self.state = state
+    }
+}
+
+/// One decoded 0x47 `motion_events` record: the ring's OWN averaged accelerometer vector for the period,
+/// plus an orientation code and a high-intensity count (open_oura `decode_motion`, clean-room fact
+/// citation; OURA_PROTOCOL.md s6.13). This is the SAME shape as a WHOOP 4.0 gravity sample — an averaged
+/// `(x, y, z)` vector, NOT a per-sample raw accel — so it can feed the same motion pipeline. Axis values
+/// are the signed record bytes scaled ×8 (open_oura's convention); the LSB→g scale for NOOP's stager is
+/// a downstream calibration, so this struct carries the ring's raw ×8 integers, unscaled and honest.
+public struct OuraMotionEvent: Equatable, Sendable, Codable {
+    public let ringTimestamp: UInt32
+    /// Orientation code 0…7 (record byte0, TOP 3 bits: `b0 >> 5`).
+    public let orientation: Int
+    /// Seconds of motion in the window (record byte0, low 5 bits: `b0 & 0x1f`, 0…31). A direct
+    /// motion-intensity measure — arguably the cleanest activity signal for sleep staging.
+    public let motionSeconds: Int
+    /// Averaged X/Y/Z, signed record byte × 8 (open_oura `decode_motion`).
+    public let avgX: Int
+    public let avgY: Int
+    public let avgZ: Int
+    /// Low/high-intensity counts (record byte4/byte5, `& 0x3f`, 0…63). nil when the record is short
+    /// (< 5 / < 6 bytes) — both are optional in the wire format.
+    public let lowIntensity: Int?
+    public let highIntensity: Int?
+    public init(ringTimestamp: UInt32, orientation: Int, motionSeconds: Int, avgX: Int, avgY: Int,
+                avgZ: Int, lowIntensity: Int?, highIntensity: Int?) {
+        self.ringTimestamp = ringTimestamp; self.orientation = orientation
+        self.motionSeconds = motionSeconds
+        self.avgX = avgX; self.avgY = avgY; self.avgZ = avgZ
+        self.lowIntensity = lowIntensity; self.highIntensity = highIntensity
     }
 }
 
@@ -200,6 +236,9 @@ public enum OuraEvent: Equatable, Sendable {
     case battery(OuraBattery)
     case sleepPhase(OuraSleepPhase)
     case motion(OuraMotion)
+    /// A decoded `0x47` motion_events record: the ring's averaged accel vector (Tier-A). Distinct from
+    /// `.motion` (the 0x6B period's 2-bit state codes).
+    case motionEvent(OuraMotionEvent)
     case state(OuraState)
     case timeSync(OuraTimeSync)
     case rtcBeacon(OuraRtcBeacon)
@@ -218,6 +257,29 @@ public enum OuraEvent: Equatable, Sendable {
         switch self {
         case .tierB, .activityInfo: return true
         default: return false
+        }
+    }
+
+    /// The record's envelope ring-time, when it carries one (battery is a plain response, not a log
+    /// record). Feeds the history drain's in-session continuation cursor: open_oura's `drain_events`
+    /// advances `start` past the max timestamp of EVERY event in a batch, whatever its tag.
+    public var envelopeRingTimestamp: UInt32? {
+        switch self {
+        case .hr(let v): return v.ringTimestamp
+        case .ibi(let v): return v.ringTimestamp
+        case .hrv(let v): return v.ringTimestamp
+        case .spo2(let v): return v.ringTimestamp
+        case .temp(let v): return v.ringTimestamp
+        case .battery: return nil
+        case .sleepPhase(let v): return v.ringTimestamp
+        case .motion(let v): return v.ringTimestamp
+        case .motionEvent(let v): return v.ringTimestamp
+        case .state(let v): return v.ringTimestamp
+        case .timeSync(let v): return v.ringTimestamp
+        case .rtcBeacon(let v): return v.ringTimestamp
+        case .debugText(let rt, _): return rt
+        case .tierB(let v): return v.ringTimestamp
+        case .activityInfo(let v): return v.ringTimestamp
         }
     }
 }

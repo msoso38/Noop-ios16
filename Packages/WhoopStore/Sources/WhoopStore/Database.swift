@@ -564,6 +564,44 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "ts"])
             }
         }
+
+        // v29: provenance for NOOP-computed headline scores. This is deliberately separate from
+        // `dayOwnership`: ownership controls which device is allowed to supply a day's raw inputs,
+        // while this table records which source actually supplied each persisted computed metric.
+        // Metric-level keys keep mixed-source days honest and make missing legacy metadata explicit.
+        migrator.registerMigration("v29-score-input-provenance") { db in
+            try db.create(table: "scoreInputProvenance") { t in
+                t.column("deviceId", .text).notNull()   // computed "-noop" namespace
+                t.column("day", .text).notNull()
+                t.column("key", .text).notNull()
+                t.column("sourceId", .text).notNull()
+                t.primaryKey(["deviceId", "day", "key"])
+            }
+            try db.create(index: "idx_scoreInputProvenance_source",
+                          on: "scoreInputProvenance", columns: ["sourceId"])
+        }
+
+        // v30 (#823): record each R-R beat's EMISSION order within its second. Reads ordered by
+        // `rrMs`, i.e. by VALUE, which makes successive beats similar by construction and biases
+        // RMSSD — built entirely from successive differences — DOWNWARD. `seq` cannot serve here:
+        // it counts repeats of an identical (ts, rrMs) beat, so every DISTINCT beat in a second
+        // carries seq 0 and they all tie.
+        //
+        // Additive nullable column, no table rebuild, no existing row touched. Deliberately NOT in
+        // the primary key, which stays (deviceId, ts, rrMs, seq) from v24 — an insertion counter in
+        // the key would collide distinct beats arriving in separate batches, the data-loss
+        // regression the v24 note warns about. `ord` only informs read order.
+        //
+        // Pre-v30 rows stay NULL: the order was never recorded, so it cannot be backfilled and a
+        // guess would be worse than an admission. SQLite sorts NULL first in ASC, so an all-NULL
+        // second ties on `ord` and falls through to the old (rrMs, seq) order, unchanged.
+        //
+        // Twin of Room MIGRATION_23_24. Both stores are SQLite, so NULL-ordering matches exactly.
+        migrator.registerMigration("v30-rr-ord") { db in
+            try db.alter(table: "rrInterval") { t in
+                t.add(column: "ord", .integer)
+            }
+        }
         return migrator
     }
 }

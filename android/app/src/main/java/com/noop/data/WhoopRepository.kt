@@ -60,11 +60,107 @@ data class StreamBatch(
      * so they are captured here for the strap log. Diag only; empty when none. Mirrors Swift `droppedRtcEvents`.
      */
     val droppedRtcEvents: List<DroppedRtcEvent> = emptyList(),
+    /**
+     * #520 diagnostic: a summary of `dynamic_acceleration@41` (the strap's own gravity-removed motion
+     * magnitude) over this batch's v18 records. The field has been decoded on both platforms all along
+     * with nothing consuming it, so there is no evidence on whether it is a usable stillness signal;
+     * this counts what arrived so the strap log can answer that from real nights before anyone pays for
+     * a migration. Diag only (excluded from [isEmpty]). Byte-identical twin of Swift `Streams.dynAccel`.
+     */
+    val dynAccel: DynAccelDiag = DynAccelDiag(),
 ) {
     val isEmpty: Boolean
         get() = hr.isEmpty() && rr.isEmpty() && events.isEmpty() && battery.isEmpty() &&
             spo2.isEmpty() && skinTemp.isEmpty() && resp.isEmpty() && gravity.isEmpty() &&
             steps.isEmpty() && sleepState.isEmpty() && ppgHr.isEmpty() && ppgWaveform.isEmpty()
+}
+
+/**
+ * #520 diagnostic: distribution of `dynamic_acceleration` over one decoded batch. Deliberately a
+ * summary, not a stream — at 1 Hz a night is ~30k values and the open question needs a shape, not
+ * samples. [still] counts values under `SleepStager.gravityStillThresholdG` (0.01 g) — borrowed as a
+ * REFERENCE CUT, not because the two quantities are the same thing. The stager thresholds a per-sample
+ * DELTA (how much the gravity vector moved between consecutive samples); this field is an ABSOLUTE
+ * gravity-removed magnitude at one instant. Both go to ~0 when the wrist is still, so the same cut is a
+ * sensible starting point, but the two still-fractions are not measuring the same thing and a match does
+ * not prove equivalence. [min]/[max]/[mean] let a reader re-derive any other cut from the logs.
+ * Byte-identical twin of Swift `Streams.DynAccelDiag` — same fields, same fold order, same nulls.
+ */
+data class DynAccelDiag(
+    var count: Int = 0,
+    var still: Int = 0,
+    var min: Double? = null,
+    var max: Double? = null,
+    /** Running sum, so a batch of any size costs O(1) memory. */
+    var sum: Double = 0.0,
+) {
+    /** Mean over [count] values, or null when nothing arrived. */
+    val mean: Double? get() = if (count > 0) sum / count else null
+
+    /** Fraction of values below the stillness threshold, or null when nothing arrived. */
+    val stillFraction: Double? get() = if (count > 0) still.toDouble() / count else null
+
+    /**
+     * Fold another batch's summary into this one. A batch is an arbitrary slice of an offload, so the
+     * still-fraction only means anything once a whole session is merged — the Backfiller accumulates with
+     * this and logs once at the session boundary. Merging an empty diag is a no-op. Twin of Swift.
+     */
+    fun merge(other: DynAccelDiag) {
+        if (other.count <= 0) return
+        count += other.count
+        still += other.still
+        sum += other.sum
+        other.min?.let { lo -> min = min?.let { kotlin.math.min(it, lo) } ?: lo }
+        other.max?.let { hi -> max = max?.let { kotlin.math.max(it, hi) } ?: hi }
+    }
+
+    /**
+     * The strap-log line for a whole offload session, or null when nothing arrived (so a WHOOP 4.0 or a
+     * caught-up session stays quiet). Every field is an Int rendered by interpolation — deliberately NOT
+     * [String.format]. Two separate traps live in that function: the default locale renders `0,021` on a
+     * de/fr device, and Java rounds HALF_UP where C (and so Swift) rounds half-to-EVEN, which makes ties
+     * diverge. Integers avoid both. Byte-identical twin of Swift `DynAccelDiag.logLine`.
+     */
+    fun logLine(threshold: Double): String? {
+        val lo = min ?: return null
+        val hi = max ?: return null
+        val avg = mean ?: return null
+        val frac = stillFraction ?: return null
+        if (count <= 0) return null
+        return "Backfill: dynaccel n=$count still=${pct(frac)}% mean=${mg(avg)}mg " +
+            "range=${mg(lo)}..${mg(hi)}mg (thr ${mg(threshold)}mg) " +
+            "— diagnostic only, not stored or scored (#520)"
+    }
+
+    companion object {
+        /**
+         * Milli-g, rounded to match Swift's `.rounded()` (ties away from zero).
+         *
+         * [kotlin.math.roundToInt] is REQUIRED here and [kotlin.math.round] is WRONG: `round` is
+         * `Math.rint`, which breaks ties toward the EVEN integer, while `roundToInt` is `Math.round`,
+         * which breaks them toward positive infinity — the same answer as Swift for non-negative input.
+         * With `round`, 62.5 mg would give 62 on Kotlin and 63 on Swift, which is exactly the printf
+         * divergence this integer formatting exists to avoid. The decoder gates this field to `[0, 8] g`
+         * so input is never negative, where the two rules would part company again.
+         */
+        fun mg(g: Double): Int = (g * 1000).roundToInt()
+
+        /** Whole percent, same rounding rule and the same reason. */
+        fun pct(fraction: Double): Int = (fraction * 100).roundToInt()
+    }
+
+    /**
+     * Fold one decoded value in. [threshold] is passed rather than imported so the protocol layer keeps
+     * no dependency on the analytics layer; the caller supplies the stager's own constant.
+     */
+    fun add(g: Double, threshold: Double) {
+        if (!g.isFinite()) return
+        count += 1
+        sum += g
+        if (g < threshold) still += 1
+        min = min?.let { kotlin.math.min(it, g) } ?: g
+        max = max?.let { kotlin.math.max(it, g) } ?: g
+    }
 }
 
 // Device-agnostic decoded rows (deviceId attached when inserted). Mirror Streams.swift shapes.
@@ -85,14 +181,25 @@ data class RrRow(val ts: Long, val rrMs: Int)
  * straddle a live-flush boundary still collide (batch-local), the same narrow case the old key dropped and
  * strictly no worse; the authoritative historical path delivers a second's beats atomically in one batch.
  * Pure so it is unit-testable.
+ *
+ * Also stamps `ord` (Room v24, #823): the beat's position among ALL beats sharing this `ts` in this batch —
+ * its emission order, which `seq` cannot express because `seq` keys on (ts, rrMs) and so is 0 for every
+ * DISTINCT beat in a second. `ord` is NOT in the key and never affects which rows survive; it exists so
+ * reads can return beats in the order the heart produced them rather than sorted by value, which biases
+ * RMSSD down. Same batch-local caveat as `seq`: a second split across two live flushes restarts `ord` at 0,
+ * and ON CONFLICT DO NOTHING keeps whichever row landed first. The historical path delivers a second
+ * atomically, so the authoritative copy is correctly ordered.
  */
 internal fun assignRrSeq(deviceId: String, rows: List<RrRow>): List<RrInterval> {
     val seqByBeat = HashMap<Pair<Long, Int>, Int>()
+    val ordByTs = HashMap<Long, Int>()
     return rows.map { row ->
         val key = row.ts to row.rrMs
         val s = seqByBeat.getOrDefault(key, 0)
         seqByBeat[key] = s + 1
-        RrInterval(deviceId = deviceId, ts = row.ts, rrMs = row.rrMs, seq = s)
+        val o = ordByTs.getOrDefault(row.ts, 0)
+        ordByTs[row.ts] = o + 1
+        RrInterval(deviceId = deviceId, ts = row.ts, rrMs = row.rrMs, seq = s, ord = o)
     }
 }
 
@@ -300,6 +407,20 @@ class WhoopRepository(private val dao: WhoopDao) {
      *  the recompute window before re-upserting LOCAL-keyed rows. Imported rows are never touched. */
     suspend fun deleteComputedDailyInRange(deviceId: String, from: String, to: String) =
         dao.deleteDailyMetricsInRange(deviceId, from, to)
+
+    suspend fun replaceComputedScoreWindow(
+        deviceId: String,
+        from: String,
+        to: String,
+        dailyMetrics: List<DailyMetric>,
+        metricPoints: List<MetricSeriesRow>,
+        provenance: List<ScoreInputProvenanceRow>,
+    ) = dao.replaceComputedScoreWindow(
+        deviceId, from, to, dailyMetrics, metricPoints, provenance
+    )
+
+    suspend fun scoreInputSource(deviceId: String, day: String, key: String): String? =
+        dao.scoreInputSource(deviceId, day, key)
 
     /** Hand-correct the bed (onset) / wake (end) time of an existing sleep session, DURABLY , port
      *  of iOS PR #395 (Repository.editSleepTimes + MetricsCache.applySleepEdit).
