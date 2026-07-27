@@ -1,5 +1,5 @@
 {
-  "_readme": "SHARED Room<->GRDB SCHEMA ORACLE (#775). Two byte-identical copies: Packages/WhoopStore/Tests/WhoopStoreTests/Resources/schema_oracle.json and android/app/src/test/resources/schema_oracle.json. SchemaOracleTests.swift compares GRDB's PRAGMA table_info/index_list against it; SchemaOracleTest.kt compares Room's exported schema JSON against it. `columns` is the iOS/GRDB shape in GRDB column order (macOS is the reference implementation); every way Android differs is spelled out in an `android` / `iosAbsent` / `androidColumnOrder` override naming a key in `divergenceReasons`. Adding a column, reordering one, or changing a type/nullability on one platform only fails both suites until it is either fixed or written down here.",
+  "_readme": "SHARED Room<->GRDB SCHEMA ORACLE (#775). Two byte-identical copies: Packages/WhoopStore/Tests/WhoopStoreTests/Resources/schema_oracle.json and android/app/src/test/resources/schema_oracle.json. SchemaOracleTests.swift compares GRDB's PRAGMA table_info/index_list against it; SchemaOracleTest.kt compares Room's exported schema JSON against it. `columns` is the iOS/GRDB shape in GRDB column order (macOS is the reference implementation); every way Android differs is spelled out in an `android` / `iosAbsent` / `androidColumnOrder` override naming a key in `divergenceReasons`. Adding a column, reordering one, or changing a type/nullability on one platform only fails both suites until it is either fixed or written down here. `grdbMigrationLineages` is the same idea for migration IDENTIFIERS: a fork that numbered its own migrations before upstream reached those numbers declares them there instead of renumbering \u2014 GRDB keys migrations by identifier string, so renaming one wedges a database that already ran it.",
   "roomVersion": 25,
   "grdbMigrations": [
     "v1",
@@ -27,15 +27,31 @@
     "v23-daily-spo2-raw",
     "v24-rr-seq",
     "v25-oura-raw",
+    "v26-cloud-tombstone",
+    "v27-apple-step-hour",
     "v26-efficiency-heal",
     "v27-ppg-waveform",
+    "v28-phone-timezone",
+    "v29-daily-avg-sdnn",
     "v28-raw-imu",
     "v29-score-input-provenance",
     "v30-rr-ord",
     "v31-deep-capture-channels"
   ],
+  "grdbMigrationLineages": {
+    "fork-ios-only": {
+      "reason": "This fork (vishk23/noop) carries four iOS-only migrations that were numbered from v26 before upstream's own v26..v29 existed, so both lineages claim v26, v27, v28 and v29. They are NOT renumbered to sit after upstream's: GRDB keys migrations by identifier STRING, so renaming one makes it read as un-applied on a device that already ran it, and the migrator then re-runs its body against a schema that already has the table \u2014 wedging a live database. The identifiers are frozen exactly as first shipped. What still carries the vN <-> Room-version mapping is the BASELINE lineage (grdbMigrations minus every lineage declared here), which both suites still check is exactly v1..vN with no gaps and no repeats; a lineage's own vN must strictly increase; and full-identifier uniqueness is enforced across everything, because a genuinely duplicated identifier makes GRDB silently skip the second body.",
+      "migrations": [
+        "v26-cloud-tombstone",
+        "v27-apple-step-hour",
+        "v28-phone-timezone",
+        "v29-daily-avg-sdnn"
+      ]
+    }
+  },
   "divergenceReasons": {
     "android-orphan-synced-column": "REAL COLUMN DRIFT: `synced` exists on Android only. GRDB's v10 note is explicit that stepSample gets no `synced` column ('unused; see StreamStore'), and v12's ppgHrSample never had one either; the Room entities copied the flag from the older per-second entities. Nothing reads it on Android \u2014 the per-row upload flag belongs to an upload path that does not exist there \u2014 so it is dead width, not divergent data. Removing it needs a Room table rebuild.",
+    "avg-sdnn-ios-only": "FORK-ONLY COLUMN: `dailyMetric.avgSdnn` is appended by the fork's GRDB `v29-daily-avg-sdnn` \u2014 the 5-minute SDNN index, the broad-variability twin of `avgHrv` (RMSSD), window-matched to a watch's short SDNN rather than the drift-inflated whole-night SD, and computed by `HRVAnalyzer.sdnnIndex` during the nightly analysis. Additive and nullable, so it costs an existing row nothing. Room has no field for it; giving it one means a @Database version bump plus a migration, so the absence is recorded here rather than left to read as unexplained drift.",
     "battery-alter-append-order": "REAL COLUMN-ORDER DRIFT (CLAUDE.md: 'column order in a Room CREATE TABLE must match the entity field order'). GRDB appended `synced` (v5) then `charging` (v6) with ALTER TABLE, which can only append; the Room entity declares `charging` before `synced`. Same columns, same types, different positions \u2014 so any positional copy (INSERT INTO battery SELECT * FROM \u2026) swaps them. Fixing it means reordering the Room entity's fields, which changes Room's identity hash and therefore needs a version bump plus a no-op migration.",
     "grdb-boolean-affinity": "GRDB's .boolean column type is declared BOOLEAN, which SQLite gives NUMERIC affinity; Room maps Kotlin Boolean to INTEGER. For the 0/1 values both sides write, NUMERIC and INTEGER affinity store bit-identical INTEGERs, so a .noopbak round-trips. Closing it means a GRDB table rebuild.",
     "paired-device-alter-append-order": "REAL COLUMN-ORDER DRIFT, same shape as battery. GRDB's v16-paired-device-peripheral appended `peripheralId` at the end; the Room entity declares it fifth, between `nickname` and `sourceKind`.",
@@ -115,6 +131,35 @@
       ],
       "indices": []
     },
+    "appleStepHour": {
+      "platform": "ios_only",
+      "reason": "Fork-only iOS table (GRDB `v27-apple-step-hour`): hourly Apple Health step counts. The daily HealthKit collect path flattens a whole day into one `appleDaily.steps` total, so hours the phone was dead or absent read as low steps for the entire day instead of as the specific hours with no recording. Android has no HealthKit source, so no Room twin.",
+      "columns": [
+        {
+          "name": "deviceId",
+          "affinity": "TEXT",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "ts",
+          "affinity": "INTEGER",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "steps",
+          "affinity": "INTEGER",
+          "notNull": true,
+          "default": null
+        }
+      ],
+      "primaryKey": [
+        "deviceId",
+        "ts"
+      ],
+      "indices": []
+    },
     "battery": {
       "platform": "both",
       "columns": [
@@ -177,6 +222,85 @@
       ],
       "androidColumnOrderDivergence": "battery-alter-append-order",
       "indices": []
+    },
+    "cloudTombstone": {
+      "platform": "ios_only",
+      "reason": "Fork-only iOS table (GRDB `v26-cloud-tombstone`): records deletions accepted from the NOOP cloud journal, keyed by (kind, editSeq) for idempotency, so a later re-import cannot resurrect a row the user deleted. Backs Strand/CloudSync/, which has no Android counterpart.",
+      "columns": [
+        {
+          "name": "id",
+          "affinity": "INTEGER",
+          "notNull": false,
+          "default": null
+        },
+        {
+          "name": "kind",
+          "affinity": "TEXT",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "deviceId",
+          "affinity": "TEXT",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "startTs",
+          "affinity": "INTEGER",
+          "notNull": false,
+          "default": null
+        },
+        {
+          "name": "endTs",
+          "affinity": "INTEGER",
+          "notNull": false,
+          "default": null
+        },
+        {
+          "name": "sport",
+          "affinity": "TEXT",
+          "notNull": false,
+          "default": null
+        },
+        {
+          "name": "day",
+          "affinity": "TEXT",
+          "notNull": false,
+          "default": null
+        },
+        {
+          "name": "key",
+          "affinity": "TEXT",
+          "notNull": false,
+          "default": null
+        },
+        {
+          "name": "editSeq",
+          "affinity": "INTEGER",
+          "notNull": true,
+          "default": null
+        },
+        {
+          "name": "createdAt",
+          "affinity": "INTEGER",
+          "notNull": true,
+          "default": null
+        }
+      ],
+      "primaryKey": [
+        "id"
+      ],
+      "indices": [
+        {
+          "name": "idx_cloudTombstone_kind_device",
+          "unique": false,
+          "columns": [
+            "kind",
+            "deviceId"
+          ]
+        }
+      ]
     },
     "cursors": {
       "platform": "ios_only",
@@ -322,6 +446,14 @@
           "affinity": "INTEGER",
           "notNull": false,
           "default": null
+        },
+        {
+          "name": "avgSdnn",
+          "affinity": "REAL",
+          "notNull": false,
+          "default": null,
+          "androidAbsent": true,
+          "divergence": "avg-sdnn-ios-only"
         }
       ],
       "primaryKey": [
@@ -1052,6 +1184,28 @@
         "lastSeenAt"
       ],
       "androidColumnOrderDivergence": "paired-device-alter-append-order",
+      "indices": []
+    },
+    "phoneTimezone": {
+      "platform": "ios_only",
+      "reason": "Fork-only iOS table (GRDB `v28-phone-timezone`): the IANA timezone the phone was in for each local calendar day, so day-bucketed metrics stay correct across travel. Android has no twin.",
+      "columns": [
+        {
+          "name": "day",
+          "affinity": "TEXT",
+          "notNull": false,
+          "default": null
+        },
+        {
+          "name": "tzId",
+          "affinity": "TEXT",
+          "notNull": true,
+          "default": null
+        }
+      ],
+      "primaryKey": [
+        "day"
+      ],
       "indices": []
     },
     "ppgHrSample": {
