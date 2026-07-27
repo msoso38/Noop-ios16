@@ -15,7 +15,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
@@ -34,6 +36,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.BuildConfig
@@ -322,9 +326,15 @@ private fun TestModeRow(
 private fun DiagnosticToolsCard(vm: AppViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val live by vm.live.collectAsStateWithLifecycle()
     var showRecalibrate by remember { mutableStateOf(false) }
     // "Debug logging" moved here from Settings: dev-only, mirrors the strap log to logcat over adb.
     var debugLogging by remember { mutableStateOf(NoopPrefs.debugLogging(context)) }
+    // Raw-frame capture (moved here from Settings, the last diagnostic control still living there):
+    // model-agnostic (WHOOP 4.0 and 5/MG alike, ticket 04). Mirrors the iOS TestCentreView toggle.
+    val puffinExperiment = remember { PuffinExperiment.from(context) }
+    var rawFrameCapture by remember { mutableStateOf(puffinExperiment.isRawCaptureEnabled) }
+    var showClearCaptureConfirm by remember { mutableStateOf(false) }
     SettingsSectionTC(
         icon = Icons.Filled.Info,
         title = uiString(R.string.l10n_test_centre_screen_diagnostic_tools_04ba4d3f),
@@ -368,7 +378,90 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
                     colors = settingsSwitchColors(),
                 )
             }
+
+            // Raw-frame capture — off by default, safe to leave on (read-only on the strap). Moved
+            // here from Settings: the recorder covers WHOOP 4.0's classic envelope as well as WHOOP
+            // 5.0/MG's puffin envelope, so it's not 5/MG-only.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text(
+                    uiString(R.string.l10n_test_centre_screen_record_5_mg_raw_capture_research_1d966bbf),
+                    style = NoopType.subhead,
+                    color = Palette.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(
+                    checked = rawFrameCapture,
+                    onCheckedChange = {
+                        rawFrameCapture = it
+                        puffinExperiment.isRawCaptureEnabled = it
+                    },
+                    colors = settingsSwitchColors(),
+                    modifier = Modifier.semantics {
+                        contentDescription = uiString(R.string.l10n_test_centre_screen_record_5_mg_raw_capture_9354fe89)
+                    },
+                )
+            }
+            Text(
+                uiString(R.string.l10n_test_centre_screen_records_the_raw_frames_of_each_98a284df),
+                style = NoopType.caption,
+                color = Palette.textTertiary,
+            )
+            NoopButton(
+                text = uiString(R.string.l10n_test_centre_screen_share_5_mg_capture_for_the_e41ac6bd),
+                leadingIcon = Icons.Filled.Upload,
+                kind = NoopButtonKind.Secondary,
+                fullWidth = true,
+                onClick = { LogExport.shareRawFrameCapture(context, live.connected) },
+            )
+            // One-tap "matched pair" export (#510): hands a reporter BOTH the raw capture file and
+            // the strap log together (timestamped, same minute) so a bug report arrives with the
+            // frames AND the context that produced them.
+            NoopButton(
+                text = uiString(R.string.l10n_test_centre_screen_export_raw_log_matched_pair_d65390bf),
+                leadingIcon = Icons.Filled.IosShare,
+                kind = NoopButtonKind.Secondary,
+                fullWidth = true,
+                onClick = { scope.launch { LogExport.shareRawAndLog(context, vm.ble.exportLogText(), live.connected) } },
+            )
+            // Clear captured frames: always available (clearing an empty capture is harmless) so a
+            // reporter can wipe an unrelated capture, reproduce the bug, then export a clean sample
+            // instead of hunting the right frames out of a noisy file.
+            NoopButton(
+                text = uiString(R.string.l10n_test_centre_screen_clear_captured_frames_51b28d22),
+                leadingIcon = Icons.Filled.DeleteForever,
+                kind = NoopButtonKind.Destructive,
+                fullWidth = true,
+                onClick = { showClearCaptureConfirm = true },
+            )
         }
+    }
+    if (showClearCaptureConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearCaptureConfirm = false },
+            containerColor = Palette.surfaceOverlay,
+            title = { Text(uiString(R.string.l10n_test_centre_screen_clear_captured_frames_a217550e), style = NoopType.title2, color = Palette.textPrimary) },
+            text = {
+                Text(
+                    uiString(R.string.l10n_test_centre_screen_this_deletes_every_frame_captured_0ed8f5ee),
+                    style = NoopType.subhead, color = Palette.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.ble.clearRawFrameCapture()
+                    showClearCaptureConfirm = false
+                }) { Text(uiString(R.string.l10n_test_centre_screen_clear_719ea396), style = NoopType.body, color = Palette.accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearCaptureConfirm = false }) {
+                    Text(uiString(R.string.l10n_test_centre_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+                }
+            },
+        )
     }
     if (showRecalibrate) {
         AlertDialog(

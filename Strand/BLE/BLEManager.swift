@@ -683,8 +683,8 @@ public final class BLEManager: NSObject, ObservableObject {
     private static let backfillDrainBatchSize = 12
 
     /// Records raw frames (WHOOP 4.0 classic envelope AND WHOOP 5.0/MG puffin) to a JSON file for
-    /// diagnostics. Passive (read-only on the strap) and gated by the Settings → Experimental "Record
-    /// raw frames" toggle; a no-op when the toggle is off. Lazy so it shares `state` after init.
+    /// diagnostics. Passive (read-only on the strap) and gated by the Test Centre "Record raw frames"
+    /// toggle; a no-op when the toggle is off. Lazy so it shares `state` after init.
     /// (Cherry-picked from @j0b-dev's PR #20.)
     private lazy var rawFrameRecorder = RawFrameRecorder(state: state)
     private lazy var puffinEventLog = PuffinEventLog()
@@ -693,8 +693,12 @@ public final class BLEManager: NSObject, ObservableObject {
     /// engineering. Gated on the same capture toggle; no-op otherwise.
     private lazy var puffinDeepBufferLog = PuffinDeepBufferLog()
 
-    /// Force the raw capture buffer to disk so the Settings export/reveal targets a current file.
+    /// Force the raw capture buffer to disk so the Test Centre export/reveal targets a current file.
     public func flushRawCaptures() { rawFrameRecorder.flush() }
+
+    /// Discard everything captured so far. Capture resumes on the very next frame if the toggle is
+    /// still on — `RawFrameRecorder` lazily opens a fresh session file, no reconnect needed.
+    public func clearRawCaptures() { rawFrameRecorder.clear() }
 
     // MARK: CoreBluetooth
     private var central: CBCentralManager!

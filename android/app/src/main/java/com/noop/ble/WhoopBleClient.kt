@@ -6842,6 +6842,24 @@ class WhoopBleClient(
         }
     }
 
+    /**
+     * User-triggered wipe (Test Centre "Clear captured frames" button): closes the writer, deletes the
+     * capture file and its rotation backup, and resets the in-memory counters. If a capture session was
+     * in progress, reopens a fresh file immediately so recording keeps running without needing a
+     * reconnect — matching the "clear, reproduce, export" workflow the button exists for.
+     */
+    fun clearRawFrameCapture() {
+        val wasCapturing = captureWriter != null
+        closeRawFrameCapture(flushSummary = false)
+        runCatching {
+            java.io.File(context.filesDir, RAW_CAPTURE_FILE).delete()
+            java.io.File(context.filesDir, "$RAW_CAPTURE_FILE.1").delete()
+        }
+        captureLines = 0
+        captureDisabled = false
+        if (wasCapturing) startRawFrameCapture()
+    }
+
     private fun log(s: String, domain: com.noop.testcentre.TestDomain? = null) {
         // A diagnostic log line must NEVER be able to crash the app. log() runs on the GATT binder
         // thread and from the background reconnect service, so an uncaught throw here takes the WHOLE

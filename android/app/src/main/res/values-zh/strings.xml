@@ -809,11 +809,16 @@
     <string name="l10n_test_centre_screen_android_runs_this_via_workmanager_doze_875e499e">Android 通过 WorkManager 运行此任务（Doze 机制可能会导致延迟）。</string>
     <string name="l10n_test_centre_screen_calibrating_validcount_hrvreadiness_min_nights_nights_c5b21706">校准中 (%1$s/%2$s 晚)</string>
     <string name="l10n_test_centre_screen_cancel_77dfd213">取消</string>
+    <string name="l10n_test_centre_screen_clear_719ea396">清除</string>
+    <string name="l10n_test_centre_screen_clear_captured_frames_51b28d22">清除已捕获的帧</string>
+    <string name="l10n_test_centre_screen_clear_captured_frames_a217550e">清除已捕获的帧？</string>
+    <string name="l10n_test_centre_screen_this_deletes_every_frame_captured_0ed8f5ee">这会删除目前为止捕获的所有帧。如果开关仍处于开启状态，捕获会继续进行。</string>
     <string name="l10n_test_centre_screen_daily_auto_export_02ed9f75">每日自动导出</string>
     <string name="l10n_test_centre_screen_debug_logging_daaa7d74">调试日志</string>
     <string name="l10n_test_centre_screen_diagnostic_tools_04ba4d3f">诊断工具</string>
     <string name="l10n_test_centre_screen_experimental_algorithms_e09581e2">实验性算法 (测试中)</string>
     <string name="l10n_test_centre_screen_export_f3e4fadb">导出</string>
+    <string name="l10n_test_centre_screen_export_raw_log_matched_pair_d65390bf">导出原始数据 + 日志 (配对打包)</string>
     <string name="l10n_test_centre_screen_export_time_2ca90c2e">导出时间</string>
     <string name="l10n_test_centre_screen_heads_up_this_test_mode_is_8b82ed69">请注意：此测试模式当前处于关闭状态，因此日志中没有包含相关抓取数据。若需...</string>
     <string name="l10n_test_centre_screen_hr_from_ppg_sub_lag_interpolation_a3ed1536">基于 PPG 信号的心率亚延迟插值 (v26 间隙填充算法)</string>
@@ -823,10 +828,14 @@
     <string name="l10n_test_centre_screen_recalibrate_aaa989ea">重新校准</string>
     <string name="l10n_test_centre_screen_recalibrate_charge_baseline_52a05a26">重新校准“充能”基线</string>
     <string name="l10n_test_centre_screen_recalibrate_your_charge_baseline_018e3846">确认要重新校准您的“充能”基线吗？</string>
+    <string name="l10n_test_centre_screen_record_5_mg_raw_capture_9354fe89">记录 5.0/MG 原始数据抓包</string>
+    <string name="l10n_test_centre_screen_record_5_mg_raw_capture_research_1d966bbf">记录 5.0/MG 原始数据抓包 (供研究用)</string>
+    <string name="l10n_test_centre_screen_records_the_raw_frames_of_each_98a284df">将每次 5.0/MG 历史数据同步的原始数据帧保存到手机文件中，您可以分享这些文件，帮助 NOOP 学习如何解码 5.0/MG 的睡眠、恢复及负荷数据。文件内包含原始生物识别数据帧（心率、R-R间期、皮肤体温、运动信息）以及手环自身的诊断文本。除非您主动分享，否则这些数据绝不会离开您的手机。默认处于关闭状态。</string>
     <string name="l10n_test_centre_screen_report_a_bug_with_my_log_5101ee49">附带日志报告 Bug</string>
     <string name="l10n_test_centre_screen_report_ee45c303">报告</string>
     <string name="l10n_test_centre_screen_review_before_sharing_d7050383">在分享前先预览</string>
     <string name="l10n_test_centre_screen_share_09ca55ca">分享 / 发送</string>
+    <string name="l10n_test_centre_screen_share_5_mg_capture_for_the_e41ac6bd">分享 5.0/MG 抓包数据 (协助我们逆向解码)</string>
     <string name="l10n_test_centre_screen_share_strap_log_for_bug_reports_b9802500">分享手环连接日志 (用于排查 Bug)</string>
     <string name="l10n_test_centre_screen_test_centre_37b36828">测试与极客中心</string>
     <string name="l10n_test_centre_screen_test_modes_e21f1d3c">测试模式</string>
@@ -1376,7 +1385,6 @@
     <string name="l10n_settings_screen_experimental_whoop_5_mg_41ef7041">实验性功能 · 针对 WHOOP 5 / MG</string>
     <string name="l10n_settings_screen_export_0a116345">导出…</string>
     <string name="l10n_settings_screen_export_csv_6bce63a3">导出 CSV 文件…</string>
-    <string name="l10n_settings_screen_export_raw_log_matched_pair_d65390bf">导出原始数据 + 日志 (配对打包)</string>
     <string name="l10n_settings_screen_export_raw_sensor_data_csv_a171b81e">导出传感器原始数据 (CSV)</string>
     <string name="l10n_settings_screen_extends_the_sky_behind_the_whole_39bb82cc">让“天空”背景延伸到整个“今日”屏幕，这样降低“卡片透明度”后，背景就能透过每张卡片透视出来。需要先开启上方的“日夜交替背景”功能。</string>
     <string name="l10n_settings_screen_feel_the_current_time_as_a_8ca41db1">通过一阵连续的震动组合来“感知”当前时间 (#460)。仅在手环保持连接时有效。</string>
@@ -1420,9 +1428,6 @@
     <string name="l10n_settings_screen_recalibrate_charge_baseline_52a05a26">重新校准充能(Charge)基线</string>
     <string name="l10n_settings_screen_recalibrate_your_charge_baseline_018e3846">要重新校准您的充能(Charge)基线吗？</string>
     <string name="l10n_settings_screen_recent_changes_and_what_to_expect_3ceb660b">近期功能更新与未来展望</string>
-    <string name="l10n_settings_screen_record_5_mg_raw_capture_9354fe89">记录 5.0/MG 原始数据抓包</string>
-    <string name="l10n_settings_screen_record_5_mg_raw_capture_research_1d966bbf">记录 5.0/MG 原始数据抓包 (供研究用)</string>
-    <string name="l10n_settings_screen_records_the_raw_frames_of_each_98a284df">将每次 5.0/MG 历史数据同步的原始数据帧保存到手机文件中，您可以分享这些文件，帮助 NOOP 学习如何解码 5.0/MG 的睡眠、恢复及负荷数据。文件内包含原始生物识别数据帧（心率、R-R间期、皮肤体温、运动信息）以及手环自身的诊断文本。除非您主动分享，否则这些数据绝不会离开您的手机。默认处于关闭状态。</string>
     <string name="l10n_settings_screen_remove_photo_c8f5eda8">移除头像</string>
     <string name="l10n_settings_screen_rename_d3f4cb89">重命名</string>
     <string name="l10n_settings_screen_rename_your_strap_s_bluetooth_name_6032668b">重命名您手环的蓝牙广播名称，这对于使用二手手环的用户非常实用。修改直接写入...</string>
@@ -1435,7 +1440,6 @@
     <string name="l10n_settings_screen_set_up_automatic_backups_00b4780c">设置自动备份</string>
     <string name="l10n_settings_screen_settings_c7f73bb5">设置</string>
     <string name="l10n_settings_screen_sex_e301dd60">性别</string>
-    <string name="l10n_settings_screen_share_5_mg_capture_for_the_e41ac6bd">分享 5.0/MG 抓包数据 (协助我们逆向解码)</string>
     <string name="l10n_settings_screen_share_on_device_signals_with_the_b3fd747e">与 AI 教练共享设备端的信号数据</string>
     <string name="l10n_settings_screen_share_strap_log_for_bug_reports_b9802500">分享手环日志 (用于报告 Bug)</string>
     <string name="l10n_settings_screen_shows_a_soft_sunrise_day_dusk_2d20b417">在“今日”面板背后展示柔和的日出、白天、黄昏与夜晚场景。关闭后将只显示纯黑色背景。无论开启与否，都不会影响卡片内文字的可读性。</string>

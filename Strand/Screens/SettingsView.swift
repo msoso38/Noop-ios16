@@ -30,9 +30,6 @@ struct SettingsView: View {
     /// Opt-in WHOOP 5/MG protocol experiments (off by default). See [PuffinExperiment].
     @AppStorage(PuffinExperiment.defaultsKey) private var puffinExperiments = false
 
-    /// Opt-in raw-frame capture to a file, WHOOP 4.0 and 5/MG alike (off by default). See [RawFrameRecorder].
-    @AppStorage(RawFrameRecorder.enabledKey) private var rawFrameCapture = false
-
     /// Opt-in WHOOP 5/MG "R22" deep-data unlock (off by default) — the one probe that writes a
     /// persistent feature flag to the strap. See [PuffinExperiment.deepDataKey]. (#174)
     @AppStorage(PuffinExperiment.deepDataKey) private var deepDataEnabled = false
@@ -131,8 +128,7 @@ struct SettingsView: View {
     /// connects (BLEManager, PR#195), so a real 5/MG owner who never opened the model picker still flips
     /// this true the moment their strap is discovered. We hide the 5/MG block only when the user is
     /// confidently on a 4.0 (pref says whoop4 AND nothing 5/MG is connected). The always-on raw-CSV
-    /// diagnostic AND raw-frame capture (ticket 03: now covers WHOOP 4.0 too) stay visible on every
-    /// model regardless.
+    /// diagnostic stays visible on every model regardless.
     private var showFiveMGControls: Bool {
         selectedWhoopModelRaw == WhoopModel.whoop5mg.rawValue
     }
@@ -143,7 +139,7 @@ struct SettingsView: View {
     }
 
     /// Raw-sensor CSV export (experimental diagnostic, #308/#276/#322). Holds the last-written file so
-    /// macOS can "Reveal in Finder" after a share, mirroring the raw-frame-capture export.
+    /// macOS can "Reveal in Finder" after a share.
     @State private var rawCsvBusy = false
     @State private var lastRawCsvURL: URL?
 
@@ -1534,60 +1530,13 @@ struct SettingsView: View {
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
-
-                Divider().overlay(StrandPalette.hairline)
-
-                // MARK: Raw-frame capture — off by default, safe to leave on (read-only on the strap).
-                // Visible on EVERY model (ticket 03): the recorder now covers WHOOP 4.0's classic
-                // envelope as well as WHOOP 5.0/MG's puffin envelope, so this is no longer 5/MG-only.
-                Toggle(isOn: $rawFrameCapture) {
-                    Text("Record raw frames to a file")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                Text("Saves every raw frame your strap sends (WHOOP 4.0 or 5/MG, with a timestamp and the live heart rate) to a JSON file you can share for diagnostics. This only records frames the strap already sent (it never writes to your strap), so it is safe to leave on. Export the file and attach it to a bug report.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if live.rawCaptureCount > 0 {
-                    Text(live.rawCaptureCount == 1
-                         ? "1 frame captured this session."
-                         : "\(live.rawCaptureCount) frames captured this session.")
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textSecondary)
-                    HStack(spacing: NoopMetrics.space3) {
-                        NoopButton("Export frames…", systemImage: "square.and.arrow.up", kind: .primary) {
-                            exportRawFrameCaptures()
-                        }
-
-                        #if os(macOS)
-                        NoopButton("Reveal in Finder", systemImage: "folder", kind: .secondary) {
-                            revealRawFrameCaptures()
-                        }
-                        #endif
-                        Spacer(minLength: 0)
-                    }
-                    // One-tap "matched pair" export (#510): hands a reporter BOTH the raw capture file
-                    // and the strap log together (timestamped, same minute) so a bug report arrives with
-                    // the frames AND the context that produced them.
-                    NoopButton("Export raw + log", systemImage: "square.and.arrow.up.on.square", kind: .secondary) {
-                        exportRawAndLog()
-                    }
-                    Text("Saves the raw capture and the strap log together as a matched pair. Attach both to a bug report.")
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
         }
     }
 
     /// Export the last 24h of decoded sensor streams for the connected strap to a CSV, then save (macOS
-    /// NSSavePanel) or share (iOS share sheet) — the same pattern as exportRawFrameCaptures(). The store
-    /// handle and the strap deviceId both come from the app's single "my-whoop" id.
+    /// NSSavePanel) or share (iOS share sheet). The store handle and the strap deviceId both come from
+    /// the app's single "my-whoop" id.
     private func exportRawSensorCSV() {
         rawCsvBusy = true
         Task {
@@ -1636,60 +1585,6 @@ struct SettingsView: View {
         }
     }
 
-    /// Flush the in-flight capture, then copy it to a user-chosen location (save panel on macOS) or
-    /// hand it to the system share sheet (iOS).
-    private func exportRawFrameCaptures() {
-        model.ble.flushRawCaptures()
-        guard let src = live.rawCaptureURL else { return }
-        // Suggest a friendly, timestamped name so a reporter saving several captures gets sortable,
-        // non-colliding files (#510) — e.g. noop-raw-capture-260617-1042.json.
-        let suggested = FileExport.timestampedName("noop-raw-capture", ext: "json")
-        #if os(macOS)
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = suggested
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let dest = panel.url else { return }
-        let fm = FileManager.default
-        do {
-            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
-            try fm.copyItem(at: src, to: dest)
-        } catch {
-            backupAlertTitle = String(localized: "Export failed")
-            backupAlertMessage = error.localizedDescription
-            showBackupAlert = true
-        }
-        #else
-        FileExport.exportFile(at: src, suggestedName: suggested)
-        #endif
-    }
-
-    /// One-tap matched-pair export (#510): export the raw frame capture AND the strap log together,
-    /// both stamped with the same `yyMMdd-HHmm` minute so they're obviously a pair. Reuses the existing
-    /// export utilities — `FileExport.exportPair` shares both files in one iOS share sheet, and saves
-    /// each via its own NSSavePanel on macOS (no new file plumbing).
-    private func exportRawAndLog() {
-        model.ble.flushRawCaptures()
-        guard let capture = live.rawCaptureURL else {
-            backupAlertTitle = String(localized: "Nothing to export")
-            backupAlertMessage = String(localized: "No raw capture has been recorded yet this session.")
-            showBackupAlert = true
-            return
-        }
-        let stamp = FileExport.timestamp()
-        FileExport.exportPair(
-            file: capture, fileSuggestedName: "noop-raw-capture-\(stamp).json",
-            text: live.exportableLogText(), textSuggestedName: "noop-strap-log-\(stamp).txt")
-    }
-
-    #if os(macOS)
-    /// Flush, then reveal the capture file in Finder so the user can grab it directly.
-    private func revealRawFrameCaptures() {
-        model.ble.flushRawCaptures()
-        guard let url = live.rawCaptureURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-    }
-    #endif
 
     private var backupCard: some View {
         SettingsSection(

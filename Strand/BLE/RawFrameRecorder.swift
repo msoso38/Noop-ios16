@@ -87,6 +87,23 @@ final class RawFrameRecorder {
         }
     }
 
+    /// Discard everything captured so far (in-memory and on disk) and start a fresh session file on the
+    /// next `flush()`. User-triggered from the Test Centre "Clear captured frames" button so a reporter
+    /// can wipe an unrelated capture, reproduce the bug, then export a clean sample. Lazy reopen (rather
+    /// than eagerly recreating the file here, as the Android twin's `clearRawFrameCapture` does) is fine
+    /// on this side: iOS only ever writes one file per app launch, so the next `capture()` call — not a
+    /// reconnect — is always imminent while a session is live.
+    func clear() {
+        buffer.reset()
+        sinceFlush = 0
+        if let url = fileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        fileURL = nil
+        state?.rawCaptureCount = 0
+        state?.rawCaptureURL = nil
+    }
+
     /// Enforce the directory soft cap by deleting the oldest capture files (best-effort). Filenames are
     /// `raw-yyyyMMdd-HHmmss.json`, so lexicographic order is chronological — delete from the front
     /// until the total is back under the cap. `keep` (the active session file) is never deleted.

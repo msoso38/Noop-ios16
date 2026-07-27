@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 import StrandDesign
 import StrandAnalytics
 import StrandImport
@@ -11,7 +14,8 @@ import WhoopStore
 /// profile later is a registry entry, never a new screen. The lower three sections re-host the same
 /// bindings and actions that live in SettingsView (strap log, recalibrate, scheduled export, the 5/MG
 /// experimental toggles) so the Test Centre is the one place to find them; SettingsView keeps a thin nav
-/// link in. No em-dash in any string here.
+/// link in. Raw-frame capture (toggle, export, clear) lives ONLY here now, moved out of Settings
+/// entirely. No em-dash in any string here.
 struct TestCentreView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var live: LiveState
@@ -27,6 +31,12 @@ struct TestCentreView: View {
     @State private var infoTitle = ""
     @State private var infoMessage = ""
     @State private var showInfo = false
+
+    /// Opt-in raw-frame capture to a file, WHOOP 4.0 and 5/MG alike (off by default). See
+    /// [RawFrameRecorder]. Moved here from Settings so every diagnostic, log and test control lives in
+    /// one place.
+    @AppStorage(RawFrameRecorder.enabledKey) private var rawFrameCapture = false
+    @State private var showClearCaptureConfirm = false
 
     // Section 3: scheduled daily auto-export, the same ScheduledDebugExport store the Settings card uses.
     @State private var debugExportOn = ScheduledDebugExport.isEnabled
@@ -76,6 +86,13 @@ struct TestCentreView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays.")
+        }
+        .confirmationDialog("Clear captured frames?",
+                            isPresented: $showClearCaptureConfirm, titleVisibility: .visible) {
+            Button("Clear", role: .destructive) { model.ble.clearRawCaptures() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This deletes every frame captured so far. Capture keeps running if the toggle is still on.")
         }
         .alert(infoTitle, isPresented: $showInfo) {
             Button("OK", role: .cancel) { }
@@ -150,6 +167,61 @@ struct TestCentreView: View {
                 // surfaced as a copyable readout (spec section 3.4).
                 NoopButton("Copy environment dump", systemImage: "info.circle", kind: .secondary) {
                     PlatformPasteboard.copy(live.exportableLogText())
+                }
+
+                Divider().overlay(StrandPalette.hairline)
+
+                // Raw-frame capture — off by default, safe to leave on (read-only on the strap). Moved
+                // here from Settings (was the last diagnostic control still living there): the recorder
+                // covers WHOOP 4.0's classic envelope as well as WHOOP 5.0/MG's puffin envelope, so it's
+                // not 5/MG-only.
+                Toggle(isOn: $rawFrameCapture) {
+                    Text("Record raw frames to a file")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                Text("Saves every raw frame your strap sends (WHOOP 4.0 or 5/MG, with a timestamp and the live heart rate) to a JSON file you can share for diagnostics. This only records frames the strap already sent (it never writes to your strap), so it is safe to leave on. Export the file and attach it to a bug report.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if live.rawCaptureCount > 0 {
+                    Text(live.rawCaptureCount == 1
+                         ? "1 frame captured this session."
+                         : "\(live.rawCaptureCount) frames captured this session.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                    HStack(spacing: NoopMetrics.space3) {
+                        NoopButton("Export frames…", systemImage: "square.and.arrow.up", kind: .primary) {
+                            exportRawFrameCaptures()
+                        }
+
+                        #if os(macOS)
+                        NoopButton("Reveal in Finder", systemImage: "folder", kind: .secondary) {
+                            revealRawFrameCaptures()
+                        }
+                        #endif
+                        Spacer(minLength: 0)
+                    }
+                    // One-tap "matched pair" export (#510): hands a reporter BOTH the raw capture file
+                    // and the strap log together (timestamped, same minute) so a bug report arrives with
+                    // the frames AND the context that produced them.
+                    NoopButton("Export raw + log", systemImage: "square.and.arrow.up.on.square", kind: .secondary) {
+                        exportRawAndLog()
+                    }
+                    Text("Saves the raw capture and the strap log together as a matched pair. Attach both to a bug report.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // Clear captured frames: always available (even before anything's captured, clearing an
+                // empty buffer is harmless) so a reporter can wipe an unrelated capture, reproduce the
+                // bug, then export a clean sample instead of hunting the right frames out of a noisy file.
+                NoopButton("Clear captured frames", systemImage: "trash", kind: .destructive) {
+                    showClearCaptureConfirm = true
                 }
             }
         }
@@ -364,6 +436,61 @@ struct TestCentreView: View {
         }
         showInfo = true
     }
+
+    /// Flush the in-flight capture, then copy it to a user-chosen location (save panel on macOS) or
+    /// hand it to the system share sheet (iOS).
+    private func exportRawFrameCaptures() {
+        model.ble.flushRawCaptures()
+        guard let src = live.rawCaptureURL else { return }
+        // Suggest a friendly, timestamped name so a reporter saving several captures gets sortable,
+        // non-colliding files (#510) — e.g. noop-raw-capture-260617-1042.json.
+        let suggested = FileExport.timestampedName("noop-raw-capture", ext: "json")
+        #if os(macOS)
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = suggested
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        let fm = FileManager.default
+        do {
+            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+            try fm.copyItem(at: src, to: dest)
+        } catch {
+            infoTitle = String(localized: "Export failed")
+            infoMessage = error.localizedDescription
+            showInfo = true
+        }
+        #else
+        FileExport.exportFile(at: src, suggestedName: suggested)
+        #endif
+    }
+
+    /// One-tap matched-pair export (#510): export the raw frame capture AND the strap log together,
+    /// both stamped with the same `yyMMdd-HHmm` minute so they're obviously a pair. Reuses the existing
+    /// export utilities — `FileExport.exportPair` shares both files in one iOS share sheet, and saves
+    /// each via its own NSSavePanel on macOS (no new file plumbing).
+    private func exportRawAndLog() {
+        model.ble.flushRawCaptures()
+        guard let capture = live.rawCaptureURL else {
+            infoTitle = String(localized: "Nothing to export")
+            infoMessage = String(localized: "No raw capture has been recorded yet this session.")
+            showInfo = true
+            return
+        }
+        let stamp = FileExport.timestamp()
+        FileExport.exportPair(
+            file: capture, fileSuggestedName: "noop-raw-capture-\(stamp).json",
+            text: live.exportableLogText(), textSuggestedName: "noop-strap-log-\(stamp).txt")
+    }
+
+    #if os(macOS)
+    /// Flush, then reveal the capture file in Finder so the user can grab it directly.
+    private func revealRawFrameCaptures() {
+        model.ble.flushRawCaptures()
+        guard let url = live.rawCaptureURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+    #endif
 }
 
 /// One domain-test-mode row: icon + title + status + blurb, a toggle wired to TestCentre, and a Report
