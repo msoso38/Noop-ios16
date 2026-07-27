@@ -1788,10 +1788,15 @@ private struct LiquidBackfillProgressRow: View {
         if let behind = progress.behindLabel, let frontier = progress.frontierUnix {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isRecovering(progress) ? "Recovering strap history" : "Strap history pending")
+                    // `String(localized:)`, matching `LiquidSyncStatusRow` directly above — a bare
+                    // `Text("literal")` here relies on Xcode's build-time extraction and left these three
+                    // strings out of the String Catalog entirely (caught by Tools/i18n_audit.py).
+                    Text(isRecovering(progress)
+                         ? String(localized: "Recovering strap history")
+                         : String(localized: "Strap history pending"))
                         .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
                     // The anchor that answers "is my data lost?" — we HAVE your data up to this instant.
-                    Text("Have it through \(recoveredThrough(frontier))")
+                    Text(String(localized: "Have it through \(recoveredThrough(frontier))"))
                         .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                 }
                 Spacer()
