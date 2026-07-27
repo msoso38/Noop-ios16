@@ -49,7 +49,29 @@ this experiment. If deep-history capture is not already working, establish that 
    minutes. Do not hold your breath or attempt desaturation.
 8. Tap **End experiment**. Leave frame recording enabled until the normal history sync has completed,
    because some v20 buffers may arrive after the physical phases.
-9. Tap **Export experiment…** and save the `.jsonl` file.
+9. Tap **Export experiment…** and save the file. It is the existing capture log,
+   `puffin-deepbuffers.jsonl` — the markers are appended to it rather than written
+   separately, so the frames and the phase boundaries stay in one file.
+
+### What the labels look like in the file
+
+The procedure above names the buttons; the JSONL and the report use the raw values. They are not
+always the same words — tapping **Off wrist · sensor covered** writes `off_wrist_dark` — so this is
+the mapping to grep by:
+
+| Button | `label` in the JSONL |
+|---|---|
+| On wrist · still | `on_wrist_still` |
+| On wrist · gentle pressure | `gentle_pressure` |
+| Off wrist · sensor covered | `off_wrist_dark` |
+| Off wrist · room light | `off_wrist_room_light` |
+| On wrist · again | `on_wrist_again` |
+| On wrist · slow paced breathing | `paced_breathing_slow` |
+| On wrist · normal breathing | `paced_breathing_normal` |
+| End experiment | `experiment_end` |
+
+`experiment_end` is a boundary, not a phase: it closes the preceding one so later offload records
+are not attributed past the run, and it never appears as a phase in the report.
 
 ## Analyze the export
 
@@ -57,7 +79,7 @@ From the repository:
 
 ```bash
 cd Packages/WhoopProtocol
-swift run whoop-optical-experiment /path/to/noop-whoop5-optical-experiment.jsonl \
+swift run whoop-optical-experiment /path/to/puffin-deepbuffers.jsonl \
   > optical-report.json
 ```
 
