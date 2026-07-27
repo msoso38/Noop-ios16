@@ -313,7 +313,13 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
     out["hist_version"] = version
     // @11 a per-record counter: +1 every record, independent of unix (advances across gaps); seen on
     // two straps. @11 is only the low byte — read the full u32 LE.
-    frame.histU32(11)?.let { out["record_index"] = it.toInt() }
+    // Emitted as a Long, NOT narrowed to Int: this is an UNSIGNED 32-bit field and Kotlin's Int is
+    // 32-bit while Swift's is 64-bit, so `toInt()` made a value with bit 31 set decode to
+    // -1_062_772_323 here and 3_232_194_973 in Swift from byte-identical bytes — a cross-platform
+    // decode divergence the per-platform fixture-hex tests cannot see (same bytes, each suite asserting
+    // its own answer). PR #848 hit the same 32-vs-64-bit split in the storage codec. Pinned on both
+    // platforms by the `whoop5_v18_synthetic_record_index_high_bit` fixture in decoder_oracle.json.
+    frame.histU32(11)?.let { out["record_index"] = it }
     frame.histU32(15)?.let { out["unix"] = it.toInt() }
     frame.histU8(22)?.let { out["heart_rate"] = it }
     val rrn = frame.histU8(23) ?: 0

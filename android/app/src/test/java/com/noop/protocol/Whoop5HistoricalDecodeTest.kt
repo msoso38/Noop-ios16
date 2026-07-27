@@ -86,7 +86,10 @@ class Whoop5HistoricalDecodeTest {
         // Fields read off the same real worn frame, justified by observed behaviour (parity with the
         // Swift Whoop5HistoricalTests.testHistoricalV18ObservedFields).
         val p = decodeHistorical(bytes(wornV18), DeviceFamily.WHOOP5)!!
-        assertEquals(25443699, p["record_index"])               // @11 per-record counter
+        // Long, not Int: record_index is an unsigned u32 and Kotlin's Int is 32-bit while Swift's is
+        // 64-bit, so it is carried as a Long to keep the two decoders' output identical (see the
+        // decoder comment and the high-bit oracle fixture).
+        assertEquals(25443699L, p["record_index"])              // @11 per-record counter
         assertEquals(141, p["hr_quality_flags"])                // @36 flag byte (0x8D), NOT a fixed-point HR
         assertEquals(101, p["heart_rate_alt"])                  // @37 duplicate HR (hr@22 = 102)
         assertEquals(170, p["step_cadence"])                    // @59 cadence-like byte (raw)
