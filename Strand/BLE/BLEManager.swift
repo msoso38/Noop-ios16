@@ -1504,10 +1504,15 @@ public final class BLEManager: NSObject, ObservableObject {
                 || command == .getBodyLocationAndStatus
                 // START_FF_KEY_EXCHANGE (117) / SEND_NEXT_FF (118) over puffin: the READ-ONLY feature-flag
                 // ENUMERATION probe (#761) — it reads the strap's own flag NAMES and writes no value. Gated
-                // harder than the probes above: allowed ONLY while a probe is actually in flight, so a
-                // default install can never form these bytes. The SET verbs (120 SET_FF_VALUE / 119
-                // SET_DEVICE_CONFIG_VALUE) keep their own separate opt-in clauses below and are never sent
-                // from this path. Driven only by probeFeatureFlags() (user-initiated, Test Centre gated).
+                // harder than the probes above: allowed ONLY while a probe is actually in flight, so on a
+                // 5/MG a default install can never form these bytes. NOTE this whole allowlist is inside the
+                // `deviceFamily == .whoop5` branch — WHOOP 4.0 has no send allowlist at all, so on a 4.0 the
+                // only thing keeping 117/118 off the wire is probeFeatureFlags()'s own Test Centre gate.
+                // Same practical result, different mechanism, and worth knowing because the 4.0 is the
+                // family with a published key dump to reproduce and so the likely first runner.
+                // The SET verbs (120 SET_FF_VALUE / 119 SET_DEVICE_CONFIG_VALUE) keep their own separate
+                // opt-in clauses below and are never sent from this path. Driven only by
+                // probeFeatureFlags() (user-initiated, Test Centre gated).
                 || ((command == .startFeatureFlagKeyExchange || command == .sendNextFeatureFlag)
                     && featureFlagReport != nil)
                 || command == .sendHistoricalData || command == .historicalDataResult
@@ -2584,6 +2589,11 @@ public final class BLEManager: NSObject, ObservableObject {
         }
         // Defence in depth: the menu entry is already Test-Centre gated, but the sender re-checks so no
         // other path can start a probe on a default install.
+        //
+        // On WHOOP 4.0 this check is the ONLY thing standing between a default install and 117/118 on the
+        // wire: the send() allowlist that also gates them lives inside the `deviceFamily == .whoop5`
+        // branch, and 4.0 has no allowlist. So this guard is not merely belt-and-braces on every family —
+        // for the family most likely to run this first, it is the belt.
         guard TestCentre.active(.connection) else {
             log("Feature-flag probe (#761) ignored — Test Centre → Connection is off")
             return
