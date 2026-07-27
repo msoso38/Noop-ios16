@@ -128,7 +128,7 @@ struct WorkoutDetailView: View {
         }
 
         let hrr = await repo.workoutHeartRateRecovery(
-            from: row.startTs, to: row.endTs, maxHR: Double(profile.hrMax))
+            from: row.startTs, to: row.endTs, maxHR: Double(profile.hrMax), source: row.source)
 
         // Steps for an on-foot session (#398), computed at display time over the exact window so it
         // "fills in after sync": prefer the strap's own counter (MG/5.0) once it has offloaded the window,
