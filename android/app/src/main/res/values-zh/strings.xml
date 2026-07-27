@@ -1649,4 +1649,39 @@
     <string name="battery_critical_body">剩余 %1$d%%。手环在约 10%% 时就会停止记录——不充电就无法记录今晚。</string>
     <string name="battery_bedtime_title">撑不过今晚</string>
     <string name="battery_bedtime_body">还能记录 %1$s，但今晚约需 %2$s。请在睡前充电。</string>
+
+    <!-- #867: the three older battery notifications, previously raw Kotlin literals in
+         BatteryAlertNotifier and therefore English in every locale. Wording and translations are the
+         Apple catalog's, moved across unchanged. -->
+    <string name="battery_runtime_title">手环电量低</string>
+    <string name="battery_runtime_body">你的 WHOOP 还剩 %1$s，今晚请充电。</string>
+    <string name="battery_low_title">电量低</string>
+    <string name="battery_low_body">今晚之前给你的 WHOOP 充电。</string>
+    <string name="battery_full_title">手环已充满电</string>
+    <string name="battery_full_body">你的 WHOOP 电量为 100%。</string>
+
+    <!-- Foreground-service notification (WhoopConnectionService). Always on screen while the strap is
+         connected, and hardcoded English until now: com/noop/ble is outside i18n_audit.py's scan roots,
+         and a NotificationCompat builder chain matches none of its Compose patterns, so the gate could
+         not see it. postNotification's dedupe key now includes the locale — without that, these would
+         keep the previous language until the connection or battery state happened to change. -->
+    <string name="fgs_title_reconnecting">正在重新连接你的 WHOOP…</string>
+    <string name="fgs_title_syncing">正在同步手环历史…</string>
+    <string name="fgs_title_connected">已连接到你的 WHOOP</string>
+    <string name="fgs_detail_streaming">正在后台传输</string>
+    <string name="fgs_detail_keeping_link">正在保持连接</string>
+    <string name="fgs_detail_recovery">恢复 %1$d%%</string>
+    <string name="fgs_detail_battery">手环 %1$d%%</string>
+    <string name="fgs_action_disconnect">断开连接</string>
+    <string name="fgs_channel_name">手环连接</string>
+    <string name="fgs_channel_desc">当 NOOP 在后台保持你的 WHOOP 连接时显示。</string>
+
+    <!-- The remaining notifier titles/bodies, surfaced by extending i18n_audit.py to the
+         notification builders. Same defect as the block above: user-visible, never localised. -->
+    <string name="illness_alert_title">早期预警：放轻松</string>
+    <string name="inactivity_title">活动提醒</string>
+    <string name="smart_alarm_title">早上好</string>
+    <string name="smart_alarm_body">你的智能闹钟刚刚响了。</string>
+    <string name="battery_channel_name">电量提醒</string>
+    <string name="battery_channel_desc">当手环电量低或已充满时提醒。</string>
 </resources>

@@ -1715,4 +1715,39 @@
     <string name="battery_critical_body">Restam %1$d%%. A bracelete deixa de gravar perto dos 10%% – não vai captar esta noite se não a carregar.</string>
     <string name="battery_bedtime_title">Não dura a noite</string>
     <string name="battery_bedtime_body">Restam %1$s de gravação, mas esta noite precisa de cerca de %2$s. Carregue antes de se deitar.</string>
+
+    <!-- #867: the three older battery notifications, previously raw Kotlin literals in
+         BatteryAlertNotifier and therefore English in every locale. Wording and translations are the
+         Apple catalog's, moved across unchanged. -->
+    <string name="battery_runtime_title">Bateria fraca da correia</string>
+    <string name="battery_runtime_body">Autonomia restante no teu WHOOP: %1$s. Recarrega-o esta noite.</string>
+    <string name="battery_low_title">Bateria fraca</string>
+    <string name="battery_low_body">Recarregue o teu WHOOP antes desta noite.</string>
+    <string name="battery_full_title">Correia totalmente carregada</string>
+    <string name="battery_full_body">O teu WHOOP está a 100%.</string>
+
+    <!-- Foreground-service notification (WhoopConnectionService). Always on screen while the strap is
+         connected, and hardcoded English until now: com/noop/ble is outside i18n_audit.py's scan roots,
+         and a NotificationCompat builder chain matches none of its Compose patterns, so the gate could
+         not see it. postNotification's dedupe key now includes the locale — without that, these would
+         keep the previous language until the connection or battery state happened to change. -->
+    <string name="fgs_title_reconnecting">A reconectar ao teu WHOOP…</string>
+    <string name="fgs_title_syncing">Sincronizando o histórico da bracelete…</string>
+    <string name="fgs_title_connected">Ligado ao teu WHOOP</string>
+    <string name="fgs_detail_streaming">A transmitir em segundo plano</string>
+    <string name="fgs_detail_keeping_link">A manter a ligação aberta</string>
+    <string name="fgs_detail_recovery">Recuperação %1$d%%</string>
+    <string name="fgs_detail_battery">Correia %1$d%%</string>
+    <string name="fgs_action_disconnect">Desconectar</string>
+    <string name="fgs_channel_name">Ligação da correia</string>
+    <string name="fgs_channel_desc">Apresentado enquanto o NOOP mantém o teu WHOOP ligado em segundo plano.</string>
+
+    <!-- The remaining notifier titles/bodies, surfaced by extending i18n_audit.py to the
+         notification builders. Same defect as the block above: user-visible, never localised. -->
+    <string name="illness_alert_title">Aviso prévio: vá com calma</string>
+    <string name="inactivity_title">Mover lembrete</string>
+    <string name="smart_alarm_title">Bom dia</string>
+    <string name="smart_alarm_body">O teu alarme inteligente acabou de tocar.</string>
+    <string name="battery_channel_name">Alertas de bateria</string>
+    <string name="battery_channel_desc">Avisos quando a bateria da correia está fraca ou totalmente carregada.</string>
 </resources>
