@@ -1731,4 +1731,12 @@
         <item quantity="one">Longest: %1$d day</item>
         <item quantity="other">Longest: %1$d days</item>
     </plurals>
+
+    <!-- Escalation battery alerts (critical SoC crossing + bedtime night-guard). The strap stops
+         recording near 10% SoC, so the 15% low alert on its own leaves no second warning before the
+         data stops. Twin of the Swift BatteryNotifier copy. -->
+    <string name="battery_critical_title">Charge your WHOOP now</string>
+    <string name="battery_critical_body">%1$d%% left. The strap stops recording near 10%% — it won\'t capture tonight unless you charge it.</string>
+    <string name="battery_bedtime_title">Won\'t last the night</string>
+    <string name="battery_bedtime_body">%1$s of recording left, but tonight needs about %2$s. Charge before bed.</string>
 </resources>
