@@ -6,6 +6,7 @@ import StrandDesign
 import StrandAnalytics
 import WhoopProtocol
 import WhoopStore
+import OuraProtocol
 
 /// Live — the connected strap in real time, in the liquid finish. Built on the shared design system
 /// (ScreenScaffold chrome + day-of-sky backdrop, StrandPalette, StrandFont) and the liquid vocabulary
@@ -73,6 +74,7 @@ struct LiveView: View {
     /// active. Auto-opens when a workout begins; closing just hides it (the workout keeps recording).
     @State private var showLiveWorkout = false
     @State private var showStartSport = false
+    @State private var confirmingEndWorkout = false
 
     /// Manual HRV snapshot (#127) — presents the "Take an HRV reading" screen as a sheet. Entry sits in
     /// the Session console and is only enabled while bonded (the reading needs the live R-R stream).
@@ -146,6 +148,14 @@ struct LiveView: View {
             HRVSnapshotView(onClose: { showHRVSnapshot = false }, source: hrvSnapshotSource)
                 .environmentObject(model)
                 .environmentObject(live)
+        }
+        .alert("End this workout?", isPresented: $confirmingEndWorkout) {
+            Button("Cancel", role: .cancel) { }
+            Button("End workout", role: .destructive) {
+                model.endWorkout()
+            }
+        } message: {
+            Text("This stops recording and saves what's captured so far. It can't be resumed.")
         }
     }
 
@@ -377,7 +387,7 @@ struct LiveView: View {
                     }
                     NoopButton("End workout", systemImage: "stop.circle.fill",
                                kind: .destructive, fullWidth: true) {
-                        model.endWorkout()
+                        confirmingEndWorkout = true
                     }
                 }
             }
@@ -705,7 +715,14 @@ private struct LiveHeaderStats: View {
     /// A streaming Oura ring is definitionally worn (PPG needs skin contact), and `worn` isn't reset on a
     /// source switch — so a stale `worn=false` from a prior WHOOP WRIST_OFF must not read "Off wrist"
     /// mid-stream. For WHOOP `ringStreaming` is always false, so this is just `live.worn`. #218.
-    private var wornNow: Bool { live.worn || ringStreaming }
+    private var wornNow: Bool {
+        // An Oura ring reports a precise live wear/charge state (live-HR presence + charger STATE + a
+        // removal watchdog), so prefer it — it drops to not-worn the moment the ring is off the finger or
+        // on the charger, unlike `ringStreaming`, which lingers. WHOOP has no such signal (ouraWearState
+        // stays nil), so it keeps the bond-worn / stream fallback. #218.
+        if let w = live.ouraWearState { return w == .worn }
+        return live.worn || ringStreaming
+    }
 
     var body: some View {
         HStack(spacing: 16) {
@@ -970,7 +987,14 @@ private struct LiveSignalTrustRail: View {
     /// Streaming ⟹ worn: keeps a stale `worn=false` (from a prior WHOOP WRIST_OFF, never reset on a source
     /// switch) from reading "Off wrist" while an Oura ring streams. For WHOOP `ringStreaming` is always
     /// false, so this is just `live.worn`. #218.
-    private var wornNow: Bool { live.worn || ringStreaming }
+    private var wornNow: Bool {
+        // An Oura ring reports a precise live wear/charge state (live-HR presence + charger STATE + a
+        // removal watchdog), so prefer it — it drops to not-worn the moment the ring is off the finger or
+        // on the charger, unlike `ringStreaming`, which lingers. WHOOP has no such signal (ouraWearState
+        // stays nil), so it keeps the bond-worn / stream fallback. #218.
+        if let w = live.ouraWearState { return w == .worn }
+        return live.worn || ringStreaming
+    }
 
     var body: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 168), spacing: NoopMetrics.gap)],

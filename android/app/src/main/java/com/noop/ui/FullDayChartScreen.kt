@@ -24,8 +24,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.noop.R
 import com.noop.analytics.HrvAnalyzer
 import com.noop.protocol.DeviceFamily
 import com.noop.protocol.skinTempCelsius
@@ -44,18 +46,23 @@ import java.util.Locale
 // we re-read at the new resolution. Mirrors macOS FullDayChartView + OverviewHRChart's zoom binding.
 
 private enum class TimelineMetric(val title: String) {
-    Hr("Heart Rate"),
+    Hr(uiString(R.string.timeline_metric_heart_rate)),
     // #803: this trace is a rolling rMSSD over the RR series, NOT the raw RR interval it used to plot.
     // The honest title says exactly what the curve is (windowed rMSSD), not a bare "HRV".
-    Hrv("rMSSD (5 min)"),
-    Spo2("SpO₂"),
-    SkinTemp("Skin Temp"),
-    Respiration("Respiration"),
-    Motion("Motion"),
+    Hrv(uiString(R.string.timeline_metric_rmssd)),
+    Spo2(uiString(R.string.timeline_metric_spo2)),
+    SkinTemp(uiString(R.string.timeline_metric_skin_temp)),
+    Respiration(uiString(R.string.timeline_metric_respiration)),
+    Motion(uiString(R.string.timeline_metric_motion)),
     // #175: the strap's OWN band sleep_state track (0 wake/1 still/2 asleep/3 up), shown as a distinct
     // stepped track alongside the derived hypnogram. This is the band's REPORTED state, NOT a stage NOOP
     // trusts as truth — the pill names it "Band Sleep State" so it can't be mistaken for the derived stages.
-    BandSleepState("Band Sleep State"),
+    BandSleepState(uiString(R.string.timeline_metric_band_sleep_state)),
+
+    // The Oura ring's OWN per-window motion (0x47, OURA_MOTION events): seconds of movement in each ~30 s
+    // window. An honest ACTIVITY signal — NOT gravity magnitude (the ring sends no continuous gravity) and
+    // NEVER a step count. Empty for a WHOOP strap. Twin of Swift TimelineMetric.ouraMovement.
+    Movement(uiString(R.string.timeline_metric_movement)),
 }
 
 @Composable
@@ -90,6 +97,24 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
 
     var metric by remember { mutableStateOf(TimelineMetric.Hr) }
     var ownedOnly by remember { mutableStateOf(true) }
+    // #623: is an empty SpO2 / respiration track "unsupported on this strap" or just "not this window"?
+    // A 5.0/MG never decodes either (4.0-only wire signals). But the canonical registry-model resolver
+    // (#171) maps legacy bare-"WHOOP" 4.0s to the 5.0 family too, and a 4.0-v24 DOES bank SpO2 — so gate
+    // the "not supported" copy on 5.0-family AND the strap having NEVER produced that metric, else a legacy
+    // 4.0-v24 with data on other days would contradict itself. `ever*` default true (assume produced) so a
+    // 4.0-v24 never flashes the wrong message before the async reads resolve.
+    var isWhoop5 by remember { mutableStateOf(false) }
+    var everSpo2 by remember { mutableStateOf(true) }
+    var everResp by remember { mutableStateOf(true) }
+    LaunchedEffect(deviceId) {
+        val model = runCatching { vm.pairedDevices() }.getOrDefault(emptyList())
+            .firstOrNull { it.id == deviceId }?.model
+        val whoop5 = DeviceFamily.forRegistryModel(model) == DeviceFamily.WHOOP5
+        isWhoop5 = whoop5
+        val now = System.currentTimeMillis() / 1000
+        everSpo2 = !whoop5 || runCatching { vm.repo.spo2Samples(deviceId, 0, now, 1) }.getOrDefault(emptyList()).isNotEmpty()
+        everResp = !whoop5 || runCatching { vm.repo.respSamples(deviceId, 0, now, 1) }.getOrDefault(emptyList()).isNotEmpty()
+    }
     // The visible window the gestures drive; null → the whole day.
     var window by remember { mutableStateOf<LongRange?>(null) }
     val visible = window ?: dayBounds
@@ -167,8 +192,8 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
     }
 
     ScreenScaffold(
-        title = "Deep Timeline",
-        subtitle = "Every second of your day. Drag back up to 3 days.",
+        title = stringResource(R.string.deep_timeline_title),
+        subtitle = stringResource(R.string.timeline_subtitle),
     ) {
         // METRIC PILLS — horizontally scrollable so all six fit on a phone.
         Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
@@ -182,12 +207,14 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
 
         // SOURCE PILL — the owned strap, with the #574 owned/all scope toggle.
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("My WHOOP", style = NoopType.footnote, color = Palette.textSecondary)
+            Text(stringResource(R.string.timeline_my_whoop), style = NoopType.footnote, color = Palette.textSecondary)
             Spacer(Modifier.weight(1f))
+            val ownedLabel = stringResource(R.string.timeline_owned)
+            val allLabel = stringResource(R.string.timeline_all)
             SegmentedPillControl(
                 items = listOf(true, false),
                 selection = ownedOnly,
-                label = { if (it) "Owned" else "All" },
+                label = { if (it) ownedLabel else allLabel },
                 onSelect = { ownedOnly = it },
             )
         }
@@ -232,8 +259,17 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
                 Box(modifier = Modifier.fillMaxWidth().height(280.dp), contentAlignment = Alignment.Center) {
                     when {
                         loading && points.isEmpty() ->
-                            Text("Loading the day…", style = NoopType.footnote, color = Palette.textTertiary)
-                        points.isEmpty() -> EmptyTimelineState(metric, ownedOnly)
+                            Text(stringResource(R.string.timeline_loading_day), style = NoopType.footnote, color = Palette.textTertiary)
+                        points.isEmpty() -> {
+                            // #623: the metric is genuinely UNSUPPORTED on this strap only when it's a
+                            // 5.0-family strap that has never produced it — not merely an empty window.
+                            val metricUnsupported = ownedOnly && isWhoop5 && when (metric) {
+                                TimelineMetric.Spo2 -> !everSpo2
+                                TimelineMetric.Respiration -> !everResp
+                                else -> false
+                            }
+                            EmptyTimelineState(metric, ownedOnly, metricUnsupported)
+                        }
                         else -> TimelineChart(
                             points = displayPoints,
                             windowStart = visible.first,
@@ -249,9 +285,9 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
                 if (displayPoints.isNotEmpty()) {
                     val vals = displayPoints.map { it.value }
                     Row(modifier = Modifier.fillMaxWidth()) {
-                        TimelineStat("MIN", formatValue(metric, vals.minOrNull() ?: 0.0), Modifier.weight(1f))
-                        TimelineStat("AVG", formatValue(metric, vals.average()), Modifier.weight(1f))
-                        TimelineStat("MAX", formatValue(metric, vals.maxOrNull() ?: 0.0), Modifier.weight(1f))
+                        TimelineStat(stringResource(R.string.timeline_min), formatValue(metric, vals.minOrNull() ?: 0.0), Modifier.weight(1f))
+                        TimelineStat(stringResource(R.string.timeline_avg), formatValue(metric, vals.average()), Modifier.weight(1f))
+                        TimelineStat(stringResource(R.string.timeline_max), formatValue(metric, vals.maxOrNull() ?: 0.0), Modifier.weight(1f))
                     }
                 }
             }
@@ -260,13 +296,13 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
         // ZOOM HINT + reset.
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (window == null) "Pinch to zoom · drag to pan" else "Zoomed in - drag to pan",
+                if (window == null) stringResource(R.string.timeline_pinch_to_zoom) else stringResource(R.string.timeline_zoomed_in),
                 style = NoopType.footnote, color = Palette.textTertiary,
             )
             Spacer(Modifier.weight(1f))
             if (window != null) {
                 Text(
-                    "Reset",
+                    stringResource(R.string.timeline_reset),
                     style = NoopType.footnote,
                     color = Palette.accent,
                     modifier = Modifier.clickable { window = null },
@@ -277,19 +313,28 @@ fun FullDayChartScreen(vm: AppViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun EmptyTimelineState(metric: TimelineMetric, ownedOnly: Boolean) {
+private fun EmptyTimelineState(metric: TimelineMetric, ownedOnly: Boolean, metricUnsupported: Boolean) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.padding(horizontal = 24.dp),
     ) {
-        Text("No ${metric.title.lowercase(Locale.US)} here",
+        Text(stringResource(R.string.timeline_empty_metric, metric.title.lowercase(Locale.US)),
             style = NoopType.body, color = Palette.textSecondary)
-        Text(
-            if (ownedOnly) "Nothing offloaded for this window yet."
-            else "Other sources don’t offload raw per-second data on-device.",
-            style = NoopType.footnote, color = Palette.textTertiary, textAlign = TextAlign.Center,
-        )
+        // #623: when SpO2 / raw respiration is genuinely unsupported on this strap (a 5.0-family strap that
+        // has never produced it — those are 4.0-only wire signals), say so instead of a generic "nothing
+        // offloaded" that reads as broken, and point respiration at the Health screen where the R-R/RSA
+        // estimate surfaces. [metricUnsupported] already folds in the family + never-produced + ownedOnly
+        // gate, so a 4.0-v24 with data on other days keeps the generic message.
+        val reason = when {
+            metricUnsupported && metric == TimelineMetric.Spo2 ->
+                stringResource(R.string.timeline_spo2_not_on_whoop5)
+            metricUnsupported && metric == TimelineMetric.Respiration ->
+                stringResource(R.string.timeline_resp_not_on_whoop5)
+            ownedOnly -> stringResource(R.string.timeline_nothing_offloaded)
+            else -> stringResource(R.string.timeline_other_sources_no_offload)
+        }
+        Text(reason, style = NoopType.footnote, color = Palette.textTertiary, textAlign = TextAlign.Center)
     }
 }
 
@@ -373,6 +418,17 @@ private suspend fun readTimeline(
             // which the view renders as its honest "nothing here" state — never a fabricated flat line.
             runCatching { repo.sleepStateSamples(deviceId, from, to, 200_000) }.getOrDefault(emptyList())
                 .map { TimelinePoint(it.ts, it.state.toDouble()) }
+        TimelineMetric.Movement ->
+            // The ring's OWN per-window motion from OURA_MOTION events (0x47): plot `motion_seconds`
+            // (0 when still, up to 31 s in the ~30 s window). Honest activity, NEVER scored/steps; empty
+            // for a WHOOP strap. Twin of Swift's ouraMovement series.
+            runCatching { repo.events(deviceId, from, to, 200_000) }.getOrDefault(emptyList())
+                .filter { it.kind == com.noop.data.OuraStreamMapping.EVENT_MOTION }
+                .mapNotNull { row ->
+                    val ms = runCatching { org.json.JSONObject(row.payloadJSON).optInt("motion_seconds", -1) }
+                        .getOrDefault(-1)
+                    if (ms < 0) null else TimelinePoint(row.ts, ms.toDouble())
+                }
     }
     if (raw.isEmpty() || bucket <= 1L) return@withContext raw
     downsampleTimeline(raw, bucket)
@@ -408,7 +464,7 @@ private fun metricColor(metric: TimelineMetric): Color = when (metric) {
     TimelineMetric.Hr -> Palette.metricRose
     TimelineMetric.SkinTemp -> Palette.strain033
     TimelineMetric.Hrv, TimelineMetric.Spo2 -> Palette.sleepLight
-    TimelineMetric.Respiration, TimelineMetric.Motion -> Palette.textSecondary
+    TimelineMetric.Respiration, TimelineMetric.Motion, TimelineMetric.Movement -> Palette.textSecondary
     // #175: the band-state track uses the deep-sleep hue so it reads as a distinct sleep track.
     TimelineMetric.BandSleepState -> Palette.sleepDeep
 }
@@ -417,11 +473,12 @@ private fun unitSuffix(metric: TimelineMetric, tempUnit: TemperatureUnit): Strin
     TimelineMetric.Hr -> " bpm"
     TimelineMetric.SkinTemp -> UnitFormatter.temperatureUnit(tempUnit)   // #101: °C / °F per preference
     TimelineMetric.Hrv -> " ms"
+    TimelineMetric.Movement -> " s"   // seconds of movement per ~30 s window (ring's 0x47 activity)
     else -> ""
 }
 
 private fun formatValue(metric: TimelineMetric, v: Double): String = when (metric) {
-    TimelineMetric.Hr, TimelineMetric.Respiration, TimelineMetric.Hrv -> v.toInt().toString()
+    TimelineMetric.Hr, TimelineMetric.Respiration, TimelineMetric.Hrv, TimelineMetric.Movement -> v.toInt().toString()
     // `v` already arrives in the displayed unit — callers read from `displayPoints`, which converts skin
     // temp to °F upfront so the chart's axis (plotted from the same points) agrees with this readout (#101).
     TimelineMetric.SkinTemp -> String.format(Locale.US, "%.1f", v)

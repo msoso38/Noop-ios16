@@ -33,6 +33,19 @@ public enum OuraDecoders {
         Int(b[i]) | (Int(b[i + 1]) << 8) | (Int(b[i + 2]) << 16) | (Int(b[i + 3]) << 24)
     }
 
+    // MARK: - GetProductInfo reply (serial / hardware pages; s4.1 / s7.3)
+
+    /// Decode a GetProductInfo reply body (the serial page `18 03 08 00 10` or the hardware page
+    /// `18 03 18 00 10`, both answered under outer op 0x19). On-device capture 2026-07-24 (Gen3): the body is
+    /// `byte0 = 0x00 status/OK, then a NUL-terminated ASCII string, NUL-padded` — e.g. serial "2H3B2405003655"
+    /// or hardware id "BLB_03". Returns the trimmed ASCII string, or nil for an empty/non-printable body.
+    public static func productInfoString(_ body: [UInt8]) -> String? {
+        guard body.count > 1 else { return nil }
+        let ascii = body.dropFirst().prefix(while: { $0 != 0x00 })
+        guard !ascii.isEmpty, ascii.allSatisfy({ (0x20...0x7e).contains($0) }) else { return nil }
+        return String(bytes: ascii, encoding: .ascii)
+    }
+
     // MARK: - Live-HR realtime push (0x2F sub-op 0x28; s5.6)
 
     /// Decode a live-HR push body (the bytes AFTER `2f 0f 28`). Per OURA_PROTOCOL.md s5.6 the wire
@@ -53,52 +66,105 @@ public enum OuraDecoders {
         return OuraHR(ringTimestamp: ringTimestamp, bpm: bpm, ibiMs: ibi)
     }
 
-    // MARK: - IBI + amplitude, bit-packed (0x60; s6.1)
+    // MARK: - IBI + amplitude, byte-scatter packed (0x60; s6.1)
 
-    /// Decode the 0x60 ibi_and_amplitude_event: 6 IBI+amplitude pairs bit-packed across the body.
-    /// IBI = 11-bit value (ms); amplitude = 7-bit mantissa (byte bits [7:1]) shifted left by the
-    /// exponent; exponent = low nibble of the last body byte (shift = (n==7) ? 0 : n+1). Per
-    /// OURA_PROTOCOL.md s6.1. Returns nil on a short body. A bit-reader walks the body MSB-first.
+    /// Decode the 0x60 ibi_and_amplitude_event: a fixed 14-byte packet holding 6 IBIs (ms) + PPG
+    /// amplitudes. Each 11-bit IBI is gathered from SCATTERED bytes, NOT a linear bitstream — per the
+    /// ring's native `parse_api_ibi_and_amplitude_event`: `ibi[k] = (b[6+k]&1) | (b[k]<<3) | <2 hi bits
+    /// from the b[12]/b[13] nibbles>`. Amplitude = `(b[6+k] >> 1) << shift`, exponent = low nibble of
+    /// b[13] (shift = (n==7) ? 0 : n+1). Returns nil on a short body.
+    ///
+    /// NOTE (#511, decode fix): the previous layout read the body as a linear MSB-first bitstream, which
+    /// only ever recovered the FIRST IBI correctly and scrambled the other five — a real overnight
+    /// capture decoded to an 82% beat-to-beat >200ms "jump" rate (not a heartbeat train). This
+    /// byte-scatter layout, cross-checked against the same capture, yields a coherent ~60 bpm train
+    /// (10% jump rate) that tracks the night's sleep stages and its day/night dip. Validated against
+    /// the `open_oura` decompiled `parse_api_ibi_and_amplitude_event`.
     public static func decodeIBIAmplitude(_ rec: OuraRecord) -> [OuraIBI]? {
         let b = rec.payload
-        // Need at least the 14 packed bytes the spec describes (body bytes 6..19 inclusive = 14 bytes).
-        guard b.count >= 14 else { return nil }
-        let n = Int(b[b.count - 1] & 0x0F)
+        guard b.count >= 14 else { return nil }   // fixed 14-byte packet (body bytes 6..19)
+        let b12 = Int(b[12]), b13 = Int(b[13])
+        let n = b13 & 0x0F
         let shift = (n == 7) ? 0 : (n + 1)
-        var reader = BitReader(b)
+        let ibi = [
+            (Int(b[6])  & 1) | (Int(b[0]) << 3) | ((b12 >> 5) & 6),
+            (Int(b[7])  & 1) | (Int(b[1]) << 3) | ((b12 >> 3) & 6),
+            (Int(b[8])  & 1) | (Int(b[2]) << 3) | ((b12 >> 1) & 6),
+            (Int(b[9])  & 1) | (Int(b[3]) << 3) | ((b12 & 3) << 1),
+            (Int(b[10]) & 1) | (Int(b[4]) << 3) | ((b13 >> 5) & 6),
+            (Int(b[11]) & 1) | (Int(b[5]) << 3) | ((b13 >> 3) & 6),
+        ]
         var out: [OuraIBI] = []
-        for _ in 0..<6 {
-            guard let raw11 = reader.read(11) else { break }
-            guard let mant7 = reader.read(7) else { break }
-            let ibi = raw11                                   // 11-bit value -> ms
-            let amp = mant7 << shift                           // 7-bit mantissa << exponent
-            guard ibi > 0 else { continue }                   // drop a zero IBI, never invent one
-            out.append(OuraIBI(ringTimestamp: rec.ringTimestamp, ibiMs: ibi, amplitude: amp))
+        for k in 0..<6 {
+            guard ibi[k] > 0 else { continue }                 // drop a zero IBI, never invent one
+            let amp = (Int(b[6 + k]) >> 1) << shift            // 7-bit mantissa << exponent
+            out.append(OuraIBI(ringTimestamp: rec.ringTimestamp, ibiMs: ibi[k], amplitude: amp))
         }
         return out.isEmpty ? nil : out
     }
 
+    // MARK: - Green IBI + amplitude CANDIDATE decode (0x71; s6.2, upstream #287)
+
+    /// CANDIDATE decode of the 0x71 green_ibi_and_amp_event, ported verbatim from ringverse's
+    /// `p_green_ibi_and_amp` (parse.js, firmware @0x503960): 5 densely bit-packed 11-bit IBIs +
+    /// amplitudes (7-bit mantissa << shift), first entry amplitude-only (`ibiMs == 0`), timestamps
+    /// walking backward from the event time by each IBI in turn (caller's job — entries are returned
+    /// in that walk order). `shift` comes from payload[13] bits [2:0] (`s == 7 → 0`, else `s+1`);
+    /// bit [3] set means a firmware-layout mismatch → nil (never guess).
+    ///
+    /// TIER-B (#287): this layout has NO verified NOOP capture yet — the result is for the 0x71
+    /// fixture-capture log ONLY (side-by-side with the raw bytes, cross-checked against concurrent
+    /// live-HR R-R), never a stored rrInterval. Promote only after a real capture validates it.
+    /// Payload indexing: ringverse's `b[i]` spans the whole frame (type/len/rt4/body); our `payload`
+    /// starts at spec offset 6, so `b[i] == payload[i-6]`. Strict 14-byte gate (= wire len 18).
+    public static func decodeGreenIBIAmpCandidate(payload p: [UInt8], ringTimestamp: UInt32)
+        -> (shift: Int, samples: [OuraIBI])? {
+        guard p.count == 14 else { return nil }
+        let b13 = Int(p[13])
+        guard (b13 >> 3) & 1 == 0 else { return nil }   // reserved bit set → firmware mismatch
+        let s = b13 & 7
+        let shift = (s == 7) ? 0 : s + 1
+        let b12 = Int(p[12])
+        // Each 11-bit IBI: 1 low bit (an amplitude byte's LSB) | 8 mid bits (a full byte << 3)
+        // | 2 bits [2:1] from the pack bytes. Ordering per the firmware's scrambled layout.
+        let ds = [
+            (Int(p[10]) & 1) | (Int(p[4]) << 3) | ((b13 >> 5) & 6),
+            (Int(p[9]) & 1) | (Int(p[3]) << 3) | ((b12 & 3) << 1),
+            (Int(p[8]) & 1) | (Int(p[2]) << 3) | ((b12 >> 1) & 6),
+            (Int(p[7]) & 1) | (Int(p[1]) << 3) | ((b12 >> 3) & 6),
+            (Int(p[6]) & 1) | (Int(p[0]) << 3) | ((b12 >> 5) & 6),
+        ]
+        let amps = (6...10).map { (Int(p[$0]) >> 1) << shift }
+        var samples = [OuraIBI(ringTimestamp: ringTimestamp, ibiMs: 0, amplitude: amps[0])]
+        for i in 0..<5 {
+            samples.append(OuraIBI(ringTimestamp: ringTimestamp, ibiMs: ds[i], amplitude: amps[i]))
+        }
+        return (shift, samples)
+    }
+
     // MARK: - Green IBI quality, 2 bytes/sample (0x80; s6.4)
 
-    /// Decode the 0x80 green_ibi_quality_event: per 16-bit LE sample, bits 0-10 = IBI ms,
-    /// bits 11-13 = qual_a, bits 14-15 = qual_b. Accept a sample only if qual_a <= 1 && qual_b == 0.
-    /// 7 samples per 14-byte record. Per OURA_PROTOCOL.md s6.4. Returns nil on a short/odd body.
+    /// Decode the 0x80 green_ibi_quality_event: per 2-byte sample `ibi_ms = (b1 & 7) | (b0 << 3)`
+    /// (an 11-bit value, high byte first — NOT a little-endian u16), `quality = (b1 >> 3) & 3`. Accept a
+    /// sample only when `quality == 1` (the ring's "good beat" flag) and the IBI is physiological
+    /// (300..2000 ms). Up to 7 samples per 14-byte record. Per the native `parse_api_green_ibi_quality
+    /// _event`. Returns nil on a short body.
     ///
-    /// ROBUSTNESS (s6.4): the record holds at most 7 samples (14 bytes at 2 B/sample). We cap the read
-    /// at 7 samples; any sample bytes beyond the 7th are a misframe and are ignored rather than decoded.
+    /// NOTE (#511, decode fix): the previous layout read a little-endian u16 and masked bits 0-10, placing
+    /// the high byte in the LOW bits — a bit-order error that scrambled the interval (real-capture
+    /// within-record jitter 583ms). This high-byte-first layout with the `quality == 1` gate yields a
+    /// clean beat train (45ms jitter) and keeps MORE good beats. Validated against `open_oura`.
     public static func decodeGreenIBIQuality(_ rec: OuraRecord) -> [OuraIBI]? {
         let b = rec.payload
-        guard b.count >= 2, b.count % 2 == 0 else { return nil }
+        guard b.count >= 2 else { return nil }
         let maxSamples = 7                            // s6.4: 7 samples per 14-byte record
         var out: [OuraIBI] = []
         var i = 0
         var sampleCount = 0
         while i + 1 < b.count && sampleCount < maxSamples {
-            let sample = u16le(b, i)
-            let ibi = sample & 0x07FF                 // bits 0-10
-            let qualA = (sample >> 11) & 0x07         // bits 11-13
-            let qualB = (sample >> 14) & 0x03         // bits 14-15
-            if qualA <= 1 && qualB == 0 && ibi > 0 {
+            let ibi = (Int(b[i + 1]) & 0x07) | (Int(b[i]) << 3)   // high byte first
+            let quality = (Int(b[i + 1]) >> 3) & 0x03
+            if quality == 1 && ibi >= 300 && ibi <= 2000 {
                 out.append(OuraIBI(ringTimestamp: rec.ringTimestamp, ibiMs: ibi))
             }
             i += 2
@@ -319,6 +385,19 @@ public enum OuraDecoders {
         return OuraState(ringTimestamp: rec.ringTimestamp, stateCode: Int(code), text: text)
     }
 
+    // MARK: - Feature-status read reply (0x2F sub-op 0x21; s5.6 / s7.1)
+
+    /// Decode a feature-status read reply's SUB-BODY (the bytes AFTER the `0x21` sub-op) into
+    /// `feature, mode, status, state, subscription`, the ring's own feature report [open_oura-feat]. The
+    /// observed daytime-HR reply is `2f 06 21 02 01 11 02 00` → sub-body `02 01 11 02 00`. Returns nil on a
+    /// short body (< 5) so a truncated reply never fabricates a status. READ-ONLY diagnostic.
+    public static func decodeFeatureStatus(_ subBody: [UInt8]) -> OuraFeatureStatus? {
+        guard subBody.count >= 5 else { return nil }
+        return OuraFeatureStatus(feature: Int(subBody[0]), mode: Int(subBody[1]),
+                                 status: Int(subBody[2]), state: Int(subBody[3]),
+                                 subscription: Int(subBody[4]))
+    }
+
     // MARK: - Debug text (0x43; s6.15)
 
     /// Decode the 0x43 debug_event: ASCII state strings. Per OURA_PROTOCOL.md s6.15. Returns nil when
@@ -331,8 +410,9 @@ public enum OuraDecoders {
     // MARK: - Sleep phase, 2-bit codes (0x4E / 0x5A; s6.12)
 
     /// Decode the 0x4E/0x5A sleep_phase_details: byte6 = header; phase codes are 2-bit, 4 per byte
-    /// (bits [7:6][5:4][3:2][1:0]); codes 0=awake,1=light,2=deep,3=REM. Per OURA_PROTOCOL.md s6.12.
-    /// Returns nil on a short body. The header byte is skipped; phase bytes follow.
+    /// (bits [7:6][5:4][3:2][1:0]); codes 0=deep, 1=light, 2=rem, 3=awake per open_oura's VALIDATED
+    /// `decode_sleep_phases` mapping (see OuraSleepStage). Returns nil on a short body. The header
+    /// byte is skipped; phase bytes follow.
     public static func decodeSleepPhase(_ rec: OuraRecord) -> [OuraSleepPhase]? {
         let b = rec.payload
         // body[0] is the header (spec offset 6); phase codes begin at body[1].
@@ -377,6 +457,44 @@ public enum OuraDecoders {
         return out.isEmpty ? nil : out
     }
 
+    // MARK: - Motion events, averaged accel vector (0x47; s6.13)
+
+    /// Decode a 0x47 `motion_events` record: a compact per-window motion summary. Layout is a
+    /// byte-for-byte port of open_oura's `decode_motion` / native `parse_api_motion_events`
+    /// (clean-room fact citation; OURA_PROTOCOL.md s6.13):
+    ///   byte0 >> 5      = orientation (0…7)
+    ///   byte0 & 0x1f    = motion_seconds (0…31)
+    ///   byte1/2/3       = avg X/Y/Z, signed int8 × 8
+    ///   byte4 (opt)     = low_intensity: bit 0x40 set ⇒ INVALID (whole record → nil); else `& 0x3f`
+    ///   byte5 (opt)     = high_intensity: bit 0x40 set ⇒ INVALID (whole record → nil); else `& 0x3f`
+    /// Needs ≥ 4 bytes (orientation/motion_seconds + the 3 axes); low/high intensity are optional. The
+    /// avg vector is the SAME averaged-accel shape as a WHOOP 4.0 gravity sample. NOTE (validated
+    /// on-device #804): 0x47 is MOVEMENT-GATED — the ring emits it only while moving, so there is no
+    /// still/1 g sample; `motion_seconds` / intensity are the activity signal, not a gravity magnitude.
+    public static func decodeMotionEvents(_ rec: OuraRecord) -> OuraMotionEvent? {
+        let b = rec.payload
+        guard b.count >= 4 else { return nil }
+        var low: Int? = nil
+        if b.count >= 5 {
+            guard b[4] & 0x40 == 0 else { return nil }
+            low = Int(b[4] & 0x3f)
+        }
+        var high: Int? = nil
+        if b.count >= 6 {
+            guard b[5] & 0x40 == 0 else { return nil }
+            high = Int(b[5] & 0x3f)
+        }
+        return OuraMotionEvent(
+            ringTimestamp: rec.ringTimestamp,
+            orientation: Int(b[0] >> 5),
+            motionSeconds: Int(b[0] & 0x1f),
+            avgX: Int(Int8(bitPattern: b[1])) * 8,
+            avgY: Int(Int8(bitPattern: b[2])) * 8,
+            avgZ: Int(Int8(bitPattern: b[3])) * 8,
+            lowIntensity: low,
+            highIntensity: high)
+    }
+
     // MARK: - Activity info (0x50; s6.13) - Tier B, third-party formula
 
     /// Decode the 0x50 activity_info record: byte0 = a `state` code (activity-category; meaning
@@ -396,29 +514,5 @@ public enum OuraDecoders {
             return (raw * 100).rounded() / 100
         }
         return OuraActivityInfo(ringTimestamp: rec.ringTimestamp, state: Int(state), met: met)
-    }
-}
-
-// MARK: - Bit reader (MSB-first), used by the bit-packed decoders (0x60)
-
-/// A minimal MSB-first bit reader over a byte array. Used for the bit-packed IBI+amplitude layout
-/// (OURA_PROTOCOL.md s6.1) where 11-bit IBI and 7-bit amplitude fields straddle byte boundaries.
-/// Returns nil when fewer than the requested bits remain (so the decoder stops cleanly, never guesses).
-struct BitReader {
-    private let bytes: [UInt8]
-    private var bitPos = 0
-    init(_ bytes: [UInt8]) { self.bytes = bytes }
-
-    mutating func read(_ count: Int) -> Int? {
-        guard bitPos + count <= bytes.count * 8 else { return nil }
-        var value = 0
-        for _ in 0..<count {
-            let byteIndex = bitPos >> 3
-            let bitIndex = 7 - (bitPos & 7)               // MSB-first
-            let bit = (Int(bytes[byteIndex]) >> bitIndex) & 1
-            value = (value << 1) | bit
-            bitPos += 1
-        }
-        return value
     }
 }

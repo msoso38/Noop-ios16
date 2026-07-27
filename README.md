@@ -315,10 +315,13 @@ guarded with `#if canImport(UIKit)` / `#if canImport(AppKit)`.
 Strand/                  macOS SwiftUI reference app (this is what you build)
 Packages/
   WhoopProtocol/         BLE frame parsing, CRC, command/event/packet decode
+  OuraProtocol/          clean-room Oura ring BLE protocol (framing, auth, decoders, driver)
+  PolarProtocol/         Polar PMD decoder (HR / PPI / ECG / ACC streams)
   WhoopStore/            GRDB/SQLite persistence (migrations, streams, caches)
   StrandAnalytics/       HRV / recovery / strain / sleep / correlation math
   StrandImport/          WHOOP CSV + Apple Health importers
   StrandDesign/          SwiftUI design system (palette, components, charts)
+  NoopLocalAccess/       local read-only data-access layer (on-device, no network)
 Tools/Backfill/          CLI tool for backfilling decoded data
 Fixtures/                sample WHOOP export for tests
 ```
@@ -346,7 +349,7 @@ offload, and live notifications.
 
 Everything is stored on-device in SQLite (using
 [GRDB.swift](https://github.com/groue/GRDB.swift)). The schema is a versioned
-migrator (`Database.swift`, currently through `v9`). Examples of decoded-stream
+migrator (`Database.swift`, currently past `v28`). Examples of decoded-stream
 tables created in `v1`–`v3`:
 
 ```sql

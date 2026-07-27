@@ -263,7 +263,17 @@ struct InsightsView: View {
         .onChangeCompat(of: outcome) { _ in recomputeRanked() }
         // Refresh the day anchor on appear and whenever the app returns to the foreground; if the date has
         // advanced this bumps the `.task(id:)` key and the journal reloads for the new logical day (#860).
-        .onAppear { refreshCurrentDayKey() }
+        .onAppear {
+            refreshCurrentDayKey()
+            // #656: honour a day the Today journal widget deep-linked to (tapping a bar opens the journal
+            // at THAT day). Consumed once on arrival, then cleared. Reload explicitly — setting the offset
+            // here doesn't run the pill's onChanged, and the `.task` keys on the day-key, not the offset.
+            if let day = router.pendingJournalDayOffset {
+                journalDayOffset = day
+                router.pendingJournalDayOffset = nil
+                Task { await load() }
+            }
+        }
         .onChangeCompat(of: scenePhase) { phase in
             if phase == .active { refreshCurrentDayKey() }
         }
@@ -976,13 +986,23 @@ struct InsightsView: View {
         // `ranked` is memoized in @State (see recomputeRanked()); reading it
         // here does no expensive work per render.
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-            // Header + the ONE segmented pill control for choosing the outcome.
-            HStack(alignment: .center) {
-                SectionHeader("Behaviour Effects",
-                              overline: "What moves your \(outcome.outcomeName.lowercased())")
-                Spacer()
-                SegmentedPillControl(Outcome.allCases, selection: $outcome) { $0.label }
-                    .accessibilityLabel("Outcome metric")
+            // Keep the outcome labels intrinsic while they fit beside the header. When either
+            // localization or Dynamic Type needs more room, move the control to its own row.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center) {
+                    SectionHeader("Behaviour Effects",
+                                  overline: "What moves your \(outcome.outcomeName.lowercased())")
+                    Spacer(minLength: NoopMetrics.space2)
+                    behaviourOutcomeControl
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+
+                VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+                    SectionHeader("Behaviour Effects",
+                                  overline: "What moves your \(outcome.outcomeName.lowercased())")
+                    behaviourOutcomeControl
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
 
             if ranked.isEmpty {
@@ -994,6 +1014,12 @@ struct InsightsView: View {
                 }
             }
         }
+    }
+
+    private var behaviourOutcomeControl: some View {
+        SegmentedPillControl(Outcome.allCases, selection: $outcome,
+                             adaptsToAvailableWidth: true) { $0.label }
+            .accessibilityLabel("Outcome metric")
     }
 
     private var noEffects: some View {
