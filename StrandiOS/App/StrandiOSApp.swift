@@ -36,6 +36,16 @@ struct StrandiOSApp: App {
     @AppStorage(ChartStyle.storageKey) private var chartStyleRaw = ChartStyle.titanium.rawValue
 
     init() {
+        #if CLOUD_SYNC
+        // FIRST, before anything that could open the database. `WalCheckpointing` is a per-connection
+        // PRAGMA applied at pool-open time, so a store opened before this line keeps SQLite's own
+        // autocheckpoint for its whole life — and one such pool restarting the WAL is enough to defeat
+        // `.external` for every other opener in the process. Both real openers are `async` (so strictly
+        // later than this `init`), and `StoreReplication.configuredAfterFirstOpen` reports it loudly if
+        // that ever stops being true. No-op unless VK has switched the trial on. See
+        // `SyncReplicationTrial`.
+        SyncReplicationTrial.applyAtLaunch()
+        #endif
         #if DEBUG
         // DEBUG-only promo-screenshot harness: when launched with `--demo-hour <Int>`, pin Today to that
         // hour's day-cycle scene + a per-hour stat frame. No-op (active stays nil) when the arg is absent.
