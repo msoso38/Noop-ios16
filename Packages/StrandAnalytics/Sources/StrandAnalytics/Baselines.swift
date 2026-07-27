@@ -187,6 +187,36 @@ public enum Baselines {
         return .trusted
     }
 
+    /// #612: calendar days since the newest night that carried a usable HRV reading (the baseline's input),
+    /// or nil when there is none / a key can't be parsed. This is DISTINCT from `calibrationNights` (which
+    /// counts progress TOWARD a usable baseline) — it measures staleness, so a surface can say "no new nights
+    /// from your strap for N days" when the baseline aged out silently instead of only "building your
+    /// baseline". Pure and TZ-free (civil-day arithmetic); mirror EXACTLY in the Kotlin twin.
+    /// `dayKeys`/`nightlyHrv` are parallel (same night per index); `today` is an ISO `yyyy-MM-dd` key.
+    public static func nightsSinceNewestValidNight(dayKeys: [String], nightlyHrv: [Double?], today: String) -> Int? {
+        var newest: String? = nil
+        for i in 0..<Swift.min(dayKeys.count, nightlyHrv.count) where nightlyHrv[i] != nil {
+            let k = dayKeys[i]
+            if newest == nil || k > newest! { newest = k }
+        }
+        guard let n = newest, let a = isoEpochDay(n), let b = isoEpochDay(today) else { return nil }
+        let d = b - a
+        return d >= 0 ? d : nil
+    }
+
+    /// Days from civil epoch (proleptic Gregorian) for an ISO `yyyy-MM-dd`, or nil if unparseable. TZ-free
+    /// (Howard Hinnant's algorithm), so Swift and Kotlin agree bit-for-bit on the day difference.
+    static func isoEpochDay(_ iso: String) -> Int? {
+        let p = iso.split(separator: "-")
+        guard p.count == 3, let y = Int(p[0]), let m = Int(p[1]), let d = Int(p[2]), m >= 1, m <= 12 else { return nil }
+        let yy = m <= 2 ? y - 1 : y
+        let era = (yy >= 0 ? yy : yy - 399) / 400
+        let yoe = yy - era * 400
+        let doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        return era * 146097 + doe - 719468
+    }
+
     // MARK: - Winsorized EWMA update (production model)
 
     /// Incorporate one new nightly value into the baseline state.
@@ -324,6 +354,30 @@ public enum Baselines {
     /// When `baselineEpoch <= 0` (the default / no recalibration) this is byte-identical to the plain
     /// `foldHistory(_:cfg:)`. When `baselineEpoch` is nil it is read from UserDefaults via
     /// `hrvBaselineEpoch()` so callers that already use the HRV config get recalibration for free.
+    /// Diagnostic companion to the epoch-aware `foldHistory` (#731): how many nights that fold DROPS
+    /// because they predate the recalibration epoch, plus the epoch itself as a `yyyy-MM-dd` day key
+    /// (nil when no recalibration is set).
+    ///
+    /// Exists because a "Charge is stuck" report is otherwise unexplainable from a strap log. A user who
+    /// taps "Recalibrate baseline" discards every earlier night and must re-earn `minNightsSeed` nights;
+    /// tapping it again resets that progress to zero. A reporter did exactly that for two weeks — 15 valid
+    /// HRV nights on file, but `nValid=3` and no Charge — and nothing in the log said the epoch was why.
+    /// Mirrors the fold's drop rule EXACTLY (same UTC day-start parse, same strict `<` comparison), so the
+    /// number reported is the number actually dropped.
+    public static func epochDropDiagnostic(dayKeys: [String],
+                                           baselineEpoch: Double? = nil) -> (dropped: Int, epochDay: String?) {
+        let epoch = baselineEpoch ?? hrvBaselineEpoch()
+        guard epoch > 0 else { return (0, nil) }
+        let fmt = DateFormatter()
+        fmt.calendar = Calendar(identifier: .gregorian)
+        fmt.timeZone = TimeZone(secondsFromGMT: 0)
+        fmt.dateFormat = "yyyy-MM-dd"
+        let dropped = dayKeys.reduce(into: 0) { acc, key in
+            if let d = fmt.date(from: key), d.timeIntervalSince1970 < epoch { acc += 1 }
+        }
+        return (dropped, fmt.string(from: Date(timeIntervalSince1970: epoch)))
+    }
+
     public static func foldHistory(_ values: [Double?], dayKeys: [String], cfg: MetricCfg,
                                    baselineEpoch: Double? = nil) -> BaselineState {
         let epoch = baselineEpoch ?? hrvBaselineEpoch()
@@ -348,6 +402,73 @@ public enum Baselines {
         let seed = (cfg.minVal + cfg.maxVal) / 2.0
         return BaselineState(baseline: seed, spread: cfg.floorSpread, nValid: 0,
                              nightsSinceUpdate: 0, status: .calibrating)
+    }
+
+    // MARK: - Device-era boundary (#459)
+
+    /// The recalibration epoch (seconds, UTC start-of-day) at the LATEST device-era boundary in a
+    /// source-tagged nightly history, for feeding `foldHistory`'s `baselineEpoch` so a baseline can't
+    /// mix two brands' incompatible HRV scales (#459: an Oura→WHOOP switch has Oura RMSSD ~120–155 ms
+    /// vs WHOOP ~72–112 ms with no overlap nights, so a straddling 30-night window reads the first
+    /// WHOOP nights as "suppressed" against an Oura-inflated mean — a device artifact, not physiology).
+    ///
+    /// CONTRACT: `sourceDays` is exactly ONE `(dayKey "yyyy-MM-dd", sourceId)` per night — the day's
+    /// WINNING source (the same per-day merge winner whose value the fold uses), NOT one row per source.
+    /// The "current era" is read off the NEWEST day's brand, so an overlap day carrying two brands would,
+    /// under the deterministic (day, sourceId) sort, let the lexically-later source (e.g. "oura-import" >
+    /// "my-whoop") masquerade as the current brand. Passing one-per-day-winner makes that impossible; the
+    /// same-day-tie handling below is only a determinism backstop, not a licence to pass raw multi-source
+    /// rows. Any order is fine (it is sorted here).
+    ///
+    /// The epoch is the start of the first day of the LATEST contiguous single-brand era: walk
+    /// newest→oldest while the brand matches the newest night's brand, and return that run's first day's
+    /// start (a lone off-brand day inside the current era truncates it — fail-safe: it drops MORE history,
+    /// never mixes scales). Returns 0.0 (no recalibration → `foldHistory` is byte-identical) when the
+    /// whole history is ONE brand — so a single-device user, and a WHOOP user whose imported + computed +
+    /// strap ids all bucket to "whoop", is completely unaffected.
+    ///
+    /// The brand bucket is intentionally coarse and NOT `DeviceFamily` (that only splits WHOOP 4 vs 5,
+    /// both the same HRV scale): every WHOOP-origin id (the canonical import, the active strap, the
+    /// "-noop" computed sibling, Health-Connect/Apple rows that ride the strap source) is ONE brand;
+    /// each wearable-export brand (oura/fitbit/garmin) is its own. Pure + unit-pinned; the caller
+    /// assembles `sourceDays` from the ORIGINAL per-source reads (brand is lost once a wearable day is
+    /// re-homed under the computed WHOOP id, so detection must precede the merge). Mirrors the Kotlin twin.
+    public static func deviceEraEpoch(_ sourceDays: [(day: String, sourceId: String)]) -> Double {
+        if sourceDays.isEmpty { return 0.0 }
+        // Total order by (day, sourceId) — a same-day mixed-brand row (an overlap night) must break the
+        // tie IDENTICALLY to the Kotlin twin, so a plain by-day sort (Swift's is not stable) can't
+        // diverge the computed epoch across platforms.
+        let sorted = sourceDays.sorted { $0.day != $1.day ? $0.day < $1.day : $0.sourceId < $1.sourceId }
+        let currentBrand = brandBucket(sorted.last!.sourceId)
+        // No brand change anywhere → no epoch (byte-identical fold for every single-brand user).
+        if !sorted.contains(where: { brandBucket($0.sourceId) != currentBrand }) { return 0.0 }
+        // Walk back over the contiguous current-brand suffix; its first day opens the current era.
+        var eraStartDay = sorted.last!.day
+        for entry in sorted.reversed() {
+            if brandBucket(entry.sourceId) != currentBrand { break }
+            eraStartDay = entry.day
+        }
+        let fmt = DateFormatter()
+        fmt.calendar = Calendar(identifier: .gregorian)
+        fmt.timeZone = TimeZone(secondsFromGMT: 0)
+        fmt.dateFormat = "yyyy-MM-dd"
+        return fmt.date(from: eraStartDay)?.timeIntervalSince1970 ?? 0.0
+    }
+
+    /// Coarse HRV-scale brand for a source id (#459). Every WHOOP-origin id shares ONE scale; each
+    /// wearable-export brand is its own. Unknown ids bucket to "whoop" (the strap source and its Apple/
+    /// Health-Connect riders), so only a positively-identified wearable export changes the era. Mirrors
+    /// the Kotlin twin.
+    static func brandBucket(_ sourceId: String) -> String {
+        // `hasPrefix` deliberately catches BOTH the export id ("oura-import") and the cloud id
+        // ("oura-api"), so an Oura-cloud era and an Oura-export era read as the same brand.
+        if sourceId.hasPrefix("oura") { return "oura" }
+        if sourceId.hasPrefix("fitbit") { return "fitbit" }
+        if sourceId.hasPrefix("garmin") { return "garmin" }
+        // "apple-health" / "health-connect" fall through to "whoop" ON PURPOSE: NOOP's Apple/HC daily
+        // rows ride the strap source's scale, and HC is a pass-through whose true origin is unknowable,
+        // so they must NOT open a false era boundary against WHOOP nights.
+        return "whoop"
     }
 
     // MARK: - Deviation

@@ -39,12 +39,21 @@ data class OuraTemp(val ringTimestamp: Long, val celsius: Double)
  */
 data class OuraBattery(val percent: Int, val voltageMv: Int? = null, val charging: Boolean? = null)
 
-/** Sleep phase code (OURA_PROTOCOL.md s6.12): 2-bit codes 0=awake, 1=light, 2=deep, 3=REM. */
+/**
+ * The 2-bit sleep-phase code values, per open_oura's VALIDATED `decode_sleep_phases` mapping
+ * (events.rs `PHASE = ["deep", "light", "rem", "awake"]`): 0=deep, 1=light, 2=rem, 3=awake.
+ *
+ * CORRECTION (2026-07-12, PARITY twin of Swift `OuraSleepStage`): the old mapping
+ * (0=awake/2=deep/3=REM) came from the same unverified doc as the rest of s6.12 and was contradicted
+ * by live captures — phase records decoded AT WAKE (wearer demonstrably awake) carry code 3, which is
+ * awake under open_oura's mapping and "REM" under the old one. The raw wire code persists unchanged
+ * (`stage.raw` is what's stored); only these LABELS changed, byte-identical on both platforms.
+ */
 enum class OuraSleepStage(val raw: Int) {
-    AWAKE(0),
+    DEEP(0),
     LIGHT(1),
-    DEEP(2),
-    REM(3);
+    REM(2),
+    AWAKE(3);
 
     companion object {
         private val byRaw = entries.associateBy { it.raw }
@@ -71,8 +80,42 @@ enum class OuraMotionState(val raw: Int) {
 /** One decoded motion-state code from a 0x6B motion_period record (OURA_PROTOCOL.md s6.13). */
 data class OuraMotion(val ringTimestamp: Long, val index: Int, val state: OuraMotionState)
 
+/**
+ * One decoded 0x47 motion_events record: the ring's OWN averaged accelerometer vector for the period,
+ * plus an orientation code and a high-intensity count (open_oura decode_motion, clean-room fact citation;
+ * OURA_PROTOCOL.md s6.13). Same shape as a WHOOP 4.0 gravity sample — an averaged (x, y, z) vector, NOT
+ * per-sample raw accel — so it can feed the same motion pipeline. Axis values are the signed record bytes
+ * scaled ×8 (open_oura's convention); the LSB→g scale for the sleep stager is a downstream calibration, so
+ * this holds the ring's raw ×8 integers, unscaled and honest. Twin of Swift OuraMotionEvent.
+ */
+data class OuraMotionEvent(
+    val ringTimestamp: Long,
+    val orientation: Int,     // byte0 >> 5 (0..7)
+    val motionSeconds: Int,   // byte0 & 0x1f (0..31): seconds of motion in the window
+    val avgX: Int,
+    val avgY: Int,
+    val avgZ: Int,
+    val lowIntensity: Int?,   // byte4 & 0x3f, or null when the record is short
+    val highIntensity: Int?,  // byte5 & 0x3f, or null when the record is short
+)
+
 /** Device lifecycle state (OURA_PROTOCOL.md s6.15) decoded from a 0x45/0x53 record. */
 data class OuraState(val ringTimestamp: Long, val stateCode: Int, val text: String? = null)
+
+/**
+ * A decoded feature-status read reply (the `0x2F` sub-op `0x21` response): the ring's own report of a
+ * feature's mode / status / state / subscription. Kotlin twin of the Swift `OuraFeatureStatus`. Read-only
+ * diagnostic — used to confirm the server-flag gate on SpO2 (`0x04`) / real_steps (`0x0b`): a
+ * `subscription == 0` with no emitted records is the ring saying "the cloud has not enabled this", which
+ * NOOP cannot override offline. Never scored, never stored.
+ */
+data class OuraFeatureStatus(
+    val feature: Int,
+    val mode: Int,
+    val status: Int,
+    val state: Int,
+    val subscription: Int,
+)
 
 /** A UTC anchor / time-sync event (OURA_PROTOCOL.md s6.11): epoch ms + timezone offset seconds. */
 data class OuraTimeSync(val ringTimestamp: Long, val epochMs: Long, val tzOffsetSeconds: Int)
@@ -140,6 +183,12 @@ sealed class OuraEvent {
     data class Battery(val value: OuraBattery) : OuraEvent()
     data class SleepPhaseEvent(val value: OuraSleepPhase) : OuraEvent()
     data class MotionEvent(val value: OuraMotion) : OuraEvent()
+
+    /**
+     * A decoded 0x47 motion_events record: the ring's averaged accel vector (Tier-A). Distinct from
+     * [MotionEvent] (the 0x6B period's 2-bit state codes). Twin of Swift OuraEvent.motionEvent.
+     */
+    data class MotionVectorEvent(val value: OuraMotionEvent) : OuraEvent()
     data class StateEvent(val value: OuraState) : OuraEvent()
     data class TimeSyncEvent(val value: OuraTimeSync) : OuraEvent()
     data class RtcBeaconEvent(val value: OuraRtcBeacon) : OuraEvent()
@@ -161,4 +210,29 @@ sealed class OuraEvent {
 
     /** True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink. */
     val isTierB: Boolean get() = this is TierB || this is ActivityInfo
+
+    /**
+     * The record's envelope ring-time, when it carries one (battery is a plain response, not a log
+     * record). Feeds the history drain's in-session continuation cursor: open_oura's `drain_events`
+     * advances `start` past the max timestamp of EVERY event in a batch, whatever its tag.
+     * Byte-identical twin of Swift's envelopeRingTimestamp.
+     */
+    val envelopeRingTimestamp: Long?
+        get() = when (this) {
+            is Hr -> value.ringTimestamp
+            is Ibi -> value.ringTimestamp
+            is Hrv -> value.ringTimestamp
+            is Spo2 -> value.ringTimestamp
+            is Temp -> value.ringTimestamp
+            is Battery -> null
+            is SleepPhaseEvent -> value.ringTimestamp
+            is MotionEvent -> value.ringTimestamp
+            is MotionVectorEvent -> value.ringTimestamp
+            is StateEvent -> value.ringTimestamp
+            is TimeSyncEvent -> value.ringTimestamp
+            is RtcBeaconEvent -> value.ringTimestamp
+            is DebugTextEvent -> ringTimestamp
+            is TierB -> value.ringTimestamp
+            is ActivityInfo -> value.ringTimestamp
+        }
 }
