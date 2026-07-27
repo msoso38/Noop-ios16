@@ -8,9 +8,18 @@ import StrandAnalytics
 /// stated "not charging" and showed a "~2 days left" DISCHARGE estimate to a user watching it charge. The
 /// 5.0 charge bit's offset (@30) is unverified — the decoder's own docs confirm only the SoC and mV fields
 /// against a real capture — so the bit alone is not a fact worth reporting.
+///
+/// ⚠️ THESE TESTS PASSING DOES NOT MEAN THE INFERENCE WORKS. Every fixture below steps the SoC by far
+/// more than the 1.0 pp `isRising` demands, so they exercise the decision but NOT the magnitude a real
+/// charge actually produces. Mirror data (2026-07-26) shows a confirmed charge stepping +0.3…+0.7 pp per
+/// reading at a ~30 s cadence — under the threshold throughout, i.e. the inference would never fire on
+/// it. See the KNOWN ISSUE block on `StrapChargeInference` and §A6 of
+/// docs/bugs/2026-07-15-strap-battery-backfill-observability.md. A fix wants a real-cadence regression
+/// case here, not just a smaller number in these fixtures.
 final class StrapChargeInferenceTests: XCTestCase {
     private let now = 1_800_000_000
-    /// Two readings ~8 min apart, the strap's real BATTERY_LEVEL cadence.
+    /// Two readings ~8 min apart. NOTE: this was written as "the strap's real BATTERY_LEVEL cadence", and
+    /// that assumption is the bug — observed charging readings arrive ~30 s apart (see the note above).
     private func series(_ a: Double, _ b: Double, gap: Int = 8 * 60, age: Int = 60) -> [(ts: Int, soc: Double)] {
         [(ts: now - age - gap, soc: a), (ts: now - age, soc: b)]
     }

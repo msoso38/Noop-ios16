@@ -24,6 +24,39 @@ import StrandAnalytics
 ///
 /// Strictly additive: a confirmed `true` is still `true`, and inference can only ever ADD a charge, never
 /// deny one. If neither witness speaks, it answers `nil` (unknown) rather than asserting "not charging".
+///
+/// ────────────────────────────────────────────────────────────────────────────────────────────────────
+/// KNOWN ISSUE — the premise is CONFIRMED, but this threshold probably never fires. NOT YET FIXED.
+///
+/// Checked against the cloud mirror on 2026-07-26 (GitHub issues are disabled on this fork, so the
+/// finding lives here and in docs/bugs/2026-07-15-…md §A6 rather than in a tracker).
+///
+/// CONFIRMED — the bit really is wrong. One charging session with unambiguous ground truth
+/// (CHARGING_ON ×10, BATTERY_PACK_CONNECTED ×3; 2026-07-15 11:07→13:34 MDT; SoC 4.7% → 100.0%) carries
+/// `charging = false` on every one of its ~300 readings. Not `nil` — FALSE, i.e. the BATTERY_LEVEL path
+/// decoded the bit and the strap asserted "not charging" while going from nearly flat to full.
+///
+/// BUT — `isRising` requires > `chargeStepPct` (1.0 pp) between CONSECUTIVE readings, and that charge
+/// stepped +0.3…+0.7 pp per reading at a ~30 s cadence. It never once cleared 1.0. The
+/// `recentRiseWindowSeconds` comment below assumes the opposite ("~8 min apart"), which is what makes
+/// 1.0 pp look like a low bar; at the real cadence it is not. The live path looks no better: a 5/MG's
+/// live SoC is whole-percent 0x2A19, so a charge steps by exactly +1, and the strict `>` that exists to
+/// survive that quantisation also excludes exactly 1.0.
+///
+/// So `chargingEffective` likely degenerates to the raw flag and this type is inert for the very case it
+/// was written for. It is not HARMFUL — the inference is additive, so behaviour equals pre-fix — but it
+/// is not doing its job either. Do not read the passing tests as coverage: the synthetic samples in
+/// `StrapChargeInferenceTests` step by more than 1.0 pp, which is exactly why they pass.
+///
+/// LIKELY FIX: make it a RATE test (pp per unit time) instead of a fixed per-reading delta. A WHOOP 5
+/// charges at ~50 pp/h against a ~1.65 pp/h discharge — a ~30x separation that holds at any cadence,
+/// where a fixed step does not.
+///
+/// UNMEASURED, and needed before picking a constant: the `battery` table this came from is fed by the
+/// decoded OFFLOAD stream, not the live path that actually populates `LiveState.batterySamples`. The
+/// ~30 s cadence is therefore evidence about banked records; the LIVE cadence and quantisation are still
+/// unconfirmed and want a real charging session to settle.
+/// ────────────────────────────────────────────────────────────────────────────────────────────────────
 enum StrapChargeInference {
 
     /// A rise must be observed within this window to count as "charging NOW". The strap emits BATTERY_LEVEL
