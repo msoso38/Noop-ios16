@@ -30,7 +30,9 @@ class StageRowSpansTest {
 
     @Test
     fun awakeAndWakeAreAliases() {
-        // Row label "Awake" must catch both the "wake" and "Awake" segments (stageColorFor parity).
+        // Row label "Awake" must catch both the "wake" and "Awake" segments. The tint now follows from
+        // the same canonicalStage call, so this covers the colour path too — stageColorFor is private
+        // and can't be asserted on directly.
         val spans = stageRowSpans(ivs, "Awake", 3600.0)
         assertEquals(2, spans.size)
         assertEquals(0.0f, spans[0].first, 1e-6f)

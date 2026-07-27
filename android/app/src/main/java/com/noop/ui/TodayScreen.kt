@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,6 +67,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -98,6 +101,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.launch
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
@@ -134,20 +138,15 @@ import android.app.DatePickerDialog
 import android.view.HapticFeedbackConstants
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.R
-import com.noop.analytics.BaselineState
 import com.noop.analytics.Baselines
 import com.noop.analytics.BatteryEstimator
 import com.noop.analytics.ChargeDriver
 import com.noop.analytics.HydrationGoal
 import com.noop.analytics.HydrationStore
 import com.noop.analytics.ReadinessEngine
-import com.noop.analytics.RecoveryDrivers
-import com.noop.analytics.RecoveryScorer
-import com.noop.analytics.RestScorer
 import com.noop.analytics.ScoreConfidence
 import com.noop.analytics.StepsEstimateEngine
 import com.noop.analytics.StrainScorer
-import com.noop.data.AppleDaily
 import com.noop.data.DailyMetric
 import com.noop.data.HrBucket
 import com.noop.data.SleepSession
@@ -224,6 +223,7 @@ private val LIQUID_PURPLE: Color = Color(red = 0x9b / 255f, green = 0x7b / 255f,
  */
 private data class TodayLiveSnapshot(
     val connected: Boolean,
+    val bonded: Boolean,
     val hrStreaming: Boolean,
     val lastSyncAt: Long?,
     val backfilling: Boolean,
@@ -238,6 +238,7 @@ private data class TodayLiveSnapshot(
     val charging: Boolean?,
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TodayScreen(
     viewModel: AppViewModel,
@@ -267,6 +268,9 @@ fun TodayScreen(
     // The liquid header battery ring taps through to Devices (iOS parity: the battery ring → router.openDevices()).
     // Defaulted to fall back to Settings so the call site stays compiling; AppRoot binds it to the Devices route.
     onOpenDevices: () -> Unit = onOpenSettings,
+    // The #627 journal-reminder card links straight to the journal (Insights). Defaulted to a no-op so
+    // the call site stays compiling; AppRoot binds it to nav.navigateTopLevel(Insights), same as Sleep.
+    onOpenJournal: () -> Unit = {},
 ) {
     val today by viewModel.today.collectAsStateWithLifecycle()
     val alert by viewModel.healthAlert.collectAsStateWithLifecycle()
@@ -289,6 +293,7 @@ fun TodayScreen(
             val s = live
             TodayLiveSnapshot(
                 connected = s.connected,
+                bonded = s.bonded,
                 hrStreaming = s.heartRate != null,
                 lastSyncAt = s.lastSyncAt,
                 backfilling = s.backfilling,
@@ -530,17 +535,37 @@ fun TodayScreen(
         }
     }
 
-    // The latest active-energy figure (kcal) for the Calories card, the newest non-null activeKcal across
-    // the Apple-side daily aggregates, mirroring the Today Calories tile. Null hides the card's value.
-    var latestActiveKcal by remember { mutableStateOf<Double?>(null) }
+    // #616: ONE calorie definition across the card, the Key-Metrics tile and the detail — resolve per day,
+    // IMPORTED-FIRST (the phone's Apple/Health-Connect activeKcal, the figure these surfaces already showed),
+    // falling back to NOOP's on-device HR estimate (activeKcalEst) only for days the phone didn't cover.
+    // Keyed by day; `caloriesByDay` feeds the SELECTED-day value the dashboard card + Key-Metrics tile both
+    // read — day-scoped like every other card, and like steps.
+    var caloriesByDay by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
     LaunchedEffect(days) {
-        latestActiveKcal = runCatching {
-            (viewModel.repo.appleDaily("apple-health", "0000-01-01", "9999-12-31") +
-                viewModel.repo.appleDaily("health-connect", "0000-01-01", "9999-12-31"))
-                .filter { it.activeKcal != null }
-                .maxByOrNull { it.day }
-                ?.activeKcal
-        }.getOrNull()
+        caloriesByDay = runCatching {
+            val onDevice = viewModel.repo.resolvedSeries("active_kcal", "my-whoop", "0000-00-00", "9999-99-99",
+                strapDeviceId = viewModel.activeStrapId).points.associate { it.day to it.value }
+            val imported = LinkedHashMap<String, Double>()
+            for (r in viewModel.repo.appleDaily("apple-health", "0000-01-01", "9999-12-31") +
+                viewModel.repo.appleDaily("health-connect", "0000-01-01", "9999-12-31")) {
+                r.activeKcal?.takeIf { it > 0 }?.let { imported.putIfAbsent(r.day, it) }
+            }
+            (onDevice.keys + imported.keys)
+                .mapNotNull { day -> (imported[day] ?: onDevice[day])?.let { day to it } }.toMap()
+        }.getOrDefault(emptyMap())
+    }
+
+    // #616: the Calories tile's 14-day sparkline — the IMPORTED-FIRST resolved series (caloriesByDay),
+    // windowed to the trailing calendar window, so a Health-Connect / Apple-only calorie user gets a trend
+    // that matches the tile's value (not the on-device estimate alone). Mirrors restCompositeSpark's build.
+    var caloriesSpark by remember { mutableStateOf<List<Double>>(emptyList()) }
+    LaunchedEffect(caloriesByDay, selectedDay, keyMetricsWindowDays) {
+        val cutoff = selectedDay.minusDays((keyMetricsWindowDays - 1).toLong()).toString()
+        val end = selectedDay.toString()
+        caloriesSpark = caloriesByDay.entries
+            .filter { it.key in cutoff..end }
+            .sortedBy { it.key }
+            .map { it.value }
     }
 
     // HYDRATION (opt-in, default OFF), the Today "Hydration" card + its detail are hidden unless the user
@@ -598,6 +623,10 @@ fun TodayScreen(
     var showLiveSession by remember { mutableStateOf(false) }
     val liveSessionsEnabled = remember { LiveSessionPrefs.enabled(context) }
     val activeLiveSession by LiveSessionRunner.active.collectAsStateWithLifecycle()
+    // The journal widget's own opt-out (default ON). Read here too so its reorderable section emits no
+    // item when disabled — an always-present zero-height slot would leave a blank draggable gap. Same
+    // remember-once idiom the card uses; a resume/recompose re-reads it. (#656)
+    val journalReminderOn = remember { NoopPrefs.journalReminderEnabled(context) }
     // S4: the Synthesis card collapses to a one-liner that expands on tap (default collapsed). Mirrors iOS.
     var synthesisExpanded by remember { mutableStateOf(false) }
     // S5: the Key Metrics grid caps at the first METRICS_COLLAPSED_CAP tiles behind a "Show all metrics"
@@ -681,7 +710,7 @@ fun TodayScreen(
         store.post(
             UpdateItem(
                 kind = UpdateKind.READING,
-                title = "New data added",
+                title = uiString(R.string.l10n_today_screen_new_data_added_e59345b4),
                 message = "$added new $daysWord of history is ready in Trends.",
                 deepLink = "trends",
             ),
@@ -804,21 +833,24 @@ fun TodayScreen(
     // keyed by metric key ("recovery" / "strain" / "sleep_performance"); each value is the RAW source id the resolver
     // returned (e.g. "my-whoop", "my-whoop-noop", "apple-health"). resolvedSeries applies the SAME
     // imported-WHOOP > NOOP-computed > Apple-Health precedence the dashboard merge uses field-by-field
-    // (WhoopRepository.mergeDaily), so the card-level badge names the sources that ACTUALLY supplied
-    // that day's scores rather than making a blanket day-level claim. Mirrors the Swift Today lane's
-    // `provenanceByMetric` resolution exactly (the winner is the last resolved point on selectedDayKey).
-    var provenanceByMetric by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // (WhoopRepository.mergeDaily), then computed rows resolve through durable input provenance so the
+    // card-level badge names the sensor/import providers rather than where NOOP ran the math.
+    var providerByMetric by remember { mutableStateOf<Map<String, ScoreInputProvider>>(emptyMap()) }
     LaunchedEffect(days, selectedDayKey, viewModel.activeStrapId) {
-        val resolved = mutableMapOf<String, String>()
+        val resolved = mutableMapOf<String, ScoreInputProvider>()
         for (key in listOf("recovery", "strain", "sleep_performance")) {
             val win = runCatching {
                 viewModel.repo.resolvedSeries(key, "my-whoop", selectedDayKey, selectedDayKey,
                     strapDeviceId = viewModel.activeStrapId)
-                    .points.lastOrNull { it.day == selectedDayKey }?.source
+                    .points.lastOrNull { it.day == selectedDayKey }
             }.getOrNull()
-            if (win != null) resolved[key] = win
+            if (win != null) {
+                viewModel.scoreInputProvider(win.source, win.day, key)?.let {
+                    resolved[key] = it
+                }
+            }
         }
-        provenanceByMetric = resolved
+        providerByMetric = resolved
     }
 
     // LIVE in-progress Effort for TODAY (#402), mirrors the iOS TodayView live-Effort fix. The stored
@@ -860,7 +892,11 @@ fun TodayScreen(
     // (Baselines.minNightsSeed valid nights). Show honest "calibrating, N of 4 nights" progress
     // instead of a bare "No Data" so a new BLE-only user knows scores are coming, not broken. (PR #85)
     val recoveryCalibration: Int? = if (selectedDayOffset == 0) {
-        recoveryCalibrationNights(days, displayMetric?.recovery != null)
+        // Thread the persisted "Recalibrate HRV baseline" epoch (0 = none) so N folds the SAME
+        // epoch-aware history the recovery engine folds — otherwise a post-recalibration user's pre-epoch
+        // nights inflate the count past the seed gate and the score side wrongly reads NeedsStrap (Bug B).
+        val hrvEpoch = NoopPrefs.of(context).getLong(Baselines.hrvBaselineEpochKey, 0L).toDouble()
+        recoveryCalibrationNights(days, displayMetric?.recovery != null, hrvEpoch)
     } else {
         null
     }
@@ -925,6 +961,20 @@ fun TodayScreen(
             prior.recovery?.let { LastCharge(it, carriedCaption(prior.day, carryOverTodayKey)) }
         }
     }
+    var carriedRecoveryProvider by remember { mutableStateOf<ScoreInputProvider?>(null) }
+    LaunchedEffect(lastScoredRecoveryDay?.day, viewModel.activeStrapId) {
+        val carriedDay = lastScoredRecoveryDay?.day
+        carriedRecoveryProvider = if (carriedDay == null) {
+            null
+        } else {
+            runCatching {
+                viewModel.repo.resolvedSeries("recovery", "my-whoop", carriedDay, carriedDay,
+                    strapDeviceId = viewModel.activeStrapId)
+                    .points.lastOrNull { it.day == carriedDay }
+                    ?.let { viewModel.scoreInputProvider(it.source, it.day, "recovery") }
+            }.getOrNull()
+        }
+    }
 
     // Explainability (COMPONENT 2): the honest state of the score side for TODAY, scored / calibrating /
     // carried-last-night / needs-strap. One state, never a bare blank, and never a fabricated number. Only
@@ -944,11 +994,11 @@ fun TodayScreen(
 
     // One honest card-level badge, matching LiquidTodayView: identical winners collapse to one label;
     // mixed winners show at most two sources in Charge / Effort / Rest order so the pill stays compact.
-    val heroSourceLabel = remember(provenanceByMetric, viewModel.activeStrapId) {
-        heroSourceLabel(
-            rawSources = listOf("recovery", "strain", "sleep_performance")
-                .mapNotNull { provenanceByMetric[it] },
-            deviceId = viewModel.activeStrapId,
+    val heroSourceLabel = remember(providerByMetric, carriedRecoveryProvider, displayMetric?.recovery, lastScoredCharge) {
+        scoreHeroSourceLabel(
+            providerByMetric = providerByMetric,
+            carriedRecoveryProvider = carriedRecoveryProvider,
+            usesCarriedRecovery = displayMetric?.recovery == null && lastScoredCharge != null,
         )
     }
 
@@ -992,6 +1042,8 @@ fun TodayScreen(
         val hcDaysCount = viewModel.repo.appleDaily("health-connect", "0000-01-01", "9999-12-31").size
         footer = TodayFooterState(
             // fillWorkoutHrFromStrap: imported sessions carry no HR, derive it from strap samples (#77).
+            // #510: strap-native rows now read HR under their OWN recording strap (inside the fill), so a 2nd
+            // WHOOP's workouts reconcile Avg HR + Effort from their own trace; imported rows keep the default.
             recentWorkouts = viewModel.repo.fillWorkoutHrFromStrap(recentUnion),
             whoopDays = days.size,
             whoopWorkouts = whoopWorkouts.size,
@@ -1022,7 +1074,29 @@ fun TodayScreen(
             onHorizontalDrag = { _, dragAmount -> accumulatedX += dragAmount },
         )
     }
+    val canPullToSync = todayPullToSyncEnabled(liveSnap.connected, liveSnap.bonded, liveSnap.backfilling)
+    // material3 1.2.1's rememberPullToRefreshState CAPTURES the `enabled` lambda ONCE (rememberSaveable,
+    // no rememberUpdatedState), so `{ canPullToSync }` would freeze the plain Boolean from the FIRST
+    // composition — and Today usually first composes before the strap has (re)connected, leaving the
+    // gesture permanently disabled for the session. Read the stable `liveSnap` State live inside the lambda
+    // instead, so each gesture check sees the current connected/bonded/backfilling. (syncNow is triple-gated
+    // anyway; this just makes the gesture actually enable once the strap is ready.)
+    val pullToSyncState = rememberPullToRefreshState(
+        enabled = { todayPullToSyncEnabled(liveSnap.connected, liveSnap.bonded, liveSnap.backfilling) },
+    )
+    LaunchedEffect(pullToSyncState.isRefreshing, canPullToSync) {
+        if (pullToSyncState.isRefreshing) {
+            if (canPullToSync) viewModel.syncNow()
+            // Historical offloads can run for a while; the existing sync chip/note owns ongoing progress.
+            pullToSyncState.endRefresh()
+        }
+    }
 
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .nestedScroll(pullToSyncState.nestedScrollConnection),
+    ) {
     LazyScreenScaffold(
         modifier = daySwipeModifier,
         // title = null suppresses the big scaffold header (the nullable-title path); the compact
@@ -1076,7 +1150,16 @@ fun TodayScreen(
             val keyDate = runCatching { LocalDate.parse(selectedDayKey) }.getOrNull() ?: selectedDay
             keyDate.format(DateTimeFormatter.ofPattern("EEEE, d MMMM", Locale.US))
         }
-        Box(modifier = Modifier.fillMaxWidth().staggeredAppear(0)) {
+        // #486: header + wordmark + Arrange fold into ONE compact top cluster. Previously the decorative
+        // "N O O P" wordmark and the pinned "Arrange" affordance were each their own full-width list item,
+        // so the scaffold's 12dp rowSpacing left two near-empty sky bands stacked under the header ("empty
+        // space below NOOP"). Grouping them here removes those section gaps: the wordmark hangs 2dp under
+        // the title, and Arrange rides the SAME row as the wordmark (wordmark dead-centre, Arrange trailing)
+        // instead of claiming its own band.
+        Column(
+            modifier = Modifier.fillMaxWidth().staggeredAppear(0),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
             LiquidTodayHeader(
                 dayTitle = dayTitle,
                 humanDate = humanDate,
@@ -1091,16 +1174,28 @@ fun TodayScreen(
                 onOpenSettings = onOpenSettings,
                 onOpenDevices = onOpenDevices,
             )
-        }
-        }
-
-        // WORDMARK, a subtle centred "N O O P" on the sky between the header and the hero (iOS LiquidWordmark
-        // parity). White @ ~50% opacity, letter-spaced, perfectly centred; a tap plays a small random wiggle
-        // easter egg. The old Android Today had NO wordmark; this adds it. Staggered in just after the header.
-        item {
-            Box(modifier = Modifier.fillMaxWidth().staggeredAppear(0)) {
+            // WORDMARK (iOS LiquidWordmark parity): a subtle centred "N O O P" @ ~50% opacity, with a
+            // tap easter egg. Shares its row with the Arrange affordance — wordmark centred, Arrange
+            // aligned to the trailing edge — so neither needs its own empty band.
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 LiquidWordmark()
+                // #today-layout: a small affordance to REORDER the sections below (an alternative to
+                // holding + dragging the cards directly). Opens a Today-local dialog — no nav destination.
+                TextButton(
+                    onClick = { showLayoutEditor = true },
+                    colors = ButtonDefaults.textButtonColors(contentColor = Palette.textTertiary),
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                ) {
+                    Icon(
+                        Icons.Filled.SwapVert,
+                        contentDescription = uiString(R.string.l10n_today_screen_arrange_today_sections_9675862b),
+                        modifier = Modifier.size(Metrics.iconSmall),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(uiString(R.string.l10n_today_screen_arrange_cfdd099c), style = NoopType.footnote)
+                }
             }
+        }
         }
 
         // A "workout in progress" indicator whenever a manual workout is active (iOS parity: the Today
@@ -1159,7 +1254,14 @@ fun TodayScreen(
             // Today" tap there flips calibratingDismissed back via the shared restore path above.
             if (selectedDayOffset == 0 && scoreState is ScoreState.Calibrating && !calibratingDismissed) {
                 Box(modifier = Modifier.fillMaxWidth()) {
-                    ScoreStateNote(scoreState)
+                    ScoreStateNote(
+                        scoreState,
+                        restartCause = ScoreState.calibrationRestartCause(
+                            ScoreState.recalibrationDay(
+                                NoopPrefs.of(context).getLong(Baselines.hrvBaselineEpochKey, 0L),
+                            ),
+                        ),
+                    )
                     if (updateStore != null) {
                         TodayCardDismissButton(
                             modifier = Modifier.align(Alignment.TopEnd),
@@ -1177,7 +1279,7 @@ fun TodayScreen(
             if (selectedDayOffset != 0 || !scoresBuildingDismissed) {
                 Box(modifier = Modifier.fillMaxWidth()) {
                     DataPendingNote(
-                        title = "Live now. Your scores are building.",
+                        title = uiString(R.string.l10n_today_screen_live_now_your_scores_are_building_cb05a4e8),
                         body = "Your live heart rate is working from the strap, and recovery, strain " +
                             "and sleep build from it over your next few nights of wear, sharpening as it " +
                             "learns your baseline. Want your full history instantly? Import your WHOOP " +
@@ -1203,24 +1305,8 @@ fun TodayScreen(
 
         if (alert != null) item { IllnessBanner(alert!!) }
 
-        // #today-layout: a small right-aligned affordance to REORDER the sections below (an alternative to
-        // holding + dragging the cards directly). Opens a Today-local dialog — no new nav destination.
-        item {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(
-                    onClick = { showLayoutEditor = true },
-                    colors = ButtonDefaults.textButtonColors(contentColor = Palette.textTertiary),
-                ) {
-                    Icon(
-                        Icons.Filled.SwapVert,
-                        contentDescription = "Arrange Today sections",
-                        modifier = Modifier.size(Metrics.iconSmall),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text("Arrange", style = NoopType.footnote)
-                }
-            }
-        }
+        // #486: the "Arrange" affordance moved UP into the header/wordmark cluster (see above) so it no
+        // longer sits alone in its own full-width band here. It stays pinned; only its position changed.
 
         // #today-layout: EVERY Today section — including the Charge/Effort/Rest hero and the Start-session
         // entry — renders in the user's saved order (TodayLayoutPrefs); only the top bar + this Arrange
@@ -1248,6 +1334,8 @@ fun TodayScreen(
                     selectedDayOffset == 0 && (liveSessionsEnabled || activeLiveSession != null)
                 TodaySection.YOUR_CARDS ->
                     selectedDayOffset == 0 && visibleDashboardCards.isNotEmpty()
+                TodaySection.JOURNAL ->
+                    selectedDayOffset == 0 && journalReminderOn
                 else -> true
             }
             if (!sectionVisible) return@forEach
@@ -1316,7 +1404,7 @@ fun TodayScreen(
                                         modifier = Modifier.size(Metrics.iconSmall),
                                     )
                                     Text(
-                                        "No cardio load yet. Effort builds once your heart rate climbs into your effort " +
+                                        uiString(R.string.l10n_today_screen_no_cardio_load_yet_effort_builds_e952006c) +
                                             "zone (around 50% of your heart-rate reserve). A calm day honestly reads near zero.",
                                         style = NoopType.footnote,
                                         color = Palette.textTertiary,
@@ -1361,22 +1449,15 @@ fun TodayScreen(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.Top) {
                                 Box(modifier = Modifier.weight(1f)) {
                                     SectionHeader("Key Metrics", overline = dayLabel, trailing = trendWindowLabel(keyMetricsWindowDays))
                                 }
-                                TextButton(
+                                TodayEditAction(
                                     onClick = { showMetricsEditor = true },
-                                    colors = ButtonDefaults.textButtonColors(contentColor = Palette.accent),
-                                ) {
-                                    Icon(
-                                        Icons.Filled.Tune,
-                                        contentDescription = "Edit Key Metrics",
-                                        modifier = Modifier.size(Metrics.iconSmall),
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Edit", style = NoopType.footnote)
-                                }
+                                    contentDescription = uiString(R.string.l10n_today_screen_edit_key_metrics_f95e61a4),
+                                    contentAlignment = Alignment.TopCenter,
+                                )
                             }
                             Box(modifier = Modifier.fillMaxWidth().staggeredAppear(stagger)) {
                                 MetricGrid(
@@ -1392,6 +1473,8 @@ fun TodayScreen(
                                     profileWeightKg = profileWeightKg,
                                     importedStepsForDay = importedStepsForDay,
                                     estimatedStepsForDay = stepsEstForDay,
+                                    caloriesForDay = caloriesByDay[selectedDayKey],   // #616: imported-first per day
+                                    caloriesSpark = caloriesSpark,                    // #616: imported-first trend
                                     stepActivityClassForDay = stepActivityClassForDay,
                                     stepsEstimateCaption = stepsEstimateCaption(profileStore),
                                     restScore = restScoreForDay,
@@ -1441,7 +1524,7 @@ fun TodayScreen(
                             vitality = vitalityToday,
                             importedStepsForDay = importedStepsForDay,
                             estimatedStepsForDay = stepsEstForDay,
-                            latestActiveKcal = latestActiveKcal,
+                            caloriesForDay = caloriesByDay[selectedDayKey],
                             hydrationTotalMl = hydrationTotalMl,
                             hydrationGoalMl = hydrationGoalMl,
                             onOpenHydration = onOpenHydration,
@@ -1450,6 +1533,15 @@ fun TodayScreen(
                             onOpenSleep = onOpenSleep,
                             onOpenCoupled = onOpenCoupled,
                             onCustomise = { showDashboardEditor = true },
+                        )
+                        // #656: the persistent journal widget (last-7-days strip + tap-through). Now a
+                        // reorderable section like the others — hold-drag or Arrange moves it. Today-only
+                        // and enabled-gated at the loop level (sectionVisible) so it never leaves a blank
+                        // draggable slot. Twin of iOS LiquidTodayView's `.journal` arm.
+                        TodaySection.JOURNAL -> JournalReminderCard(
+                            viewModel = viewModel,
+                            days = days,
+                            onOpenJournal = onOpenJournal,
                         )
                     }
                 }
@@ -1470,6 +1562,17 @@ fun TodayScreen(
                 strapBatteryEstimate = if (liveSnap.connected) batteryEstimateText else null,
                 expanded = sourcesExpanded,
                 onToggle = { sourcesExpanded = !sourcesExpanded },
+            )
+        }
+    }
+        // Material3's PullToRefreshContainer draws its indicator circle even at rest (progress 0, not
+        // refreshing), so an idle Today showed a permanent grey dot at the top (#582). Compose it only
+        // while a pull is in progress or a sync is running — the pull GESTURE flows through the Box's
+        // nestedScroll above, not this container, so gating the visual can't disable pull-to-sync.
+        if (pullToSyncState.progress > 0f || pullToSyncState.isRefreshing) {
+            PullToRefreshContainer(
+                state = pullToSyncState,
+                modifier = Modifier.align(Alignment.TopCenter),
             )
         }
     }
@@ -1623,7 +1726,7 @@ private fun WorkoutInProgressCard(
             .liquidPress(interaction)
             .clickable(interactionSource = interaction, indication = null, onClick = onReturn)
             .semantics(mergeDescendants = true) {
-                contentDescription = "Workout in progress, $sportLabel, $elapsed. Return to workout."
+                contentDescription = uiString(R.string.l10n_today_screen_workout_in_progress_sportlabel_elapsed_return_95ce4bda, sportLabel, elapsed)
             },
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(Metrics.space12)) {
@@ -1638,7 +1741,7 @@ private fun WorkoutInProgressCard(
                 )
                 Spacer(Modifier.width(Metrics.space8))
                 Text(
-                    "WORKOUT IN PROGRESS",
+                    uiString(R.string.l10n_today_screen_workout_in_progress_af2322c9),
                     style = NoopType.overline,
                     color = Palette.metricRose,
                 )
@@ -1664,7 +1767,7 @@ private fun WorkoutInProgressCard(
                         containerColor = Palette.accent, contentColor = Palette.surfaceBase,
                     ),
                 ) {
-                    Text("Return to workout", style = NoopType.captionNumber)
+                    Text(uiString(R.string.l10n_today_screen_return_to_workout_30dc5509), style = NoopType.captionNumber)
                     Spacer(Modifier.width(Metrics.space6))
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -1719,7 +1822,7 @@ private fun LiveSessionEntryCard(onOpen: () -> Unit) {
             .liquidPress(interaction)
             .clickable(interactionSource = interaction, indication = null, onClick = onOpen)
             .semantics(mergeDescendants = true) {
-                contentDescription = "$title, beta. $detail"
+                contentDescription = uiString(R.string.l10n_today_screen_title_beta_detail_6b39ae21, title, detail)
             },
     ) {
         Row(
@@ -1766,7 +1869,7 @@ private fun TodayCardDismissButton(onClick: () -> Unit, modifier: Modifier = Mod
         onClick = onClick,
         modifier = modifier
             .size(Metrics.iconButton)
-            .semantics { contentDescription = "Dismiss to Updates" },
+            .semantics { contentDescription = uiString(R.string.l10n_today_screen_dismiss_to_updates_2c7915b8) },
     ) {
         Icon(
             Icons.Filled.Close,
@@ -1794,7 +1897,7 @@ private fun QuickActionDisc(onClick: () -> Unit) {
                 indication = null,
                 onClick = onClick,
             )
-            .semantics { contentDescription = "Quick actions" },
+            .semantics { contentDescription = uiString(R.string.l10n_today_screen_quick_actions_e47e8042) },
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -1851,13 +1954,13 @@ private fun ScoringGuideIntroCard(onOpen: () -> Unit, onDismiss: () -> Unit) {
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("New here?", style = NoopType.headline, color = Palette.textPrimary)
+                Text(uiString(R.string.l10n_today_screen_new_here_b81f2e17), style = NoopType.headline, color = Palette.textPrimary)
                 Spacer(Modifier.weight(1f))
                 IconButton(
                     onClick = onDismiss,
                     modifier = Modifier
                         .size(Metrics.iconButton)
-                        .semantics { contentDescription = "Dismiss" },
+                        .semantics { contentDescription = uiString(R.string.l10n_today_screen_dismiss_70afe9ef) },
                 ) {
                     Icon(
                         Icons.Filled.Close,
@@ -1868,75 +1971,17 @@ private fun ScoringGuideIntroCard(onOpen: () -> Unit, onDismiss: () -> Unit) {
                 }
             }
             Text(
-                "See how Charge, Effort and Rest are calculated, and how they differ from WHOOP.",
+                uiString(R.string.l10n_today_screen_see_how_charge_effort_and_rest_80243197),
                 style = NoopType.subhead,
                 color = Palette.textSecondary,
             )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onOpen) {
-                    Text("See how it works", style = NoopType.captionNumber, color = Palette.accent)
+                    Text(uiString(R.string.l10n_today_screen_see_how_it_works_f7b38f07), style = NoopType.captionNumber, color = Palette.accent)
                 }
             }
         }
     }
-}
-
-// MARK: - Day navigation (#817) - chevron arrows + horizontal swipe, iOS parity
-//
-// `selectedDayOffset` is days-back-from-today (0 = today, 1 = yesterday, …). The header chevrons and a
-// horizontal swipe across the dashboard both move it: older increments the offset (no upper bound - you
-// can browse arbitrarily far back), newer decrements it but is CLAMPED at 0 so a future day can never be
-// selected. These pure helpers hold that clamp so it's covered by a JVM test and shared by both the
-// arrow taps and the swipe handler, matching the iOS DayNavBar's `canGoNewer` / `selectedOffset ± 1`.
-
-/**
- * #860 item 1: the launch day-landing policy, as ONE pure decision so the rule can't drift between the
- * screen and its test and stays byte-identical to the iOS `TodayView.launchDayOffset` twin. A FRESH-PROCESS
- * launch ALWAYS lands on today (offset 0), even when today has no data yet and the only banked data is N days
- * back - that exact case is what stranded a calibrating user on an old day after an app update (the reporter's
- * case on v7.6.0). A non-fresh (in-session) call returns [savedOffset] UNCHANGED, so tabbing away to an old
- * day and coming back within the same process preserves the user-navigated day (#739/#614). [hasTodayData]
- * and [latestDataDayBack] are accepted so the signature documents the inputs the retired auto-land consumed,
- * but on a fresh launch they intentionally have NO effect - the old "land on the most recent data day"
- * behaviour (#605/#739) is retired. Mirror EXACTLY in Swift.
- */
-internal fun launchDayOffset(
-    isFreshLaunch: Boolean,
-    savedOffset: Int,
-    hasTodayData: Boolean,
-    latestDataDayBack: Int,
-): Int {
-    // Fresh process: snap to today unconditionally. The data-shape inputs are deliberately ignored so a
-    // calibrating user whose newest data is days back still opens on today, not on that old day.
-    if (!isFreshLaunch) return savedOffset
-    return 0
-}
-
-/** The offset for one step toward an OLDER day (previous). Unbounded above - history runs as far back as
- *  the data does. */
-internal fun dayNavOlder(selectedOffset: Int): Int = selectedOffset + 1
-
-/** The offset for one step toward a NEWER day (next), CLAMPED at 0 so a future day is never selectable. */
-internal fun dayNavNewer(selectedOffset: Int): Int = (selectedOffset - 1).coerceAtLeast(0)
-
-/** True when there IS a newer day to step to (i.e. we're not already on today). Gates the ▶ chevron's
- *  enabled state, mirroring the iOS `canGoNewer`. */
-internal fun dayNavCanGoNewer(selectedOffset: Int): Boolean = selectedOffset > 0
-
-/** The minimum horizontal drag (px) that counts as a day-change swipe, so a small wobble during a
- *  vertical scroll doesn't flip the day. ~64dp at mdpi; the handler passes density-scaled px. */
-internal const val DAY_NAV_SWIPE_THRESHOLD_DP: Float = 64f
-
-/**
- * Resolve a completed horizontal swipe to the next [selectedDayOffset]. A drag whose total horizontal
- * travel doesn't clear [thresholdPx] returns the offset UNCHANGED (treated as a non-swipe). A rightward
- * swipe (positive [dragX], the natural "go back" / reveal-the-past gesture) steps to the OLDER day; a
- * leftward swipe steps to the NEWER day, clamped at today. Pure so the gesture mapping is unit-tested.
- */
-internal fun dayNavSwipeTarget(selectedOffset: Int, dragX: Float, thresholdPx: Float): Int = when {
-    kotlin.math.abs(dragX) < thresholdPx -> selectedOffset
-    dragX > 0f -> dayNavOlder(selectedOffset)
-    else -> dayNavNewer(selectedOffset)
 }
 
 // MARK: - Liquid Today header (iOS LiquidTodayView.scene parity)
@@ -2006,14 +2051,16 @@ private fun LiquidTodayHeader(
         Column(
             modifier = Modifier
                 .weight(1f)
-                .clip(RoundedCornerShape(Metrics.cornerSm))
+                // #492: NO rounded clip here. With indication = null there's no ripple to shape, and the
+                // rounded corners were clipping the title/date text's bottom-left (the "W" of "Wednesday").
+                // iOS's title Button uses a plain contentShape(Rectangle()) with no clip — mirror that.
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClickLabel = "Change day",
                     onClick = { showPicker = true },
                 )
-                .semantics { contentDescription = "$dayTitle, $humanDate. Tap to pick a day, swipe to change day." },
+                .semantics { contentDescription = uiString(R.string.l10n_today_screen_daytitle_humandate_tap_to_pick_a_7e12ce96, dayTitle, humanDate) },
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
@@ -2057,7 +2104,7 @@ private fun LiquidTodayHeader(
                         indication = null,
                         onClick = onOpenSettings,
                     )
-                    .semantics { contentDescription = "Profile and settings" },
+                    .semantics { contentDescription = uiString(R.string.l10n_today_screen_profile_and_settings_9b3d12f2) },
                 contentAlignment = Alignment.Center,
             ) {
                 ProfileAvatar(size = 34.dp)
@@ -2085,16 +2132,18 @@ private fun SyncStatusChip(
     lastSyncAt: Long?,
     historySyncExperimental: Boolean,
 ) {
-    when {
-        backfilling -> ChipCapsule(
-            Icons.Filled.Autorenew, "$chunks", Palette.accent, "Syncing strap history, $chunks chunks")
-        lastSyncAt != null -> ChipCapsule(
-            Icons.Filled.Check, shortSyncAgo(lastSyncAt), Palette.textSecondary,
-            "Strap history synced ${shortSyncAgo(lastSyncAt)} ago")
-        historySyncExperimental -> ChipCapsule(
-            Icons.Filled.Check, "live", Palette.textSecondary,
-            "Connected; strap history sync is experimental on this strap")
-        // else: cold start — render nothing; the building-scores note covers it.
+    when (val state = SyncChipState.resolve(backfilling, chunks, lastSyncAt, historySyncExperimental)) {
+        is SyncChipState.Syncing -> ChipCapsule(
+            Icons.Filled.Autorenew, "${state.chunks}", Palette.accent,
+            uiString(R.string.l10n_today_screen_sync_chip_syncing_desc_bfc290e7, state.chunks))
+        is SyncChipState.Synced -> ChipCapsule(
+            Icons.Filled.Check, state.agoText, Palette.textSecondary,
+            uiString(R.string.l10n_today_screen_sync_chip_synced_desc_4d255944, state.agoText))
+        SyncChipState.ExperimentalLive -> ChipCapsule(
+            Icons.Filled.Check, uiString(R.string.l10n_today_screen_sync_chip_live_98aadb37), Palette.textSecondary,
+            uiString(R.string.l10n_today_screen_sync_chip_experimental_desc_3de06a70))
+        SyncChipState.Hidden -> Unit
+        // cold start — render nothing; the building-scores note covers it.
     }
 }
 
@@ -2111,18 +2160,6 @@ private fun ChipCapsule(icon: ImageVector, text: String, tint: Color, desc: Stri
     ) {
         Icon(icon, contentDescription = desc, tint = tint, modifier = Modifier.size(14.dp))
         Text(text, style = NoopType.caption, color = tint)
-    }
-}
-
-/** Compact relative age for the header chip ("now" / "Nm" / "Nh" / "Nd") from a unix-SECONDS timestamp —
- *  deliberately terse. Twin of the iOS `SyncStatusChip.shortAgo`. */
-private fun shortSyncAgo(unixSec: Long): String {
-    val secs = (System.currentTimeMillis() / 1000L - unixSec).coerceAtLeast(0)
-    return when {
-        secs < 60 -> "now"
-        secs < 3600 -> "${secs / 60}m"
-        secs < 86_400 -> "${secs / 3600}h"
-        else -> "${secs / 86_400}d"
     }
 }
 
@@ -2182,7 +2219,7 @@ private fun LiquidBatteryRing(batteryPct: Double?, onClick: () -> Unit) {
                 )
             }
             Text(
-                "${pct.roundToInt()}",
+                uiString(R.string.l10n_today_screen_pct_roundtoint_05ba4549, pct.roundToInt()),
                 style = NoopType.number(9f, weight = FontWeight.Bold),
                 color = Color.White.copy(alpha = 0.9f),
             )
@@ -2214,10 +2251,10 @@ private fun LiquidWordmark() {
     var egg by remember { mutableIntStateOf(0) }      // which egg to play (drives the LaunchedEffect)
 
     val view = LocalView.current
-    val animRot by animateFloatAsState(rot, tween(durationMillis = if (reduced) 0 else 520), label = "wordmark-rot")
-    val animScaleX by animateFloatAsState(scaleX, tween(durationMillis = if (reduced) 0 else 380), label = "wordmark-sx")
-    val animScaleY by animateFloatAsState(scaleY, tween(durationMillis = if (reduced) 0 else 380), label = "wordmark-sy")
-    val animDx by animateFloatAsState(dx, tween(durationMillis = if (reduced) 0 else 420), label = "wordmark-dx")
+    val animRot by animateFloatAsState(rot, tween(durationMillis = if (reduced) 0 else 520), label = uiString(R.string.l10n_today_screen_wordmark_rot_21de874b))
+    val animScaleX by animateFloatAsState(scaleX, tween(durationMillis = if (reduced) 0 else 380), label = uiString(R.string.l10n_today_screen_wordmark_sx_68fa7b60))
+    val animScaleY by animateFloatAsState(scaleY, tween(durationMillis = if (reduced) 0 else 380), label = uiString(R.string.l10n_today_screen_wordmark_sy_7b8bd743))
+    val animDx by animateFloatAsState(dx, tween(durationMillis = if (reduced) 0 else 420), label = uiString(R.string.l10n_today_screen_wordmark_dx_d428284f))
 
     // On each tap, kick a value to an extreme then settle it back so the animateFloatAsState eases through
     // to rest — a natural wobble without hand-authored keyframes. Six variants, chosen at random per tap.
@@ -2304,11 +2341,6 @@ private fun ScoreHeroRow(
     // count-up both honour Reduce Motion internally, so this is purely a "don't animate an empty hero" cost
     // gate. A carried Charge counts as data (its dimmed vessel should slosh like the Rest one).
     val animated = recovery != null || strain != null || restScore != null || lastScoredCharge != null
-    var sourceBadgeHeightPx by remember(heroSourceLabel) { mutableIntStateOf(0) }
-    val sourceBadgeHalfHeight = with(LocalDensity.current) {
-        if (sourceBadgeHeightPx > 0) (sourceBadgeHeightPx / 2f).toDp()
-        else Metrics.sourceBadgeHeight / 2
-    }
 
     Box(
         modifier = Modifier
@@ -2423,12 +2455,9 @@ private fun ScoreHeroRow(
                                 // Measure the full label even when it is wider than the Rest vessel, then
                                 // let it overflow left while preserving the vessel-aligned trailing edge.
                                 .wrapContentWidth(unbounded = true, align = Alignment.End)
-                                .onSizeChanged { sourceBadgeHeightPx = it.height }
-                                // The row starts one space16 inside the card; lifting by that plus half the
-                                // measured badge height puts its centre exactly on the top border, including
-                                // when Android font scaling grows it above the canonical compact height.
-                                .offset(y = -(Metrics.space16 + sourceBadgeHalfHeight))
-                                .semantics { contentDescription = "Source: $heroSourceLabel" },
+                                // Match iOS: centre the pill on the card border, aligned with the Rest vessel.
+                                .offset(y = -(Metrics.space16 + Metrics.sourceBadgeHeight / 2))
+                                .semantics { contentDescription = uiString(R.string.l10n_today_screen_source_herosourcelabel_d3363687, heroSourceLabel) },
                         )
                     }
                 }
@@ -2502,7 +2531,7 @@ private fun HeroRingColumn(
                  maxLines = 1, overflow = TextOverflow.Ellipsis)
             Icon(
                 Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = "How ${domain.label} is calculated",
+                contentDescription = uiString(R.string.l10n_today_screen_how_domain_label_is_calculated_8897768c, domain.label),
                 tint = Palette.textSecondary.copy(alpha = 0.6f),
                 modifier = Modifier.size(14.dp),
             )
@@ -2627,9 +2656,16 @@ private fun SynthesisHeroCard(
         // the SAME in both states, only the detail body and chrome fold, never the read (#506).
         val status = if (recoveryCalibration != null) "Calibrating" else synthesisWord(recovery)
         val detail = if (recoveryCalibration != null) {
-            // Comma (not the old em-dash) to match the Swift canonical synthesis copy VERBATIM
-            // (TodayView "Learning your baseline, N of M nights.") and the no-em-dash standing rule.
-            "Learning your baseline, $recoveryCalibration of ${Baselines.minNightsSeed} nights."
+            // #612: if the baseline aged out silently — connected, but no new night for > staleDays — say WHY
+            // it's calibrating instead of only "learning your baseline". `stale` is always > staleDays (14).
+            val stale = Baselines.nightsSinceNewestValidNight(days.map { it.day }, days.map { it.avgHrv }, logicalDayKeyNow())
+            if (stale != null && stale > Baselines.staleDays) {
+                uiString(R.string.l10n_today_screen_no_new_nights_from_your_strap_for_stale_days_8863bcfe, stale)
+            } else {
+                // Comma (not the old em-dash) to match the Swift canonical synthesis copy VERBATIM
+                // (TodayView "Learning your baseline, N of M nights.") and the no-em-dash standing rule.
+                "Learning your baseline, $recoveryCalibration of ${Baselines.minNightsSeed} nights."
+            }
         } else if (carriedDay != null) {
             // Carried prior-day read, summarise that day + stamp it so it isn't passed off as today's.
             synthesisDetail(carriedDay) + " ${carriedCaption(carriedDay.day)}."
@@ -2677,7 +2713,7 @@ private fun SynthesisHeroCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("SYNTHESIS", style = NoopType.overline, color = Palette.textTertiary)
+                        Text(uiString(R.string.l10n_today_screen_synthesis_876bc749), style = NoopType.overline, color = Palette.textTertiary)
                         Text(
                             status,
                             style = NoopType.headline,
@@ -2713,7 +2749,7 @@ private fun ReadinessHeroPill(word: String, level: ReadinessEngine.Level, onTap:
             .border(1.dp, tone.copy(alpha = 0.32f), RoundedCornerShape(50))
             .clickable(onClickLabel = "See your full readiness", onClick = onTap)
             .padding(horizontal = 10.dp, vertical = 5.dp)
-            .semantics { contentDescription = "Readiness: $word" },
+            .semantics { contentDescription = uiString(R.string.l10n_today_screen_readiness_word_749b3330, word) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(word.uppercase(), style = NoopType.overline, color = tone)
@@ -2731,9 +2767,9 @@ private fun RingEmptyOverlay(
 ) {
     if (calibratingNights != null) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Calibrating", style = NoopType.headline, color = Palette.textTertiary, maxLines = 1)
+            Text(uiString(R.string.l10n_today_screen_calibrating_37c2c9bd), style = NoopType.headline, color = Palette.textTertiary, maxLines = 1)
             Text(
-                "$calibratingNights of ${Baselines.minNightsSeed}",
+                uiString(R.string.l10n_today_screen_calibratingnights_of_baselines_minnightsseed_3b76e55c, calibratingNights, Baselines.minNightsSeed),
                 style = NoopType.footnote,
                 color = Palette.textSecondary,
                 maxLines = 1,
@@ -2755,9 +2791,9 @@ private fun RingNoData() {
 @Composable
 private fun RingNeedsTrackedNight() {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Calibrating", style = NoopType.headline, color = Palette.textTertiary, maxLines = 1)
+        Text(uiString(R.string.l10n_today_screen_calibrating_37c2c9bd), style = NoopType.headline, color = Palette.textTertiary, maxLines = 1)
         Text(
-            "needs a tracked night",
+            uiString(R.string.l10n_today_screen_needs_a_tracked_night_ccfd532a),
             style = NoopType.footnote,
             color = Palette.textSecondary,
             maxLines = 1,
@@ -2806,19 +2842,19 @@ private fun HeroMetricRows(day: DailyMetric?, carriedDay: DailyMetric? = null, v
                 )
             }
             HeroVitalRow(
-                label = "Heart-rate variability",
+                label = uiString(R.string.l10n_today_screen_heart_rate_variability_a137586d),
                 value = hrv?.let { "${it.roundToInt()} ms" } ?: NO_DATA,
                 tint = Palette.metricCyan,
                 fraction = hrv?.let { (it / 120.0).coerceIn(0.0, 1.0) },
             )
             HeroVitalRow(
-                label = "Resting heart rate",
+                label = uiString(R.string.l10n_today_screen_resting_heart_rate_348928d6),
                 value = rhr?.let { "$it bpm" } ?: NO_DATA,
                 tint = Palette.metricRose,
                 fraction = rhr?.let { (it / 100.0).coerceIn(0.0, 1.0) },
             )
             HeroVitalRow(
-                label = "Breaths per minute",
+                label = uiString(R.string.l10n_today_screen_breaths_per_minute_2b197c54),
                 value = resp?.let { String.format(Locale.US, "%.1f rpm", it) } ?: NO_DATA,
                 tint = Palette.accent,
                 fraction = resp?.let { (it / 24.0).coerceIn(0.0, 1.0) },
@@ -2841,7 +2877,7 @@ private fun HeroVitalRow(label: String, value: String, tint: Color, fraction: Do
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .semantics { contentDescription = "$label $value" },
+            .semantics { contentDescription = uiString(R.string.l10n_today_screen_label_value_b781d590, label, value) },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Metrics.space12),
     ) {
@@ -2868,6 +2904,41 @@ private fun HeroVitalRow(label: String, value: String, tint: Color, fraction: Do
 // big white value + small unit + chevron on the right. A card with no value yet renders a dash rather than
 // vanishing. Mirrors iOS TodayView.yourCardsSection / pinnedCardRow / dashboardValue / dashboardTint.
 
+/** Shared Today section edit affordance. The 48dp box keeps the whole control easy to tap while its
+ *  visible content stays pinned to the overline instead of centring against a two-line header. */
+@Composable
+private fun TodayEditAction(
+    contentDescription: String,
+    onClick: () -> Unit,
+    contentAlignment: Alignment = Alignment.Center,
+) {
+    Box(
+        modifier = Modifier
+            .height(48.dp)
+            .clickable(onClick = onClick)
+            .semantics { this.contentDescription = contentDescription }
+            .padding(horizontal = Metrics.space12),
+    ) {
+        Row(
+            modifier = Modifier.align(contentAlignment),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Tune,
+                contentDescription = null,
+                tint = Palette.accent,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(Metrics.space4))
+            Text(
+                uiString(R.string.l10n_today_screen_edit_5301648d).uppercase(Locale.getDefault()),
+                style = NoopType.overline.copy(letterSpacing = 0.4.sp),
+                color = Palette.accent,
+            )
+        }
+    }
+}
+
 @Composable
 private fun YourCardsSection(
     cards: List<DashboardCard>,
@@ -2881,7 +2952,7 @@ private fun YourCardsSection(
     vitality: Double?,
     importedStepsForDay: Int?,
     estimatedStepsForDay: Int?,
-    latestActiveKcal: Double?,
+    caloriesForDay: Double?,
     hydrationTotalMl: Double,
     hydrationGoalMl: Int,
     onOpenHydration: () -> Unit,
@@ -2893,26 +2964,13 @@ private fun YourCardsSection(
 ) {
     Box(modifier = Modifier.fillMaxWidth().staggeredAppear(2)) {
         Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
-            // Header: "YOUR CARDS" overline + a right-aligned blue CUSTOMISE action (the WHOOP ✎ affordance).
+            // Header: "YOUR CARDS" overline + a right-aligned blue EDIT action (the WHOOP ✎ affordance).
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Overline("Your cards", modifier = Modifier.weight(1f))
-                TextButton(
+                TodayEditAction(
                     onClick = onCustomise,
-                    colors = ButtonDefaults.textButtonColors(contentColor = Palette.accent),
-                    modifier = Modifier.semantics { contentDescription = "Customise your cards" },
-                ) {
-                    Icon(
-                        Icons.Filled.Tune,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        "CUSTOMISE",
-                        style = NoopType.overline.copy(letterSpacing = 0.4.sp),
-                        color = Palette.accent,
-                    )
-                }
+                    contentDescription = uiString(R.string.l10n_today_screen_customise_your_cards_2428d761),
+                )
             }
             cards.forEach { card ->
                 DashboardCardRow(
@@ -2929,7 +2987,7 @@ private fun YourCardsSection(
                         vitality = vitality,
                         importedStepsForDay = importedStepsForDay,
                         estimatedStepsForDay = estimatedStepsForDay,
-                        latestActiveKcal = latestActiveKcal,
+                        caloriesForDay = caloriesForDay,
                         hydrationTotalMl = hydrationTotalMl,
                         hydrationGoalMl = hydrationGoalMl,
                     ),
@@ -3118,7 +3176,7 @@ private fun dashboardCardValue(
     vitality: Double?,
     importedStepsForDay: Int?,
     estimatedStepsForDay: Int?,
-    latestActiveKcal: Double?,
+    caloriesForDay: Double?,
     hydrationTotalMl: Double,
     hydrationGoalMl: Int,
 ): String {
@@ -3151,7 +3209,7 @@ private fun dashboardCardValue(
             real ?: est ?: NO_DATA
         }
         DashboardCard.CALORIES ->
-            withUnit(latestActiveKcal?.let { intStringGrouped(it) } ?: NO_DATA)
+            withUnit(caloriesForDay?.let { intStringGrouped(it) } ?: NO_DATA)
         DashboardCard.STRESS ->
             // #706/#684: Stress is baseline-relative, so until the strap has banked enough worn nights to
             // seed the 30-day RHR/HRV baseline StressScreen reads, the front card has no number to show. The
@@ -3215,7 +3273,7 @@ private fun DashboardCardRow(
             }
             // iOS row padding: 14h / 11v (tighter than the old 13/11 icon-box row).
             .padding(horizontal = 14.dp, vertical = 11.dp)
-            .semantics { contentDescription = "${card.title}: $value" },
+            .semantics { contentDescription = uiString(R.string.l10n_today_screen_card_title_value_e4bb76b3, card.title, value) },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -3334,9 +3392,9 @@ private fun DashboardCardsEditorDialog(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("My Dashboard", style = NoopType.title2, color = Palette.textPrimary)
+                    Text(uiString(R.string.l10n_today_screen_my_dashboard_a7a19e72), style = NoopType.title2, color = Palette.textPrimary)
                     Text(
-                        "Choose which cards show on Today and reorder them with the arrows. " +
+                        uiString(R.string.l10n_today_screen_choose_which_cards_show_on_today_f79942e1) +
                             "Cards with no value yet show a dash.",
                         style = NoopType.subhead,
                         color = Palette.textSecondary,
@@ -3363,7 +3421,7 @@ private fun DashboardCardsEditorDialog(
                                     uncheckedTrackColor = Palette.surfaceInset,
                                     uncheckedBorderColor = Palette.hairline,
                                 ),
-                                modifier = Modifier.semantics { contentDescription = "Show ${item.card.title}" },
+                                modifier = Modifier.semantics { contentDescription = uiString(R.string.l10n_today_screen_show_item_card_title_7844540d, item.card.title) },
                             )
                             Spacer(Modifier.width(12.dp))
                             Text(
@@ -3379,7 +3437,7 @@ private fun DashboardCardsEditorDialog(
                             ) {
                                 Icon(
                                     Icons.Filled.KeyboardArrowUp,
-                                    contentDescription = "Move ${item.card.title} up",
+                                    contentDescription = uiString(R.string.l10n_today_screen_move_item_card_title_up_61a1b306, item.card.title),
                                     tint = if (index > 0) Palette.textSecondary else Palette.textTertiary,
                                     modifier = Modifier.size(Metrics.iconSmall),
                                 )
@@ -3391,7 +3449,7 @@ private fun DashboardCardsEditorDialog(
                             ) {
                                 Icon(
                                     Icons.Filled.KeyboardArrowDown,
-                                    contentDescription = "Move ${item.card.title} down",
+                                    contentDescription = uiString(R.string.l10n_today_screen_move_item_card_title_down_abd8549a, item.card.title),
                                     tint = if (index < items.lastIndex) Palette.textSecondary else Palette.textTertiary,
                                     modifier = Modifier.size(Metrics.iconSmall),
                                 )
@@ -3414,7 +3472,7 @@ private fun DashboardCardsEditorDialog(
                                 .forEach { items.add(EditableDashboardCard(it, false)) }
                         },
                         colors = ButtonDefaults.textButtonColors(contentColor = Palette.textSecondary),
-                    ) { Text("Reset", style = NoopType.body) }
+                    ) { Text(uiString(R.string.l10n_today_screen_reset_44c57abd), style = NoopType.body) }
                     Spacer(Modifier.weight(1f))
                     Button(
                         onClick = { onSave(items.filter { it.enabled }.map { it.card }) },
@@ -3424,7 +3482,7 @@ private fun DashboardCardsEditorDialog(
                             containerColor = Palette.accent,
                             contentColor = Palette.surfaceBase,
                         ),
-                    ) { Text("Done", style = NoopType.captionNumber) }
+                    ) { Text(uiString(R.string.l10n_today_screen_done_e9b450d1), style = NoopType.captionNumber) }
                 }
             }
         }
@@ -3647,9 +3705,9 @@ private fun TodayLayoutEditorDialog(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Arrange Today", style = NoopType.title2, color = Palette.textPrimary)
+                    Text(uiString(R.string.l10n_today_screen_arrange_today_6b699147), style = NoopType.title2, color = Palette.textPrimary)
                     Text(
-                        "Hold a section and drag it to reorder — here, or directly on the Today cards.",
+                        uiString(R.string.l10n_today_screen_hold_a_section_and_drag_it_1d6e2441),
                         style = NoopType.subhead,
                         color = Palette.textSecondary,
                     )
@@ -3731,7 +3789,7 @@ private fun TodayLayoutEditorDialog(
                             items.addAll(TodaySection.defaultOrder)
                         },
                         colors = ButtonDefaults.textButtonColors(contentColor = Palette.textSecondary),
-                    ) { Text("Reset", style = NoopType.body) }
+                    ) { Text(uiString(R.string.l10n_today_screen_reset_44c57abd), style = NoopType.body) }
                     Spacer(Modifier.weight(1f))
                     Button(
                         onClick = { onSave(items.toList()) },
@@ -3739,7 +3797,7 @@ private fun TodayLayoutEditorDialog(
                             containerColor = Palette.accent,
                             contentColor = Palette.surfaceBase,
                         ),
-                    ) { Text("Done", style = NoopType.captionNumber) }
+                    ) { Text(uiString(R.string.l10n_today_screen_done_e9b450d1), style = NoopType.captionNumber) }
                 }
             }
         }
@@ -3773,13 +3831,13 @@ internal fun ChargeBreakdownSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "What shaped your Charge",
+                    uiString(R.string.l10n_today_screen_what_shaped_your_charge_9f53a2b3),
                     style = NoopType.headline,
                     color = Palette.textPrimary,
                     modifier = Modifier.weight(1f),
                 )
                 IconButton(onClick = onClose) {
-                    Icon(Icons.Filled.Close, contentDescription = "Close", tint = Palette.textSecondary)
+                    Icon(Icons.Filled.Close, contentDescription = uiString(R.string.l10n_today_screen_close_bbfa773e), tint = Palette.textSecondary)
                 }
             }
             Column(
@@ -3812,7 +3870,7 @@ internal fun ChargeBreakdownSheet(
                         .background(Palette.surfaceInset)
                         .padding(14.dp)
                         .semantics {
-                            contentDescription = "How Charge is calculated. The method behind the score."
+                            contentDescription = uiString(R.string.l10n_today_screen_how_charge_is_calculated_the_method_3ea7548b)
                         },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -3828,12 +3886,12 @@ internal fun ChargeBreakdownSheet(
                         verticalArrangement = Arrangement.spacedBy(1.dp),
                     ) {
                         Text(
-                            "How Charge is calculated",
+                            uiString(R.string.l10n_today_screen_how_charge_is_calculated_142d5e8e),
                             style = NoopType.subhead,
                             color = Palette.textPrimary,
                         )
                         Text(
-                            "The method behind the score, not today's values.",
+                            uiString(R.string.l10n_today_screen_the_method_behind_the_score_not_5bc68508),
                             style = NoopType.caption,
                             color = Palette.textTertiary,
                         )
@@ -3877,7 +3935,10 @@ private fun RecoveryDriversSection(
 
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
         // Header row: section title + the SURFACED confidence pill (dot + tier tag) on the right.
-        Row(verticalAlignment = Alignment.Top) {
+        Row(
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(Metrics.space8),
+        ) {
             Box(modifier = Modifier.weight(1f)) {
                 SectionHeader("What shaped it", overline = overline, trailing = "vs your baseline")
             }
@@ -3887,7 +3948,7 @@ private fun RecoveryDriversSection(
             Column(verticalArrangement = Arrangement.spacedBy(Metrics.space16)) {
                 drivers.forEach { DriverRow(it) }
                 Text(
-                    "Each line is how many points that signal moved Charge versus sitting at your " +
+                    uiString(R.string.l10n_today_screen_each_line_is_how_many_points_dec2c062) +
                         "on-device baseline. Approximate, not medical advice.",
                     style = NoopType.footnote,
                     color = Palette.textTertiary,
@@ -3926,7 +3987,7 @@ private fun DriverRow(driver: ChargeDriver) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.semantics {
             contentDescription =
-                "${driver.label}, ${driver.valueText}, ${driver.baselineText}, " +
+                uiString(R.string.l10n_today_screen_driver_label_driver_valuetext_driver_baselinetext_067bc963, driver.label, driver.valueText, driver.baselineText) +
                     "$signed points, ${driver.verdict}"
         },
     ) {
@@ -3947,7 +4008,7 @@ private fun DriverRow(driver: ChargeDriver) {
                     modifier = Modifier.size(14.dp),
                 )
             }
-            Text("$signed pts", style = NoopType.captionNumber, color = tone)
+            Text(uiString(R.string.l10n_today_screen_signed_pts_5ea85678, signed), style = NoopType.captionNumber, color = tone)
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(driver.label, style = NoopType.headline, color = Palette.textPrimary)
@@ -3995,27 +4056,27 @@ private fun RecoveryContributorsSection(day: DailyMetric?, carriedDay: DailyMetr
             // Resting HR, lower is better, so invert a typical 40–80 bpm span. Charge/recovery world (iOS
             // chargeColor, the recovery contributor reads on the WHOOP-green Charge world, not gold).
             ContributorBar(
-                label = "Resting HR",
+                label = uiString(R.string.l10n_today_screen_resting_hr_26677094),
                 readout = rhr?.let { "${it.roundToInt()} bpm" } ?: NO_DATA,
                 fraction = rhr?.let { 1.0 - ((it - 40.0) / 40.0) },
                 color = Palette.chargeColor,
             )
             // Sleep, hours in bed against an 8h target. Blue (sleep world).
             ContributorBar(
-                label = "Sleep",
+                label = uiString(R.string.l10n_today_screen_sleep_3cac34e6),
                 readout = sleepMin?.let { sleepValue(cd) } ?: NO_DATA,
                 fraction = sleepMin?.let { (it / 60.0) / 8.0 },
                 color = Palette.sleepLight,
             )
             // Respiratory, stability around a typical 12–20 rpm span. Deep blue (sleep world).
             ContributorBar(
-                label = "Respiratory",
+                label = uiString(R.string.l10n_today_screen_respiratory_1cd8c175),
                 readout = resp?.let { String.format(Locale.US, "%.1f rpm", it) } ?: NO_DATA,
                 fraction = resp?.let { 1.0 - ((it - 12.0) / 8.0) },
                 color = Palette.sleepDeep,
             )
             Text(
-                "Baselines learned on-device over 14 days. Bars are an approximate read of each " +
+                uiString(R.string.l10n_today_screen_baselines_learned_on_device_over_14_359f6812) +
                     "signal against a typical adult range, not medical advice.",
                 style = NoopType.footnote,
                 color = Palette.textTertiary,
@@ -4044,163 +4105,9 @@ private fun ContributorBar(label: String, readout: String, fraction: Double?, co
             animated = false,
             modifier = Modifier
                 .fillMaxWidth()
-                .semantics { contentDescription = "$label $readout" },
+                .semantics { contentDescription = uiString(R.string.l10n_today_screen_label_readout_3f166607, label, readout) },
         )
     }
-}
-
-/**
- * Recent nights carrying a usable nightly HRV, the signal that seeds the recovery baseline. While
- * recovery is still null and this count is in [1, seed), it is the honest "calibrating N of <seed>"
- * progress shown in place of "No Data"; null once recovery exists or no night has data yet. Pure +
- * unit-tested (RecoveryCalibrationTest). Mirrors Baselines.minNightsSeed as the seed gate. (PR #85)
- */
-internal fun recoveryCalibrationNights(
-    days: List<DailyMetric>,
-    hasRecovery: Boolean,
-    seed: Int = Baselines.minNightsSeed,
-): Int? {
-    if (hasRecovery) return null
-    // Match the baseline's validity predicate, not just non-null: Baselines.update only advances the
-    // recovery seed (nValid) for nights whose avgHrv is within the HRV config bounds, so an implausible
-    // out-of-range night must NOT be counted here either, else the displayed N could over-state nValid.
-    val cfg = Baselines.hrvCfg
-    // Include 0: a brand-new user (no banked nights) reads "Calibrating, 0 of N" on Charge, not a
-    // bare "No data" that looks broken (#335). Caller gates past days to null; >= seed → null.
-    return days.count { val v = it.avgHrv; v != null && v in cfg.minVal..cfg.maxVal }
-        .takeIf { it in 0 until seed }
-}
-
-/**
- * The ordered "What shaped it" Charge driver rows for [displayDay], rebuilt PURELY from the visible
- * [days] history (the same in-memory rows the dashboard already shows, imports win field-by-field in
- * the merge), so no engine round-trip is needed and the bars match the Charge ring's own inputs. Folds
- * the whole history (oldest first) into the four-plus-one personal baselines with [Baselines.foldHistory]
- * (byte-identical to the engine's whole-history fold when no manual Recalibrate epoch is set, the common
- * case), then defers to [RecoveryDrivers.chargeDrivers], which scores each row against the SAME inputs
- * [RecoveryScorer.recovery] reads. Empty when the displayed day can't score (cold-start / missing input),
- * so the section hides rather than faking rows. Mirrors the iOS chargeDrivers wiring.
- */
-internal fun recoveryChargeDrivers(
-    days: List<DailyMetric>,
-    displayDay: DailyMetric?,
-): List<ChargeDriver> {
-    val day = displayDay ?: return emptyList()
-    val hrv = day.avgHrv ?: return emptyList()
-    val rhr = day.restingHr?.toDouble() ?: return emptyList()
-
-    // Whole-history fold (oldest first), exactly as the engine seeds baselines2.
-    val ordered = days.sortedBy { it.day }
-    val hrvBase = Baselines.foldHistory(ordered.map { it.avgHrv }, Baselines.hrvCfg)
-    if (!hrvBase.usable) return emptyList()
-    val rhrBase = Baselines.foldHistory(ordered.map { it.restingHr?.toDouble() }, Baselines.restingHRCfg)
-    val respBase = Baselines.foldHistory(ordered.map { it.respRateBpm }, Baselines.respCfg).takeIf { it.usable }
-
-    // sleepPerf: the Rest COMPOSITE (÷100) when stages exist, else raw efficiency, the SAME derivation
-    // recomputeRecovery uses, so the Sleep driver scores against the headline's own input.
-    val sleepPerf = RestScorer.restFromDaily(day)?.let { it / 100.0 } ?: day.efficiency
-
-    return RecoveryDrivers.chargeDrivers(
-        hrv = hrv,
-        rhr = rhr,
-        resp = day.respRateBpm,
-        hrvBaseline = hrvBase,
-        rhrBaseline = rhrBase,
-        respBaseline = respBase,
-        sleepPerf = sleepPerf,
-        skinTempDev = day.skinTempDevC,
-    )
-}
-
-/**
- * The Charge (recovery) [ScoreConfidence] tier for [displayDay] against the HRV baseline folded from
- * [days], surfaced as the confidence dot + tier tag under the "What shaped it" rows. SURFACED, never
- * recomputed differently: it calls [ScoreConfidence.forCharge] with the SAME folded HRV baseline the
- * drivers scored against. Mirrors the iOS surfacing of the existing ScoreConfidence on the recovery screen.
- */
-internal fun chargeConfidenceTier(
-    days: List<DailyMetric>,
-    displayDay: DailyMetric?,
-): ScoreConfidence {
-    val hrvBase: BaselineState =
-        Baselines.foldHistory(days.sortedBy { it.day }.map { it.avgHrv }, Baselines.hrvCfg)
-    return ScoreConfidence.forCharge(displayDay?.recovery, hrvBase)
-}
-
-/**
- * The most recent fully-SCORED recovery day to carry over on TODAY while tonight's recovery hasn't been
- * scored yet (#543), the ONE prior row every recovery-derived read-out (Charge ring, HRV / resting-HR /
- * respiratory / SpO₂ tiles, Synthesis, Contributors, Readiness) carries over from at the rollover. Pure +
- * unit-tested (TodayMetricTilesTest). [days] is oldest→newest; the chosen row is the last with a non-null
- * recovery that isn't today's (still-null) [selectedDayKey]. Returns null unless it's today, today itself
- * isn't scored, and we're not mid-calibration (calibration owns its own copy), so past days / a scored
- * today / a calibrating today carry nothing and live behaviour is unchanged. Mirrors iOS.
- */
-internal fun lastScoredRecoveryDay(
-    days: List<DailyMetric>,
-    selectedDayKey: String,
-    isToday: Boolean,
-    todayScored: Boolean,
-    isCalibrating: Boolean,
-    // #547 carry-over guard: the local "today" key ("yyyy-MM-dd"). A stray FUTURE-dated row (a bad strap
-    // clock wrote a day past today) must NEVER be picked as "last night", that's how #547's Today header
-    // read "12 Jul". Cheap belt-and-suspenders alongside the ingest gate + heal: filter candidates to
-    // day <= today so even a future row that slipped through can't surface here. ISO date keys sort
-    // chronologically, so a plain string compare is correct. Defaulted to MAX so an un-updated call site
-    // keeps the prior behaviour; the Today call site passes the real local today.
-    today: String = "9999-12-31",
-): DailyMetric? {
-    if (!isToday || todayScored || isCalibrating) return null
-    return days.lastOrNull { it.recovery != null && it.day != selectedDayKey && it.day <= today }
-}
-
-/** A prior day's Charge carried over on TODAY (value + "Last night · <date>" caption) while tonight's
- *  recovery hasn't been scored yet (#543). Mirrors the iOS lastScoredCharge tuple. */
-internal data class LastCharge(val value: Double, val caption: String)
-
-/** "d MMM" for a stored `yyyy-MM-dd` day key, used by the carried-over Charge caption (#543). Parses
- *  the key and falls back to the raw key so the caption is never empty. Mirrors iOS lastChargeDateFmt. */
-internal fun lastChargeDateLabel(dayKey: String): String =
-    runCatching {
-        LocalDate.parse(dayKey).format(DateTimeFormatter.ofPattern("d MMM", Locale.US))
-    }.getOrDefault(dayKey)
-
-/** Carry-over recency cap (#779): the "Last night" framing only holds when the carried scored day is
- *  within this many days of today. Mirrors iOS TodayView.carryFreshnessDays. */
-internal const val CARRY_FRESHNESS_DAYS = 2L
-
-/** True when the carried scored day is OLDER than the freshness cap (#779), which drives the "Latest
- *  sleep" relabel. Pure + unit-testable. Both keys are "yyyy-MM-dd"; an unparseable key (or non-positive gap)
- *  reads as fresh so we never over-claim staleness. [today] is today's key (carry-over is today-only),
- *  defaulted to the device's current date for the composable call sites. Mirrors iOS isCarryStale. */
-internal fun isCarryStale(priorDayKey: String, today: String = LocalDate.now().toString()): Boolean =
-    runCatching {
-        ChronoUnit.DAYS.between(LocalDate.parse(priorDayKey), LocalDate.parse(today)) > CARRY_FRESHNESS_DAYS
-    }.getOrDefault(false)
-
-/** #977 — HONEST Rest resolution for the selected day. Today's own scored Rest wins; otherwise, ONLY on
- *  today, tail-fall-back to the last scored night — but ONLY when that night is within the carry-freshness
- *  window ([isCarryStale] == false). A live 5.0 whose sleep never scores (no overnight gravity ⇒ no
- *  `sleep_performance` point ever written) used to pin Rest to a weeks-old scored night while Charge kept
- *  advancing; gating the tail-fallback lets the Rest ring fall through to its needs-a-tracked-night state
- *  instead of freezing on a stale number. The legitimate morning carry of last night's Rest (before today
- *  scores) is preserved unchanged. Pure + unit-testable. Mirrors iOS TodayView.freshRestScore. */
-internal fun freshRestScore(
-    todayValue: Double?, lastDay: String?, lastValue: Double?,
-    isTodaySelected: Boolean, today: String = LocalDate.now().toString(),
-): Double? {
-    if (todayValue != null) return todayValue
-    if (!isTodaySelected || lastDay == null || lastValue == null) return null
-    return if (isCarryStale(lastDay, today)) null else lastValue
-}
-
-/** The carried recovery caption stamp, keyed on that scored day's own date and its recency. Within the
- *  freshness cap it reads "Last night · <date>"; once the carried day is older than the cap (#779) it reads
- *  "Latest sleep · <date>" so a weeks-old import is never surfaced as "Last night". Shared by every carried
- *  recovery read-out so the prior-day provenance reads identically. Mirrors iOS carriedCaption. */
-internal fun carriedCaption(priorDayKey: String, today: String = LocalDate.now().toString()): String {
-    val prefix = if (isCarryStale(priorDayKey, today)) "Latest sleep" else "Last night"
-    return "$prefix · ${lastChargeDateLabel(priorDayKey)}"
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -4215,90 +4122,12 @@ internal fun carriedCaption(priorDayKey: String, today: String = LocalDate.now()
 
 // ── COMPONENT 2, explained score states ─────────────────────────────────────────────────────────────
 
-/**
- * The honest state of one score/tile on Today, one state per score, never a bare blank. Derived from
- * baseline readiness + data presence + the #543 carry-over, so a tile that has no own value for the day
- * still says WHY and WHAT to do, and shows no fabricated number. Mirrors Swift `ScoreState` 1:1 (same
- * three cases, same [title] / [detail] copy). [Scored] carries the real value the tile renders normally;
- * the other three are the no-own-number states this layer explains.
- */
-sealed class ScoreState {
-    /** Today's own value exists, the tile renders the number as usual; this layer adds nothing. */
-    data class Scored(val value: Double) : ScoreState()
-
-    /** Baselines still cold-start: [nightsRemaining] more nights of wear until scores get personal.
-     *  Shows NO number (calibrating never fakes a value). */
-    data class Calibrating(val nightsRemaining: Int) : ScoreState()
-
-    /** A prior scored day shown before tonight is scored (#543 carry-over), stamped with [dateLabel]
-     *  ("d MMM") so the prior read is never passed off as today's. [stale] is true when that day is older
-     *  than the freshness cap (#779): the carry is still shown so the recovery side isn't a bare blank, but
-     *  it's relabelled "Latest sleep" so a weeks-old import is never passed off as "Last night". */
-    data class CarriedLastNight(val dateLabel: String, val stale: Boolean = false) : ScoreState()
-
-    /** No data for today at all, strap not worn / not connected / not synced. Shows NO number. */
-    object NeedsStrap : ScoreState()
-
-    /** The status title shown in the tile's state slot. VERBATIM, mirror Swift exactly. */
-    val title: String
-        get() = when (this) {
-            is Scored -> ""
-            is Calibrating -> "Calibrating"
-            is CarriedLastNight -> if (stale) "Latest sleep · $dateLabel" else "Last night · $dateLabel"
-            NeedsStrap -> "Needs the strap"
-        }
-
-    /** The one-line plain-English what-to-do. VERBATIM, mirror Swift exactly. The night(s) plural in
-     *  the calibrating copy follows [nightsRemaining]. */
-    val detail: String
-        get() = when (this) {
-            is Scored -> ""
-            is Calibrating -> {
-                val nights = if (nightsRemaining == 1) "night" else "nights"
-                "Building your baseline. About $nightsRemaining more $nights until your scores are personal."
-            }
-            is CarriedLastNight ->
-                // A fresh post-rollover carry tells you tonight's score is on its way; a stale carry (an
-                // older import, #779) instead explains the number is from that earlier session, not today.
-                if (stale) "This is your last scored session. Wear the strap overnight for a fresh score."
-                else "Tonight's lands after you sleep with the strap on."
-            NeedsStrap -> "No data for today. Was your strap worn and connected overnight?"
-        }
-}
-
-/**
- * Resolve the honest [ScoreState] for the Today score side from the same signals the tiles already use,
- * so the explainer is the EXACT truth on screen (never a separate guess). Pure + unit-tested. Order of
- * precedence mirrors the tile waterfall:
- *   1. [todayRecovery] present                → [ScoreState.Scored] (the tile shows its real number);
- *   2. mid-calibration ([calibratingNights])  → [ScoreState.Calibrating] (N more nights, no number);
- *   3. a prior scored day to carry (#543)     → [ScoreState.CarriedLastNight] (stamped with its date);
- *   4. otherwise                              → [ScoreState.NeedsStrap] (no data, no number).
- * Mirrors Swift `scoreStateForToday`.
- */
-internal fun scoreStateForToday(
-    todayRecovery: Double?,
-    calibratingNights: Int?,
-    carriedDay: DailyMetric?,
-    seed: Int = Baselines.minNightsSeed,
-    today: String = LocalDate.now().toString(),
-): ScoreState = when {
-    todayRecovery != null -> ScoreState.Scored(todayRecovery)
-    // "About N more nights" = the seed gate minus the nights banked so far, floored at 1 (zero would read
-    // as "ready" when it isn't). Calibrating never fakes a value.
-    calibratingNights != null -> ScoreState.Calibrating((seed - calibratingNights).coerceAtLeast(1))
-    // #779: a carry older than the freshness cap is still shown (not a bare blank) but relabelled to
-    // "Latest sleep" so a weeks-old import is never passed off as "Last night".
-    carriedDay != null -> ScoreState.CarriedLastNight(lastChargeDateLabel(carriedDay.day), isCarryStale(carriedDay.day, today))
-    else -> ScoreState.NeedsStrap
-}
-
 /** The honest score-state note shown in the Today flow when there is no own number to render, the
  *  state title + one what-to-do line, no fabricated value. [ScoreState.Scored] renders nothing (the
  *  tiles carry the real number). The whole card is the spec's "never a bare blank". Mirrors the iOS
  *  ScoreStateNote. */
 @Composable
-private fun ScoreStateNote(state: ScoreState) {
+private fun ScoreStateNote(state: ScoreState, restartCause: String? = null) {
     if (state is ScoreState.Scored) return
     val icon = when (state) {
         is ScoreState.Calibrating -> Icons.Filled.Tune
@@ -4314,7 +4143,7 @@ private fun ScoreStateNote(state: ScoreState) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .semantics { contentDescription = "${state.title}. ${state.detail}" },
+                .semantics { contentDescription = uiString(R.string.l10n_today_screen_state_title_state_detail_f5380609, state.title, state.detail) },
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.Top,
         ) {
@@ -4329,89 +4158,18 @@ private fun ScoreStateNote(state: ScoreState) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(state.title, style = NoopType.headline, color = Palette.textPrimary)
                 Text(state.detail, style = NoopType.subhead, color = Palette.textSecondary)
+                // #731: when the countdown restarted because the user tapped "Recalibrate
+                // baseline", say so - otherwise the natural response to a fresh countdown is to
+                // tap it again, resetting it once more. null (no line) if never recalibrated.
+                restartCause?.let {
+                    Text(it, style = NoopType.footnote, color = Palette.textTertiary)
+                }
             }
         }
     }
 }
 
 // ── COMPONENT 3, recording status ───────────────────────────────────────────────────────────────────
-
-/**
- * The honest live-recording state of the strap, for the Today/Live chip. Derived from the BLE connection
- * + last-sync timestamp so people always know it's working, or know it isn't and why. Mirrors Swift
- * `RecordingState` 1:1 (same three cases, same [title] / [detail] copy, same [tone]).
- */
-sealed class RecordingState {
-    /** The strap is connected and saving data live. */
-    object Recording : RecordingState()
-
-    /** Not live now, but synced [minutesAgo] minutes ago, an honest "how fresh is it". */
-    data class LastSynced(val minutesAgo: Long) : RecordingState()
-
-    /** No connection and nothing recent to fall back on. */
-    object NotRecording : RecordingState()
-
-    /** #580, a connected WHOOP 5/MG streaming live HR fine, but its firmware hands over no history
-     *  offload yet. NOT the WHOOP-4 "not recording" failure: the link is live, history sync is just
-     *  experimental on 5.0. Surfaced from `LiveState.historySyncExperimental`, overriding the resolver. */
-    object HistoryExperimental : RecordingState()
-
-    /** The chip's status word. VERBATIM, mirror Swift exactly. */
-    val title: String
-        get() = when (this) {
-            Recording -> "Recording"
-            is LastSynced -> "Last synced ${minutesAgo}m ago"
-            NotRecording -> "Not recording"
-            HistoryExperimental -> "Connected"
-        }
-
-    /** The chip's one-line detail. VERBATIM, mirror Swift exactly. */
-    val detail: String
-        get() = when (this) {
-            Recording -> "Your strap is connected and saving data."
-            is LastSynced -> "Reconnect to pull the latest."
-            NotRecording -> "Strap not connected. Tap to connect."
-            HistoryExperimental -> "History sync is experimental on 5.0."
-        }
-
-    /** Chip hue: live recording reads positive (gold/green dot), a stale-but-recent sync reads neutral,
-     *  not-recording reads critical so a dropped link is obvious; the 5.0 experimental-history state is
-     *  connected so it reads accent, not critical. */
-    val tone: StrandTone
-        get() = when (this) {
-            Recording -> StrandTone.Positive
-            is LastSynced -> StrandTone.Neutral
-            NotRecording -> StrandTone.Critical
-            HistoryExperimental -> StrandTone.Accent
-        }
-}
-
-/**
- * Resolve the honest [RecordingState] from the live BLE state + last-sync timestamp. Pure + unit-tested.
- *   - connected AND a live HR is streaming  → [RecordingState.Recording] (it really is saving data);
- *   - else a [lastSyncAtSec] this session    → [RecordingState.LastSynced] (minutes since, clamped >= 0,
- *                                              ROUNDED UP so a 30s-old sync reads "1m ago" not "0m ago");
- *   - else                                   → [RecordingState.NotRecording].
- * "Recording" requires BOTH a connection AND a live heart-rate sample so a bonded-but-silent link can't
- * claim it's saving data. [nowSec] is unix seconds (injected so the math is testable). Mirrors Swift
- * `recordingStateFor`.
- */
-internal fun recordingStateFor(
-    connected: Boolean,
-    liveHeartRate: Int?,
-    lastSyncAtSec: Long?,
-    nowSec: Long,
-): RecordingState = when {
-    connected && liveHeartRate != null -> RecordingState.Recording
-    lastSyncAtSec != null -> {
-        // Clamp at 0 (a sync stamped slightly in the future from strap-clock skew can't read negative)
-        // then ROUND UP so a 30-second-old sync reads "1m ago", never "0m ago", matches the Swift
-        // `RecordingState.resolve` ceil. ceil(secs / 60) == (secs + 59) / 60 for non-negative longs.
-        val secs = (nowSec - lastSyncAtSec).coerceAtLeast(0L)
-        RecordingState.LastSynced((secs + 59L) / 60L)
-    }
-    else -> RecordingState.NotRecording
-}
 
 /** The Today/Live recording chip: a tinted StatePill with the status word (a pulsing dot while live),
  *  plus the one-line what-it-means below. Honest, never claims "Recording" without a live stream.
@@ -4433,7 +4191,7 @@ private fun RecordingStatusChip(state: RecordingState, onConnect: () -> Unit) {
                     Modifier
                 },
             )
-            .semantics { contentDescription = "${state.title}. ${state.detail}" },
+            .semantics { contentDescription = uiString(R.string.l10n_today_screen_state_title_state_detail_f5380609, state.title, state.detail) },
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -4455,94 +4213,6 @@ private fun RecordingStatusChip(state: RecordingState, onConnect: () -> Unit) {
 }
 
 // ── COMPONENT 4, provenance badge ───────────────────────────────────────────────────────────────────
-
-/**
- * The Today provenance label for the day's REAL merge winner, extends the existing By-Day badge
- * vocabulary consistently. NOOP-computed reads "On-device" (the spec's wording for the By-Day badge,
- * versus the FusedRecord screen's terser "NOOP"), an imported strap day reads "Whoop", and a phone
- * aggregate reads "Apple Health" / "Health Connect". Null when no source owns the day (nothing to
- * stamp). Mirrors the Swift `provenanceBadgeLabel`. */
-internal fun dayOwnerSource(deviceId: String?): com.noop.analytics.FusionSource? = when {
-    deviceId == null -> null
-    deviceId.endsWith("-noop") -> com.noop.analytics.FusionSource.NOOP_COMPUTED
-    deviceId == WhoopRepository.APPLE_HEALTH_SOURCE -> com.noop.analytics.FusionSource.APPLE_HEALTH
-    deviceId == WhoopRepository.HEALTH_CONNECT_SOURCE -> com.noop.analytics.FusionSource.HEALTH_CONNECT
-    // The merged Today rows carry the imported strap deviceId ("my-whoop") on days a real WHOOP import
-    // covers, and the "-noop" sibling otherwise; any other strap deviceId is still an imported strap day.
-    else -> com.noop.analytics.FusionSource.WHOOP_IMPORT
-}
-
-internal fun provenanceBadgeLabel(owner: com.noop.analytics.FusionSource?): String? = when (owner) {
-    com.noop.analytics.FusionSource.NOOP_COMPUTED -> "On-device"
-    com.noop.analytics.FusionSource.WHOOP_IMPORT -> "Whoop"
-    com.noop.analytics.FusionSource.APPLE_HEALTH -> "Apple Health"
-    com.noop.analytics.FusionSource.HEALTH_CONNECT -> "Health Connect"
-    com.noop.analytics.FusionSource.XIAOMI_BAND -> "Mi Band"
-    com.noop.analytics.FusionSource.NUTRITION_CSV -> "Nutrition"
-    com.noop.analytics.FusionSource.LOCAL_CACHE -> "Cached"
-    null -> null
-}
-
-/**
- * PURE mapper (unit-tested), a RAW resolver source id (as returned by [WhoopRepository.resolvedSeries]'s
- * winning point, e.g. "my-whoop", "my-whoop-noop", "apple-health") onto the spec's provenance labels,
- * given the strap's real [deviceId]. ANY NOOP-computed strap sibling (a "-noop"-suffixed id, not just the
- * active strap's) reads "On-device" — matching by suffix rather than "$deviceId-noop" so a computed row
- * from a non-active strap can't fall through to [com.noop.analytics.FusionSource.NOOP_COMPUTED]'s raw
- * "NOOP" displayName (the internal id must never surface); the imported strap source ([deviceId], normally
- * "my-whoop") reads "Whoop"; the Apple-Health source reads "Apple Health". Any other real source (Health
- * Connect, Mi Band, nutrition) keeps its [com.noop.analytics.FusionSource.displayName], still the genuine
- * merge winner, never a blanket claim. Mirrors the Swift `provenanceDisplayLabel` EXACTLY. This is the
- * PER-METRIC mapper the Today rings use; the day-level [dayOwnerSource]/[provenanceBadgeLabel] pair stays
- * for the legacy By-Day vocabulary.
- */
-internal fun provenanceDisplayLabel(
-    rawSource: String,
-    deviceId: String = WhoopRepository.WHOOP_SOURCE,
-): String {
-    if (rawSource.endsWith("-noop")) return "On-device"
-    if (rawSource == deviceId || rawSource == WhoopRepository.WHOOP_SOURCE) return "Whoop"
-    if (rawSource == WhoopRepository.APPLE_HEALTH_SOURCE) return "Apple Health"
-    // Fall back to the FusionSource display name for any other known source; else the raw id verbatim.
-    return com.noop.analytics.FusionSource.entries.firstOrNull { it.id == rawSource }?.displayName ?: rawSource
-}
-
-/** Today uses the audience-facing sensor name for Apple Health scores, matching the Swift Today lane. */
-internal fun todayProvenanceChipLabel(
-    rawSource: String,
-    deviceId: String = WhoopRepository.WHOOP_SOURCE,
-): String = if (rawSource == WhoopRepository.APPLE_HEALTH_SOURCE) {
-    "Apple Watch"
-} else {
-    provenanceDisplayLabel(rawSource, deviceId)
-}
-
-/**
- * One compact source label for the liquid score hero. Raw winners arrive in Charge / Effort / Rest order;
- * identical display names collapse and mixed winners are capped at two so the badge stays readable.
- * Mirrors LiquidTodayView.heroSourceLabel value-for-value.
- */
-internal fun heroSourceLabel(
-    rawSources: List<String>,
-    deviceId: String = WhoopRepository.WHOOP_SOURCE,
-): String? {
-    val labels = LinkedHashSet<String>()
-    for (rawSource in rawSources) {
-        labels.add(todayProvenanceChipLabel(rawSource, deviceId))
-        if (labels.size == 2) break
-    }
-    return labels.takeIf { it.isNotEmpty() }?.joinToString(" + ")
-}
-
-/** The tint for a per-metric provenance badge, keyed on the resolved LABEL, gold for Whoop, cyan for
- *  Apple Health, the positive status hue for on-device (and anything else). Matches the Data Sources
- *  footer + the Swift `provenanceTint` so the same source reads the same colour on Today. */
-internal fun provenanceLabelTint(label: String): Color = when (label) {
-    "Whoop" -> Palette.accent
-    "Apple Health" -> Palette.metricCyan
-    "Health Connect" -> Palette.metricPurple
-    else -> Palette.statusPositive
-}
 
 // NOTE: the blanket day-level `TodayProvenanceBadge` was removed. Today provenance now resolves the real
 // per-metric field-by-field winners, deduplicates them, and renders one card-level SourceBadge aligned to
@@ -4572,6 +4242,13 @@ private fun MetricGrid(
     profileWeightKg: Double = 75.0,
     importedStepsForDay: Int? = null,
     estimatedStepsForDay: Int? = null,
+    // #616: the selected day's calorie value resolved imported-first (imported Apple/Health-Connect
+    // activeKcal ?: NOOP's on-device estimate), so the Calories tile matches the card + detail instead of
+    // reading the on-device estimate alone (which left it NO_DATA / inconsistent). Mirrors the steps params.
+    caloriesForDay: Double? = null,
+    // #616: the Calories tile's imported-first 14-day trend (see caloriesSpark above) — threaded like
+    // restSpark because it isn't a plain DailyMetric column (it unions the imported + on-device series).
+    caloriesSpark: List<Double> = emptyList(),
     // #316 / @63, the selected day's representative activity class (0=still, 1=walk, 2=run), shown as a small
     // still/walk/run glyph on a REAL (measured) Steps tile. null hides the icon (no classed sample for the day).
     stepActivityClassForDay: Int? = null,
@@ -4607,7 +4284,7 @@ private fun MetricGrid(
         KeyMetric.CHARGE to run {
             val v = d?.recovery ?: lastScoredCharge?.value
             KeyTileData(
-                label = "Recovery",
+                label = uiString(R.string.l10n_today_screen_recovery_ea924f72),
                 value = d?.recovery?.let { "${it.roundToInt()}" }
                     ?: recoveryCalibration?.let { "$it/${Baselines.minNightsSeed}" }
                     ?: lastScoredCharge?.let { "${it.value.roundToInt()}" } ?: NO_DATA,
@@ -4618,15 +4295,18 @@ private fun MetricGrid(
             )
         },
         KeyMetric.EFFORT to KeyTileData(
-            label = "Strain",
+            label = uiString(R.string.l10n_today_screen_strain_79fe380e),
             value = d?.strain?.let { UnitFormatter.effortDisplay(it, effortScale) } ?: NO_DATA,
-            unit = if (d?.strain != null) "%" else "",
+            // #492: Strain/Effort is a load index (0–21 WHOOP / 0–100 NOOP), NOT a percentage — the "%"
+            // was wrong (esp. on the 0–21 scale). Recovery/Rest ARE 0–100 % and keep it. iOS shows the
+            // strain axis as an "of 21"/"of 100" caption with no % (TodayView effort tile); match that.
+            unit = "",
             tint = d?.strain?.let { Palette.effortTint(it / StrainScorer.maxStrain) } ?: Palette.effortColor,
             frac = d?.strain?.let { (it / 100.0).coerceIn(0.0, 1.0) },
             spark = w.strain,
         ),
         KeyMetric.REST to KeyTileData(
-            label = "Rest",
+            label = uiString(R.string.l10n_today_screen_rest_b79e5f48),
             value = restScore?.let { "${it.roundToInt()}" } ?: NO_DATA,
             unit = if (restScore != null) "%" else "",
             tint = restScore?.let { Palette.recoveryColor(it) } ?: Palette.restColor,
@@ -4647,7 +4327,7 @@ private fun MetricGrid(
         KeyMetric.RESTING_HR to run {
             val v = d?.restingHr ?: carriedDay?.restingHr
             KeyTileData(
-                label = "Rest HR",
+                label = uiString(R.string.l10n_today_screen_rest_hr_04005617),
                 value = v?.toString() ?: NO_DATA,
                 unit = if (v != null) "bpm" else "",
                 tint = Palette.metricRose,
@@ -4658,7 +4338,7 @@ private fun MetricGrid(
         KeyMetric.BLOOD_OXYGEN to run {
             val v = d?.spo2Pct ?: carriedDay?.spo2Pct ?: spo2CarryDay?.spo2Pct
             KeyTileData(
-                label = "Blood Oxygen",
+                label = uiString(R.string.l10n_today_screen_blood_oxygen_a8ad9ff5),
                 value = v?.let { String.format(Locale.US, "%.0f", it) } ?: NO_DATA,
                 unit = if (v != null) "%" else "",
                 tint = Palette.metricCyan,
@@ -4669,7 +4349,7 @@ private fun MetricGrid(
         KeyMetric.RESPIRATORY to run {
             val v = d?.respRateBpm ?: carriedDay?.respRateBpm
             KeyTileData(
-                label = "Respiratory",
+                label = uiString(R.string.l10n_today_screen_respiratory_1cd8c175),
                 value = v?.let { String.format(Locale.US, "%.1f", it) } ?: NO_DATA,
                 unit = if (v != null) "rpm" else "",
                 tint = Palette.accent,
@@ -4682,30 +4362,37 @@ private fun MetricGrid(
             val realSteps = d?.steps ?: importedStepsForDay
             val steps = realSteps ?: estimatedStepsForDay
             KeyTileData(
-                label = "Steps",
+                label = uiString(R.string.l10n_today_screen_steps_cdde4f20),
                 value = steps?.let { intString(it.toDouble()) } ?: NO_DATA,
                 unit = "",
                 tint = Palette.metricCyan,
                 frac = steps?.let { (it / 10000.0).coerceIn(0.0, 1.0) },
+                spark = w.steps,   // #616: was missing → no trend line under the tile
             )
         },
         KeyMetric.WEIGHT to run {
             val weight = weightTile(latestWeightKg, profileWeightKg, unitSystem)
             KeyTileData(
-                label = "Weight",
+                label = uiString(R.string.l10n_today_screen_weight_69c0b815),
                 value = weight.value,
                 unit = "",
                 tint = Palette.accent,
                 frac = null,
             )
         },
-        KeyMetric.CALORIES to KeyTileData(
-            label = "Calories",
-            value = d?.activeKcalEst?.let { intString(it) } ?: NO_DATA,
-            unit = if (d?.activeKcalEst != null) "kcal" else "",
-            tint = Palette.metricAmber,
-            frac = d?.activeKcalEst?.let { (it / 800.0).coerceIn(0.0, 1.0) },
-        ),
+        KeyMetric.CALORIES to run {
+            // #616: the per-day resolved calorie value (caloriesForDay = imported Apple/Health-Connect
+            // first, else NOOP's on-device estimate) — one number across tile, card and detail.
+            val kcal = caloriesForDay
+            KeyTileData(
+                label = uiString(R.string.l10n_today_screen_calories_3e62ecfe),
+                value = kcal?.let { intString(it) } ?: NO_DATA,
+                unit = if (kcal != null) "kcal" else "",
+                tint = Palette.metricAmber,
+                frac = kcal?.let { (it / 800.0).coerceIn(0.0, 1.0) },
+                spark = caloriesSpark,   // #616: imported-first trend (was missing → no trend line)
+            )
+        },
     )
 
     // Resolve the enabled tiles to their descriptors (keeping the metric for the tap mapping), dropping
@@ -4825,7 +4512,7 @@ private fun LiquidKeyTile(
             .clip(RoundedCornerShape(16.dp))
             .frostedCardSurface(cornerRadius = 16.dp)
             .padding(horizontal = 12.dp, vertical = 11.dp)
-            .semantics { contentDescription = "${data.label} ${data.value} ${data.unit}".trim() },
+            .semantics { contentDescription = uiString(R.string.l10n_today_screen_data_label_data_value_data_unit_27f6fd6b, data.label, data.value, data.unit).trim() },
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
@@ -4844,7 +4531,7 @@ private fun LiquidKeyTile(
             )
             if (data.unit.isNotEmpty() && hasValue) {
                 Text(
-                    " ${data.unit}",
+                    uiString(R.string.l10n_today_screen_data_unit_c768ef8c, data.unit),
                     style = NoopType.caption,
                     color = Palette.textPrimary,
                     maxLines = 1,
@@ -4911,34 +4598,6 @@ private suspend fun WhoopRepository.workoutsAllSources(
 // least two buckets, so a strap-only user with no wear today sees nothing rather than an empty chart.
 // Mirrors the macOS TodayView.heartRateTrendSection. LineChart spaces points by index (no time axis),
 // so the buckets, being uniform 5-min means in time order, read as an even left-to-right day curve.
-
-/** The Today heart-rate card's visible window (the UX from PR #985, reimplemented). [TODAY] = the full
- *  loaded day since the logical midnight — the unchanged default. The rest are rolling "last N hours"
- *  ending now. VIEW-ONLY, the #829 zoom rule: a window only narrows which of the already-loaded 5-minute
- *  buckets render — it never re-queries the DB and never changes the bucket resolution. (PR #985 proposed
- *  re-reading shorter windows at finer buckets; that adds a DB round-trip per tap and a second read path
- *  for detail that already has a home — the Deep Timeline re-reads down to raw seconds as you zoom.)
- *  Because the loaded extent starts at midnight, a window clips to the day: early in the morning the wider
- *  windows coincide with Today, which reads fine — both mean "everything so far". Only offered on the
- *  CURRENT day: a past day has no "now", so it always shows the full calendar day, exactly as before. */
-internal enum class HrWindow(val label: String, val hours: Int) {
-    // Declaration order IS the pill order: Today (the whole loaded day) anchors the wide end, then
-    // strictly most → least hours. TODAY stays ordinal 0 so the rememberSaveable default is the full day.
-    TODAY("Today", 0),
-    H24("24h", 24), H12("12h", 12), H6("6h", 6), H3("3h", 3), H1("1h", 1);
-
-    /** Earliest bucket timestamp (unix seconds) this window renders, anchored at `now`. TODAY = no
-     *  narrowing. Anchoring at the wall clock (not the newest banked bucket) keeps the card honest: a
-     *  strap that hasn't offloaded for two hours shows "no heart rate in the last 1h", never a silently
-     *  re-anchored older hour — and the empty state keeps the pills, so it's not a dead end. */
-    fun cutoff(now: Long): Long = if (this == TODAY) Long.MIN_VALUE else now - hours * 3600L
-}
-
-/** The pure narrowing seam (locked by HrWindowTest): does a loaded bucket survive the window's cut?
- *  The filter only ever drops OLD buckets, so the newest bucket always survives a non-empty cut and the
- *  card's trailing "latest bpm" read-out is window-invariant. */
-internal fun hrWindowKeeps(bucketTs: Long, window: HrWindow, now: Long): Boolean =
-    bucketTs >= window.cutoff(now)
 
 /** The HR-window selector row, reusing the app's ONE SegmentedPillControl (house chrome, not the PR's
  *  bespoke control). Shared by the empty and populated card branches so the pills stay put whether or
@@ -5132,7 +4791,7 @@ private fun HeartRateTrendCard(
                         color = Palette.textTertiary,
                     )
                 }
-                Text("$latest bpm", style = NoopType.chartValueLarge, color = Palette.metricRose)
+                Text(uiString(R.string.l10n_today_screen_latest_bpm_e7bec767, latest), style = NoopType.chartValueLarge, color = Palette.metricRose)
             }
             // #985: the window selector, current day only — Today (since midnight, the default) or a
             // rolling last-N-hours cut of the same loaded buckets. A past day has no "now" → no selector.
@@ -5150,9 +4809,9 @@ private fun HeartRateTrendCard(
                     modifier = Modifier.height(Metrics.chartHeight),
                     verticalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text("$visMax", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
-                    Text("$visAvg", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
-                    Text("$visMin", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
+                    Text(uiString(R.string.l10n_today_screen_vismax_80b2c2fc, visMax), style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
+                    Text(uiString(R.string.l10n_today_screen_visavg_8c9a4746, visAvg), style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
+                    Text(uiString(R.string.l10n_today_screen_vismin_5d665ceb, visMin), style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
                 }
                 // The HR line, with the Overview marker layers (sleep band · Charge · Effort · sport
                 // glyphs) overlaid on top, markers are positioned by mapping each event's wall-clock
@@ -5209,7 +4868,7 @@ private fun HeartRateTrendCard(
                 listOf("Min" to min, "Avg" to avg, "Max" to max).forEach { (label, value) ->
                     Column(modifier = Modifier.weight(1f)) {
                         Overline(label, color = Palette.textTertiary)
-                        Text("$value bpm", style = NoopType.bodyNumber, color = Palette.textPrimary)
+                        Text(uiString(R.string.l10n_today_screen_value_bpm_8f3a90c3, value), style = NoopType.bodyNumber, color = Palette.textPrimary)
                     }
                 }
             }
@@ -5227,7 +4886,7 @@ private fun HeartRateTrendCard(
                 )
                 if (hrZoom != null) {
                     Text(
-                        "Reset",
+                        uiString(R.string.l10n_today_screen_reset_44c57abd),
                         style = NoopType.footnote,
                         color = Palette.accent,
                         modifier = Modifier
@@ -5258,7 +4917,7 @@ private fun HrTimeAxisLabels(
                 Text(label, style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
             }
             if (showNow) {
-                Text("Now", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
+                Text(uiString(R.string.l10n_today_screen_now_e3b82040), style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
             }
         },
     ) { measurables, constraints ->
@@ -5607,14 +5266,14 @@ private fun OverviewHRChart(
             }
             if (chargeX != null) {
                 ChartMarkerPill(
-                    text = "${recovery.roundToInt()}% Charge",
+                    text = uiString(R.string.l10n_today_screen_recovery_roundtoint_charge_92fbaa5e, recovery.roundToInt()),
                     color = Palette.recoveryColor(recovery),
                     modifier = Modifier.markerOffset(chargeX, density, topPadDp),
                 )
             }
             if (effortX != null) {
                 ChartMarkerPill(
-                    text = "${UnitFormatter.effortDisplay(strain, effortScale)} Effort",
+                    text = uiString(R.string.l10n_today_screen_unitformatter_effortdisplay_strain_effortscale_effort_53dbd951, UnitFormatter.effortDisplay(strain, effortScale)),
                     color = Palette.effortTint(strain / StrainScorer.maxStrain),
                     modifier = Modifier.markerOffset(plotW, density, topPadDp, alignEnd = true),
                 )
@@ -5720,26 +5379,6 @@ private fun WorkoutGlyph(icon: ImageVector, modifier: Modifier = Modifier) {
 
 // MARK: - Today footer sections
 
-// Internal (not private) so the #849 re-mount cache can live on the long-lived ViewModel and be restored
-// when the Today composable is recreated (tab-return / post-import re-mount) instead of recomputing.
-data class TodayFooterState(
-    val recentWorkouts: List<WorkoutRow> = emptyList(),
-    val whoopDays: Int? = null,
-    val whoopWorkouts: Int? = null,
-    val appleDays: Int? = null,
-    val appleWorkouts: Int? = null,
-    val hcDays: Int? = null,
-    val hcWorkouts: Int? = null,
-)
-
-// The Today "Last Workouts" contract, pure and unit-locked (LastWorkoutsFeedTest): cross-source
-// dedup (#687), newest first, at most four. The seam already dedups, so the dedup here is an
-// idempotent guard that keeps the contract honest for any future caller feeding a raw union.
-internal fun lastWorkoutsFeed(rows: List<WorkoutRow>): List<WorkoutRow> =
-    WorkoutEditing.dedupCrossSource(rows)
-        .sortedByDescending { it.startTs }
-        .take(4)
-
 @Composable
 private fun TodayWorkoutsSection(workouts: List<WorkoutRow>) {
     // Single column, newest first: the 2x2 grid truncated durations on narrow phones and read as
@@ -5777,6 +5416,7 @@ private fun TodaySourcesSection(
     onToggle: () -> Unit = {},
 ) {
     SectionHeader("Data Sources", overline = "Provenance")
+    Spacer(Modifier.height(Metrics.gap))
     val whoopPresent = (footer.whoopDays ?: 0) > 0 || strapBatteryPct != null
     val applePresent = (footer.appleDays ?: 0) > 0 || (footer.appleWorkouts ?: 0) > 0
     val hcPresent = (footer.hcDays ?: 0) > 0 || (footer.hcWorkouts ?: 0) > 0
@@ -5824,7 +5464,7 @@ private fun TodaySourcesSection(
                     .clickable(onClickLabel = "Hide data source detail", onClick = onToggle),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Synced from", style = NoopType.overline, color = Palette.textTertiary, modifier = Modifier.weight(1f))
+                Text(uiString(R.string.l10n_today_screen_synced_from_2aa7258b), style = NoopType.overline, color = Palette.textTertiary, modifier = Modifier.weight(1f))
                 Icon(
                     Icons.Filled.KeyboardArrowUp,
                     contentDescription = null,
@@ -5886,7 +5526,7 @@ private fun SourceRow(
         // Settings Strap section; absent entirely when there's no live reading (#159).
         batteryPct?.let { pct ->
             Spacer(Modifier.width(8.dp))
-            StatePill(title = "$pct%", tone = batteryPillTone(pct), showsDot = false)
+            StatePill(title = uiString(R.string.l10n_today_screen_pct_ee63e247, pct), tone = batteryPillTone(pct), showsDot = false)
             // The "~X left" runtime estimate sits beside the %, dimmer, only when we have a trusted one (#713).
             batteryEstimate?.let { est ->
                 Spacer(Modifier.width(6.dp))
@@ -5952,7 +5592,7 @@ private fun ReadinessSection(days: List<DailyMetric>, carriedDay: DailyMetric? =
                 )
                 readiness.acwr?.let { acwr ->
                     Text(
-                        "load ${String.format(Locale.US, "%.2f", acwr)}",
+                        uiString(R.string.today_load_ratio, String.format(Locale.US, "%.2f", acwr)),
                         style = NoopType.captionNumber,
                         color = Palette.textTertiary,
                     )
@@ -6014,40 +5654,6 @@ private fun ReadinessSection(days: List<DailyMetric>, carriedDay: DailyMetric? =
         }
     }
 }
-
-/**
- * S4 (#205): the one-word readiness read kept on the hero (Push / Maintain / Rest) now the full Readiness
- * card folded into the Charge-ring tap. PURE mapping of the existing [ReadinessEngine.Level]; INSUFFICIENT
- * returns null (the hero then shows no word, matching the old card hiding itself). Byte-identical twin of
- * the Swift TodayView.readinessWord.
- */
-internal fun readinessWord(level: ReadinessEngine.Level): String? = when (level) {
-    ReadinessEngine.Level.PRIMED -> "Push"
-    ReadinessEngine.Level.BALANCED -> "Maintain"
-    ReadinessEngine.Level.STRAINED -> "Rest"
-    ReadinessEngine.Level.RUNDOWN -> "Rest"
-    ReadinessEngine.Level.INSUFFICIENT -> null
-}
-
-/**
- * S5: the collapsed Data Sources footer summary, "Synced from: WHOOP, Apple Watch", listing only sources
- * with data (Apple Health reads as "Apple Watch", the device the audience knows), or "No sources yet".
- * PURE + unit-tested. Twin of the Swift TodayView.syncedFromSummary, plus the Android-only
- * hasHealthConnect source — Health Connect is named for what it is, never folded under "Apple Watch"
- * (issue #176).
- */
-internal fun syncedFromSummary(hasWhoop: Boolean, hasApple: Boolean, hasHealthConnect: Boolean = false, hasXiaomi: Boolean): String {
-    val names = buildList {
-        if (hasWhoop) add("WHOOP")
-        if (hasApple) add("Apple Watch")
-        if (hasHealthConnect) add("Health Connect")
-        if (hasXiaomi) add("Mi Band")
-    }
-    return if (names.isEmpty()) "No sources yet" else "Synced from: " + names.joinToString(", ")
-}
-
-/** S5: the Key-Metric overflow cap, mirroring TodayView.metricsCollapsedCap (two columns, three rows). */
-internal const val METRICS_COLLAPSED_CAP = 6
 
 /** Level → color, mirroring TodayView.readinessColor. */
 private fun readinessColor(level: ReadinessEngine.Level): Color = when (level) {
@@ -6216,6 +5822,11 @@ private data class Window(
     val rhr: List<Double>,
     val spo2: List<Double>,
     val resp: List<Double>,
+    // #616: the Steps tile carried no `spark` series, so it drew no trend line while every other tile did.
+    // On-device DailyMetric.steps (the strap @57 count) — the same signal the Steps tile VALUE reads
+    // (on-device-first), matching iOS kSparks "steps". (Calories is imported-first, so its spark is threaded
+    // separately as caloriesSpark, not read off a DailyMetric column here.)
+    val steps: List<Double>,
 )
 
 /**
@@ -6244,6 +5855,7 @@ private fun rememberTrendWindow(
             rhr = series { it.restingHr?.toDouble() },
             spo2 = series { it.spo2Pct },
             resp = series { it.respRateBpm },
+            steps = series { it.steps?.toDouble() },   // #616
         )
     }
 
@@ -6299,110 +5911,6 @@ private fun restCaption(d: DailyMetric?): String? = when {
     d?.efficiency != null -> String.format(Locale.US, "%.0f%% eff", d.efficiency)
     else -> null
 }
-
-/**
- * H9, whether THIS night's sleep STAGING is low-confidence, read from the core's existing
- * [ScoreConfidence] rule (never fabricated). True exactly when the night has staged sleep (so the base
- * Rest tier is SOLID) yet the H9 overload DOWNGRADES it, a high-efficiency night whose deep+REM share
- * is implausibly low, far more likely a staging miss (the EEG-free classifier's weak spot) than a real
- * night with almost no restorative sleep. We surface that honestly with a small "Stages estimated" badge
- * rather than faking stages or tanking the Rest score. Reads only the day's banked stage figures
- * (efficiency is the engine's 0..1 fraction; restorative = deep+REM), so it's the SAME decision the
- * daily pass made into `restConfidence`. Returns false for a missing day, a calibrating/building base
- * tier, or any night the core deems SOLID. Pure + unit-tested. Mirrors the iOS Sleep H9 badge gate.
- */
-internal fun restStageLowConfidence(d: DailyMetric?): Boolean {
-    val asleepMin = d?.totalSleepMin ?: return false
-    val efficiency = d.efficiency ?: return false
-    val restorativeMin = (d.deepMin ?: 0.0) + (d.remMin ?: 0.0)
-    val hasStaged = restorativeMin > 0.0
-    // The base (pre-H9) tier: SOLID only when there's staged sleep. If the base isn't SOLID the badge
-    // doesn't apply, a calibrating/no-stage night has its own honest treatment, not a "stages off" flag.
-    if (ScoreConfidence.forRest(hasSession = true, hasStagedSleep = hasStaged) != ScoreConfidence.SOLID) {
-        return false
-    }
-    // The H9 overload: SOLID stays SOLID unless the high-efficiency / low-restorative staging-miss fires.
-    return ScoreConfidence.forRest(
-        hasSession = true,
-        hasStagedSleep = hasStaged,
-        asleepSeconds = asleepMin * 60.0,
-        restorativeSeconds = restorativeMin * 60.0,
-        efficiency = efficiency,
-    ) == ScoreConfidence.BUILDING
-}
-
-/**
- * Short "it's coming, not broken" caption for an unscored tile on TODAY only (#527, extended for H10).
- * Rest fills in after a night's sleep; Effort fills in once cardio load is logged; the overnight vitals
- * (Blood Oxygen) and the on-device Steps fill in over the next few nights / today's wear; Charge needs a
- * few nights to learn your baseline. Returns null off-today so a navigated PAST day with no score
- * honestly stays a bare dash (missing data, not mid-calibration), mirrors the recoveryCalibration
- * today-only rule the Charge tile uses. Each call site only reaches here when the value is genuinely
- * absent, so the hint never overwrites a real reading. No em-dashes (house style). Pure + unit-tested.
- */
-internal fun buildingHint(metric: KeyMetric, isToday: Boolean): String? {
-    if (!isToday) return null
-    return when (metric) {
-        KeyMetric.REST -> "Building, wear it tonight"
-        KeyMetric.EFFORT -> "Building, moves as you do"
-        // H10: an unscored Charge today that ISN'T mid-calibration and has nothing to carry, say what's
-        // needed rather than a bare "No Data". (The "Calibrating N of 4" copy still owns the calibrating
-        // case at the call site; this only shows once there's genuinely nothing.)
-        KeyMetric.CHARGE -> "Building, wear it tonight"
-        // H10: the overnight blood-oxygen reading builds from sleep, like the other in-sleep vitals.
-        KeyMetric.BLOOD_OXYGEN -> "Building, wear it tonight"
-        // H10: on-device steps fill in across today as you move (5/MG counter / imported HC).
-        KeyMetric.STEPS -> "Building, moves as you do"
-        else -> null
-    }
-}
-
-// MARK: - Steps / Weight / Calories tile logic (issue #107)
-//
-// Steps and Calories read straight off today's DailyMetric (the on-device WHOOP5 derivations); the
-// pure helpers below back the Weight tile, which has no daily strap source and instead falls back to
-// the user's profile weight. Kept pure + file-internal so TodayMetricTilesTest is the oracle.
-
-/** The Weight tile's display string and an honest caption ("from profile" only on fallback). */
-internal data class WeightTileText(val value: String, val caption: String?)
-
-/**
- * The newest body weight across the two Apple-side sources (apple-health + health-connect), or null
- * when neither carries one. Days are ISO `yyyy-MM-dd`, which sorts chronologically, so the lexically
- * greatest day with a non-null `weightKg` is the most recent, no date parsing needed. (#107)
- */
-internal fun latestWeightKg(apple: List<AppleDaily>, healthConnect: List<AppleDaily>): Double? =
-    (apple + healthConnect)
-        .filter { it.weightKg != null }
-        .maxByOrNull { it.day }
-        ?.weightKg
-
-/**
- * Steps for [dayKey] from the imported Apple Health / Health Connect daily aggregates, or null when
- * neither source carries a step total for that day. Backs the Today Steps-tile fallback for straps
- * NOOP can't read steps off over Bluetooth, notably the WHOOP 4.0, which DOES count steps (in the
- * official WHOOP app) but doesn't expose them to NOOP, so on a 4.0 the tile shows imported steps
- * rather than "No Data". On-device WHOOP 5/MG steps (DailyMetric.steps) still take precedence at the
- * call site. When both sources report the same day, the larger (most-complete) total wins so we never
- * sum and double-count. Mirrors the macOS TodayView, which already falls back to imported steps. (#150)
- */
-internal fun stepsForDay(apple: List<AppleDaily>, healthConnect: List<AppleDaily>, dayKey: String): Int? =
-    (apple + healthConnect)
-        .filter { it.day == dayKey }
-        .mapNotNull { it.steps }
-        .maxOrNull()
-
-/**
- * Resolve the Weight tile text: prefer the latest Apple/Health-Connect weight, else fall back to the
- * SI profile weight with a "from profile" caption so the source stays honest. Both are formatted
- * through the shared [UnitFormatter] so the Imperial/Metric toggle reaches this tile too. (#107)
- */
-internal fun weightTile(latestWeightKg: Double?, profileWeightKg: Double, system: UnitSystem): WeightTileText =
-    if (latestWeightKg != null) {
-        WeightTileText(UnitFormatter.massFromKilograms(latestWeightKg, system), "latest")
-    } else {
-        WeightTileText(UnitFormatter.massFromKilograms(profileWeightKg, system), "from profile")
-    }
 
 /** Group-separated integer display from a Double (e.g. 12 345 steps), matching the Apple Health tiles. */
 private fun intString(v: Double): String {
@@ -6516,9 +6024,9 @@ private fun KeyMetricsEditorDialog(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Edit Key Metrics", style = NoopType.title2, color = Palette.textPrimary)
+                    Text(uiString(R.string.l10n_today_screen_edit_key_metrics_f95e61a4), style = NoopType.title2, color = Palette.textPrimary)
                     Text(
-                        "Choose which tiles show on your Control Center and reorder them with the arrows.",
+                        uiString(R.string.l10n_today_screen_choose_which_tiles_show_on_your_a4e3acfb),
                         style = NoopType.subhead,
                         color = Palette.textSecondary,
                     )
@@ -6530,9 +6038,9 @@ private fun KeyMetricsEditorDialog(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("Detailed tiles", style = NoopType.body, color = Palette.textPrimary)
+                        Text(uiString(R.string.l10n_today_screen_detailed_tiles_0801721b), style = NoopType.body, color = Palette.textPrimary)
                         Text(
-                            "Squarer tiles with a trend graph under the bar.",
+                            uiString(R.string.l10n_today_screen_squarer_tiles_with_a_trend_graph_3c297dec),
                             style = NoopType.caption,
                             color = Palette.textSecondary,
                         )
@@ -6547,7 +6055,7 @@ private fun KeyMetricsEditorDialog(
                             uncheckedTrackColor = Palette.surfaceInset,
                             uncheckedBorderColor = Palette.hairline,
                         ),
-                        modifier = Modifier.semantics { contentDescription = "Detailed tiles" },
+                        modifier = Modifier.semantics { contentDescription = uiString(R.string.l10n_today_screen_detailed_tiles_0801721b) },
                     )
                 }
                 // The detailed graphs' trailing window — 2 days / 1 week / 2 weeks (the NOOP signature
@@ -6583,7 +6091,7 @@ private fun KeyMetricsEditorDialog(
                                     uncheckedTrackColor = Palette.surfaceInset,
                                     uncheckedBorderColor = Palette.hairline,
                                 ),
-                                modifier = Modifier.semantics { contentDescription = "Show ${item.metric.title}" },
+                                modifier = Modifier.semantics { contentDescription = uiString(R.string.l10n_today_screen_show_item_metric_title_81803daf, item.metric.title) },
                             )
                             Spacer(Modifier.width(12.dp))
                             Text(
@@ -6599,7 +6107,7 @@ private fun KeyMetricsEditorDialog(
                             ) {
                                 Icon(
                                     Icons.Filled.KeyboardArrowUp,
-                                    contentDescription = "Move ${item.metric.title} up",
+                                    contentDescription = uiString(R.string.l10n_today_screen_move_item_metric_title_up_52d2104c, item.metric.title),
                                     tint = if (index > 0) Palette.textSecondary else Palette.textTertiary,
                                     modifier = Modifier.size(Metrics.iconSmall),
                                 )
@@ -6611,7 +6119,7 @@ private fun KeyMetricsEditorDialog(
                             ) {
                                 Icon(
                                     Icons.Filled.KeyboardArrowDown,
-                                    contentDescription = "Move ${item.metric.title} down",
+                                    contentDescription = uiString(R.string.l10n_today_screen_move_item_metric_title_down_890afe60, item.metric.title),
                                     tint = if (index < items.lastIndex) Palette.textSecondary else Palette.textTertiary,
                                     modifier = Modifier.size(Metrics.iconSmall),
                                 )
@@ -6631,7 +6139,7 @@ private fun KeyMetricsEditorDialog(
                             KeyMetric.defaultOrder.forEach { items.add(EditableMetric(it, true)) }
                         },
                         colors = ButtonDefaults.textButtonColors(contentColor = Palette.textSecondary),
-                    ) { Text("Reset", style = NoopType.body) }
+                    ) { Text(uiString(R.string.l10n_today_screen_reset_44c57abd), style = NoopType.body) }
                     Spacer(Modifier.weight(1f))
                     Button(
                         onClick = { onSave(items.filter { it.enabled }.map { it.metric }, detailed, windowDays) },
@@ -6641,7 +6149,7 @@ private fun KeyMetricsEditorDialog(
                             containerColor = Palette.accent,
                             contentColor = Palette.surfaceBase,
                         ),
-                    ) { Text("Done", style = NoopType.captionNumber) }
+                    ) { Text(uiString(R.string.l10n_today_screen_done_e9b450d1), style = NoopType.captionNumber) }
                 }
             }
         }

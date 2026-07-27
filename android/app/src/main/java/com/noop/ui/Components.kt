@@ -1,5 +1,7 @@
 package com.noop.ui
 
+import com.noop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.foundation.Canvas
 import androidx.compose.animation.core.animateFloat
@@ -24,6 +26,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Spacer
@@ -69,6 +72,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -234,7 +238,7 @@ fun SyncingHistoryNote(chunks: Int, modifier: Modifier = Modifier) {
         StatePill("Syncing strap history…", tone = StrandTone.Accent, pulsing = true)
         if (chunks > 0) {
             Text(
-                "$chunks chunks pulled",
+                uiString(R.string.l10n_components_chunks_chunks_pulled_cec186cf, chunks),
                 style = NoopType.footnote,
                 color = Palette.textSecondary,
             )
@@ -329,7 +333,7 @@ private fun PulsingDotHalo(tone: StrandTone, size: Dp) {
             animation = tween(Motion.breathPeriodMs, easing = Motion.easeInOut),
             repeatMode = RepeatMode.Reverse,
         ),
-        label = "dotScale",
+        label = uiString(R.string.l10n_components_dotscale_5bc02101),
     )
     val haloAlpha by transition.animateFloat(
         initialValue = 0.5f,
@@ -338,7 +342,7 @@ private fun PulsingDotHalo(tone: StrandTone, size: Dp) {
             animation = tween(Motion.breathPeriodMs, easing = Motion.easeInOut),
             repeatMode = RepeatMode.Reverse,
         ),
-        label = "dotHalo",
+        label = uiString(R.string.l10n_components_dothalo_3332546c),
     )
     Box(
         modifier = Modifier
@@ -492,9 +496,9 @@ fun StatTile(
     deltaColor: Color = Palette.textTertiary,
     tint: Color? = null,
     // When true, the trailing delta chip yields width to the value instead of taking its full
-    // intrinsic size. Used by the workout tiles, where a wide kcal chip (e.g. "1234 kcal") was
-    // starving the duration column and clipping it to "4…"/"2…" on narrow phones (#332). The
-    // default keeps the sparkline key-metric tiles (Rest/Respiratory/HRV) exactly as they were.
+    // intrinsic size. Used by narrow two-column tiles where a wide chip (e.g. "1234 kcal" or
+    // "+10 vs base") would otherwise starve the reading column and clip its value. The default
+    // keeps callers that have enough width exactly as they were.
     compactDelta: Boolean = false,
 ) {
     // Each tile borrows its accent as a faint card wash, so a metric reads as part of its
@@ -520,7 +524,7 @@ fun StatTile(
                     Spacer(Modifier.width(8.dp))
                     // In compact mode the chip shares the row's remaining space (fill = false, so it
                     // never grows past its content) — this guarantees the weighted value column keeps
-                    // its half and the duration reads in full beside the kcal chip (#332).
+                    // its half and the primary reading remains intact beside a wide chip (#332/#492).
                     TrendChip(
                         text = delta,
                         color = deltaColor,
@@ -571,18 +575,27 @@ fun <T> SegmentedPillControl(
     label: (T) -> String,
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
+    // Opt-in compact mode for long option sets. The track fills its parent and gives each segment an
+    // equal share instead of letting intrinsic label padding widen the surrounding card past the screen.
+    // Defaulted so the shorter controls keep their existing sizing.
+    adaptsToAvailableWidth: Boolean = false,
     // Per-segment availability (#943): a disabled segment stays VISIBLE (dimmed, not clickable) so the
     // control can teach that an option exists before it is usable, e.g. trend ranges that unlock as
     // history builds. Defaulted so every existing call site is untouched.
     enabled: (T) -> Boolean = { true },
 ) {
     val outerShape = RoundedCornerShape(50)
+    val scrollsForLargeText = adaptsToAvailableWidth && LocalDensity.current.fontScale > 1f
+    val usesEqualWidth = adaptsToAvailableWidth && !scrollsForLargeText
+    val rangeScrollState = rememberScrollState()
     // The track is a fixed-height pill; the selected pill FILLS that height so its inset is EQUAL on
     // every side (container padding 4, pill horizontal padding only). The old compact pill inside a
     // taller row left more vertical margin than horizontal — it read as off-centre. Mirrors iOS's
     // SegmentedPillControl refresh (segment height 36, pill fills it for an even inset).
     Row(
         modifier = modifier
+            .then(if (scrollsForLargeText) Modifier.horizontalScroll(rangeScrollState) else Modifier)
+            .then(if (usesEqualWidth) Modifier.fillMaxWidth() else Modifier)
             .height(36.dp)
             .clip(outerShape)
             .background(Palette.surfaceInset)
@@ -607,16 +620,19 @@ fun <T> SegmentedPillControl(
             Box(
                 modifier = Modifier
                     // Fill the track height so the pill's inset is equal top/bottom/left/right.
+                    .then(if (usesEqualWidth) Modifier.weight(1f) else Modifier)
                     .fillMaxHeight()
                     .clip(pillShape)
                     .then(pillBg)
                     .then(if (itemEnabled) Modifier.clickableNoRipple { onSelect(item) } else Modifier)
-                    .padding(horizontal = 12.dp),
+                    .padding(horizontal = if (usesEqualWidth) Metrics.space4 else 12.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = label(item),
                     style = NoopType.captionNumber,
+                    maxLines = if (adaptsToAvailableWidth) 1 else Int.MAX_VALUE,
+                    overflow = if (adaptsToAvailableWidth) TextOverflow.Ellipsis else TextOverflow.Clip,
                     color = when {
                         selected && Palette.isLight -> androidx.compose.ui.graphics.Color.White
                         selected -> Palette.goldDeepText
@@ -672,7 +688,7 @@ fun BevelGauge(
     val animatedFraction by animateFloatAsState(
         targetValue = frac,
         animationSpec = tween(Motion.durationSlow, easing = Motion.drawIn),
-        label = "ringFill",
+        label = uiString(R.string.l10n_components_ringfill_59cd4fb9),
     )
     // Outer bloom — a faint, STATIC glow. The breathing pulse is gone (matching iOS): it sits calm so
     // the ring reads flat/Material, not glowing. Strength tracks the iOS bloomOpacity (0.05 + 0.13·frac)
@@ -902,12 +918,12 @@ fun GlowRing(
     val animFraction by animateFloatAsState(
         targetValue = if (started) target else 0f,
         animationSpec = spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow),
-        label = "glowring-fraction",
+        label = uiString(R.string.l10n_components_glowring_fraction_5bcc7cd7),
     )
     val animValue by animateFloatAsState(
         targetValue = if (started) value.toFloat() else 0f,
         animationSpec = tween(durationMillis = 850, easing = FastOutSlowInEasing),
-        label = "glowring-value",
+        label = uiString(R.string.l10n_components_glowring_value_ac0e87de),
     )
     val trackColor = Palette.textPrimary.copy(alpha = 0.10f)
     Box(modifier = modifier.size(diameter), contentAlignment = Alignment.Center) {
@@ -1402,8 +1418,8 @@ fun StepperField(
         if (unit != null) {
             Text(unit, style = NoopType.caption, color = Palette.textTertiary)
         }
-        StepperButton(symbol = "−", onClick = onMinus, label = "Decrease $accessibility")
-        StepperButton(symbol = "+", onClick = onPlus, label = "Increase $accessibility")
+        StepperButton(symbol = "−", onClick = onMinus, label = uiString(R.string.l10n_components_decrease_accessibility_df5f1511, accessibility))
+        StepperButton(symbol = "+", onClick = onPlus, label = uiString(R.string.l10n_components_increase_accessibility_0949c0e9, accessibility))
     }
 }
 

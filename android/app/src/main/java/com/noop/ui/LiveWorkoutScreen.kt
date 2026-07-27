@@ -1,5 +1,7 @@
 package com.noop.ui
 
+import com.noop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -20,9 +22,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -93,6 +97,10 @@ fun LiveWorkoutScreen(vm: AppViewModel, onClose: () -> Unit) {
     val zoneSet = remember(profile.hrMax) { HrZones.zones(maxHR = profile.hrMax.toDouble()) }
     val zone = bpm?.let { zoneSet.zoneNumber(it.toDouble()) } ?: 0
 
+    // Guards the destructive End action behind a confirm (#517) — a stray tap on the full-width
+    // button used to end the workout instantly with no way back.
+    var showEndConfirm by remember { mutableStateOf(false) }
+
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(w.startMs) {
         while (true) { nowMs = System.currentTimeMillis(); delay(1000) }
@@ -142,11 +150,11 @@ fun LiveWorkoutScreen(vm: AppViewModel, onClose: () -> Unit) {
 
             // Live stats grid — avg / peak / effort, from the captured window.
             Row(horizontalArrangement = Arrangement.spacedBy(Metrics.gap), modifier = Modifier.fillMaxWidth()) {
-                StatTile(modifier = Modifier.weight(1f), label = "Avg", value = if (w.avgHr > 0) "${w.avgHr}" else "—",
+                StatTile(modifier = Modifier.weight(1f), label = uiString(R.string.l10n_live_workout_screen_avg_cdc93143), value = if (w.avgHr > 0) "${w.avgHr}" else "—",
                     accent = if (w.avgHr > 0) Palette.metricRose else Palette.textPrimary)
-                StatTile(modifier = Modifier.weight(1f), label = "Peak", value = if (w.peakHr > 0) "${w.peakHr}" else "—",
+                StatTile(modifier = Modifier.weight(1f), label = uiString(R.string.l10n_live_workout_screen_peak_c83dbbd3), value = if (w.peakHr > 0) "${w.peakHr}" else "—",
                     accent = if (w.peakHr > 0) Palette.metricRose else Palette.textPrimary)
-                StatTile(modifier = Modifier.weight(1f), label = "Effort", value = UnitFormatter.effortDisplay(w.liveStrain, effortScale),
+                StatTile(modifier = Modifier.weight(1f), label = uiString(R.string.l10n_live_workout_screen_effort_8c974bc6), value = UnitFormatter.effortDisplay(w.liveStrain, effortScale),
                     accent = Palette.strainColor(w.liveStrain))
             }
 
@@ -160,14 +168,51 @@ fun LiveWorkoutScreen(vm: AppViewModel, onClose: () -> Unit) {
             Spacer(Modifier.height(12.dp))
 
             Button(
-                onClick = { vm.endWorkout(); onClose() },
+                onClick = { showEndConfirm = true },
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(vertical = 14.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Palette.statusCritical, contentColor = Palette.surfaceBase,
                 ),
-            ) { Text("End workout", style = NoopType.headline) }
+            ) { Text(uiString(R.string.l10n_live_workout_screen_end_workout_3e8d6238), style = NoopType.headline) }
         }
+    }
+
+    // Confirm before ending (#517): a stray tap on "End workout" used to stop the session and
+    // discard the in-progress recording with no way back.
+    if (showEndConfirm) {
+        AlertDialog(
+            onDismissRequest = { showEndConfirm = false },
+            containerColor = Palette.surfaceOverlay,
+            title = {
+                Text(
+                    uiString(R.string.l10n_live_workout_screen_end_this_workout_4869c76a),
+                    style = NoopType.title2, color = Palette.textPrimary,
+                )
+            },
+            text = {
+                Text(
+                    uiString(R.string.l10n_live_workout_screen_this_stops_recording_and_saves_what_3e17a23e),
+                    style = NoopType.subhead, color = Palette.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showEndConfirm = false; vm.endWorkout(); onClose() }) {
+                    Text(
+                        uiString(R.string.l10n_live_workout_screen_end_workout_3e8d6238),
+                        style = NoopType.body, color = Palette.statusCritical,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEndConfirm = false }) {
+                    Text(
+                        uiString(R.string.l10n_live_workout_screen_cancel_77dfd213),
+                        style = NoopType.body, color = Palette.textSecondary,
+                    )
+                }
+            },
+        )
     }
 }
 
@@ -189,13 +234,13 @@ private fun SensorRow(sensor: StandardHrSource.SensorMetrics) {
         Overline("Sensor")
         Row(horizontalArrangement = Arrangement.spacedBy(Metrics.gap), modifier = Modifier.fillMaxWidth()) {
             if (speed != null) {
-                StatTile(modifier = Modifier.weight(1f), label = "Speed", value = "$speed km/h", accent = Palette.effortColor)
+                StatTile(modifier = Modifier.weight(1f), label = uiString(R.string.l10n_live_workout_screen_speed_2d2cb022), value = "$speed km/h", accent = Palette.effortColor)
             }
             if (cadence != null) {
-                StatTile(modifier = Modifier.weight(1f), label = "Cadence", value = "$cadence/min", accent = Palette.effortColor)
+                StatTile(modifier = Modifier.weight(1f), label = uiString(R.string.l10n_live_workout_screen_cadence_68af11f0), value = "$cadence/min", accent = Palette.effortColor)
             }
             if (power != null) {
-                StatTile(modifier = Modifier.weight(1f), label = "Power", value = "$power W", accent = Palette.effortColor)
+                StatTile(modifier = Modifier.weight(1f), label = uiString(R.string.l10n_live_workout_screen_power_7548ab52), value = "$power W", accent = Palette.effortColor)
             }
         }
     }
@@ -280,7 +325,7 @@ private fun ZoneRail(zone: Int, zoneSet: com.noop.analytics.HrZoneSet) {
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        "Z$z",
+                        uiString(R.string.l10n_live_workout_screen_z_z_d3991a28, z),
                         style = NoopType.captionNumber,
                         color = if (active) Palette.surfaceBase else Palette.textTertiary,
                     )
