@@ -12,6 +12,56 @@ extension WhoopStore {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// Pack a decoded v26 PPG waveform's samples as little-endian i16 (2 bytes/sample) — a single
+    /// compact BLOB per (deviceId, ts) row instead of 24 scalar rows (issue #156 follow-up, v27). Any
+    /// sample count is handled (a truncated frame can decode fewer than 24); each value is truncated to
+    /// Int16's range, matching the wire format it came from (`readI16` in the decoder never produces
+    /// anything wider).
+    static func packPpgSamples(_ samples: [Int]) -> Data {
+        var buf = Data(capacity: samples.count * 2)
+        for s in samples {
+            let v = Int16(truncatingIfNeeded: s)
+            buf.append(UInt8(truncatingIfNeeded: v))
+            buf.append(UInt8(truncatingIfNeeded: v >> 8))
+        }
+        return buf
+    }
+
+    /// Inverse of `packPpgSamples`. A trailing odd byte (a corrupt/truncated blob) is dropped rather
+    /// than thrown — a read path never crashes on a malformed row.
+    static func unpackPpgSamples(_ data: Data) -> [Int] {
+        let bytes = [UInt8](data)
+        var out = [Int](); out.reserveCapacity(bytes.count / 2)
+        var i = 0
+        while i + 1 < bytes.count {
+            let u = UInt16(bytes[i]) | (UInt16(bytes[i + 1]) << 8)
+            out.append(Int(Int16(bitPattern: u)))
+            i += 2
+        }
+        return out
+    }
+
+    /// #423: pack the raw-IMU i16 columns to a little-endian BLOB (same wire encoding as `packPpgSamples`,
+    /// an `[Int16]` source — the 6×100 columns ax…az,gx…gz). Byte-identical to Kotlin `packImuColumns`.
+    static func packImuColumns(_ cols: [Int16]) -> Data {
+        var buf = Data(capacity: cols.count * 2)
+        for v in cols { buf.append(UInt8(truncatingIfNeeded: v)); buf.append(UInt8(truncatingIfNeeded: v >> 8)) }
+        return buf
+    }
+
+    /// Inverse of `packImuColumns`; a trailing odd byte is dropped so a malformed row never crashes a read.
+    static func unpackImuColumns(_ data: Data) -> [Int16] {
+        let bytes = [UInt8](data)
+        var out = [Int16](); out.reserveCapacity(bytes.count / 2)
+        var i = 0
+        while i + 1 < bytes.count { out.append(Int16(bitPattern: UInt16(bytes[i]) | (UInt16(bytes[i + 1]) << 8))); i += 2 }
+        return out
+    }
+
+    /// #423 rolling retention for the raw-IMU capture table (twin of Kotlin `RAW_IMU_RETENTION_ROWS`):
+    /// ~1 h at 1 row/strap-second (~4 MB) hard-caps the table during a multi-day offload replay.
+    public static let rawImuRetentionRows = 3600
+
     /// Insert or update a device row (natural key = id).
     public func upsertDevice(id: String, mac: String?, name: String?) async throws {
         let now = Int(Date().timeIntervalSince1970)
@@ -24,6 +74,27 @@ extension WhoopStore {
                     name = excluded.name,
                     lastSeen = excluded.lastSeen
                 """, arguments: [id, mac, name, now, now])
+        }
+    }
+
+    /// #423: persist decoded 5/MG raw-IMU offload buffers (one row per strap-second, packed i16 BLOB),
+    /// then bound the table to the newest `retentionRows` for the device (rolling retention). Written from
+    /// the deep-buffer capture seam, not the normal stream path, so it inserts directly (idempotent by ts).
+    /// Twin of Kotlin `WhoopRepository.insertRawImu`.
+    public func insertRawImu(deviceId: String, rows: [(ts: Int, cols: [Int16])], retentionRows: Int) async throws {
+        guard !rows.isEmpty else { return }
+        try syncWrite { db in
+            let ins = try db.cachedStatement(sql: """
+                INSERT INTO rawImuSample (deviceId, ts, samples) VALUES (?, ?, ?)
+                ON CONFLICT(deviceId, ts) DO NOTHING
+                """)
+            // Pack the raw i16 columns to the LE BLOB HERE (packImuColumns is module-internal), so the
+            // caller passes plain [Int16] and never needs the packer. Mirrors how `insert` packs ppgWaveform.
+            for r in rows { try ins.execute(arguments: [deviceId, r.ts, WhoopStore.packImuColumns(r.cols)]) }
+            try db.execute(sql: """
+                DELETE FROM rawImuSample WHERE deviceId = ? AND ts < (
+                    SELECT MIN(ts) FROM (SELECT ts FROM rawImuSample WHERE deviceId = ? ORDER BY ts DESC LIMIT ?))
+                """, arguments: [deviceId, deviceId, retentionRows])
         }
     }
 
@@ -57,18 +128,29 @@ extension WhoopStore {
             }
             if !streams.rr.isEmpty {
                 let stmt = try db.cachedStatement(sql: """
-                    INSERT INTO rrInterval (deviceId, ts, rrMs, seq) VALUES (?, ?, ?, ?)
+                    INSERT INTO rrInterval (deviceId, ts, rrMs, seq, ord) VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(deviceId, ts, rrMs, seq) DO NOTHING
                     """)
                 // v24 (#163): number EQUAL (ts, rrMs) beats 0, 1, … within this batch so both survive;
                 // distinct beats keep seq 0 and their own (ts, rrMs, 0) key, so a distinct beat is never
                 // dropped even across batches (rrMs stays in the key). Re-syncing identical rows reproduces
                 // the same (ts, rrMs, seq) → still idempotent. Nested dict = (ts, rrMs) occurrence counter.
+                //
+                // v30 (#823): `ord` is the beat's position among ALL beats sharing this ts in this batch —
+                // its emission order. `seq` cannot express it (it keys on (ts, rrMs), so distinct beats in
+                // a second are all 0). Not in the key, never changes which rows survive; it exists so reads
+                // return beats in heart order rather than sorted by value, which biases RMSSD down. Same
+                // batch-local caveat as seq: a second split across two live flushes restarts ord at 0 and
+                // DO NOTHING keeps the first row. The historical path delivers a second atomically.
+                // Twin of Kotlin assignRrSeq.
                 var seqByTsRr: [Int: [Int: Int]] = [:]
+                var ordByTs: [Int: Int] = [:]
                 for r in streams.rr {
                     let seq = seqByTsRr[r.ts]?[r.rrMs] ?? 0
                     seqByTsRr[r.ts, default: [:]][r.rrMs] = seq + 1
-                    try stmt.execute(arguments: [deviceId, r.ts, r.rrMs, seq])
+                    let ord = ordByTs[r.ts] ?? 0
+                    ordByTs[r.ts] = ord + 1
+                    try stmt.execute(arguments: [deviceId, r.ts, r.rrMs, seq, ord])
                     rr += db.changesCount
                 }
             }
@@ -173,6 +255,20 @@ extension WhoopStore {
                     try stmt.execute(arguments: [deviceId, s.ts, s.bpm, s.conf])
                 }
             }
+            // RAW v26 optical PPG waveform (#156 follow-up) — the samples `ppgHr` above is derived FROM.
+            // Persist-only, same as steps/sleepState/ppgHr: not added to the 8-field return tuple. ON
+            // CONFLICT DO NOTHING keeps the FIRST-seen waveform for a second, matching every other
+            // per-second stream's dedupe rule. Packed into one compact BLOB per row (see
+            // `packPpgSamples`) rather than 24 scalar rows, so this insert is O(records), not O(samples).
+            if !streams.ppgWaveform.isEmpty {
+                let stmt = try db.cachedStatement(sql: """
+                    INSERT INTO ppgWaveformSample (deviceId, ts, samples) VALUES (?, ?, ?)
+                    ON CONFLICT(deviceId, ts) DO NOTHING
+                    """)
+                for s in streams.ppgWaveform {
+                    try stmt.execute(arguments: [deviceId, s.ts, WhoopStore.packPpgSamples(s.samples)])
+                }
+            }
             return (hr, rr, ev, bat, spo2, skin, resp, grav)
         }
     }
@@ -213,9 +309,12 @@ extension WhoopStore {
                 row.cols[1] = WhoopStore.intStr(r["bpm"])
                 out.append(row)
             }
-            // rr: stream=rr → rr_ms (col 4).
+            // rr: stream=rr → rr_ms (col 4). Same-second beats need the #823 tiebreak here too, and
+            // more so: bare "ORDER BY ts" left their order UNDEFINED, so a raw export could differ
+            // between runs over identical data. Emission order first, then the pre-v30 fallback.
             for r in try Row.fetchAll(db, sql:
-                "SELECT ts, rrMs FROM rrInterval WHERE deviceId = ? AND ts >= ? ORDER BY ts",
+                "SELECT ts, rrMs FROM rrInterval WHERE deviceId = ? AND ts >= ? " +
+                "ORDER BY ts, ord, rrMs, seq",
                 arguments: [deviceId, floor]) {
                 var row = RawCSVRow(ts: r["ts"]); row.cols[0] = "rr"
                 row.cols[2] = WhoopStore.intStr(r["rrMs"])
@@ -395,6 +494,26 @@ extension WhoopStore {
         try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ppgHrSample") ?? 0 }
     }
 
+    /// The RAW v26 optical PPG waveform (#156 follow-up), one record per second, in `[from, to]` for one
+    /// device, ascending by ts. `samples` are the raw i16 ADC counts the strap sent, unpacked from the
+    /// compact on-disk BLOB (`packPpgSamples`/`unpackPpgSamples`). Empty when the strap never emitted
+    /// v26 (the WHOOP 4.0 / v18-only common case) or the window has no v26-heavy stretch.
+    public func ppgWaveformSamples(deviceId: String, from: Int, to: Int, limit: Int = 200_000) async throws
+        -> [PpgWaveformSample] {
+        try syncRead { db in
+            try Row.fetchAll(db, sql: """
+                SELECT ts, samples FROM ppgWaveformSample
+                WHERE deviceId = ? AND ts >= ? AND ts <= ?
+                ORDER BY ts LIMIT ?
+                """, arguments: [deviceId, from, to, limit])
+                .map { PpgWaveformSample(ts: $0["ts"], samples: WhoopStore.unpackPpgSamples($0["samples"])) }
+        }
+    }
+
+    public func ppgWaveformCountForTest() async throws -> Int {
+        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ppgWaveformSample") ?? 0 }
+    }
+
     public func deviceRowForTest(id: String) async throws -> (mac: String?, name: String?)? {
         try syncRead { db in
             guard let row = try Row.fetchOne(db,
@@ -402,6 +521,29 @@ extension WhoopStore {
                 return nil
             }
             return (row["mac"], row["name"])
+        }
+    }
+
+    /// Write an R-R row the way a PRE-v30 build did: `ord` left NULL, emission order never recorded.
+    /// The normal insert path always stamps `ord`, so there is otherwise no way to construct the
+    /// legacy shape — and the read-order fallback for existing user data is exactly the branch most
+    /// worth testing rather than assuming. Test-only (#823).
+    public func insertLegacyRrWithoutOrdForTest(deviceId: String, ts: Int, rrMs: Int) async throws {
+        try syncWrite { db in
+            try db.execute(sql: """
+                INSERT INTO rrInterval (deviceId, ts, rrMs, seq, ord) VALUES (?, ?, ?, 0, NULL)
+                ON CONFLICT(deviceId, ts, rrMs, seq) DO NOTHING
+                """, arguments: [deviceId, ts, rrMs])
+        }
+    }
+
+    /// The stored `ord` values for one second, in read order. Test-only (#823).
+    public func rrOrdValuesForTest(deviceId: String, ts: Int) async throws -> [Int?] {
+        try syncRead { db in
+            try Row.fetchAll(db, sql: """
+                SELECT ord FROM rrInterval WHERE deviceId = ? AND ts = ?
+                ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC
+                """, arguments: [deviceId, ts]).map { $0["ord"] }
         }
     }
 }

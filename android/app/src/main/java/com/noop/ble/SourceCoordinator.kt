@@ -8,6 +8,7 @@ import com.noop.data.SourceKind
 import com.noop.data.StreamBatch
 import com.noop.data.WhoopRepository
 import com.noop.oura.OuraRingGen
+import com.noop.oura.OuraWearState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -121,6 +122,11 @@ class SourceCoordinator(
      *  source is live. Mirrors Swift `AppModel.ouraNeedsPairing`. */
     private val _ouraNeedsPairing = MutableStateFlow<String?>(null)
     val ouraNeedsPairing: StateFlow<String?> = _ouraNeedsPairing.asStateFlow()
+
+    /** The active Oura source's live wear/charge state (worn / charging / off), or null when no Oura source
+     *  is live. Drives the Live screen's On-wrist / Off-wrist read (#628). Mirrors iOS `LiveState.ouraWearState`. */
+    private val _ouraWearState = MutableStateFlow<OuraWearState?>(null)
+    val ouraWearState: StateFlow<OuraWearState?> = _ouraWearState.asStateFlow()
 
     /** Collects the active Oura source's adoptPhase / needsPairing into the mirrors above; cancelled and
      *  nulled on teardown so a forgotten ring never leaks a stale outcome. */
@@ -411,8 +417,22 @@ class SourceCoordinator(
             persist = { batch: StreamBatch, deviceId: String ->
                 scope.launch { runCatching { repo.insert(batch, deviceId) } }
             },
+            persistSleepSession = { s: com.noop.oura.OuraSleepSession, deviceId: String ->
+                // The ring-PROVIDED hypnogram night, upserted under the ring's OWN id (imported/measured
+                // side, NOT the "-noop" computed sibling) so mergeSleepRichness surfaces Oura's SleepNet
+                // staging over NOOP's sparse-motion computed night (#325).
+                scope.launch {
+                    runCatching {
+                        repo.upsertSleepSessions(listOf(com.noop.data.SleepSession(
+                            deviceId = deviceId, startTs = s.startTs, endTs = s.endTs,
+                            efficiency = s.efficiency, stagesJSON = s.stagesJson)))
+                    }
+                }
+            },
             log = straplog,           // Oura connect/auth/stream lifecycle → the SAME exported strap log (#421)
             onBattery = batterySink,  // ring battery → the same live state the WHOOP strap battery uses
+            onModel = { model -> scope.launch { runCatching { registry.setModel(id, model) } } },  // #772: correct a name-guessed gen
+            onSerial = { serial -> adoptOuraSerial(currentId = id, serial = serial) },  // #771
         )
         // CONSUME the one-shot adopt-intent the wizard armed after its irreversible-consent gate AND its
         // second "Take over" confirm (and ONLY then). True permits the DANGEROUS post-factory-reset key
@@ -430,8 +450,36 @@ class SourceCoordinator(
         ouraStateJob = scope.launch {
             launch { source.adoptPhase.collect { _ouraAdoptPhase.value = it } }
             launch { source.needsPairing.collect { _ouraNeedsPairing.value = it } }
+            launch { source.ouraWearState.collect { _ouraWearState.value = it } }
         }
         return source
+    }
+
+    /**
+     * #771 (twin of Swift's `SourceCoordinator.adoptOuraSerial`): the live Oura source read the ring's stable
+     * SERIAL on connect. Re-point this device from its transient address-based id ([currentId]) onto its
+     * `oura-<serial>` id (prefix from the brand catalog, never a literal), so a re-pair never orphans history.
+     * Folds ONLY the active row (other past `oura-*` rows are left untouched — the store method enforces that),
+     * migrates the install key (else the re-pointed session can't authenticate), then `setActive` +
+     * `onActiveDeviceChanged` re-point the running source onto the serial id. Runs on [scope] so it's already
+     * off the BLE callback thread; re-checks it is still the active device before acting.
+     */
+    private fun adoptOuraSerial(currentId: String, serial: String) {
+        val ctx = context ?: return
+        val serialId = "${ExperimentalBrand.OURA.idPrefix}-$serial"
+        if (currentId == serialId) return
+        scope.launch {
+            if (registry.activeDeviceId() != currentId) return@launch
+            if (registry.adoptSerialIdentity(currentId, serialId)) {
+                OuraInstallKeyStore.load(ctx, currentId)?.let { key ->
+                    OuraInstallKeyStore.save(ctx, serialId, key)
+                    OuraInstallKeyStore.clear(ctx, currentId)
+                }
+                straplog("Oura: adopted stable serial id $serialId (was $currentId) - re-pointing onto the ring's serial (#771)")
+                registry.setActive(serialId)
+                onActiveDeviceChanged(serialId)
+            }
+        }
     }
 
     /** Stop the live non-WHOOP source (standard strap, FTMS machine, Huami device, or Oura ring) and drop
@@ -444,6 +492,7 @@ class SourceCoordinator(
         ouraStateJob?.cancel(); ouraStateJob = null
         _ouraAdoptPhase.value = OuraLiveSource.AdoptPhase.Idle
         _ouraNeedsPairing.value = null
+        _ouraWearState.value = null   // #628: no live Oura source -> no wear badge
         // A stale speed/cadence/power readout must not outlive the strap session (the source's own stop()
         // already pushes an empty SensorMetrics, but reset here too so leaving for WHOOP / FTMS / Huami —
         // none of which feed this flow — is clean and immediate).

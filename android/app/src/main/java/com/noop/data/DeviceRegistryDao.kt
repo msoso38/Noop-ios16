@@ -43,6 +43,11 @@ interface DeviceRegistryDao {
     @Query("UPDATE pairedDevice SET nickname = :nickname WHERE id = :id")
     suspend fun renameDevice(id: String, nickname: String?)
 
+    /** Update the model label for an existing device (e.g. seeded "WHOOP" → "WHOOP 4.0" once the
+     *  strap's service family is known from a live BLE connect). Twin of the Swift store's `setModel`. */
+    @Query("UPDATE pairedDevice SET model = :model WHERE id = :id")
+    suspend fun setModel(id: String, model: String)
+
     /** Persist (or clear) a device's stable BLE peripheral identifier (the MAC address on Android). Lets
      *  the seeded "my-whoop" adopt its strap's address on first connect and a specific WHOOP confirm its
      *  identity. Twin of the Swift store's `setPeripheralId`. */
@@ -70,6 +75,8 @@ interface DeviceRegistryDao {
     @Query("DELETE FROM gravitySample WHERE deviceId = :deviceId") suspend fun deleteGravityFor(deviceId: String)
     @Query("DELETE FROM stepSample WHERE deviceId = :deviceId") suspend fun deleteStepsFor(deviceId: String)
     @Query("DELETE FROM ppgHrSample WHERE deviceId = :deviceId") suspend fun deletePpgHrFor(deviceId: String)
+    @Query("DELETE FROM ppgWaveformSample WHERE deviceId = :deviceId") suspend fun deletePpgWaveformFor(deviceId: String)
+    @Query("DELETE FROM rawImuSample WHERE deviceId = :deviceId") suspend fun deleteRawImuFor(deviceId: String)   // #423
     @Query("DELETE FROM event WHERE deviceId = :deviceId") suspend fun deleteEventsFor(deviceId: String)
     @Query("DELETE FROM battery WHERE deviceId = :deviceId") suspend fun deleteBatteryFor(deviceId: String)
     @Query("DELETE FROM dailyMetric WHERE deviceId = :deviceId") suspend fun deleteDailyMetricsFor(deviceId: String)
@@ -79,6 +86,8 @@ interface DeviceRegistryDao {
     @Query("DELETE FROM appleDaily WHERE deviceId = :deviceId") suspend fun deleteAppleDailyFor(deviceId: String)
     @Query("DELETE FROM metricSeries WHERE deviceId = :deviceId") suspend fun deleteMetricSeriesFor(deviceId: String)
     @Query("DELETE FROM dayOwnership WHERE deviceId = :deviceId") suspend fun deleteDayOwnershipFor(deviceId: String)
+    @Query("DELETE FROM scoreInputProvenance WHERE deviceId = :deviceId OR sourceId = :deviceId")
+    suspend fun deleteScoreInputProvenanceFor(deviceId: String)
     // Added (audit finding): device-keyed tables the delete set previously missed, so "delete all data"
     // left raw band sleep-state (sleepStateSample), user-entered lab/blood markers (labMarker), live
     // coaching sessions (liveSession) and dismissed workout/sleep markers behind — a privacy defect for a
@@ -89,6 +98,43 @@ interface DeviceRegistryDao {
     @Query("DELETE FROM liveSession WHERE deviceId = :deviceId") suspend fun deleteLiveSessionsFor(deviceId: String)
     @Query("DELETE FROM dismissedWorkout WHERE deviceId = :deviceId") suspend fun deleteDismissedWorkoutsFor(deviceId: String)
     @Query("DELETE FROM dismissedSleep WHERE deviceId = :deviceId") suspend fun deleteDismissedSleepsFor(deviceId: String)
+
+    // #771 adopt-serial: re-key one device's rows onto the serial id across every device-scoped table.
+    // `UPDATE OR IGNORE` so the canonical (serial) row wins any (deviceId, ts…) primary-key clash; the
+    // leftover clashing rows are then cleared by the matching delete*For(from) above. One per table (Room
+    // has no dynamic table names) — the SAME table set as deleteDeviceData, guarded by DeviceRegistryTest.
+    @Query("UPDATE OR IGNORE hrSample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyHr(from: String, to: String)
+    @Query("UPDATE OR IGNORE rrInterval SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyRr(from: String, to: String)
+    @Query("UPDATE OR IGNORE spo2Sample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeySpo2(from: String, to: String)
+    @Query("UPDATE OR IGNORE skinTempSample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeySkinTemp(from: String, to: String)
+    @Query("UPDATE OR IGNORE respSample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyResp(from: String, to: String)
+    @Query("UPDATE OR IGNORE gravitySample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyGravity(from: String, to: String)
+    @Query("UPDATE OR IGNORE stepSample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeySteps(from: String, to: String)
+    @Query("UPDATE OR IGNORE ppgHrSample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyPpgHr(from: String, to: String)
+    @Query("UPDATE OR IGNORE ppgWaveformSample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyPpgWaveform(from: String, to: String)
+    @Query("UPDATE OR IGNORE rawImuSample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyRawImu(from: String, to: String)
+    @Query("UPDATE OR IGNORE event SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyEvents(from: String, to: String)
+    @Query("UPDATE OR IGNORE battery SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyBattery(from: String, to: String)
+    @Query("UPDATE OR IGNORE dailyMetric SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyDailyMetrics(from: String, to: String)
+    @Query("UPDATE OR IGNORE sleepSession SET deviceId = :to WHERE deviceId = :from") suspend fun reKeySleepSessions(from: String, to: String)
+    @Query("UPDATE OR IGNORE journal SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyJournal(from: String, to: String)
+    @Query("UPDATE OR IGNORE workout SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyWorkouts(from: String, to: String)
+    @Query("UPDATE OR IGNORE appleDaily SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyAppleDaily(from: String, to: String)
+    @Query("UPDATE OR IGNORE metricSeries SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyMetricSeries(from: String, to: String)
+    @Query("UPDATE OR IGNORE dayOwnership SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyDayOwnership(from: String, to: String)
+    @Query("UPDATE OR IGNORE sleepStateSample SET deviceId = :to WHERE deviceId = :from") suspend fun reKeySleepStates(from: String, to: String)
+    @Query("UPDATE OR IGNORE labMarker SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyLabMarkers(from: String, to: String)
+    @Query("UPDATE OR IGNORE liveSession SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyLiveSessions(from: String, to: String)
+    @Query("UPDATE OR IGNORE dismissedWorkout SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyDismissedWorkouts(from: String, to: String)
+    @Query("UPDATE OR IGNORE dismissedSleep SET deviceId = :to WHERE deviceId = :from") suspend fun reKeyDismissedSleeps(from: String, to: String)
+
+    /** The registry row for [id], or null. (#771 adopt-serial needs the active row's fields to clone/carry.) */
+    @Query("SELECT * FROM pairedDevice WHERE id = :id")
+    suspend fun pairedDevice(id: String): PairedDeviceRow?
+
+    /** Drop a registry row / its `device` twin by id (#771: remove the folded-in provisional CB-UUID id). */
+    @Query("DELETE FROM pairedDevice WHERE id = :id") suspend fun deletePairedDeviceRow(id: String)
+    @Query("DELETE FROM device WHERE id = :id") suspend fun deleteDeviceRow(id: String)
 
     /** Set the owner override for a day (insert-or-replace by the day PK). */
     @Insert(onConflict = OnConflictStrategy.REPLACE)

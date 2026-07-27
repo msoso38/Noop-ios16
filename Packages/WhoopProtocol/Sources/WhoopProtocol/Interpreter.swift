@@ -484,7 +484,25 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
     }
     if let v = readDType(frame, 82, "u8") {
         fb.add(82, 1, "aux_byte_82", "status", value: .int(v),
-               note: "raw; observed nonzero only while sleep_state = asleep (meaning not pinned)")
+               note: "raw; nonzero only while sleep_state = asleep; tri-mode, see spo2_candidate_82")
+        // #103 SpO2 candidate: a decompile-sourced decode (gen5.rs `spo2_pct`, reimplemented here as a
+        // protocol fact with attribution, like the other RE work) reads @82 (= inner 74) as a
+        // strap-computed SpO2 % scalar, tri-mode: 70–100 = a real %, bit-7 values (0x80/0xA0…) =
+        // saturation sentinels, other sub-70 nonzero = diagnostic codes, populated only during sleep.
+        // Evidence is SPLIT: an 8-night independent validation with real spread (corr +0.99, ~0.4 %/night,
+        // tracks a 92 % desat AND a 98 % high; offset-specific — only @82 tracks in a 74–92 scan) meets
+        // the cross-night bar, but the two capture nights checked on the original #103 device moved
+        // OPPOSITE to the app value (95.50→92.83 app vs 93.62→93.80 gated mean) — device/firmware
+        // variance or an extraction error on one side, unresolved. So this ships as an INSTRUMENTATION
+        // CANDIDATE only: the in-band value is decoded and surfaced raw for multi-device correlation
+        // against the app's own nightly SpO2. It must never back a shipped SpO2 metric, never write
+        // `spo2Pct`/`spo2_red`/`spo2_ir` (the testHistoricalV18OpticalFieldsAreNotNamedPhysiologically
+        // guard), and never
+        // feed a downstream gate (recovery/illness) until the cross-device contradiction is resolved.
+        if (70...100).contains(v) {
+            fb.add(82, 1, "spo2_candidate_82", "spo2", value: .int(v),
+                   note: "in-band (70–100) @82 reading; candidate strap-computed SpO2 % (#103) — instrumentation only, cross-device evidence still split, not a shipped metric")
+        }
     }
     // ── The @82–119 "optical/perfusion + tail" span, characterised over 18,602 real v18 records from a
     // third strap (overnight R22 live stream) + cross-checked on the two fixture devices above. The span
@@ -590,16 +608,20 @@ private func decodeWhoop5HistoricalV26(_ frame: [UInt8], fb: FieldBuilder) {
 /// Both versions reuse the v18 record header — layout version @9, a marker byte @10 (0x81 on v20, 0x80 on
 /// v21), the monotonic u32 record index @11 (the same lifetime counter as v18), and the u32 unix second
 /// @15. Their bodies are blocks of fixed-length sample channels, established from captured frames:
-///   • v21 (1244 B): a (100, 100, 3) descriptor near @22, then three 100-sample i16 channels at @28 /
-///     @228 / @428 (200 B apart), each a bounded pulsatile waveform at its own DC baseline.
-///   • v20 (2140 B): five channel blocks, each preceded by a presence byte (0x19 = active, 0x00 =
-///     empty / zero-filled); an active block holds two 50-sample i32 channels. The presence bytes sit at
-///     @0x1a / @0x1c0 / @0x366 / @0x50c / @0x6b2; the ten channel slots start at
-///     @0x2f / 0xf7 / 0x1d5 / 0x29d / 0x37b / 0x443 / 0x521 / 0x5e9 / 0x6c7 / 0x78f.
+///   • v21 (1244 B): a (100, 100, 3) descriptor near @22, then SIX 100-sample i16 channels in two blocks —
+///     accelerometer at @28 / @228 / @428 and gyroscope at @640 / @840 / @1040 (200 B apart; countB @630 =
+///     100). This is 6-axis IMU, not optical: the accel channels sphere-fit to a ~1 g gravity shell on a
+///     stationary strap (validated by Whoop5RawImu over 1423 real buffers, #423/#493).
+///   • v20 (2140 B): five repeated 422-byte optical-measurement blocks. Each has a 21-byte header,
+///     two 200-byte channel slots, and one reserved byte. Header byte 0 is the shared sample count; an
+///     active block holds two 25-sample i32 channels (~25 Hz). The two channels share one measurement
+///     header and must not be interpreted as two wavelengths. See `Whoop5RawOptical` for the lossless
+///     structural model and the 25-vs-50 sample-count evidence.
 ///
-/// Channels are exposed as raw sample arrays with NO invented scale or unit (an optical waveform has no
-/// absolute unit). Which channel maps to which optical LED — and which carries motion — needs a labelled
-/// capture (e.g. a deliberate moving window), so no per-channel identity is asserted here.
+/// v21 channels are named accel_/gyro_ per the gravity-shell evidence above. The v20 record is optical,
+/// but its measurement wavelengths and channel geometry remain OPEN, so those channels stay neutrally
+/// named. This layer exposes raw i16 (v21) or sign-extended i32 (v20) arrays; `Whoop5RawImu.decode`
+/// applies the v21 physical scales.
 private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, version: Int, payloadEnd: Int?) {
     if frame.count > 10 {
         fb.add(10, 1, "layout_marker", "meta", value: .int(Int(frame[10])))
@@ -611,43 +633,67 @@ private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, ver
         fb.add(15, 4, "unix", "time", value: .int(unix), note: "real unix seconds")
     }
     if version == 21 {
-        // Three 100-sample i16 channels, 200 B apart.
-        for (ch, start) in [(0, 28), (1, 228), (2, 428)] {
+        // TWO blocks of three 100-sample i16 channels: accelerometer (@28/@228/@428) then gyroscope
+        // (@640/@840/@1040), matching the (100,100,3) header @22 and countB @630. NOT optical: on a
+        // stationary strap the three accel channels sphere-fit to a ~1 g gravity shell (median |a| =
+        // 1.006 g, 100/100 samples in-shell on the real fixture) — a gravity vector, which PPG cannot
+        // produce. Validated as 6-axis IMU by Whoop5RawImu over 1423 real buffers (#423/#493). Emitted as
+        // raw i16 arrays (this field layer applies no scale); the physical scales — 1/4096 g/LSB (accel),
+        // 2000/32768 (°/s)/LSB (gyro) — are applied by Whoop5RawImu.decode.
+        let channels: [(name: String, start: Int)] = [
+            ("accel_x", 28), ("accel_y", 228), ("accel_z", 428),
+            ("gyro_x", 640), ("gyro_y", 840), ("gyro_z", 1040),
+        ]
+        for (name, start) in channels {
             var samples: [Int] = []
             for i in 0..<100 {
                 guard let v = readI16(frame, start + i * 2) else { break }
                 samples.append(v)
             }
             if samples.count == 100 {
-                fb.add(start, 200, "optical_ch\(ch)", "ppg", value: .intArray(samples),
-                       note: "raw i16 channel samples (no absolute unit)")
+                fb.add(start, 200, name, "imu", value: .intArray(samples),
+                       note: "raw i16 samples (scale via Whoop5RawImu: 1/4096 g accel, 2000/32768 dps gyro)")
             }
         }
         fb.parsed["sensor_channel_samples"] = .int(100)
         return
     }
-    // version == 20: five blocks of two 50-sample i32 channels, each block gated by a presence byte.
-    let blocks: [(present: Int, ch0: Int, ch1: Int)] = [
-        (0x1a, 0x2f, 0xf7), (0x1c0, 0x1d5, 0x29d), (0x366, 0x37b, 0x443),
-        (0x50c, 0x521, 0x5e9), (0x6b2, 0x6c7, 0x78f),
-    ]
+    // version == 20: five repeated optical-measurement blocks. Each block carries one shared header and
+    // two channel slots. This matters semantically: the two channels within a block are a detector/readout
+    // pair for one measurement configuration, not evidence for two different LED wavelengths.
+    //
+    // EVIDENCE (why 25, not 50): across all 29,203 captured 2140-B buffers, exactly blocks 0/3/4 are active
+    // (channel slots @47/247/1313/1513/1735/1935) and, in every active channel, sample slots 25..49 are
+    // exactly 0.0 — only samples 0..24 carry data. Earlier builds read 50 and emitted arrays that were half
+    // zeros. The block-header byte itself reads 0x19 = 25 on every active block, consistent with a live
+    // per-block sample count. Each sample is a 4-byte LE container holding a 20-bit signed value (its upper
+    // 12 bits are only ever 0x000/0xFFF — pure sign extension — across all captures), so reading it as i32
+    // recovers the correct signed magnitude with no masking.
+    //
+    // Wavelength identity remains open. The six active channels in the current corpus are three pairs
+    // (blocks 0/3/4), not six independent colors. In particular, block 4's two channels cannot be named
+    // IR and red without independent evidence because they share the same block-level configuration.
+    guard let optical = Whoop5RawOptical.decode(frame) else { return }
+    fb.parsed["sensor_block_count"] = .int(optical.blocks.count)
     var present = 0
-    for (b, blk) in blocks.enumerated() {
-        guard frame.count > blk.present, frame[blk.present] != 0 else { continue }
-        for (half, start) in [(0, blk.ch0), (1, blk.ch1)] {
-            var samples: [Int] = []
-            for i in 0..<50 {
-                guard let v = readI32(frame, start + i * 4) else { break }
-                samples.append(v)
-            }
-            if samples.count == 50 {
-                fb.add(start, 200, "channel_b\(b)_\(half)", "sensor", value: .intArray(samples),
-                       note: "raw i32 channel samples (no absolute unit)")
-                present += 1
-            }
+    for block in optical.blocks {
+        let start = Whoop5RawOptical.blockStart + block.index * Whoop5RawOptical.blockLength
+        fb.add(start, Whoop5RawOptical.headerLength, "block_b\(block.index)_header", "optical_config",
+               value: .intArray(block.rawHeader.map(Int.init)),
+               note: "raw: sample count + shared metadata + two 7-byte channel descriptors")
+        fb.parsed["block_b\(block.index)_sample_count"] = .int(block.sampleCount)
+        guard block.sampleCount > 0 else { continue }
+        for (channelIndex, channel) in block.channels.enumerated() {
+            let sampleStart = start + Whoop5RawOptical.headerLength
+                + channelIndex * Whoop5RawOptical.channelSlotLength
+            fb.add(sampleStart, block.sampleCount * 4,
+                   "channel_b\(block.index)_\(channelIndex)", "sensor",
+                   value: .intArray(channel.samples.map(Int.init)),
+                   note: "raw signed i32 samples; paired under one block config; no wavelength or absolute unit asserted")
+            present += 1
         }
     }
-    fb.parsed["sensor_channel_samples"] = .int(50)
+    fb.parsed["sensor_channel_samples"] = .int(optical.blocks.map(\.sampleCount).max() ?? 0)
     fb.parsed["sensor_channels_present"] = .int(present)
 }
 
