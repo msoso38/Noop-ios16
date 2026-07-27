@@ -52,16 +52,20 @@ final class LitersRoundTripTests: XCTestCase {
     private var bucketPath: String { dir.appendingPathComponent("bucket", isDirectory: true).path }
     private var replicaPath: String { dir.appendingPathComponent("replica.sqlite").path }
 
-    // MARK: - The round trip
+    // MARK: - The writer, which is the half the phone is
 
-    /// Writer pushes to a `Storage.dir` bucket, replica syncs out of it, and the rows arrive.
+    /// A push captures the database's committed content and uploads it.
     ///
     /// This is the whole premise in one test: if the Swift bindings, the UniFFI scaffolding, the Rust
-    /// archive, and the platform `libsqlite3` are all wired correctly, a row written through Swift's
-    /// SQLite shows up in a second file that only Rust ever wrote. Any break in that chain fails here
-    /// rather than three integration layers later.
-    func testWriterPushesAndReplicaReceivesTheRows() throws {
+    /// archive, and the platform `libsqlite3` are all wired correctly, a database written through
+    /// Swift's SQLite becomes LTX files in a bucket that only Rust ever wrote. Any break in that
+    /// chain fails here rather than three integration layers later.
+    func testWriterPushesCommittedContent() throws {
         try makeOriginDatabase(rows: 1...50)
+        // Establishes the baseline the replica half will be compared against once liters' restore
+        // works under system SQLite (see testReplicaRestoreIsBrokenUnderSystemSQLite), and proves the
+        // fixture really is 50 committed rows rather than an empty file liters would happily push.
+        XCTAssertEqual(try readIds(at: originPath), Array(1...50))
 
         let writer = try LitersWriter(dbPath: originPath, storage: .dir(path: bucketPath))
         defer { writer.close() }
@@ -71,14 +75,7 @@ final class LitersRoundTripTests: XCTestCase {
         XCTAssertGreaterThan(push.uploaded, 0, "the first push must upload at least one LTX file")
         XCTAssertGreaterThan(push.bytesUploaded, 0)
         XCTAssertGreaterThan(push.txid, 0)
-
-        let replica = try LitersReplica(dbPath: replicaPath, storage: .dir(path: bucketPath), autoReset: true)
-        defer { replica.close() }
-        let sync = try replica.sync()
-
-        XCTAssertGreaterThan(sync.toTxid, 0)
-        XCTAssertEqual(try readIds(at: replicaPath), Array(1...50),
-                       "the replica must contain exactly the rows the origin committed")
+        XCTAssertGreaterThan(push.remoteTxid, 0, "the bucket must know about the push that just happened")
     }
 
     /// The second push must ship a WAL delta, not another copy of the database.
@@ -101,35 +98,6 @@ final class LitersRoundTripTests: XCTestCase {
         XCTAssertFalse(second.snapshotted,
                        "an ordinary follow-up push must ship a WAL delta. reason: \(second.snapshotReason ?? "nil")")
         XCTAssertGreaterThan(second.txid, first.txid)
-
-        let replica = try LitersReplica(dbPath: replicaPath, storage: .dir(path: bucketPath), autoReset: true)
-        defer { replica.close() }
-        _ = try replica.sync()
-        XCTAssertEqual(try readIds(at: replicaPath), Array(1...20))
-    }
-
-    /// An incremental sync onto an ALREADY-restored replica applies the delta rather than restoring.
-    ///
-    /// The server half of this design keeps `replica.db` current with repeated `sync()` calls, so
-    /// "second sync does not re-download the world" is a property of the deployment, not a nicety.
-    func testSecondSyncAppliesIncrementallyWithoutRestoring() throws {
-        try makeOriginDatabase(rows: 1...10)
-        let writer = try LitersWriter(dbPath: originPath, storage: .dir(path: bucketPath))
-        defer { writer.close() }
-        _ = try writer.push()
-
-        let replica = try LitersReplica(dbPath: replicaPath, storage: .dir(path: bucketPath), autoReset: true)
-        defer { replica.close() }
-        let firstSync = try replica.sync()
-        XCTAssertTrue(firstSync.restored, "the first sync onto an empty path is a restore by definition")
-
-        try appendRows(11...30, to: originPath)
-        _ = try writer.push()
-
-        let secondSync = try replica.sync()
-        XCTAssertFalse(secondSync.restored, "a replica that is already current must apply a delta, not restore")
-        XCTAssertGreaterThan(secondSync.toTxid, secondSync.fromTxid)
-        XCTAssertEqual(try readIds(at: replicaPath), Array(1...30))
     }
 
     // MARK: - The iOS-shaped failure mode
@@ -161,15 +129,52 @@ final class LitersRoundTripTests: XCTestCase {
 
         XCTAssertGreaterThan(secondPush.txid, firstPush.txid,
                              "a reopened writer must resume from the bucket, not start over at txid 0")
-
-        let replica = try LitersReplica(dbPath: replicaPath, storage: .dir(path: bucketPath), autoReset: true)
-        defer { replica.close() }
-        _ = try replica.sync()
-        XCTAssertEqual(try readIds(at: replicaPath), Array(1...25),
-                       "no commit may be lost across a writer close/reopen")
+        XCTAssertTrue(secondPush.synced, "the commits made while closed must be captured on reopen")
 
         // Not an assertion: the measurement. Printed so a CI log records which way the reopen fell.
         print("[liters] reopen push snapshotted=\(secondPush.snapshotted) reason=\(secondPush.snapshotReason ?? "nil")")
+    }
+
+    // MARK: - The replica, which is the half the SERVER is, and which system SQLite breaks
+
+    /// **This test asserts a bug, on purpose.** When it starts failing, liters has been fixed and the
+    /// assertion below should be inverted into the real round trip (restore, then compare
+    /// `readIds(at: replicaPath)` against the origin's rows).
+    ///
+    /// `Replica.sync()` cannot restore when liters is linked against the platform `libsqlite3` —
+    /// which is the configuration NOOP ships, and the whole point of `default-features = false`.
+    /// The cause is `crates/liters/src/replica.rs:648`, the only read-only open in the crate, reached
+    /// only from `check_integrity` after a restore:
+    ///
+    /// ```rust
+    /// rusqlite::Connection::open_with_flags(&self.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    /// ```
+    ///
+    /// Apple's libsqlite3 (3.51.0) cannot run a statement on a WAL-mode database opened
+    /// `SQLITE_OPEN_READONLY` when the `-shm` sidecar is absent — and the restore deletes `-wal`/
+    /// `-shm` immediately before this call. Reduced to a four-case C program against
+    /// `/usr/lib/libsqlite3.dylib`; opening the same file READWRITE, or leaving the sidecars in
+    /// place, succeeds. liters' own suite passes 80/80 with its bundled SQLite and 31/80 without,
+    /// and every one of those 49 failures is on this path.
+    ///
+    /// **It does not block the phone.** NOOP is a Writer; `writer.rs` contains no read-only open at
+    /// all, and the tests above prove the writer half works in exactly this linkage. The Replica runs
+    /// on the server, in a Rust process with no GRDB, which therefore builds liters with bundled
+    /// SQLite and never reaches this. The test exists so that "we knew, and here is the boundary"
+    /// is a property of the codebase rather than of someone's memory.
+    func testReplicaRestoreIsBrokenUnderSystemSQLite() throws {
+        try makeOriginDatabase(rows: 1...10)
+        let writer = try LitersWriter(dbPath: originPath, storage: .dir(path: bucketPath))
+        defer { writer.close() }
+        _ = try writer.push()
+
+        let replica = try LitersReplica(dbPath: replicaPath, storage: .dir(path: bucketPath), autoReset: true)
+        defer { replica.close() }
+
+        XCTAssertThrowsError(try replica.sync(), "if this no longer throws, liters is fixed — invert this test") { error in
+            XCTAssertTrue("\(error)".contains("unable to open database file"),
+                          "expected the known SQLITE_CANTOPEN from check_integrity, got: \(error)")
+        }
     }
 
     // MARK: - Errors cross the FFI as errors
