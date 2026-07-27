@@ -4,6 +4,7 @@ import com.noop.oura.OuraEvent
 import com.noop.oura.OuraHR
 import com.noop.oura.OuraHRV
 import com.noop.oura.OuraIBI
+import com.noop.oura.OuraMotionEvent
 import com.noop.oura.OuraSleepPhase
 import com.noop.oura.OuraSleepStage
 import com.noop.oura.OuraSpO2
@@ -63,6 +64,43 @@ class OuraStreamMappingTest {
     }
 
     @Test
+    fun motionBecomesOuraMotionEvent() {
+        val s = OuraStreamMapping.streams(
+            listOf(OuraEvent.MotionVectorEvent(OuraMotionEvent(
+                ringTimestamp = 5, orientation = 5, motionSeconds = 21,
+                avgX = -96, avgY = 0, avgZ = -1024, lowIntensity = 42, highIntensity = 63))),
+            anchor,
+        )
+        assertEquals(1, s.events.size)
+        val ev = s.events.first()
+        assertEquals(OuraStreamMapping.EVENT_MOTION, ev.kind)
+        assertEquals("OURA_MOTION", ev.kind)
+        assertEquals(base + 5, ev.ts)
+        // Keys/values must match the Swift twin exactly.
+        assertEquals(5, ev.payload["orientation"])
+        assertEquals(21, ev.payload["motion_seconds"])
+        assertEquals(-96, ev.payload["x"])
+        assertEquals(0, ev.payload["y"])
+        assertEquals(-1024, ev.payload["z"])
+        assertEquals(42, ev.payload["low_intensity"])
+        assertEquals(63, ev.payload["high_intensity"])
+    }
+
+    @Test
+    fun motionShortRecordOmitsIntensityKeys() {
+        val s = OuraStreamMapping.streams(
+            listOf(OuraEvent.MotionVectorEvent(OuraMotionEvent(
+                ringTimestamp = 5, orientation = 1, motionSeconds = 0,
+                avgX = 80, avgY = 0, avgZ = 0, lowIntensity = null, highIntensity = null))),
+            anchor,
+        )
+        val ev = s.events.first()
+        assertEquals(0, ev.payload["motion_seconds"])
+        assertTrue("absent intensity must not be faked", !ev.payload.containsKey("low_intensity"))
+        assertTrue("absent intensity must not be faked", !ev.payload.containsKey("high_intensity"))
+    }
+
+    @Test
     fun sleepPhaseBecomesOuraSleepPhaseEvent() {
         val s = OuraStreamMapping.streams(
             listOf(
@@ -75,9 +113,9 @@ class OuraStreamMappingTest {
         val deep = s.events[0]
         assertEquals(OuraStreamMapping.EVENT_SLEEP_PHASE, deep.kind)
         assertEquals("OURA_SLEEP_PHASE", deep.kind)
-        assertEquals(2, deep.payload["phase"])           // OuraSleepStage.DEEP.raw == 2
+        assertEquals(0, deep.payload["phase"])           // OuraSleepStage.DEEP.raw == 0 (open_oura validated)
         assertEquals(0, deep.payload["index"])
-        assertEquals(3, s.events[1].payload["phase"])     // REM.raw == 3
+        assertEquals(2, s.events[1].payload["phase"])     // REM.raw == 2 (open_oura validated)
         // PARITY: the payload is exactly { phase, index } - the Swift twin emits no phase_name, so neither
         // does Kotlin. Pin it so a re-added phase_name key breaks this test.
         assertNull(deep.payload["phase_name"])

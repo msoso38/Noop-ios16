@@ -536,7 +536,7 @@ final class HealthKitBridge: ObservableObject {
             if let rhr = row.restingHr {
                 add(.restingHeartRate, HKUnit.count().unitDivided(by: .minute()), Double(rhr), row.day, at)
             }
-            // Export the GENUINE SDNN (v29) when present — the strap's `avgHrv` is RMSSD, which HealthKit
+            // Export the GENUINE SDNN (v31) when present — the strap's `avgHrv` is RMSSD, which HealthKit
             // has no field for, so writing it under `.heartRateVariabilitySDNN` mislabels it. `avgSdnn` is the
             // 5-min SDNN index, deliberately window-matched to Apple's own short-window SDNN samples so the
             // written values sit consistently in the user's Health SDNN history (a whole-night SD would land

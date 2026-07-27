@@ -63,6 +63,7 @@ struct StrandiOSApp: App {
         WindowGroup {
             iOSRootView()
                 .environmentObject(model)
+                .environmentObject(model.ble)   // #334: Today pull-to-sync reads BLEManager (no HR churn)
                 .environmentObject(model.live)
                 .environmentObject(model.repo)
                 .environmentObject(model.profile)
@@ -159,6 +160,21 @@ struct StrandiOSApp: App {
                 .onOpenURL { url in
                     if url.host == "import-health" {
                         model.handleHealthImportURL(url)
+                    }
+                }
+                .alert("Import Apple Health data?", isPresented: Binding(
+                    get: { model.pendingShortcutHealthImport != nil },
+                    set: { showing in
+                        if !showing { model.cancelPendingHealthImport() }
+                    }
+                )) {
+                    Button("Import") { model.confirmPendingHealthImport() }
+                    Button("Cancel", role: .cancel) { model.cancelPendingHealthImport() }
+                } message: {
+                    if let pending = model.pendingShortcutHealthImport {
+                        Text("A Shortcut wants to add \(pending.daysCount) days and \(pending.workoutsCount) workouts to the Apple Health import source.")
+                    } else {
+                        Text("A Shortcut wants to add data to the Apple Health import source.")
                     }
                 }
                 // Bring the watch link up once at launch (WCSession ignores a redundant activate), then
@@ -315,6 +331,11 @@ enum DemoScreens {
         guard let i = args.firstIndex(of: "--demo-screen"), i + 1 < args.count else { return nil }
         switch args[i + 1].lowercased() {
         case "today":    return AnyView(TodayView())
+        // The DEFAULT iOS Today (`noop.liquidTodayEnabled` ships true), so it needs its own entry — plain
+        // "today" renders the CLASSIC screen, which is exactly the screen whose behaviour Liquid was found
+        // to have diverged from. Without this, the default Today was the one screen the harness could not
+        // capture.
+        case "liquidtoday": return AnyView(LiquidTodayView())
         case "trends":   return AnyView(TrendsView())
         case "sleep":    return AnyView(SleepView())
         case "live":     return AnyView(LiveView())

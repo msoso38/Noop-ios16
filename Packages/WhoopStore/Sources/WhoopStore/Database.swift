@@ -525,11 +525,88 @@ extension WhoopStore {
                 WHERE efficiency > 1.5
                 """)
         }
-        // v29: persist nightly SDNN — the 5-min SDNN index (broad-variability twin of avgHrv=RMSSD),
+
+        // v27 (issue #156 follow-up): durable storage for the WHOOP 5.0 v26 optical PPG waveform. The
+        // strap's 24 Hz buffer was fully DECODED (`ppg_waveform`, 24 i16 ADC samples/record) but only
+        // ever used to derive a per-second HR estimate (`ppgHrSample`, v12) — the waveform itself was
+        // discarded right after, and `rejectedHistoricalRecords` explicitly excludes v26 from the
+        // undecodable-record reject archive ("known-and-unstored by design"), so it had no home at all.
+        //
+        // One row per (deviceId, ts) — the SAME shape as every other per-second decoded stream (hrSample,
+        // spo2Sample, ppgHrSample, …) — but the 24 samples are packed into a compact BLOB (2 bytes/sample,
+        // little-endian i16, `WhoopStore.packPpgSamples`/`unpackPpgSamples`) instead of 24 scalar rows.
+        // That keeps a v26-heavy night to roughly the same order of magnitude as ONE extra per-second
+        // stream (≈50 bytes/row), not 24x that. Additive only, a NEW table, no existing row touched.
+        //
+        // Retention: no pruning, matching every other durable per-second table (hrSample, spo2Sample, …
+        // are never pruned either) — this is decoded biometric history, not the transient raw outbox.
+        // `PrunePolicy`'s ~50 MB cap governs ONLY `rawBatch` (raw, pre-decode frames kept for re-decode /
+        // re-sync); it is untouched by and unrelated to this table. Growth here is bounded by how much
+        // v26 data a strap actually emits (firmware chooses v26 vs v18 per second, not every night is
+        // v26-heavy), not by an artificial cap.
+        migrator.registerMigration("v27-ppg-waveform") { db in
+            try db.create(table: "ppgWaveformSample") { t in
+                t.column("deviceId", .text).notNull()
+                t.column("ts", .integer).notNull()
+                t.column("samples", .blob).notNull()
+                t.primaryKey(["deviceId", "ts"])
+            }
+        }
+
+        // #423: WHOOP 5/MG raw-IMU offload capture (100 Hz 6-axis). `samples` is a packed i16 LE BLOB of
+        // the six wire columns (ax…az,gx…gz). Twin of the Android `rawImuSample` table (MIGRATION_20_21);
+        // same column order + PK so a `.noopbak` round-trips byte-for-byte.
+        migrator.registerMigration("v28-raw-imu") { db in
+            try db.create(table: "rawImuSample") { t in
+                t.column("deviceId", .text).notNull()
+                t.column("ts", .integer).notNull()
+                t.column("samples", .blob).notNull()
+                t.primaryKey(["deviceId", "ts"])
+            }
+        }
+
+        // v29: provenance for NOOP-computed headline scores. This is deliberately separate from
+        // `dayOwnership`: ownership controls which device is allowed to supply a day's raw inputs,
+        // while this table records which source actually supplied each persisted computed metric.
+        // Metric-level keys keep mixed-source days honest and make missing legacy metadata explicit.
+        migrator.registerMigration("v29-score-input-provenance") { db in
+            try db.create(table: "scoreInputProvenance") { t in
+                t.column("deviceId", .text).notNull()   // computed "-noop" namespace
+                t.column("day", .text).notNull()
+                t.column("key", .text).notNull()
+                t.column("sourceId", .text).notNull()
+                t.primaryKey(["deviceId", "day", "key"])
+            }
+            try db.create(index: "idx_scoreInputProvenance_source",
+                          on: "scoreInputProvenance", columns: ["sourceId"])
+        }
+
+        // v30 (#823): record each R-R beat's EMISSION order within its second. Reads ordered by
+        // `rrMs`, i.e. by VALUE, which makes successive beats similar by construction and biases
+        // RMSSD — built entirely from successive differences — DOWNWARD. `seq` cannot serve here:
+        // it counts repeats of an identical (ts, rrMs) beat, so every DISTINCT beat in a second
+        // carries seq 0 and they all tie.
+        //
+        // Additive nullable column, no table rebuild, no existing row touched. Deliberately NOT in
+        // the primary key, which stays (deviceId, ts, rrMs, seq) from v24 — an insertion counter in
+        // the key would collide distinct beats arriving in separate batches, the data-loss
+        // regression the v24 note warns about. `ord` only informs read order.
+        //
+        // Pre-v30 rows stay NULL: the order was never recorded, so it cannot be backfilled and a
+        // guess would be worse than an admission. SQLite sorts NULL first in ASC, so an all-NULL
+        // second ties on `ord` and falls through to the old (rrMs, seq) order, unchanged.
+        //
+        // Twin of Room MIGRATION_23_24. Both stores are SQLite, so NULL-ordering matches exactly.
+        migrator.registerMigration("v30-rr-ord") { db in
+            try db.alter(table: "rrInterval") { t in
+                t.add(column: "ord", .integer)
+            }
+        }
+
+        // v31: persist nightly SDNN — the 5-min SDNN index (broad-variability twin of avgHrv=RMSSD),
         // window-matched to a watch's short SDNN rather than the drift-inflated whole-night SD. Additive,
         // nullable; computed by HRVAnalyzer.sdnnIndex during the nightly analysis.
-        // (Id kept as v29 to match the contributor's fork lineage so a future sync never double-applies.)
-        migrator.registerMigration("v29-daily-avg-sdnn") { db in
+        migrator.registerMigration("v31-daily-avg-sdnn") { db in
             try db.alter(table: "dailyMetric") { t in
                 t.add(column: "avgSdnn", .double)
             }

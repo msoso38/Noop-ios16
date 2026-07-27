@@ -47,6 +47,9 @@ object DataBackup {
     /** Entry name of the optional whitelisted-settings JSON (#1000). Matches the Apple exporter. */
     private const val SETTINGS_ENTRY_NAME = BackupSettingsCodec.ENTRY_NAME
 
+    private const val MAX_BACKUP_SQLITE_BYTES = 2_147_483_648L
+    private const val MAX_BACKUP_SETTINGS_BYTES = 1_048_576L
+
     /** First 16 bytes of every SQLite 3 file: "SQLite format 3\0". */
     private val SQLITE_MAGIC: ByteArray =
         byteArrayOf(
@@ -173,6 +176,11 @@ object DataBackup {
                 StageResult.NO_DB_IN_ZIP -> {
                     tempSettings.delete()
                     return ImportResult.Failed("The backup archive doesn't contain a database file.")
+                }
+                StageResult.ENTRY_TOO_LARGE -> {
+                    tempSqlite.delete()
+                    tempSettings.delete()
+                    return ImportResult.Failed("The backup archive is too large to restore safely.")
                 }
                 StageResult.NOT_A_BACKUP -> return ImportResult.Failed(
                     "That file is not a NOOP backup - it doesn't look like a .noopbak archive or a SQLite database."
@@ -331,7 +339,7 @@ object DataBackup {
     // ── Container staging (pure file/stream layer, unit-tested under real file I/O) ──────
 
     /** Outcome of [stageBackupSqlite]: the SQLite was staged, or why it wasn't. */
-    enum class StageResult { OK, CANNOT_OPEN, NO_DB_IN_ZIP, NOT_A_BACKUP }
+    enum class StageResult { OK, CANNOT_OPEN, NO_DB_IN_ZIP, NOT_A_BACKUP, ENTRY_TOO_LARGE }
 
     /**
      * Stage the SQLite payload of a backup into [dest], from an already-opened [input] stream whose
@@ -364,13 +372,24 @@ object DataBackup {
                         var entry = zip.nextEntry
                         while (entry != null) {
                             when {
-                                !entry.isDirectory && !foundDb && entry.name.endsWith(".sqlite") -> {
-                                    FileOutputStream(dest).use { out -> zip.copyTo(out) }
+                                !entry.isDirectory && !foundDb &&
+                                    entry.name.substringAfterLast('/') == ZIP_ENTRY_NAME -> {
+                                    FileOutputStream(dest).use { out ->
+                                        if (!copyBounded(zip, out, MAX_BACKUP_SQLITE_BYTES)) {
+                                            dest.delete()
+                                            return StageResult.ENTRY_TOO_LARGE
+                                        }
+                                    }
                                     foundDb = true
                                 }
                                 !entry.isDirectory && !foundSettings && settingsDest != null &&
                                     entry.name.substringAfterLast('/') == SETTINGS_ENTRY_NAME -> {
-                                    FileOutputStream(settingsDest).use { out -> zip.copyTo(out) }
+                                    FileOutputStream(settingsDest).use { out ->
+                                        if (!copyBounded(zip, out, MAX_BACKUP_SETTINGS_BYTES)) {
+                                            settingsDest.delete()
+                                            return StageResult.ENTRY_TOO_LARGE
+                                        }
+                                    }
                                     foundSettings = true
                                 }
                             }
@@ -382,11 +401,28 @@ object DataBackup {
                     return if (foundDb) StageResult.OK else StageResult.NO_DB_IN_ZIP
                 }
                 header.startsWith(SQLITE_MAGIC) -> {
-                    FileOutputStream(dest).use { out -> stream.copyTo(out) }
+                    FileOutputStream(dest).use { out ->
+                        if (!copyBounded(stream, out, MAX_BACKUP_SQLITE_BYTES)) {
+                            dest.delete()
+                            return StageResult.ENTRY_TOO_LARGE
+                        }
+                    }
                     return StageResult.OK
                 }
                 else -> return StageResult.NOT_A_BACKUP
             }
+        }
+    }
+
+    private fun copyBounded(input: java.io.InputStream, out: java.io.OutputStream, cap: Long): Boolean {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return true
+            if (total + read > cap) return false
+            out.write(buffer, 0, read)
+            total += read
         }
     }
 
@@ -585,12 +621,14 @@ object DataBackup {
  *
  * The factory wraps the stock [FrameworkSQLiteOpenHelperFactory] and delegates every lifecycle
  * callback (configure/create/migrate/open) to Room's real callback UNCHANGED, so migrations behave
- * exactly as before. Only `onCorruption` is replaced: it logs loudly, closes the handle, sets ONE
- * `.corrupt` sibling copy aside (best-effort, skipped when one already exists so repeated failed
- * opens can't multiply 100 MB files), and — crucially — deletes NOTHING. The trade-off is
- * deliberate and matches [WhoopDatabase]'s no-destructive-fallback doctrine: the app may then fail
- * to open the store (the user sees an error instead of a silently empty app), but the file survives
- * for backup/recovery instead of vanishing.
+ * exactly as before. Only `onCorruption` is replaced: it logs loudly, closes the handle, and moves
+ * the corrupt file aside to a TIMESTAMPED `.corrupt.<epochMillis>` quarantine (best-effort), keeping
+ * the newest [MAX_CORRUPT_QUARANTINES] and pruning older ones so a crash loop can't multiply 100 MB
+ * files (#661). It never silently discards the newest corrupt copy — repeated corruption preserves
+ * the latest (most recovery-worthy) data, not just the first. The trade-off is deliberate and matches
+ * [WhoopDatabase]'s no-destructive-fallback doctrine: the app may then fail to open the store (the
+ * user sees an error instead of a silently empty app), but the corrupt file survives for
+ * backup/recovery instead of vanishing.
  *
  * `allowDataLossOnRecovery` is pinned FALSE for the same reason: androidx's recovery path deletes
  * the file when an open fails, which is exactly the destruction this factory exists to prevent.
@@ -632,30 +670,102 @@ class CorruptionPreservingOpenHelperFactory(
             val path = runCatching { db.path }.getOrNull()
             Log.e(
                 "WhoopDatabase",
-                "SQLite reported corruption in $path — quarantining it to *.corrupt and recreating a fresh " +
-                    "store. The corrupt copy is kept; restore from a backup to get your data back.",
+                "SQLite reported corruption in $path — quarantining it to *.corrupt.<epoch> and recreating " +
+                    "a fresh store. The corrupt copy is kept; restore from a backup to get your data back.",
             )
             runCatching { db.close() }
             if (path != null && path != ":memory:") {
                 val original = File(path)
                 if (original.exists()) {
-                    val preserved = File("$path.corrupt")
-                    if (!preserved.exists()) {
-                        // Move (not copy) so the original is gone and the next open rebuilds clean. Fall
-                        // back to copy+delete if rename fails (e.g. across a storage boundary).
-                        if (!runCatching { original.renameTo(preserved) }.getOrDefault(false)) {
-                            runCatching { original.copyTo(preserved, overwrite = false) }
-                            runCatching { original.delete() }
-                        }
-                    } else {
-                        // A quarantine copy already exists — just drop the still-corrupt original.
+                    // #661: quarantine under a TIMESTAMPED name and keep the newest few, instead of a
+                    // single fixed `.corrupt` slot. The old single-slot logic kept the FIRST corrupt copy
+                    // and deleted every later one — but a later corruption is a rebuilt store that has
+                    // banked new non-resendable strap history since, so the copy it dropped was the most
+                    // recovery-worthy. Keeping the newest N caps disk (a crash loop can't multiply files)
+                    // AND preserves the latest data plus a couple of priors for diagnosing a recurring
+                    // corruption path.
+                    val dir = original.parentFile
+                    val dbName = original.name
+                    val existing = dir?.listFiles()?.map { it.name }
+                        ?.filter {
+                            it.startsWith("$dbName.corrupt.") &&
+                                it.substringAfterLast(".corrupt.").toLongOrNull() != null
+                        } ?: emptyList()
+                    val plan = planCorruptQuarantine(dbName, existing, System.currentTimeMillis())
+                    val preserved = File(dir, plan.quarantineName)
+                    // Move (not copy) so the original is gone and the next open rebuilds clean; fall back
+                    // to copy+delete if rename fails (e.g. across a storage boundary).
+                    if (!runCatching { original.renameTo(preserved) }.getOrDefault(false)) {
+                        // Cross-storage rename fallback. Copy best-effort (overwrite=true so a same-
+                        // millisecond re-entry of the same corrupt lineage still lands), then drop the
+                        // original EITHER WAY: leaving a corrupt file on the live path re-hits corruption
+                        // and crash-loops the app on every launch (#1014). Preservation is best-effort.
+                        runCatching { original.copyTo(preserved, overwrite = true) }
                         runCatching { original.delete() }
                     }
+                    // Move the WAL/SHM sidecars ALONGSIDE the quarantine rather than deleting them: the WAL
+                    // can hold the most recent un-checkpointed writes (the newest strap data). The move
+                    // still clears the live path, so the fresh rebuild can't inherit a stale write-ahead log.
+                    moveSidecarBesideQuarantine("$path-wal", "${preserved.path}-wal")
+                    moveSidecarBesideQuarantine("$path-shm", "${preserved.path}-shm")
+                    // Prune the oldest quarantines beyond the cap (+ their moved sidecars).
+                    plan.evict.forEach { name ->
+                        val stale = File(dir, name)
+                        runCatching { stale.delete() }
+                        runCatching { File("${stale.path}-wal").delete() }
+                        runCatching { File("${stale.path}-shm").delete() }
+                    }
+                } else {
+                    // No original to quarantine — clear any orphan sidecars so the fresh rebuild is clean.
+                    runCatching { File("$path-wal").delete() }
+                    runCatching { File("$path-shm").delete() }
                 }
-                // Drop the WAL/SHM sidecars so a fresh DB can't inherit a stale write-ahead log.
-                runCatching { File("$path-wal").delete() }
-                runCatching { File("$path-shm").delete() }
             }
         }
+    }
+}
+
+/** #661: at most this many `.corrupt.<epoch>` quarantines survive (newest kept), bounding disk on a
+ *  repeated-corruption crash loop while preserving the latest copies for recovery/diagnosis. */
+internal const val MAX_CORRUPT_QUARANTINES = 3
+
+internal data class CorruptQuarantinePlan(
+    val quarantineName: String,
+    val evict: List<String>,
+)
+
+/**
+ * #661: name the new corrupt-DB quarantine (`<dbName>.corrupt.<epochMillis>`) and decide which OLD
+ * quarantines to evict so at most [keep] survive (newest by embedded epoch). Pure / filesystem-free so
+ * it is unit-tested directly. [existing] must already be filtered to `<dbName>.corrupt.<digits>` names.
+ * The just-created quarantine is never evicted, even if [keep] is 0.
+ */
+internal fun planCorruptQuarantine(
+    dbName: String,
+    existing: List<String>,
+    nowMillis: Long,
+    keep: Int = MAX_CORRUPT_QUARANTINES,
+): CorruptQuarantinePlan {
+    val quarantineName = "$dbName.corrupt.$nowMillis"
+    fun epochOf(name: String): Long = name.substringAfterLast(".corrupt.").toLongOrNull() ?: 0L
+    val evict = (existing + quarantineName)
+        .distinct()
+        .sortedByDescending { epochOf(it) }
+        .drop(keep.coerceAtLeast(0))
+        .filter { it != quarantineName }
+    return CorruptQuarantinePlan(quarantineName, evict)
+}
+
+/** Best-effort move of a WAL/SHM sidecar next to its quarantined DB (rename, else copy+delete). */
+private fun moveSidecarBesideQuarantine(fromPath: String, toPath: String) {
+    val src = File(fromPath)
+    if (!src.exists()) return
+    val dst = File(toPath)
+    if (!runCatching { src.renameTo(dst) }.getOrDefault(false)) {
+        // Best-effort preserve, then ALWAYS clear the live sidecar: a stale WAL left on the live path
+        // can be applied to the freshly-rebuilt DB (WAL identity is salt-based only), re-injecting
+        // corrupt pages. Keeping the rebuild clean wins over preserving an un-movable sidecar.
+        runCatching { src.copyTo(dst, overwrite = true) }
+        runCatching { src.delete() }
     }
 }
