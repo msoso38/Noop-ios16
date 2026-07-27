@@ -281,7 +281,7 @@ fun DevicesScreen(
                 // could only be ended by the timeout or walking out of range. Nothing is lost: unacked
                 // records stay on the strap.
                 onAbortSync = if (device.status == DeviceStatus.active.name && live.connected &&
-                    live.backfilling && SourceCoordinator.isWhoop(device)
+                    WhoopBleClient.canAbortSync(live.backfilling) && SourceCoordinator.isWhoop(device)
                 ) { { viewModel.abortBackfill() } } else null,
             )
         }
