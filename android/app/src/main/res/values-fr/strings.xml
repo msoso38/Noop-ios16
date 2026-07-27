@@ -698,6 +698,7 @@
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">Préparation au VHR (expérience)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_word_a471930e">Préparation au VHR (expérience): %1$s</string>
     <string name="l10n_test_centre_screen_hrv_readiness_plews_altini_bce6578f">Préparation au VRH (Plews/Altini)</string>
+    <string name="l10n_test_centre_screen_raw_capture_f90d366a">Capture brute</string>
     <string name="l10n_test_centre_screen_recalibrate_aaa989ea">Recalibrer</string>
     <string name="l10n_test_centre_screen_recalibrate_charge_baseline_52a05a26">Recalibrer la ligne de base de la Charge</string>
     <string name="l10n_test_centre_screen_recalibrate_your_charge_baseline_018e3846">Recalibrer votre ligne de base de Charge ?</string>

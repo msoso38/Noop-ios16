@@ -841,6 +841,7 @@
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">Prontidão HRV (experimental)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_word_a471930e">Prontidão HRV (experimental): %1$s</string>
     <string name="l10n_test_centre_screen_hrv_readiness_plews_altini_bce6578f">Prontidão HRV (Plews/Altini)</string>
+    <string name="l10n_test_centre_screen_raw_capture_f90d366a">Captura bruta</string>
     <string name="l10n_test_centre_screen_recalibrate_aaa989ea">Recalibrar</string>
     <string name="l10n_test_centre_screen_recalibrate_charge_baseline_52a05a26">Recalibrar linha de base de carga</string>
     <string name="l10n_test_centre_screen_recalibrate_your_charge_baseline_018e3846">Recalibrar a tua linha de base de faturação?</string>

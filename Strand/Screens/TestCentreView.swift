@@ -68,8 +68,9 @@ struct TestCentreView: View {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 domainModesCard.staggeredAppear(index: 0)
                 diagnosticToolsCard.staggeredAppear(index: 1)
-                exportCard.staggeredAppear(index: 2)
-                experimentalAlgorithmsCard.staggeredAppear(index: 3)
+                rawCaptureCard.staggeredAppear(index: 2)
+                exportCard.staggeredAppear(index: 3)
+                experimentalAlgorithmsCard.staggeredAppear(index: 4)
             }
         }
         .id(refreshToken)
@@ -86,13 +87,6 @@ struct TestCentreView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays.")
-        }
-        .confirmationDialog("Clear captured frames?",
-                            isPresented: $showClearCaptureConfirm, titleVisibility: .visible) {
-            Button("Clear", role: .destructive) { model.ble.clearRawCaptures() }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This deletes every frame captured so far. Capture keeps running if the toggle is still on.")
         }
         .alert(infoTitle, isPresented: $showInfo) {
             Button("OK", role: .cancel) { }
@@ -168,13 +162,24 @@ struct TestCentreView: View {
                 NoopButton("Copy environment dump", systemImage: "info.circle", kind: .secondary) {
                     PlatformPasteboard.copy(live.exportableLogText())
                 }
+            }
+        }
+    }
 
-                Divider().overlay(StrandPalette.hairline)
+    // MARK: - Section 2b: Raw-frame capture (its own card, split out for clarity: #22-style diagnostic
+    // toggle + export, easy to confuse with the strap log / environment dump above when folded in)
 
-                // Raw-frame capture — off by default, safe to leave on (read-only on the strap). Moved
-                // here from Settings (was the last diagnostic control still living there): the recorder
-                // covers WHOOP 4.0's classic envelope as well as WHOOP 5.0/MG's puffin envelope, so it's
-                // not 5/MG-only.
+    /// Raw-frame capture, its own card. Moved here from Settings (was the last diagnostic control still
+    /// living there): the recorder covers WHOOP 4.0's classic envelope as well as WHOOP 5.0/MG's puffin
+    /// envelope, so it's not 5/MG-only. Split into its own tile (not folded into Diagnostic tools) since
+    /// a toggle + export + clear reads as a distinct feature, not another diagnostic-tools row.
+    @ViewBuilder private var rawCaptureCard: some View {
+        NoopCard {
+            VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                Text("RAW CAPTURE")
+                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    .foregroundStyle(StrandPalette.textSecondary)
+
                 Toggle(isOn: $rawFrameCapture) {
                     Text("Record raw frames to a file")
                         .font(StrandFont.subhead)
@@ -220,8 +225,19 @@ struct TestCentreView: View {
                 // Clear captured frames: always available (even before anything's captured, clearing an
                 // empty buffer is harmless) so a reporter can wipe an unrelated capture, reproduce the
                 // bug, then export a clean sample instead of hunting the right frames out of a noisy file.
+                // The confirmationDialog is attached HERE, on the button itself, not up on `body` — on
+                // iPad a confirmationDialog with no explicit anchor presents as a popover anchored to
+                // whatever view carries the modifier, so attaching it up on the whole screen pointed the
+                // popover arrow at the wrong place. Anchoring it to the button fixes that.
                 NoopButton("Clear captured frames", systemImage: "trash", kind: .destructive) {
                     showClearCaptureConfirm = true
+                }
+                .confirmationDialog("Clear captured frames?",
+                                    isPresented: $showClearCaptureConfirm, titleVisibility: .visible) {
+                    Button("Clear", role: .destructive) { model.ble.clearRawCaptures() }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("This deletes every frame captured so far. Capture keeps running if the toggle is still on.")
                 }
             }
         }

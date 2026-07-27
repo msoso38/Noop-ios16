@@ -825,6 +825,7 @@
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">HRV 恢复就绪度评分 (实验性功能)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_word_a471930e">HRV 就绪度 (实验版)：%1$s</string>
     <string name="l10n_test_centre_screen_hrv_readiness_plews_altini_bce6578f">HRV 恢复就绪度 (Plews/Altini 算法模型)</string>
+    <string name="l10n_test_centre_screen_raw_capture_f90d366a">原始捕获</string>
     <string name="l10n_test_centre_screen_recalibrate_aaa989ea">重新校准</string>
     <string name="l10n_test_centre_screen_recalibrate_charge_baseline_52a05a26">重新校准“充能”基线</string>
     <string name="l10n_test_centre_screen_recalibrate_your_charge_baseline_018e3846">确认要重新校准您的“充能”基线吗？</string>

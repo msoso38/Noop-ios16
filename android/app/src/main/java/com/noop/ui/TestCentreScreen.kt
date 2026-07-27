@@ -165,6 +165,10 @@ fun TestCentreScreen(vm: AppViewModel) {
         // --- Section 2: Diagnostic tools ---
         DiagnosticToolsCard(vm)
 
+        // --- Section 2b: Raw capture (its own card, split out from Diagnostic tools for clarity: a
+        // toggle + export + clear reads as a distinct feature, not another diagnostic-tools row) ---
+        RawCaptureCard(vm)
+
         // --- Section 3: Export and auto-export ---
         ExportCard(
             vm = vm,
@@ -326,15 +330,9 @@ private fun TestModeRow(
 private fun DiagnosticToolsCard(vm: AppViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val live by vm.live.collectAsStateWithLifecycle()
     var showRecalibrate by remember { mutableStateOf(false) }
     // "Debug logging" moved here from Settings: dev-only, mirrors the strap log to logcat over adb.
     var debugLogging by remember { mutableStateOf(NoopPrefs.debugLogging(context)) }
-    // Raw-frame capture (moved here from Settings, the last diagnostic control still living there):
-    // model-agnostic (WHOOP 4.0 and 5/MG alike, ticket 04). Mirrors the iOS TestCentreView toggle.
-    val puffinExperiment = remember { PuffinExperiment.from(context) }
-    var rawFrameCapture by remember { mutableStateOf(puffinExperiment.isRawCaptureEnabled) }
-    var showClearCaptureConfirm by remember { mutableStateOf(false) }
     SettingsSectionTC(
         icon = Icons.Filled.Info,
         title = uiString(R.string.l10n_test_centre_screen_diagnostic_tools_04ba4d3f),
@@ -378,10 +376,60 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
                     colors = settingsSwitchColors(),
                 )
             }
+        }
+    }
+    if (showRecalibrate) {
+        AlertDialog(
+            onDismissRequest = { showRecalibrate = false },
+            containerColor = Palette.surfaceOverlay,
+            title = { Text(uiString(R.string.l10n_test_centre_screen_recalibrate_your_charge_baseline_018e3846), style = NoopType.title2, color = Palette.textPrimary) },
+            text = {
+                Text(
+                    uiString(R.string.l10n_test_centre_screen_this_restarts_the_roughly_4_night_33cce377),
+                    style = NoopType.subhead, color = Palette.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val nowSeconds = System.currentTimeMillis() / 1000L
+                    val editor = NoopPrefs.of(context).edit()
+                    Baselines.recalibrateRecoveryBaselines(editor, nowSeconds)
+                    editor.apply()
+                    showRecalibrate = false
+                    vm.syncNow()
+                }) { Text(uiString(R.string.l10n_test_centre_screen_recalibrate_aaa989ea), style = NoopType.body, color = Palette.accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRecalibrate = false }) {
+                    Text(uiString(R.string.l10n_test_centre_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+                }
+            },
+        )
+    }
+}
 
-            // Raw-frame capture — off by default, safe to leave on (read-only on the strap). Moved
-            // here from Settings: the recorder covers WHOOP 4.0's classic envelope as well as WHOOP
-            // 5.0/MG's puffin envelope, so it's not 5/MG-only.
+/**
+ * Raw-frame capture, its own card. Moved here from Settings (was the last diagnostic control still
+ * living there): the recorder covers WHOOP 4.0's classic envelope as well as WHOOP 5.0/MG's puffin
+ * envelope, so it's not 5/MG-only. Split into its own card (not folded into Diagnostic tools) since a
+ * toggle + export + clear reads as a distinct feature, not another diagnostic-tools row. Twin of the
+ * iOS TestCentreView `rawCaptureCard`.
+ */
+@Composable
+private fun RawCaptureCard(vm: AppViewModel) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val live by vm.live.collectAsStateWithLifecycle()
+    val puffinExperiment = remember { PuffinExperiment.from(context) }
+    var rawFrameCapture by remember { mutableStateOf(puffinExperiment.isRawCaptureEnabled) }
+    var showClearCaptureConfirm by remember { mutableStateOf(false) }
+    SettingsSectionTC(
+        icon = Icons.Filled.Science,
+        title = uiString(R.string.l10n_test_centre_screen_raw_capture_f90d366a),
+        blurb = "Capture and export the raw frames your strap sends, for diagnostics or protocol research.",
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Raw-frame capture — off by default, safe to leave on (read-only on the strap).
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -458,34 +506,6 @@ private fun DiagnosticToolsCard(vm: AppViewModel) {
             },
             dismissButton = {
                 TextButton(onClick = { showClearCaptureConfirm = false }) {
-                    Text(uiString(R.string.l10n_test_centre_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
-                }
-            },
-        )
-    }
-    if (showRecalibrate) {
-        AlertDialog(
-            onDismissRequest = { showRecalibrate = false },
-            containerColor = Palette.surfaceOverlay,
-            title = { Text(uiString(R.string.l10n_test_centre_screen_recalibrate_your_charge_baseline_018e3846), style = NoopType.title2, color = Palette.textPrimary) },
-            text = {
-                Text(
-                    uiString(R.string.l10n_test_centre_screen_this_restarts_the_roughly_4_night_33cce377),
-                    style = NoopType.subhead, color = Palette.textSecondary,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val nowSeconds = System.currentTimeMillis() / 1000L
-                    val editor = NoopPrefs.of(context).edit()
-                    Baselines.recalibrateRecoveryBaselines(editor, nowSeconds)
-                    editor.apply()
-                    showRecalibrate = false
-                    vm.syncNow()
-                }) { Text(uiString(R.string.l10n_test_centre_screen_recalibrate_aaa989ea), style = NoopType.body, color = Palette.accent) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRecalibrate = false }) {
                     Text(uiString(R.string.l10n_test_centre_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
                 }
             },
