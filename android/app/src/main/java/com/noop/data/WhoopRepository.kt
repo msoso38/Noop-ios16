@@ -607,6 +607,11 @@ class WhoopRepository(private val dao: WhoopDao) {
         deleted += dao.pruneRespByTs(minTs, maxTs)
         deleted += dao.pruneGravityByTs(minTs, maxTs)
         deleted += dao.pruneSpo2ByTs(minTs, maxTs)
+        // The instrumentation streams, missing from this list since they landed (see the DAO note).
+        deleted += dao.pruneSleepStateByTs(minTs, maxTs)
+        deleted += dao.prunePpgWaveformByTs(minTs, maxTs)
+        deleted += dao.pruneRawImuByTs(minTs, maxTs)
+        deleted += dao.pruneV18AuxByTs(minTs, maxTs)
         deleted += dao.pruneEventByTs(minTs, maxTs)
         deleted += dao.pruneBatteryByTs(minTs, maxTs)
         // (b) computed daily metrics (by day key) + sleep sessions (by startTs). The prune queries apply
