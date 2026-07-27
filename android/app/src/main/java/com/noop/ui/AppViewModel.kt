@@ -415,7 +415,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun circadianActivityBins(): Pair<List<CircadianEngine.ActivityBin>, Int> {
         val now = System.currentTimeMillis() / 1000L
         val from = now - 14L * 86_400L
-        val buckets = runCatching { repository.hrBuckets(deviceId, from, now, 3_600L) }
+        // hrBucketsUnion, not hrBuckets: the Swift twin's `repo.hrBuckets(from:to:)` UNIONs the active
+        // strap with the canonical "my-whoop" (#814 read spine). Reading one id here would give Android
+        // strictly less data than Apple after a strap re-add — enough to miss the 24-bucket floor and
+        // render no estimate where Swift renders one. Single-WHOOP install resolves to one id either way.
+        val buckets = runCatching { repository.hrBucketsUnion(deviceId, from, now, 3_600L) }
             .getOrDefault(emptyList())
         val tz = TimeZone.getDefault().getOffset(now * 1000L) / 1000L
         return circadianBinsFrom(buckets, tz)
