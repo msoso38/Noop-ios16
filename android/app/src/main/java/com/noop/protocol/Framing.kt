@@ -269,7 +269,7 @@ object Framing {
             else -> Unit
         }
 
-        return ParsedFrame(ok = true, crcOk = crcOk, typeName = name, parsed = parsed)
+        return ParsedFrame(ok = true, crcOk = crcOk, typeName = name, parsed = parsed, seq = frame.u8(5))
     }
 
     private fun parseWhoop5(frame: ByteArray): ParsedFrame {
@@ -292,7 +292,7 @@ object Framing {
             "CONSOLE_LOGS" -> decodeConsoleLogsWhoop5(frame, parsed)
             else -> Unit
         }
-        return ParsedFrame(ok = true, crcOk = check.crc32Ok, typeName = name, parsed = parsed)
+        return ParsedFrame(ok = true, crcOk = check.crc32Ok, typeName = name, parsed = parsed, seq = frame.u8(innerStart + 1))
     }
 
     /**

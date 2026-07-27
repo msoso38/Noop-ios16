@@ -1,6 +1,6 @@
 package com.noop.protocol
 
-class BackfillCaptureSummary(
+class RawCaptureSummary(
     private val maxUnknownSamples: Int = 20,
 ) {
     private data class UnknownSample(

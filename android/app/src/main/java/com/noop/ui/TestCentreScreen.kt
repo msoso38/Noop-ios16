@@ -231,7 +231,7 @@ private suspend fun buildPending(
     // #1002 REAL storage probe, replacing the Phase-1 zeros in meta.json:
     //  - db_bytes: the Room store's on-disk footprint (noop_whoop.db + its -wal/-shm sidecars);
     //  - rows: per-table row counts via the store (WhoopRepository.storageRowCounts);
-    //  - raw_capture_bytes: the 5/MG frame-recorder JSONL on disk (both rotation generations).
+    //  - raw_capture_bytes: the raw-frame-recorder JSONL on disk (both rotation generations).
     // Everything read, never guessed; when nothing was readable the probe stays null and meta keeps the
     // honest zeroed block. Mirrors the Swift TestCentreReport.storageProbe.
     val dbPath = context.getDatabasePath(com.noop.data.WhoopDatabase.DB_NAME)
@@ -243,8 +243,8 @@ private suspend fun buildPending(
     val rows = vm.repo.storageRowCounts()
     var rawBytes = 0L
     for (name in listOf(
-        com.noop.ble.WhoopBleClient.WHOOP5_CAPTURE_FILE,
-        com.noop.ble.WhoopBleClient.WHOOP5_CAPTURE_FILE + ".1",
+        com.noop.ble.WhoopBleClient.RAW_CAPTURE_FILE,
+        com.noop.ble.WhoopBleClient.RAW_CAPTURE_FILE + ".1",
     )) {
         val f = java.io.File(context.filesDir, name)
         if (f.exists()) rawBytes += f.length()

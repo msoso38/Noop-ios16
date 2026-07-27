@@ -23,12 +23,14 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(KEY, false)
         set(v) = prefs.edit().putBoolean(KEY, v).apply()
 
-    /** True if the user opted in to recording raw 5/MG backfill frames to a shareable JSONL file
-     *  (default false). SEPARATE from [isEnabled]: probes SEND commands at the strap; capture only
-     *  RECORDS what arrives — different risk profiles, so different switches. (#78 fork) */
-    var isCaptureEnabled: Boolean
-        get() = prefs.getBoolean(KEY_CAPTURE, false)
-        set(v) = prefs.edit().putBoolean(KEY_CAPTURE, v).apply()
+    /** True if the user opted in to recording raw frames — WHOOP 4.0 and 5/MG alike — to a shareable
+     *  JSONL file (default false). SEPARATE from [isEnabled]: probes SEND commands at the strap;
+     *  capture only RECORDS what arrives — different risk profiles, so different switches. Mirrors
+     *  the macOS `RawFrameRecorder.enabledKey` (ticket 03/04: renamed off "puffin" once it stopped
+     *  being 5/MG-only). (#78 fork) */
+    var isRawCaptureEnabled: Boolean
+        get() = prefs.getBoolean(KEY_RAW_CAPTURE, false)
+        set(v) = prefs.edit().putBoolean(KEY_RAW_CAPTURE, v).apply()
 
     /** True if the user opted in to the WHOOP 5/MG "R22" deep-data unlock — the one probe that WRITES
      *  a persistent feature flag to the strap (the `enable_r22_*` SET_CONFIG sequence). Kept distinct
@@ -96,17 +98,20 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         set(v) = prefs.edit().putBoolean(KEY_MOTION_AWARE_WAKE, v).apply()
 
     /**
-     * Turn OFF every 5/MG-only experimental probe: protocol probes ([isEnabled]), raw capture
-     * ([isCaptureEnabled]), the R22 deep-data strap write ([isDeepDataEnabled]) and broadcast-HR
-     * ([broadcastHr]). Called on a strap FAMILY switch (WHOOP 4.0 ↔ 5/MG) so a 5/MG-only option can
-     * never linger enabled and get applied to a strap it doesn't belong to. One atomic edit.
+     * Turn OFF every 5/MG-only experimental probe: protocol probes ([isEnabled]), the R22 deep-data
+     * strap write ([isDeepDataEnabled]) and broadcast-HR ([broadcastHr]). Called on a strap FAMILY
+     * switch (WHOOP 4.0 ↔ 5/MG) so a 5/MG-only option can never linger enabled and get applied to a
+     * strap it doesn't belong to. One atomic edit.
      *
-     * The line is "does it SEND something to the strap": these four arm probes, raw-capture writes, the
-     * R22 deep-data write and the broadcast-HR write, all of which target hardware that may not support
-     * them. Pure analysis flags are deliberately left alone even when they only do anything on one
-     * family — [ppgHrSubLagInterp] only affects v26 optical records, which a 4.0 never sends, so it is
-     * inert rather than misapplied. [experimentalSleepV2], [hrvReadiness] and [motionAwareWake] are
+     * The line is "does it SEND something to the strap": these three arm probes, the R22 deep-data
+     * write and the broadcast-HR write, all of which target hardware that may not support them. Pure
+     * analysis flags are deliberately left alone even when they only do anything on one family —
+     * [ppgHrSubLagInterp] only affects v26 optical records, which a 4.0 never sends, so it is inert
+     * rather than misapplied. [experimentalSleepV2], [hrvReadiness] and [motionAwareWake] are
      * model-agnostic (the last self-gates on observed sample density, never on family, per #345).
+     * [isRawCaptureEnabled] is deliberately NOT here either: raw capture now records both WHOOP 4.0
+     * and WHOOP 5.0/MG connections, so a family switch must not reset it — unlike the keys below, it
+     * never sends anything to the strap. Mirrors the macOS `PuffinExperiment.fiveMGGatedKeys`.
      */
     fun resetFiveMGGatedProbes() {
         val editor = prefs.edit()
@@ -121,8 +126,9 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         /** Shared key name with the macOS build (`PuffinExperiment.defaultsKey`). */
         const val KEY = "noopPuffinExperiments"
 
-        /** 5/MG raw backfill capture (research aid for the puffin biometric decode). */
-        const val KEY_CAPTURE = "noopWhoop5Capture"
+        /** Raw-frame capture, WHOOP 4.0 and 5/MG alike (research aid for the protocol decode). Shares
+         *  its key name with the macOS `RawFrameRecorder.enabledKey` for parity. */
+        const val KEY_RAW_CAPTURE = "noopRawFrameCapture"
 
         /** 5/MG R22 deep-data unlock opt-in (mirrors macOS `PuffinExperiment.deepDataKey`). */
         const val KEY_DEEP_DATA = "noopWhoop5DeepData"
@@ -131,8 +137,9 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         const val KEY_BROADCAST_HR = "noopBroadcastHr"
 
         /** The 5/MG-only probe keys, in ONE place: [resetFiveMGGatedProbes] clears exactly these, and
-         *  SettingsScreen watches exactly these for external writes. Two lists would drift. */
-        internal val FIVE_MG_GATED_KEYS = listOf(KEY, KEY_CAPTURE, KEY_DEEP_DATA, KEY_BROADCAST_HR)
+         *  SettingsScreen watches exactly these for external writes. Two lists would drift. Raw capture
+         *  is deliberately NOT included — see [resetFiveMGGatedProbes]. */
+        internal val FIVE_MG_GATED_KEYS = listOf(KEY, KEY_DEEP_DATA, KEY_BROADCAST_HR)
 
         /** "Experimental sleep staging (V2)" opt-in (mirrors macOS `PuffinExperiment.experimentalSleepV2Key`). */
         const val KEY_EXPERIMENTAL_SLEEP_V2 = "noopExperimentalSleepV2"

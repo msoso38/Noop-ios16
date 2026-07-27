@@ -33,9 +33,9 @@ import com.noop.protocol.Whoop5RawImu
 import com.noop.data.WhoopRepository
 import com.noop.protocol.AlarmPayload
 import com.noop.protocol.DYN_ACCEL_STILL_THRESHOLD_G
-import com.noop.protocol.BackfillCaptureJsonl
-import com.noop.protocol.BackfillCaptureRecord
-import com.noop.protocol.BackfillCaptureSummary
+import com.noop.protocol.RawCaptureJsonl
+import com.noop.protocol.RawCaptureRecord
+import com.noop.protocol.RawCaptureSummary
 import com.noop.protocol.CommandNumber
 import com.noop.protocol.DeviceFamily
 import com.noop.protocol.Framing
@@ -750,8 +750,10 @@ class WhoopBleClient(
                 "3. Open Settings > Bluetooth, find your WHOOP, and choose Forget This Device. " +
                 "Then come back and tap Connect."
 
-        /** 5/MG raw-capture file (app filesDir; shared via Settings → "Share 5/MG capture"). */
-        const val WHOOP5_CAPTURE_FILE = "whoop5-backfill-capture.jsonl"
+        /** Raw-frame capture file (app filesDir; shared via Settings → "Share raw capture"). Covers
+         *  BOTH WHOOP 4.0 and WHOOP 5.0/MG connections (ticket 04) — renamed off "whoop5"/"puffin"
+         *  once it stopped being family-specific; mirrors the macOS `RawFrameRecorder` rename. */
+        const val RAW_CAPTURE_FILE = "raw-frame-capture.jsonl"
         const val WHOOP5_EVENT_LOG_FILE = "whoop5-events.jsonl"
         // EVENT frames are ~40–120 B of hex each, a few KB per day of wear — 5 MB is years.
         private const val WHOOP5_EVENT_LOG_MAX_BYTES = 5L * 1024 * 1024
@@ -780,8 +782,8 @@ class WhoopBleClient(
                 (frame[WHOOP5_INNER_RECORD_OFFSET].toInt() and 0xFF) == WHOOP5_EVENT_TYPE
         /** Rotation threshold (~10 MB) and absolute per-file line cap (a full overnight offload is
          *  ~28k frames; 40k leaves headroom — his fork's 20k truncated real sessions, #78 fork). */
-        private const val WHOOP5_CAPTURE_MAX_BYTES = 10L * 1024 * 1024
-        private const val WHOOP5_CAPTURE_MAX_LINES = 40_000
+        private const val RAW_CAPTURE_MAX_BYTES = 10L * 1024 * 1024
+        private const val RAW_CAPTURE_MAX_LINES = 40_000
 
         /** Live-gesture freshness window (seconds). A DOUBLE_TAP / WRIST_* event only updates live state
          *  if its event_timestamp is within this of wall-now, so a *replayed historical* gesture during a
@@ -4561,9 +4563,13 @@ class WhoopBleClient(
                         // Opt-in raw capture: record EVERY frame of the session (offload AND live
                         // flood — the offload flag lets analysis filter), BEFORE routing so frames
                         // are retained before the trim ack deletes the strap's copy. No-op (single
-                        // null check) when the toggle is off. (#78 fork)
-                        if (connectedFamily == DeviceFamily.WHOOP5 && captureWriter != null) {
-                            writeWhoop5BackfillCapture(uuid.toString(), frame)
+                        // null check) when the toggle is off. Covers BOTH WHOOP 4.0 and WHOOP 5.0/MG
+                        // (ticket 04). #47: threads the ALREADY-parsed frame from above rather than
+                        // reparsing it just to capture it. `offloadFrame` (computed above, gated on
+                        // this same `backfilling`) is equivalent to a bare `isOffloadFrame(frame,
+                        // connectedFamily)` in this branch — reused rather than recomputed. (#78 fork)
+                        if (captureWriter != null) {
+                            writeRawFrameCapture(uuid.toString(), frame, parsed, offloadFrame)
                         }
                         // Historical offload: route ONLY genuine offload frames (47/48/49/50) through
                         // the serial drain (preserves chunk order) + re-arm the idle watchdog on them.
@@ -5757,9 +5763,10 @@ class WhoopBleClient(
         _state.update { it.copy(backfilling = true, syncChunksThisSession = 0) }
         refreshConnectionPriority()   // #477: escalate to HIGH for the offload burst (faster sync). No-op unless enabled.
         applyPreferredPhy()           // #533: prefer LE 2M for the burst (halves air-time). No-op unless enabled.
-        // Opt-in raw capture (research aid): pref read fresh per session, like the probes gate.
-        if (connectedFamily == DeviceFamily.WHOOP5 && PuffinExperiment.from(context).isCaptureEnabled) {
-            startWhoop5BackfillCapture()
+        // Opt-in raw capture (research aid): pref read fresh per session, like the probes gate. Covers
+        // BOTH WHOOP 4.0 and WHOOP 5.0/MG connections (ticket 04) — no family gate.
+        if (PuffinExperiment.from(context).isRawCaptureEnabled) {
+            startRawFrameCapture()
         }
         if (connectedFamily == DeviceFamily.WHOOP5) {
             // Re-apply the Broadcast-HR device-config flag if the user opted in (#181).
@@ -6071,7 +6078,7 @@ class WhoopBleClient(
         } }
         handler.removeCallbacks(backfillTimeoutRunnable)
         backfillFrameQueue.clear()
-        closeWhoop5BackfillCapture(flushSummary = true)
+        closeRawFrameCapture(flushSummary = true)
         log("Backfill: session ended — reason=$reason")
         // Inactivity reminder (#419): read-only hook on the natural offload completion (no cadence
         // change). Only on a true HISTORY_COMPLETE — a timeout/disconnect didn't bring a fresh window.
@@ -6603,7 +6610,7 @@ class WhoopBleClient(
         lastSessionEndTrim = null
         // A mid-offload link drop must still flush the capture file (summary already logged or not —
         // don't double-log it here).
-        closeWhoop5BackfillCapture(flushSummary = false)
+        closeRawFrameCapture(flushSummary = false)
         handler.removeCallbacks(backfillTimeoutRunnable)
         stopBackfillTimer()
         stopKeepAlive()
@@ -6643,57 +6650,66 @@ class WhoopBleClient(
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
-    // MARK: 5/MG raw backfill capture (opt-in research aid, #78 fork)
+    // MARK: Raw-frame capture (opt-in research/diagnostics aid, #78 fork; ticket 04)
     //
-    // Records every frame of a 5/MG backfill session as one JSONL line (parsed fields + raw hex) so
-    // real users — not just adb-equipped developers — can contribute the ground-truth material the
-    // puffin biometric decode needs. Gated on PuffinExperiment.isCaptureEnabled (default OFF); APPENDS
-    // across sessions with per-session ids (his fork truncated per session, losing overnight data);
-    // rotates at the cap; fail-soft — capture can never break the sync it observes.
+    // Records every frame of a backfill session — WHOOP 4.0 (classic envelope) AND WHOOP 5.0/MG
+    // (puffin envelope) alike — as one JSONL line (parsed fields + raw hex) so real users — not just
+    // adb-equipped developers — can contribute the ground-truth material the protocol decode needs.
+    // Gated on PuffinExperiment.isRawCaptureEnabled (default OFF); APPENDS across sessions with
+    // per-session ids (an earlier fork truncated per session, losing overnight data); rotates at the
+    // cap; fail-soft — capture can never break the sync it observes. Renamed off "whoop5"/"puffin"
+    // naming (it was 5/MG-only by hardcoded design; ticket 03 wired the WHOOP4 side on macOS first).
 
     @Volatile private var captureWriter: java.io.BufferedWriter? = null
     @Volatile private var captureDisabled = false
     @Volatile private var captureLines = 0
     private var captureSessionId = ""
-    private val captureSummary = BackfillCaptureSummary()
+    private val captureSummary = RawCaptureSummary()
 
-    private fun startWhoop5BackfillCapture() {
+    private fun startRawFrameCapture() {
         if (captureWriter != null || captureDisabled) return
         runCatching {
-            val f = java.io.File(context.filesDir, WHOOP5_CAPTURE_FILE)
+            val f = java.io.File(context.filesDir, RAW_CAPTURE_FILE)
             // Rotate at the cap: keep one previous generation, then start fresh.
-            if (f.exists() && f.length() > WHOOP5_CAPTURE_MAX_BYTES) {
-                val old = java.io.File(context.filesDir, "$WHOOP5_CAPTURE_FILE.1")
+            if (f.exists() && f.length() > RAW_CAPTURE_MAX_BYTES) {
+                val old = java.io.File(context.filesDir, "$RAW_CAPTURE_FILE.1")
                 old.delete()
                 f.renameTo(old)
             }
             captureWriter = java.io.BufferedWriter(java.io.FileWriter(f, true))
             captureLines = 0
-            captureSessionId = "whoop5-${System.currentTimeMillis()}"
+            captureSessionId = "raw-${System.currentTimeMillis()}"
             captureSummary.reset()
-            log("Capture: 5/MG backfill capture started ($captureSessionId)")
+            log("Capture: raw-frame capture started ($captureSessionId)")
         }.onFailure {
             captureDisabled = true
             log("Capture: could not open capture file (${it.message}) — capture disabled")
         }
     }
 
-    private fun writeWhoop5BackfillCapture(characteristic: String, frame: ByteArray) {
+    /** #47: takes the ALREADY-parsed [parsed] frame (threaded from the single decode in the notify
+     *  handler) rather than reparsing — matching the WHOOP4 path's existing "parse once" convention
+     *  and the macOS `RawFrameRecorder.capture(parsed:char:)` fix (ticket 03). */
+    private fun writeRawFrameCapture(characteristic: String, frame: ByteArray, parsed: com.noop.protocol.ParsedFrame, offload: Boolean) {
         val w = captureWriter ?: return
         runCatching {
-            val parsed = Framing.parseFrame(frame, connectedFamily)
-            captureSummary.record(parsed.typeName, parsed.crcOk, frame.size, characteristic, frame.toHex())
-            val line = BackfillCaptureJsonl.encode(
-                BackfillCaptureRecord(
-                    capturedAtMs = System.currentTimeMillis(),
-                    sessionId = captureSessionId,
-                    characteristic = characteristic,
-                    typeName = parsed.typeName,
+            val hex = frame.toHex()
+            val typeName = if (parsed.ok) parsed.typeName else null
+            captureSummary.record(parsed.typeName, parsed.crcOk, frame.size, characteristic, hex)
+            val line = RawCaptureJsonl.encode(
+                RawCaptureRecord(
+                    hex = hex,
+                    char = characteristic,
+                    tsMs = System.currentTimeMillis(),
+                    hr = _state.value.heartRate,
+                    typeName = typeName,
+                    seq = parsed.seq,
                     crcOk = parsed.crcOk,
-                    offload = isOffloadFrame(frame, connectedFamily),
+                    ok = parsed.ok,
+                    sessionId = captureSessionId,
+                    offload = offload,
                     size = frame.size,
                     parsed = parsed.parsed,
-                    hex = frame.toHex(),
                 ),
             )
             synchronized(w) {
@@ -6701,13 +6717,13 @@ class WhoopBleClient(
                 w.newLine()
                 if (++captureLines % 100 == 0) w.flush()
             }
-            if (captureLines >= WHOOP5_CAPTURE_MAX_LINES) {
+            if (captureLines >= RAW_CAPTURE_MAX_LINES) {
                 log("Capture: line cap reached — capture paused until next session")
-                closeWhoop5BackfillCapture(flushSummary = false)
+                closeRawFrameCapture(flushSummary = false)
             }
         }.onFailure {
             captureDisabled = true
-            closeWhoop5BackfillCapture(flushSummary = false)
+            closeRawFrameCapture(flushSummary = false)
             log("Capture: write failed (${it.message}) — capture disabled")
         }
     }
@@ -6727,7 +6743,7 @@ class WhoopBleClient(
      */
     private fun writeWhoop5EventLogIfEvent(characteristic: String, frame: ByteArray) {
         if (eventLogDisabled || !isWhoop5EventFrame(frame)) return
-        if (!PuffinExperiment.from(context).isCaptureEnabled) return
+        if (!PuffinExperiment.from(context).isRawCaptureEnabled) return
         runCatching {
             val f = java.io.File(context.filesDir, WHOOP5_EVENT_LOG_FILE)
             if (f.exists() && f.length() > WHOOP5_EVENT_LOG_MAX_BYTES) {
@@ -6761,11 +6777,11 @@ class WhoopBleClient(
      * pref read; no-op unless the capture toggle is on.
      */
     /** #423: persist the WHOOP 5/MG raw-IMU offload buffer NOOP already decodes for the deep-buffer log —
-     *  the queryable twin of that (table-less) diagnostics line. Same `isCaptureEnabled` gate; only the
+     *  the queryable twin of that (table-less) diagnostics line. Same `isRawCaptureEnabled` gate; only the
      *  1244-B 6-axis buffer decodes (rawColumns null otherwise). IO-dispatched so it never blocks the GATT
      *  thread; bounded by a rolling retention prune. Raw i16, no downstream consumer yet (instrument-first). */
     private fun storeWhoop5RawImuIfBuffer(frame: ByteArray) {
-        if (!PuffinExperiment.from(context).isCaptureEnabled) return
+        if (!PuffinExperiment.from(context).isRawCaptureEnabled) return
         val cols = Whoop5RawImu.rawColumns(frame) ?: return
         val baseTs = PuffinDeepBufferLog.strapTs(frame)?.toLong() ?: return
         val dev = deviceId
@@ -6789,7 +6805,7 @@ class WhoopBleClient(
 
     private fun writeWhoop5DeepBufferIfBig(characteristic: String, frame: ByteArray, isOffload: Boolean) {
         if (deepBufferDisabled || !PuffinDeepBufferLog.isDeepBuffer(frame)) return
-        if (!PuffinExperiment.from(context).isCaptureEnabled) return
+        if (!PuffinExperiment.from(context).isRawCaptureEnabled) return
         runCatching {
             val f = java.io.File(context.filesDir, WHOOP5_DEEPBUFFER_FILE)
             if (f.exists() && f.length() > WHOOP5_DEEPBUFFER_MAX_BYTES) {
@@ -6815,7 +6831,7 @@ class WhoopBleClient(
         }
     }
 
-    private fun closeWhoop5BackfillCapture(flushSummary: Boolean) {
+    private fun closeRawFrameCapture(flushSummary: Boolean) {
         val w = captureWriter ?: return
         captureWriter = null
         runCatching { synchronized(w) { w.flush(); w.close() } }

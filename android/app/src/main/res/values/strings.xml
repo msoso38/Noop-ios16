@@ -1467,9 +1467,9 @@
     <string name="l10n_settings_screen_recalibrate_charge_baseline_52a05a26">Recalibrate Charge baseline</string>
     <string name="l10n_settings_screen_recalibrate_your_charge_baseline_018e3846">Recalibrate your Charge baseline?</string>
     <string name="l10n_settings_screen_recent_changes_and_what_to_expect_3ceb660b">Recent changes and what to expect</string>
-    <string name="l10n_settings_screen_record_5_mg_raw_capture_9354fe89">Record 5/MG raw capture</string>
-    <string name="l10n_settings_screen_record_5_mg_raw_capture_research_1d966bbf">Record 5/MG raw capture (research)</string>
-    <string name="l10n_settings_screen_records_the_raw_frames_of_each_98a284df">Records the raw frames of each 5/MG history sync to a file on this phone, so you can share them and help NOOP learn to decode 5/MG sleep, recovery and strain. The file contains raw biometric frames (heart rate, R-R, skin temperature, motion) and the strap\'s own diagnostic text. Nothing leaves the phone unless you share it. Off by default.</string>
+    <string name="l10n_settings_screen_record_5_mg_raw_capture_9354fe89">Record raw frames to a file</string>
+    <string name="l10n_settings_screen_record_5_mg_raw_capture_research_1d966bbf">Record raw frames to a file</string>
+    <string name="l10n_settings_screen_records_the_raw_frames_of_each_98a284df">Saves every raw frame your strap sends (WHOOP 4.0 or 5/MG, with a timestamp and the live heart rate) to a file you can share for diagnostics. This only records frames the strap already sent (it never writes to your strap), so it is safe to leave on during a history sync. Export the file and attach it to a bug report.</string>
     <string name="l10n_settings_screen_remove_photo_c8f5eda8">Remove photo</string>
     <string name="l10n_settings_screen_rename_d3f4cb89">Rename</string>
     <string name="l10n_settings_screen_rename_your_strap_s_bluetooth_name_6032668b">Rename your strap\'s Bluetooth name, useful for a second-hand band. The strap </string>
@@ -1482,7 +1482,7 @@
     <string name="l10n_settings_screen_set_up_automatic_backups_00b4780c">Set up automatic backups</string>
     <string name="l10n_settings_screen_settings_c7f73bb5">Settings</string>
     <string name="l10n_settings_screen_sex_e301dd60">Sex</string>
-    <string name="l10n_settings_screen_share_5_mg_capture_for_the_e41ac6bd">Share 5/MG capture (for the decode effort)</string>
+    <string name="l10n_settings_screen_share_5_mg_capture_for_the_e41ac6bd">Share raw capture</string>
     <string name="l10n_settings_screen_share_on_device_signals_with_the_b3fd747e">Share on-device signals with the Coach</string>
     <string name="l10n_settings_screen_share_strap_log_for_bug_reports_b9802500">Share strap log (for bug reports)</string>
     <string name="l10n_settings_screen_shows_a_soft_sunrise_day_dusk_2d20b417">Shows a soft sunrise, day, dusk and night scene behind the Today screen. Turn it off for a plain dark canvas. Your cards stay exactly as readable.</string>

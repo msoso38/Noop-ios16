@@ -463,7 +463,9 @@ fun SettingsScreen(
     // SharedPreferences isn't reactive, so the Switch drives a local mutableState that the store reads.
     val puffinExperiment = remember { PuffinExperiment.from(context) }
     var puffinExperiments by remember(rev) { mutableStateOf(puffinExperiment.isEnabled) }
-    var puffinCapture by remember(rev) { mutableStateOf(puffinExperiment.isCaptureEnabled) }
+    // Raw-frame capture (WHOOP 4.0 and 5/MG alike, ticket 04) — model-agnostic, so it's read here
+    // alongside the 5/MG-only probes but rendered in the always-visible Diagnostics card below.
+    var rawFrameCapture by remember(rev) { mutableStateOf(puffinExperiment.isRawCaptureEnabled) }
     var deepData by remember(rev) { mutableStateOf(puffinExperiment.isDeepDataEnabled) }
     var broadcastHr by remember(rev) { mutableStateOf(puffinExperiment.broadcastHr) }
     // "Sleep staging (V2)" — V2 is the DEFAULT for every strap (WHOOP 4 and 5/MG); turn it OFF to fall back
@@ -1926,58 +1928,6 @@ fun SettingsScreen(
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    Text(
-                        uiString(R.string.l10n_settings_screen_record_5_mg_raw_capture_research_1d966bbf),
-                        style = NoopType.subhead,
-                        color = Palette.textPrimary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Switch(
-                        checked = puffinCapture,
-                        onCheckedChange = {
-                            puffinCapture = it
-                            puffinExperiment.isCaptureEnabled = it
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Palette.surfaceBase,
-                            checkedTrackColor = Palette.accent,
-                            uncheckedThumbColor = Palette.textSecondary,
-                            uncheckedTrackColor = Palette.surfaceInset,
-                            uncheckedBorderColor = Palette.hairline,
-                        ),
-                        modifier = Modifier.semantics {
-                            contentDescription = uiString(R.string.l10n_settings_screen_record_5_mg_raw_capture_9354fe89)
-                        },
-                    )
-                }
-                Text(
-                    uiString(R.string.l10n_settings_screen_records_the_raw_frames_of_each_98a284df),
-                    style = NoopType.caption,
-                    color = Palette.textTertiary,
-                )
-                NoopButton(
-                    text = uiString(R.string.l10n_settings_screen_share_5_mg_capture_for_the_e41ac6bd),
-                    leadingIcon = Icons.Filled.Upload,
-                    kind = NoopButtonKind.Secondary,
-                    fullWidth = true,
-                    onClick = { LogExport.shareWhoop5Capture(context, live.whoop5Detected) },
-                )
-
-                // One-tap "matched pair" export (#510): hands a reporter BOTH the raw capture file and
-                // the strap log together (timestamped, same minute) so a protocol-mapping issue arrives
-                // with the frames AND the context that produced them.
-                NoopButton(
-                    text = uiString(R.string.l10n_settings_screen_export_raw_log_matched_pair_d65390bf),
-                    leadingIcon = Icons.Filled.IosShare,
-                    kind = NoopButtonKind.Secondary,
-                    fullWidth = true,
-                    onClick = { scope.launch { LogExport.shareRawAndLog(context, vm.ble.exportLogText(), live.whoop5Detected) } },
-                )
             }
         }
         } // end if (showFiveMGControls)
@@ -2085,6 +2035,62 @@ fun SettingsScreen(
                     uiString(R.string.l10n_settings_screen_saves_the_last_24h_of_decoded_f7026f47),
                     style = NoopType.caption,
                     color = Palette.textTertiary,
+                )
+
+                // --- Raw-frame capture — off by default, safe to leave on (read-only on the strap).
+                // Visible on EVERY model (ticket 04): the recorder now covers WHOOP 4.0's classic
+                // envelope as well as WHOOP 5.0/MG's puffin envelope, so this is no longer 5/MG-only.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Text(
+                        uiString(R.string.l10n_settings_screen_record_5_mg_raw_capture_research_1d966bbf),
+                        style = NoopType.subhead,
+                        color = Palette.textPrimary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Switch(
+                        checked = rawFrameCapture,
+                        onCheckedChange = {
+                            rawFrameCapture = it
+                            puffinExperiment.isRawCaptureEnabled = it
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Palette.surfaceBase,
+                            checkedTrackColor = Palette.accent,
+                            uncheckedThumbColor = Palette.textSecondary,
+                            uncheckedTrackColor = Palette.surfaceInset,
+                            uncheckedBorderColor = Palette.hairline,
+                        ),
+                        modifier = Modifier.semantics {
+                            contentDescription = uiString(R.string.l10n_settings_screen_record_5_mg_raw_capture_9354fe89)
+                        },
+                    )
+                }
+                Text(
+                    uiString(R.string.l10n_settings_screen_records_the_raw_frames_of_each_98a284df),
+                    style = NoopType.caption,
+                    color = Palette.textTertiary,
+                )
+                NoopButton(
+                    text = uiString(R.string.l10n_settings_screen_share_5_mg_capture_for_the_e41ac6bd),
+                    leadingIcon = Icons.Filled.Upload,
+                    kind = NoopButtonKind.Secondary,
+                    fullWidth = true,
+                    onClick = { LogExport.shareRawFrameCapture(context, live.connected) },
+                )
+
+                // One-tap "matched pair" export (#510): hands a reporter BOTH the raw capture file and
+                // the strap log together (timestamped, same minute) so a bug report arrives with the
+                // frames AND the context that produced them.
+                NoopButton(
+                    text = uiString(R.string.l10n_settings_screen_export_raw_log_matched_pair_d65390bf),
+                    leadingIcon = Icons.Filled.IosShare,
+                    kind = NoopButtonKind.Secondary,
+                    fullWidth = true,
+                    onClick = { scope.launch { LogExport.shareRawAndLog(context, vm.ble.exportLogText(), live.connected) } },
                 )
 
                 // Haptic clock (#460): buzz the current time on the strap as a sequence of buzzes. No-ops

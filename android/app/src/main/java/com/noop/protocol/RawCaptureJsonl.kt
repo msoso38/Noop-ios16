@@ -1,30 +1,51 @@
 package com.noop.protocol
 
-data class BackfillCaptureRecord(
-    val capturedAtMs: Long,
-    val sessionId: String,
-    val characteristic: String,
-    val typeName: String,
+/**
+ * One captured raw BLE frame plus the provenance a protocol mapper needs to correlate bytes against
+ * ground truth. Covers BOTH WHOOP 4.0 (classic envelope) and WHOOP 5.0/MG (puffin envelope) — nothing
+ * here is family-specific.
+ *
+ * `hex`/`char`/`tsMs`/`hr`/`typeName`/`seq`/`crcOk`/`ok` are the same fields, names and casing as the
+ * macOS/iOS `RawCaptureRecord` (`Packages/RawCapture`), so a capture from either platform is directly
+ * comparable. `sessionId`/`offload`/`size`/`parsed` are an Android-specific superset (session-scoped
+ * capture + the already-decoded fields) that a plain hex-only reader ignores.
+ */
+data class RawCaptureRecord(
+    val hex: String,
+    val char: String,
+    val tsMs: Long,
+    val hr: Int?,
+    val typeName: String?,
+    val seq: Int?,
     val crcOk: Boolean?,
+    val ok: Boolean,
+    val sessionId: String,
     val offload: Boolean,
     val size: Int,
     val parsed: Map<String, Any?>,
-    val hex: String,
 )
 
-object BackfillCaptureJsonl {
-    fun encode(record: BackfillCaptureRecord): String =
+object RawCaptureJsonl {
+    fun encode(record: RawCaptureRecord): String =
         buildString {
             append('{')
-            appendField("captured_at_ms", record.capturedAtMs)
+            appendField("hex", record.hex)
             append(',')
-            appendField("session_id", record.sessionId)
+            appendField("char", record.char)
             append(',')
-            appendField("characteristic", record.characteristic)
+            appendField("ts_ms", record.tsMs)
+            append(',')
+            appendField("hr", record.hr)
             append(',')
             appendField("type_name", record.typeName)
             append(',')
+            appendField("seq", record.seq)
+            append(',')
             appendField("crc_ok", record.crcOk)
+            append(',')
+            appendField("ok", record.ok)
+            append(',')
+            appendField("session_id", record.sessionId)
             append(',')
             appendField("offload", record.offload)
             append(',')
@@ -33,8 +54,6 @@ object BackfillCaptureJsonl {
             appendQuoted("parsed")
             append(':')
             appendJsonValue(record.parsed)
-            append(',')
-            appendField("hex", record.hex)
             append('}')
         }
 

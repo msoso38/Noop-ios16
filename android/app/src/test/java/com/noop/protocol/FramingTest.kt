@@ -656,4 +656,31 @@ class FramingTest {
         val p = Framing.parseFrame(f, DeviceFamily.WHOOP5)
         assertEquals("AB", p.parsed["console"])
     }
+
+    // MARK: - ParsedFrame.seq (ticket 04: raw-frame capture needs this per family, byte-identical to
+    // the Swift `ParsedFrame.seq` — WHOOP4 @frame[5], WHOOP5/MG @frame[9], the +4 puffin-envelope shift)
+
+    @Test
+    fun parseFrame_whoop4_extractsSeqFromEnvelope() {
+        val frame = Framing.buildCommand(CommandNumber.GET_BATTERY_LEVEL, byteArrayOf(0), seq = 42)
+        val p = Framing.parseFrame(frame, DeviceFamily.WHOOP4)
+        assertEquals(42, p.seq)
+    }
+
+    @Test
+    fun parseFrame_whoop5_extractsSeqFromInnerRecord() {
+        val frame = Framing.puffinCommandFrame(
+            cmd = CommandNumber.TOGGLE_REALTIME_HR.rawValue,
+            seq = 99,
+            payload = byteArrayOf(1),
+        )
+        val p = Framing.parseFrame(frame, DeviceFamily.WHOOP5)
+        assertEquals(99, p.seq)
+    }
+
+    @Test
+    fun parseFrame_invalidFrame_seqIsNull() {
+        assertNull(Framing.parseFrame(byteArrayOf(0xAA.toByte(), 0, 0), DeviceFamily.WHOOP4).seq)
+        assertNull(ParsedFrame.invalid().seq)
+    }
 }
