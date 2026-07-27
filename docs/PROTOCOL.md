@@ -410,10 +410,26 @@ On MAVERICK the clock commands also answer in the high opcode space — `SET_CLO
 and `GET_CLOCK` at 147 (0x93), alongside `GET_HELLO` at 145 (0x91) — distinct from the 4.0
 numbers (10 / 11) above.
 
-The strap further exposes an ECG/HeartKey command family (`ECG_MAIN_CONTROL`, `ECG_SEND_RAW`,
-`ECG_SAVE_RAW`, `ECG_SAVE_FILTERED`, `ECG_SELECT_WRIST`; five consecutive codes around 0x7B–0x8B),
-an `IMU_SET_DATA_STREAM` (code 106, shared with `TOGGLE_IMU_MODE`), and a `UART_DISABLE` (0x61–0x69).
-Exact codes for these are unconfirmed.
+The strap further exposes an ECG/HeartKey command family. The `CommandNumber` table carries four codes
+for it — 123 `SELECT_WRIST`, 124 `TOGGLE_LABRADOR_DATA_GENERATION`, 125 `TOGGLE_LABRADOR_RAW_SAVE`,
+139 `TOGGLE_LABRADOR_FILTERED` — which are **not** contiguous, and an earlier revision of this section
+described "five consecutive codes around 0x7B–0x8B" against five names (`ECG_MAIN_CONTROL`,
+`ECG_SEND_RAW`, `ECG_SAVE_RAW`, `ECG_SAVE_FILTERED`, `ECG_SELECT_WRIST`). Both cannot be right:
+`ECG_SEND_RAW` has no code, and 139 (0x8B) is separated from 123–125 (0x7B–0x7D). Treat the name↔code
+mapping as unconfirmed — the 5/MG is known to remap opcodes into the high space (the clock family answers
+at 145/146/147 there versus 10/11 on a 4.0), so a code that is accepted is not evidence that it means
+what the name says.
+
+What is confirmed: on a real WHOOP 5 MG (`WS50_r03`), 124, 125 and 139 are all **accepted** — each
+answers `COMMAND_RESPONSE` with result `SUCCESS(1)` — and no ECG-shaped data followed in a 30-second
+window. That is a null result with several live explanations (an open electrode circuit, flash rather
+than a realtime channel, a wrong opcode mapping, no start verb, a flag block, an entitlement gate); see
+#891. **NOOP does not send any of these** — none is in the sender enum on either platform, and the 5/MG
+send path is an allowlist. The three reply frames are pinned as decode fixtures in
+`Whoop5CommandResponseTests` / `CommandCatalogueTest`.
+
+The strap also exposes an `IMU_SET_DATA_STREAM` (code 106, shared with `TOGGLE_IMU_MODE`) and a
+`UART_DISABLE` (0x61–0x69). Exact codes for these are unconfirmed.
 
 ### Destructive commands — *do not send*
 
@@ -429,6 +445,14 @@ data, brick, or power-cycle the strap. NOOP must never send them.
 | 38 | `PROCESS_FIRMWARE_IMAGE` | firmware write |
 | 45 | `ENTER_BLE_DFU` | enters DFU bootloader |
 | 99 | `RESET_FUEL_GAUGE` | resets battery fuel gauge |
+| 142 | `START_FIRMWARE_LOAD_NEW` | firmware write |
+| 143 | `LOAD_FIRMWARE_DATA_NEW` | firmware write |
+| 144 | `PROCESS_FIRMWARE_IMAGE_NEW` | firmware write |
+
+The 142–144 family is the high-opcode-space counterpart of 36/37/38, in the same style as the clock
+family answering at 145–147 on MAVERICK. It is named by the schema and absent from the sender enum on
+both platforms; it was missing from this table, so nothing recorded that it must stay that way. (83
+`VERIFY_FIRMWARE_IMAGE` is part of the same flow but is not itself a write, and is likewise unsent.)
 
 **Two guarded exceptions — both restarts, both non-destructive** (a restart keeps the strap's stored
 data and just re-advertises after boot). Neither is ever sent automatically or on any connect/offload path.
@@ -496,6 +520,49 @@ are facts read off a decompiled official client's response types and corroborate
 reimplemented in NOOP's own code — facts, not copied expression (see [`ATTRIBUTION.md`](../ATTRIBUTION.md)).
 **Unverified on 5/MG:** the published key dump is a 4.0's R19-era list; whether a 5/MG answers 117 at all
 is what the probe exists to establish (§10).
+
+**Device-config read probe (#103, read-only).** The #761 follow-up: that probe asked the strap for key
+NAMES, this one asks for a named key's VALUE — and it reaches the namespace 117/118 never covered. NOOP
+writes config through two different verbs into two different namespaces (`SET_FF_VALUE` / 120 for the
+sixteen R22 feature flags in `Whoop5Config.enableR22Sequence`, `SET_DEVICE_CONFIG_VALUE` / 119 for the
+Broadcast-HR key, #181) and has never read either. The `CommandNumber` table names the read side of both:
+121 `GET_DEVICE_CONFIG_VALUE` and 128 `GET_FF_VALUE`.
+
+**Both opcodes may simply not be implemented.** A number in the table is not a served verb — opcode 96
+(`ENTER_HIGH_FREQ_HISTORICAL_MODE`) is the standing example of one nothing in the wild sends. So the
+probe's primary deliverable is a per-verb verdict — **answered**, **rejected as UNSUPPORTED**, or
+**silent** — and a clean "neither verb is served" is a useful result, not a failure. It spends exactly one
+round-trip per verb establishing that (128 against a flag NOOP writes, 121 against the known-good
+Broadcast-HR key) before doing anything else; a verb that is refused, silent or undecodable is **retired**,
+so a dead verb costs one 8 s window rather than one per key.
+
+Only a verb that answers goes on to read values: the sixteen known flag names (whose values NOOP has only
+ever written, never read), then a short list of **guessed** oxygen-related key names against the
+device-config namespace — `DeviceConfigReadProbe.oxygenCandidateKeys`, the one constant to extend, and
+labelled as guesses everywhere they surface. That list is the #103 question in probe form: the byte at
+deep-record offset 82 reads as real SpO2 on some straps and flat `0x00` on others, which is what a
+subscription gate would look like, and a config key governing it would sit in the device-config namespace.
+
+Request body is `[0x01]` (the inner b3 byte) + the key as ASCII NUL-padded to 32 bytes — the SET side's own
+name field minus its value byte. That shape is **inferred from the SET side, not observed**; if it is wrong
+the strap answers FAILURE or nothing, which the report says plainly. The reply is an ordinary
+COMMAND_RESPONSE whose record sits behind the 2-byte response header, and **beyond that offset no field
+layout is assumed**: the record is reported as raw hex. A value is only ever *claimed* when the reply
+echoes the requested key inside a 32-byte NUL-padded field, in which case the byte immediately after that
+field is the value — the SET layout, checked rather than assumed. (On 5/MG the puffin envelope pads the
+inner payload to a 4-byte boundary, so trailing NULs in a record are envelope padding; reading "the byte
+after the echoed field" rather than "the last byte" is what keeps that out of the answer.)
+
+Read-only by construction. `DeviceConfigReadProbe.readOnlyOpcodes` is `{121, 128}` and
+`isReadOnlyOpcode` is the *same predicate* the 5/MG `send()` allowlist consults — admitting them only
+while a probe is in flight — so the "119/120 are never sent from this path" claim is a unit-tested property
+of the allowlist rather than a comment. The plan is capped at 64 round-trips. Driven by
+`BLEManager.probeDeviceConfigValues()` / `WhoopBleClient.probeDeviceConfigValues()` (user-triggered, Test
+Centre → Connection, both families); parsed + planned + rendered by the pure `DeviceConfigReadProbe` /
+`DeviceConfigReadProbeReport` twins (Swift↔Kotlin byte-parity, unit-tested on synthetic frames). Result
+goes to a copyable dialog + the strap log; no storage. The opcode numbers come from this repo's own
+protocol table (`Resources/whoop_protocol.json`). **Unverified on any strap:** nothing in this project has
+ever had 121 or 128 answered.
 
 **GET_DATA_RANGE ring backlog (#689, diagnostic only).** Beyond the oldest/newest timestamps NOOP already
 scans from a `GET_DATA_RANGE` reply, the app computes a ring-buffer page backlog from three u32s in the

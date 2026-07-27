@@ -1886,6 +1886,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearFeatureFlagProbe() = ble.clearFeatureFlagProbe()
 
+    /** #103: READ-ONLY device-config READ probe (GET_DEVICE_CONFIG_VALUE/121 + GET_FF_VALUE/128) — asks
+     *  the strap for a config key's VALUE, the follow-up to #761's key-NAME enumeration. Writes nothing.
+     *  User-initiated, Test-Centre-gated in DevicesScreen; the report goes to the dialog + strap log. */
+    fun probeDeviceConfigValues() = ble.probeDeviceConfigValues()
+
+    /** #103 probe report text (null until the plan finishes; waiting sentinel while it runs). */
+    val deviceConfigProbe = ble.deviceConfigProbe
+
+    fun clearDeviceConfigProbe() = ble.clearDeviceConfigProbe()
+
     /**
      * Flip the "keep connected in the background" preference (driven by Settings). Turning it on
      * while a strap is live promotes to the foreground immediately; turning it off drops the
