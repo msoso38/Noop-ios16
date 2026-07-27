@@ -247,7 +247,7 @@ terms move**. Any single headline multiplier is a property of one capture.
 Drain time is `(bytes banked per second-of-history) / (bytes the link moves per second)` and **both
 terms move**. Any single headline multiplier is a property of one capture.
 
-### A6. "Charging flag never lands" — **REFUTED as stated · OPEN (reframed)**
+### A6. "Charging flag never lands" — **REFUTED as stated · reframed question now CONFIRMED · fix INERT**
 
 The finding's own evidence contradicts its title. The row was `soc=31.6, charging=0`:
 
@@ -261,12 +261,22 @@ The finding's own evidence contradicts its title. The row was `soc=31.6, chargin
   historical record's timestamp against an observation made at inspection time. The doc never
   established the charger was on at strap-RTC 10:58:06.
 
-**OPEN (reframed):** whether the 5/MG's BATTERY_LEVEL bit0 tracks charging **at all** is genuinely
+**Was OPEN (reframed):** whether the 5/MG's BATTERY_LEVEL bit0 tracks charging **at all** is genuinely
 unknown and worth settling — but it needs a controlled capture (put it on the charger, watch
 `state.charging` change), not a single historical row. A3's fix is what makes that flag visible enough
-to observe. **This stays OPEN: nothing below settles the question.**
+to observe.
 
-**MITIGATED, so a wrong bit stops costing the wearer:** `Strand/BLE/StrapChargeInference.swift` stops
+> **CONFIRMED 2026-07-26, from the cloud mirror — the bit is not a usable charging indicator.** The
+> controlled capture asked for above turned out to be unnecessary: the mirror already held one, with
+> ground truth attached. A charging session on **2026-07-15, 11:07 → 13:34 MDT** carries `CHARGING_ON(7)`
+> ×10, `BATTERY_PACK_CONNECTED(21)` ×3, and SoC climbing **4.7% → 100.0%** — and `charging = false` on
+> every one of its ~300 battery readings. **Not `null` — `false`.** That distinction is the whole finding:
+> `null` would mean the flag never reported, while `false` means the BATTERY_LEVEL path decoded the bit
+> and the strap asserted *not charging* while going from nearly flat to full. The "single historical row"
+> objection that (correctly) sank the first pass does not apply — this is a labelled transition, not one
+> row. Caveats: one session, one strap, and the mirror was 8.9 days stale when read.
+
+**ATTEMPTED MITIGATION — and it is almost certainly INERT.** `Strand/BLE/StrapChargeInference.swift` stops
 treating that one unverified bit as the only witness. A **rising SoC** is direct, family-independent,
 decoder-independent evidence of a charge, and this codebase already trusts exactly that inference —
 `BatteryEstimator.chargeStepPct` is documented as "a SoC rise larger than this marks a CHARGE", and the
@@ -282,6 +292,29 @@ stored value diverges from Kotlin and no `.noopbak` contract moves. Pinned by
 
 Because it is display-only, this **does not** substitute for the controlled capture — it makes the app
 correct either way while the question stays open. Kotlin twin is a UI-parity item, not a data one.
+
+> **OPEN — the threshold is set above the real charge step, so the rescue never triggers.** `isRising`
+> needs **> 1.0 pp** (`BatteryEstimator.chargeStepPct`) between CONSECUTIVE readings. The confirmed charge
+> above stepped **+0.3 … +0.7 pp** per reading at a **~30 s** cadence and never once cleared it. The
+> `recentRiseWindowSeconds` comment assumes readings are "~8 min apart", which is what makes 1.0 pp look
+> like a low bar; at the observed cadence it is not. The live path looks no better — a 5/MG's live SoC is
+> whole-percent `0x2A19`, so a charge steps by exactly `+1`, and the strict `>` that exists to survive
+> that quantisation also excludes exactly 1.0.
+>
+> So `chargingEffective` degenerates to the raw flag and the wearer still sees "not charging" plus a
+> discharge estimate on a strap that is charging — **the original harm is not actually fixed.** It is not
+> a regression (the inference is additive, so behaviour equals pre-fix), but the section above overstates
+> what shipped and this correction supersedes it.
+>
+> Do not read the green tests as coverage: `StrapChargeInferenceTests`' synthetic samples step by more
+> than 1.0 pp, which is exactly why they pass.
+>
+> **Likely fix:** a RATE test (pp per unit time) rather than a fixed per-reading delta — ~50 pp/h charging
+> vs ~1.65 pp/h discharge is a ~30x separation that holds at any cadence. **Unmeasured and needed first:**
+> the `battery` table is fed by the decoded OFFLOAD stream, not the live path that populates
+> `LiveState.batterySamples`, so the LIVE cadence and quantisation are still unconfirmed. The detail is
+> duplicated at the type in `Strand/BLE/StrapChargeInference.swift` (GitHub issues are disabled on this
+> fork, so there is no tracker item).
 
 ### A7. `lastSeenAt` frozen at pairing → "last seen 18 days ago" — **CONFIRMED · OPEN (both platforms)**
 
