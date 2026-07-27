@@ -7,7 +7,11 @@ strings are passed through unchanged. Re-runnable: existing `de` units are
 overwritten so this file stays the source of truth for the German translation.
 """
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from xcstrings_format import write_catalog
 
 CATALOG = Path("Strand/Resources/Localizable.xcstrings")
 
@@ -487,8 +491,7 @@ def main() -> int:
         locs = entry.setdefault("localizations", {})
         locs["de"] = {"stringUnit": {"state": "translated", "value": de}}
 
-    CATALOG.write_text(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n",
-                       encoding="utf-8")
+    write_catalog(CATALOG, catalog)
 
     translated = sum(
         1 for k, v in strings.items()

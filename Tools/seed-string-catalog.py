@@ -11,6 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from xcstrings_format import write_catalog
+
 CATALOG = Path("Strand/Resources/Localizable.xcstrings")
 
 
@@ -90,7 +93,7 @@ def main() -> int:
         "version": existing.get("version", "1.0"),
     }
 
-    CATALOG.write_text(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n")
+    write_catalog(CATALOG, catalog)
     print(f"Catalog now has {len(strings)} strings ({added} newly seeded).")
     return 0
 

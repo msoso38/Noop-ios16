@@ -209,6 +209,36 @@ personal build. See [`BUILD.md`](BUILD.md) for the signed-bundle recipe and pair
 - No new third-party dependency unless it's discussed first. Today the only ones are **GRDB.swift**
   (SQLite) and **ZIPFoundation** (export unzip), both via SwiftPM.
 
+### Why building in Xcode rewrites `.xcstrings` files (and what to do about it)
+
+Every String Catalog (`Strand/Resources/Localizable.xcstrings`,
+`NOOPWatch/Localizable.xcstrings`, `NOOPWatchComplications/Localizable.xcstrings`,
+`Packages/StrandDesign/Sources/StrandDesign/Resources/Localizable.xcstrings`) gets rewritten by
+Xcode — reformatted and reordered, not just edited — on essentially every local Xcode build or run.
+This is intentional Apple behavior (`SWIFT_EMIT_LOC_STRINGS: YES`, set project-wide): Xcode scans
+source for localized-string usage and syncs the catalog to match (adding new keys, marking unused
+ones `stale`). It's expected, not a bug, and it does **not** reproduce under plain `xcodebuild` from
+the CLI — only Xcode.app's own build/run path does it.
+
+The reason the resulting diff looks enormous even when nothing real changed: Xcode's writer uses its
+own key ordering (empirically neither alphabetical nor locale-collated — believed to be Swift's
+hash-seeded `Dictionary` iteration order), which no external tool can reproduce. So a catalog written
+in any other order gets fully reshuffled the next time Xcode touches it.
+
+Two things keep this from becoming a churny mess in git history:
+
+- **`Tools/xcstrings_format.py`** is the canonical writer `seed-string-catalog.py`, `translate-de.py`,
+  and `translate-it.py` all use — stable alphabetical key order, `" : "` spacing, no trailing newline.
+  Run it directly on a catalog Xcode just rewrote (`python3 Tools/xcstrings_format.py
+  Strand/Resources/Localizable.xcstrings`) to collapse the diff back down to whatever *actually*
+  changed — a quick way to sanity-check a build-triggered diff before deciding whether to stage it.
+- **`Tools/git-hooks/pre-commit`** re-runs that canonicalizer on any staged `.xcstrings` file, so
+  committed history always stores the stable order regardless of what Xcode last did to your working
+  tree. Enable it once per clone: `git config core.hooksPath Tools/git-hooks`.
+
+A `.xcstrings` diff in `git status` after a build is normal — canonicalize (or just check `git diff
+--stat`) before assuming something is actually wrong.
+
 ### What CI gates — and what it deliberately doesn't
 
 NOOP runs a **deliberately lean CI**: fast, no-hardware checks guard the point of merge, while heavier
