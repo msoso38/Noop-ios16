@@ -1812,7 +1812,7 @@ final class IntelligenceEngine: ObservableObject {
     /// is learned, dayKey is the LOCAL calendar day of the midpoint , and defers to
     /// `SleepStageTotals.habitualMidsleepSec`, which keeps the longest block per day (naps drop out). The
     /// imported + computed sets can overlap; both are unioned and the learner de-dupes per day by length.
-    /// (#547) Mirrors the Android `computeHabitualMidsleep`.
+    /// (#547) Mirrors the Android `computeHabitualSleep`.
     /// CONSUME (#531 / H8): the prior pass's persisted v18 BAND sleep_state for sessions overlapping
     /// `[from, to]`, expanded to timestamped `(ts, state)` samples on the 30 s epoch grid, for the H7
     /// morning-stillness guard's re-onset confirmation. Reads the computed sessions in the window, then each
