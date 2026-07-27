@@ -174,6 +174,14 @@ aggregates one value **per window** rather than per second, and reports per-nigh
 with a loud warning below the floor. A strap whose `@82` is flat `0x00` across a long enough capture
 is classified **`feature_absent`** — neither a PASS nor a FAIL in the multi-device gate.
 
+That absence claim carries the aliasing caveat back onto itself: it also requires the capture to have
+been sampled **finely enough to see a window**. Missing the window is a phase problem, not a duration
+one — a cadence sharing a large factor with the period only ever occupies `period ÷ gcd` residues, so
+at 300 s against 1200 s it either always lands inside the window or never does, and six nights of
+scored sleep read a flat `0x00` off a perfectly healthy strap. A capture coarser than a nominal 30 s
+window stays a plain FAIL and says why. The conservative direction matters here: `feature_absent`
+*removes* a device from the gate, so over-claiming absence would make promotion easier, not harder.
+
 `--postable` prints a CSV-ish block with **no raw SpO₂ values** — safe to paste on
 [#103](https://github.com/ryanbr/noop/issues/103). Promote `spo2_candidate_82` → `spo2Pct` only when
 **≥2 devices** each PASS (the tool's multi-device footer tracks that). This does **not** change app

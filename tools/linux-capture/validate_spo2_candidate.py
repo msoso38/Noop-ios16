@@ -106,6 +106,20 @@ DEFAULT_MIN_WINDOW_COVERAGE = 0.5   # below this share of a night's windows, its
 ABSENT_MIN_RECORDS = 100
 ABSENT_MIN_ASLEEP_SPAN_S = 3 * NOMINAL_DUTY_PERIOD_S
 
+# ...and it must have been sampled FINELY enough to see one of those firings. Duration is not enough,
+# because missing the window is a phase problem, not a length one: a cadence that shares a large
+# factor with the period only ever occupies `period // gcd` residues, so it either always lands inside
+# the window or never does. At 300 s against the reference 1200 s that is 4 residues — six nights of
+# eight hours' scored sleep clear both bars above and still read a flat 0x00 off a perfectly healthy
+# strap. This is the aliasing documented at the top of this file, turned on our own absence claim.
+#
+# A cadence at or below the window length cannot skip a window, whatever the phase, so that is the
+# bar. Same caveat as NOMINAL_DUTY_PERIOD_S: 30 s is the reference strap's window, not a law — it is
+# used only as a minimum-evidence figure, never as a detector input. A coarser capture that reads all
+# zeros stays a plain FAIL, which is the conservative direction: `feature_absent` REMOVES a device
+# from the multi-device gate, so over-claiming absence makes promotion easier, not harder.
+NOMINAL_DUTY_WINDOW_S = 30
+
 # --- Variance floor --------------------------------------------------------------------------------
 # "The value lands in 70–100" is not a specific screen. On a real subscription-free 5.0 strap SIX
 # offsets pass an in-band-only screen on a majority of records — @17, @33, @59, @69, @71, @107 — and
@@ -678,12 +692,18 @@ def validate_device(
     # A strap that never emits @82 has not failed a correlation — it has no data to correlate. Say so
     # explicitly, but only once the capture is long enough that a duty-cycled feature would have had
     # several chances to fire during sleep; a short capture that missed the window is not evidence.
+    # And only if it was sampled finely enough to SEE one — see NOMINAL_DUTY_WINDOW_S. Without that
+    # last clause the two duration bars pass an aliased capture straight through and a working strap
+    # is reported absent.
     asleep_stamps = [r["unix"] for r in records if r.get("sleep_state") == SLEEP_ASLEEP]
     asleep_span = (max(asleep_stamps) - min(asleep_stamps)) if len(asleep_stamps) >= 2 else 0
+    interval = duty.get("record_interval_s")
+    cadence_could_see_window = interval is not None and interval <= NOMINAL_DUTY_WINDOW_S
     feature_absent = (
         duty["mode"] == "absent"
         and len(records) >= ABSENT_MIN_RECORDS
         and asleep_span >= ABSENT_MIN_ASLEEP_SPAN_S
+        and cadence_could_see_window
     )
     classification = (
         "feature_absent" if feature_absent else ("pass" if checklist["pass"] else "fail")
@@ -804,6 +824,17 @@ def format_duty_line(result: dict) -> str:
         f"  @82 duty cycle: mode={mode}  nonzero={d.get('n_nonzero', 0)}/{d.get('n_records', 0)} "
         f"({d.get('nonzero_fraction', 0.0):.2%})  distinct_values={d.get('distinct_values', 0)}"
     )
+    if mode == "absent":
+        # Say WHY an all-zero capture was not allowed to claim absence, rather than letting it read as
+        # a plain FAIL for no stated reason. Same principle as reporting rejected offsets.
+        interval = d.get("record_interval_s")
+        if interval is not None and interval > NOMINAL_DUTY_WINDOW_S:
+            head += (
+                f"\n    NOT claiming feature_absent: {interval:g}s cadence is coarser than a nominal "
+                f"{NOMINAL_DUTY_WINDOW_S}s window, so an aliased capture could read 0x00 off a working "
+                f"strap. Recapture at ≤{NOMINAL_DUTY_WINDOW_S}s to make an absence claim."
+            )
+        return head
     if mode != "duty_cycled":
         return head
     return (

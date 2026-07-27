@@ -661,9 +661,80 @@ class FeatureAbsentClassificationTests(unittest.TestCase):
         self.assertIn("feature_absent=1", blob)
         self.assertIn("strap-c,feature_absent,", blob)
 
+    def test_a_cadence_coarser_than_a_window_cannot_claim_absence(self):
+        """Duration bars do not catch aliasing: missing the window is a PHASE problem.
+
+        851 records over 71 hours clears both ABSENT_MIN_RECORDS and ABSENT_MIN_ASLEEP_SPAN_S, but at
+        a 300 s cadence the capture only ever occupies 4 residues mod a 1200 s period — so it either
+        always lands in the window or never does. All-zero here is not evidence of anything.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            d = self._flat_zero_device(td, "coarse", step_s=300)
+            res = vs.validate_device(d["capture"], d["export"], device="coarse")
+        self.assertEqual(res["duty"]["mode"], "absent")
+        self.assertGreaterEqual(res["duty"]["n_records"], vs.ABSENT_MIN_RECORDS)
+        self.assertEqual(res["classification"], "fail")
+        self.assertIn("NOT claiming feature_absent", vs.format_duty_line(res))
+
+    def test_an_aliased_capture_of_a_WORKING_strap_is_not_reported_absent(self):
+        """The case the duration bars let through: @82 is duty-cycling perfectly, the capture just
+        never samples inside the window. Reporting this strap as lacking the feature would drop a real
+        device out of the multi-device gate and make promotion easier."""
+        period, phase, window = 1200, 337, 30
+        with tempfile.TemporaryDirectory() as td:
+            frames, nights = [], []
+            for i in range(4):
+                t0 = _utc(2026, 4, 1 + i, 23, 0, 0)
+                t1 = t0 + 8 * 3600
+                frames += _plant_duty_night(
+                    t0, t1, 95, period=period, phase=phase, window=window, step_s=300
+                )
+                start = datetime.fromtimestamp(t0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                nights.append((start, 95.0, t0, t1))
+            cap = os.path.join(td, "aliased.json")
+            with open(cap, "w") as f:
+                json.dump(frames, f)
+            res = vs.validate_device(cap, _write_export(td, nights), device="aliased")
+        self.assertEqual(res["duty"]["n_nonzero"], 0)      # the strap works; the capture missed it
+        self.assertEqual(res["duty"]["mode"], "absent")
+        self.assertNotEqual(res["classification"], "feature_absent")
+
+    def test_a_cadence_at_the_window_length_can_still_claim_absence(self):
+        """Boundary: a cadence at or below the window length cannot skip a window whatever the phase,
+        so a flat-zero capture there IS evidence. Guards the gate against being over-tightened."""
+        with tempfile.TemporaryDirectory() as td:
+            d = self._flat_zero_device(td, "edge", step_s=vs.NOMINAL_DUTY_WINDOW_S)
+            res = vs.validate_device(d["capture"], d["export"], device="edge")
+        self.assertEqual(res["classification"], "feature_absent")
+
     def test_postable_still_carries_no_raw_spo2_values(self):
         """The duty/coverage columns are device timing, not health data — the privacy property of
-        --postable has to survive everything added here."""
+        --postable has to survive everything added here.
+
+        Uses a device with REAL, distinct per-night values. The flat-zero fixture this used to run on
+        has no SpO₂ readings to leak, so it passed whatever the formatter did with them.
+        """
+        spo2s = [91, 93, 95, 97, 92, 98]
+        with tempfile.TemporaryDirectory() as td:
+            frames, nights = [], []
+            base = _utc(2026, 8, 1, 0, 0, 0)
+            for i, s in enumerate(spo2s):
+                t0 = base + i * 86400 + 23 * 3600
+                t1 = t0 + 7 * 3600
+                frames += _plant_duty_night(t0, t1, s, period=900, phase=111, window=20)
+                start = datetime.fromtimestamp(t0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                nights.append((start, float(s), t0, t1))
+            cap = os.path.join(td, "vals.json")
+            with open(cap, "w") as f:
+                json.dump(frames, f)
+            res = vs.validate_device(cap, _write_export(td, nights), device="vals")
+        blob = vs.format_postable([res])
+        self.assertEqual(res["paired_nights"], len(spo2s))   # the values really were there to leak
+        for s in spo2s:
+            self.assertNotIn(f"{s}.00", blob)
+            self.assertNotIn(f"{float(s):.1f}", blob)
+
+    def test_postable_on_a_flat_zero_device_is_still_clean(self):
         with tempfile.TemporaryDirectory() as td:
             d = self._flat_zero_device(td, "priv")
             res = vs.validate_device(d["capture"], d["export"], device="priv")

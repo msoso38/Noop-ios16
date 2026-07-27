@@ -666,7 +666,9 @@ cannot have 2 distinct values, so an offset must show real variation before its 
 
 **Overall PASS** only if every gate clears. A strap whose `@82` is `0x00` on 100 % of a long enough
 capture is reported as **`feature_absent`** — neither a PASS nor a FAIL, and excluded from the
-multi-device gate, because a device with no data has not failed a correlation. NOOP still will not
+multi-device gate, because a device with no data has not failed a correlation. The capture must also
+have been **sampled at ≤ 30 s** to make that claim: a coarser cadence can alias with the duty period
+and read `0x00` off a working strap, so it stays a plain FAIL and the duty line says why. NOOP still will not
 promote `spo2_candidate_82` → `spo2Pct` from a single device: need **≥ 2 devices** that each PASS
 (postable summary prints `multi_device_eligible` / `all_pass` / `feature_absent`).
 
