@@ -23,7 +23,12 @@ enum CloudSyncBackgroundRefresh {
     /// registered at launch (`register(model:)`, called from `StrandiOSApp.init()`) for `schedule()` to
     /// have any effect — see `ScheduledDebugExport.bgTaskIdentifier`'s doc comment for the identical
     /// contract.
-    static let bgTaskIdentifier = "com.noopapp.noop.cloudsync.refresh"
+    /// Resolved from the bundle, not hardcoded — same reason as `ScheduledDebugExport.bgTaskIdentifier`:
+    /// the permitted entries are namespaced under the bundle id, so a personal-deploy remap silently
+    /// stales a literal and takes this whole lane down with it. `BGTaskIdentifier` lives in
+    /// `Strand/System/` (NOT here) so that fix stays independent of this fork-only directory.
+    static let bgTaskIdentifier = BGTaskIdentifier.resolve(
+        suffix: "cloudsync.refresh", upstream: "com.noopapp.noop.cloudsync.refresh")
 
     /// Register the BGTask handler. MUST be called from the app's launch (before launch finishes),
     /// same constraint as `ScheduledDebugExport.register()`. Safe to leave uncalled, or to have
@@ -31,13 +36,16 @@ enum CloudSyncBackgroundRefresh {
     /// already covers on the next foreground launch anyway — this is a strictly additive, best-effort
     /// earlier chance, never a dependency for correctness.
     static func register(model: AppModel) {
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: bgTaskIdentifier, using: nil) { task in
+        let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: bgTaskIdentifier, using: nil) { task in
             // The launch handler runs on a queue the system chooses, NOT necessarily the main actor —
             // hop explicitly before touching `CloudSyncModel` (`@MainActor`) or `AppModel`.
             Task { @MainActor in
                 handle(task, model: model)
             }
         }
+        // Same contract as `ScheduledDebugExport.register()`: a false return means this identifier isn't
+        // permitted and the 4-hourly background sync will never be delivered. Never swallow it.
+        BGTaskIdentifier.report(bgTaskIdentifier, registered: registered)
     }
 
     /// Submit a background-refresh request for *no earlier than*

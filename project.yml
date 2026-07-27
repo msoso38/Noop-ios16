@@ -260,14 +260,22 @@ targets:
           # (see CloudSyncAppDelegate's doc comment), so no push can actually arrive until that lands —
           # this mode alone is inert without it, but harmless to declare early.
           - remote-notification
-        # #510: permit the scheduled debug auto-export's BGAppRefreshTask identifier. MUST match
-        # ScheduledDebugExport.bgTaskIdentifier EXACTLY and be registered at launch (StrandiOSApp.init);
-        # otherwise iOS refuses to schedule or deliver the background drop.
-        # Cloud Sync v2 adds its own identifier alongside it — MUST match
-        # CloudSyncBackgroundRefresh.bgTaskIdentifier EXACTLY, same registration constraint.
+        # #510: permit the scheduled debug auto-export's BGAppRefreshTask identifier (and, alongside it,
+        # Cloud Sync v2's). Both still have to be registered at launch (StrandiOSApp.init) or iOS refuses
+        # to schedule or deliver them.
+        #
+        # These derive from $(PRODUCT_BUNDLE_IDENTIFIER) rather than being spelled out, for the same
+        # reason APP_GROUP_ID is a single setting: iOS matches the identifier a handler registers against
+        # THIS list as an exact string, and the entries are namespaced under the bundle id — so a build
+        # under a different Apple ID rewrote this list and left the hardcoded Swift literals stale,
+        # silently killing BOTH background lanes with no symptom. The Swift side now resolves from the
+        # bundle too (BGTaskIdentifier.resolve, Strand/System/BGTaskIdentifier.swift), so the two sides
+        # track the bundle id together and cannot drift apart again. Xcode expands the variable during
+        # the Process-Info.plist phase — verified in the BUILT app's Info.plist, not just the generated
+        # source, since expansion inside a plist ARRAY is the part worth confirming.
         BGTaskSchedulerPermittedIdentifiers:
-          - com.noopapp.noop.debugexport
-          - com.noopapp.noop.cloudsync.refresh
+          - $(PRODUCT_BUNDLE_IDENTIFIER).debugexport
+          - $(PRODUCT_BUNDLE_IDENTIFIER).cloudsync.refresh
         NSBluetoothAlwaysUsageDescription: "NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device."
         NSLocationWhenInUseUsageDescription: "NOOP records your route during an outdoor workout to show distance, pace, and a map, and keeps recording while the screen is off. The route stays on your device. Nothing leaves it."
         NSHealthShareUsageDescription: "NOOP reads your own Apple Health data on-device to compute recovery, strain, and sleep. Nothing leaves your device."

@@ -40,7 +40,13 @@ enum ScheduledDebugExport {
 
     /// iOS BGTask identifier. Must also appear in the iOS target's `BGTaskSchedulerPermittedIdentifiers`
     /// (Info.plist) and be registered at launch for `submit` to succeed — wired in the app entry point.
-    static let bgTaskIdentifier = "com.noopapp.noop.debugexport"
+    ///
+    /// Resolved from the bundle rather than hardcoded, because the permitted entries are namespaced
+    /// under the bundle id: a build under a different Apple ID (the documented "change it in one place"
+    /// path — see `APP_GROUP_ID` in project.yml) rewrites the plist side, and a literal here would go
+    /// stale and silently kill this lane. See `BGTaskIdentifier` for the full contract.
+    static let bgTaskIdentifier = BGTaskIdentifier.resolve(
+        suffix: "debugexport", upstream: "com.noopapp.noop.debugexport")
 
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: K.enabled) }
 
@@ -198,12 +204,15 @@ enum ScheduledDebugExport {
     /// the task. Both live in the iOS app target — call this from `StrandiOSApp.init()`. Safe to leave
     /// uncalled: `submitBackgroundRequest()` fails gracefully and the macOS path + "Run now" still work.
     static func register() {
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: bgTaskIdentifier, using: nil) { task in
+        let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: bgTaskIdentifier, using: nil) { task in
             // Write the drop, then immediately request the next one (BGAppRefresh is single-shot).
             if isEnabled { catchUpIfDue() }
             submitBackgroundRequest()
             task.setTaskCompleted(success: true)
         }
+        // `register` returns false when the identifier isn't on the permitted list — the one signal that
+        // this lane is dead. Discarding it is what let a bundle-id remap silently disable the drop.
+        BGTaskIdentifier.report(bgTaskIdentifier, registered: registered)
     }
 
     /// Submit a background-refresh request for *no earlier than* the next chosen time. Honest: iOS decides
