@@ -81,6 +81,12 @@ extension WhoopStore {
     /// years, and the alternative is an invisible table that can outgrow everything a user actually reads.
     public static let v18AuxRetentionRows = 604_800
 
+    /// Rows to bank before running the retention sweep again. The sweep walks up to
+    /// `v18AuxRetentionRows` index entries, so running it per insert batch was the cost; the table may sit
+    /// this many rows (plus the crossing batch) above the cap in exchange, well under a MB against its
+    /// ~50 MB ceiling.
+    public static let v18AuxPruneEveryRows = 10_000
+
     /// Insert or update a device row (natural key = id).
     public func upsertDevice(id: String, mac: String?, name: String?) async throws {
         let now = Int(Date().timeIntervalSince1970)
@@ -128,7 +134,8 @@ extension WhoopStore {
         -> (hr: Int, rr: Int, events: Int, battery: Int,
             spo2: Int, skinTemp: Int, resp: Int, gravity: Int) {
         try await insert(streams, deviceId: deviceId,
-                         v18AuxRetentionRows: WhoopStore.v18AuxRetentionRows)
+                         v18AuxRetentionRows: WhoopStore.v18AuxRetentionRows,
+                         v18AuxPruneEveryRows: WhoopStore.v18AuxPruneEveryRows)
     }
 
     /// `insert(_:deviceId:)` with the v31 aux-table cap made explicit. Internal and a SEPARATE overload
@@ -137,10 +144,13 @@ extension WhoopStore {
     /// list — a default argument does not satisfy it. Exists so a test can prove the rolling delete with a
     /// small cap instead of writing 600k rows; every production caller goes through the wrapper above.
     @discardableResult
-    func insert(_ streams: Streams, deviceId: String, v18AuxRetentionRows: Int) async throws
+    func insert(_ streams: Streams, deviceId: String, v18AuxRetentionRows: Int,
+                v18AuxPruneEveryRows: Int) async throws
         -> (hr: Int, rr: Int, events: Int, battery: Int,
             spo2: Int, skinTemp: Int, resp: Int, gravity: Int) {
-        return try syncWrite { db in
+        // Banked rows, accumulated across batches so the sweep does not run on every one.
+        var v18Written = 0
+        let result: (Int, Int, Int, Int, Int, Int, Int, Int) = try syncWrite { db in
             var hr = 0, rr = 0, ev = 0, bat = 0
             var spo2 = 0, skin = 0, resp = 0, grav = 0
             // Reuse one prepared statement per table instead of recompiling the same SQL on every
@@ -318,27 +328,41 @@ extension WhoopStore {
                     INSERT INTO v18AuxSample (deviceId, ts, fields) VALUES (?, ?, ?)
                     ON CONFLICT(deviceId, ts) DO NOTHING
                     """)
-                var wrote = false
                 for s in streams.v18Aux {
                     let blob = V18AuxCodec.pack(s)
                     if blob.isEmpty { continue }
                     try stmt.execute(arguments: [deviceId, s.ts, blob])
-                    wrote = true
-                }
-                // Rolling retention, the same shape as `insertRawImu` (#423): keep the newest
-                // `v18AuxRetentionRows` for THIS device and drop anything older. Only runs when the batch
-                // actually wrote a row, so a WHOOP 4.0 offload (or any non-v18 second) never pays for the
-                // index scan. Twin of Kotlin `WhoopRepository.insert`'s `pruneV18Aux`.
-                if wrote {
-                    try db.execute(sql: """
-                        DELETE FROM v18AuxSample WHERE deviceId = ? AND ts < (
-                            SELECT MIN(ts) FROM (
-                                SELECT ts FROM v18AuxSample WHERE deviceId = ? ORDER BY ts DESC LIMIT ?))
-                        """, arguments: [deviceId, deviceId, v18AuxRetentionRows])
+                    v18Written += 1
                 }
             }
             return (hr, rr, ev, bat, spo2, skin, resp, grav)
         }
+
+        // Rolling retention (the `insertRawImu` shape, #423) but AMORTISED. The delete finds the
+        // Nth-newest row by rank, so it walks up to `v18AuxRetentionRows` index entries; `insertRawImu`
+        // keeps 3,600 so that is free, this keeps 604,800 and an offload inserts once per chunk. Swept
+        // once per `v18AuxPruneEveryRows` rows instead, which keeps newest-N-rows exactly (a time window
+        // would not — a sporadically-worn strap's rows span far more than a week, and the census wants
+        // that). Counter is per device because the delete is.
+        if v18Written > 0 {
+            let banked = (v18AuxRowsSincePrune[deviceId] ?? 0) + v18Written
+            v18AuxRowsSincePrune[deviceId] = banked
+            // BEST-EFFORT, and it has to be: the rows above are already committed, because the sweep is
+            // now its own transaction rather than riding the insert's. A throw here would surface as an
+            // insert failure and make Backfiller re-send a chunk it has already banked. Leaving the budget
+            // unspent instead means the next batch simply retries the sweep.
+            if banked >= v18AuxPruneEveryRows,
+               (try? syncWrite { db in
+                   try db.execute(sql: """
+                       DELETE FROM v18AuxSample WHERE deviceId = ? AND ts < (
+                           SELECT MIN(ts) FROM (
+                               SELECT ts FROM v18AuxSample WHERE deviceId = ? ORDER BY ts DESC LIMIT ?))
+                       """, arguments: [deviceId, deviceId, v18AuxRetentionRows])
+               }) != nil {
+                v18AuxRowsSincePrune[deviceId] = 0
+            }
+        }
+        return result
     }
 
     // MARK: - Raw sensor CSV export (diagnostic)

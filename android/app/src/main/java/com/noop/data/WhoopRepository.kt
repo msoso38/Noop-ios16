@@ -338,6 +338,11 @@ object HistoryHeal {
  */
 class WhoopRepository(private val dao: WhoopDao) {
 
+    /** v18 aux rows banked since the retention sweep last ran, PER DEVICE — the sweep is per device too,
+     *  so a shared counter would let one strap spend another's budget. Only the single-threaded offload
+     *  path banks v18 rows, so a plain map is enough. Swift twin: `WhoopStore.v18AuxRowsSincePrune`. */
+    private val v18AuxRowsSincePrune = mutableMapOf<String, Int>()
+
     constructor(db: WhoopDatabase) : this(db.whoopDao())
 
     // MARK: - Device
@@ -438,10 +443,27 @@ class WhoopRepository(private val dao: WhoopDao) {
             }
             if (rows.isNotEmpty()) {
                 dao.insertV18Aux(rows)
-                // Rolling retention, the same shape as insertRawImu (#423): keep the newest
-                // [V18_AUX_RETENTION_ROWS] for THIS device and drop anything older. Only runs when the
-                // batch actually wrote a row, so a WHOOP 4.0 offload never pays for the index scan.
-                dao.pruneV18Aux(deviceId, V18_AUX_RETENTION_ROWS)
+                // Rolling retention (the insertRawImu shape, #423) but AMORTISED. The delete finds the
+                // Nth-newest row by rank, so it walks up to [V18_AUX_RETENTION_ROWS] index entries;
+                // insertRawImu keeps 3,600 so that is free, this keeps 604,800 and an offload inserts once
+                // per chunk. Swept once per [V18_AUX_PRUNE_EVERY_ROWS] rows instead, which keeps
+                // newest-N-rows exactly (a time window would not — a sporadically-worn strap's rows span
+                // far more than a week, and the census wants that). Counter is per device because the
+                // delete is. Swift twin: `WhoopStore.v18AuxRowsSincePrune`.
+                val banked = (v18AuxRowsSincePrune[deviceId] ?: 0) + rows.size
+                v18AuxRowsSincePrune[deviceId] = banked
+                // Best-effort: the rows above are already committed, so a sweep failure must not surface
+                // as an insert failure and make Backfiller re-send a chunk it has already banked. Leaving
+                // the budget unspent means the next batch retries the sweep.
+                if (banked >= V18_AUX_PRUNE_EVERY_ROWS) {
+                    runCatching { dao.pruneV18Aux(deviceId, V18_AUX_RETENTION_ROWS) }
+                        .onSuccess { v18AuxRowsSincePrune[deviceId] = 0 }
+                        // pruneV18Aux is a suspend call, so a scope cancellation arrives here as a
+                        // CancellationException that runCatching would otherwise swallow — the caller would
+                        // then carry on inside a cancelled coroutine. Same rethrow AppViewModel (#125) and
+                        // HealthConnectWriter already use.
+                        .onFailure { if (it is kotlin.coroutines.cancellation.CancellationException) throw it }
+                }
             }
         }
 
@@ -1721,6 +1743,12 @@ class WhoopRepository(private val dao: WhoopDao) {
          * in wall-clock terms. Applied per device, newest-first.
          */
         const val V18_AUX_RETENTION_ROWS = 604_800
+
+        /** Rows to bank before running the retention sweep again. The sweep walks up to
+         *  [V18_AUX_RETENTION_ROWS] index entries, so running it per insert batch was the cost; the table
+         *  may sit this many rows (plus the crossing batch) above the cap in exchange, well under a MB
+         *  against its ~50 MB ceiling. Swift twin: `WhoopStore.v18AuxPruneEveryRows`. */
+        const val V18_AUX_PRUNE_EVERY_ROWS = 10_000
 
         /** #797: dashboard merge window cap (days). The bounded [recentDaysMergedFlow] keeps at most this
          *  many most-recent days per source, so a years-deep import stops re-merging the whole history on
