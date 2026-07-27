@@ -112,7 +112,12 @@ mkdir -p "$GEN"
   echo "// The #if is added by that script, not by uniffi: see the script for why it is here."
   echo "#if LITERS"
   cat "$BINDINGS/liters_ffi.swift"
-  echo "#endif"
+  # The leading newline is load-bearing. uniffi's output ends `// swiftlint:enable all` with NO
+  # trailing newline, so a plain `echo "#endif"` lands on the same line as that comment and is
+  # swallowed by it — producing a file whose `#if LITERS` is never closed. The compiler's complaint
+  # ("expected #else or #endif at end of conditional compilation block", pointing at EOF) does not
+  # mention the comment, so this is worth a comment rather than a rediscovery.
+  printf '\n#endif\n'
 } > "$GEN/liters_ffi.swift"
 echo "==> installed bindings: $GEN/liters_ffi.swift"
 
