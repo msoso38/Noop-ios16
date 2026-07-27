@@ -7,13 +7,13 @@ import CoreBluetooth
 /// EVENT frames are the strap's rare, still mostly uncatalogued records — e.g. the bi-hourly 56-byte
 /// record that tracks the nightly sleep-SpO₂ measurement cycle. Decoding them needs many
 /// (raw bytes, ground-truth value) pairs collected across weeks, which the session-scoped
-/// `PuffinFrameRecorder` cannot provide: its bulk capture files churn under a directory cap, so
+/// `RawFrameRecorder` cannot provide: its bulk capture files churn under a directory cap, so
 /// rare frames age out. This log keeps ONLY the ~150 tiny EVENT frames a day, in its own file that
 /// the bulk-capture eviction never touches, so they survive long enough to correlate.
 ///
-/// Gated on the same Settings toggle as the frame recorder (`PuffinFrameRecorder.enabledKey`) —
+/// Gated on the same Settings toggle as the frame recorder (`RawFrameRecorder.enabledKey`) —
 /// capture is passive/read-only with respect to the strap, and this adds no new setting. One JSONL
-/// line per frame (`{"ts_ms":…,"char":…,"hex":"…"}` — the same key names as `PuffinCaptureRecord`,
+/// line per frame (`{"ts_ms":…,"char":…,"hex":"…"}` — the same key names as `RawCaptureRecord`,
 /// so existing tooling reads it). Rotates at a soft cap keeping one previous generation, the same
 /// idiom as the Android twin (`WhoopBleClient.writeWhoop5EventLog`, `whoop5-events.jsonl`).
 @MainActor
@@ -41,7 +41,7 @@ final class PuffinEventLog {
     private var disabled = false
 
     private var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: PuffinFrameRecorder.enabledKey)
+        UserDefaults.standard.bool(forKey: RawFrameRecorder.enabledKey)
     }
 
     /// `<AppSupport>/OpenWhoop/puffin-events.jsonl` — deliberately OUTSIDE `puffin-captures/`, whose

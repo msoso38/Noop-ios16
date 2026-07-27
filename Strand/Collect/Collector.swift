@@ -129,12 +129,12 @@ final class Collector {
     }
 
     /// #423: persist the WHOOP 5/MG raw-IMU offload buffer NOOP already decodes for the deep-buffer log —
-    /// the queryable twin of that (table-less) diagnostics line. Same `noopPuffinCapture` gate; only the
+    /// the queryable twin of that (table-less) diagnostics line. Same `noopRawFrameCapture` gate; only the
     /// 1244-B 6-axis buffer decodes (rawColumns nil otherwise). Fire-and-forget into the store, bounded by
     /// a rolling retention prune. Raw i16, no downstream consumer yet. Twin of Android
     /// `WhoopBleClient.storeWhoop5RawImuIfBuffer`.
     func storeRawImu(frame: [UInt8]) {
-        guard UserDefaults.standard.bool(forKey: PuffinFrameRecorder.enabledKey) else { return }
+        guard UserDefaults.standard.bool(forKey: RawFrameRecorder.enabledKey) else { return }
         guard let cols = Whoop5RawImu.rawColumns(frame), let baseTs = Whoop5RawImu.baseTs(frame) else { return }
         let dev = deviceId
         Task { [store] in

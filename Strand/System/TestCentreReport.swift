@@ -87,7 +87,7 @@ final class TestCentreReport: ObservableObject {
             if let steps = try? await store.stepCountForTest() { rows["steps"] = steps }
             rawBytes = (try? await store.storageStats().rawBytes) ?? 0
         }
-        if let url = live.puffinCaptureURL {
+        if let url = live.rawCaptureURL {
             rawBytes += (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int ?? 0
         }
         guard dbBytes > 0 || !rows.isEmpty || rawBytes > 0 else { return nil }

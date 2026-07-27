@@ -48,6 +48,12 @@ packages:
     exactVersion: 2.4.1
   WhoopProtocol:
     path: Packages/WhoopProtocol
+  # Brand-neutral raw-frame capture record/accumulator. WhoopProtocol depends on it for the
+  # ParsedFrame -> RawCaptureRecord adapter, and the app target imports it directly for
+  # RawFrameRecorder (Strand/BLE) — so it needs its own top-level package + target dependency,
+  # not just the transitive link WhoopProtocol already pulls in.
+  RawCapture:
+    path: Packages/RawCapture
   WhoopStore:
     path: Packages/WhoopStore
   StrandAnalytics:
@@ -141,6 +147,7 @@ targets:
         COMBINE_HIDPI_IMAGES: YES
     dependencies:
       - package: WhoopProtocol
+      - package: RawCapture
       - package: WhoopStore
       - package: StrandAnalytics
       - package: StrandImport
@@ -162,6 +169,7 @@ targets:
     dependencies:
       - target: Strand
       - package: WhoopProtocol
+      - package: RawCapture
       - package: WhoopStore
       - package: OuraProtocol
     settings:
@@ -305,6 +313,7 @@ targets:
         SWIFT_EMIT_LOC_STRINGS: YES
     dependencies:
       - package: WhoopProtocol
+      - package: RawCapture
       - package: WhoopStore
       - package: StrandAnalytics
       - package: StrandImport

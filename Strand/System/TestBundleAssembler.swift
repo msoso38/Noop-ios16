@@ -157,7 +157,7 @@ enum TestBundleAssembler {
         //     read from disk by URL. It is TEXT (JSON lines) where embedded console strings can carry a
         //     serial, so it IS run through the redactEntries pass below (the #1 reason the whole-bundle scrub
         //     exists, 5.3). Attached only when the file exists; a non-capturing install ships no raw entry.
-        let rawCapture: FileExport.BundleEntry? = live.puffinCaptureURL
+        let rawCapture: FileExport.BundleEntry? = live.rawCaptureURL
             .flatMap { fileEntry(at: $0, name: "raw-capture.jsonl") }
 
         // 1d. last-crash.txt: the most recent crash report, when one is present on disk. It is TEXT, so it

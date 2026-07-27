@@ -381,12 +381,13 @@ public final class LiveState: ObservableObject {
     /// Kept as a closure so LiveState stays a plain observable snapshot with no alert dependency.
     public var onBatteryUpdate: ((Double) -> Void)?
 
-    /// Number of WHOOP 5/MG ("puffin") frames captured this session (when frame capture is enabled in
-    /// Settings → Experimental). Drives the capture status line + export button.
-    @Published public var puffinCaptureCount: Int = 0
-    /// On-disk location of the current puffin capture file, once anything has been flushed. The
+    /// Number of raw frames captured this session, across both WHOOP 4.0 and WHOOP 5.0/MG (when
+    /// frame capture is enabled in Settings → Experimental). Drives the capture status line + export
+    /// button.
+    @Published public var rawCaptureCount: Int = 0
+    /// On-disk location of the current raw capture file, once anything has been flushed. The
     /// Settings "Export" / "Reveal" actions target this URL.
-    @Published public var puffinCaptureURL: URL?
+    @Published public var rawCaptureURL: URL?
 
     /// Set when a WHOOP 5/MG strap refuses the encrypted bond on first connect ("Encryption/Authentication
     /// is insufficient") — CoreBluetooth won't start a fresh just-works bond against a strap still bonded to

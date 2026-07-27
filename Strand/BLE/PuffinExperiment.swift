@@ -143,16 +143,14 @@ enum PuffinExperiment {
 
     /// Every 5/MG-only probe key, in ONE place — the twin of Kotlin's `FIVE_MG_GATED_KEYS`.
     ///
-    /// The capture flag deliberately appears here even though it is declared on `PuffinFrameRecorder`
-    /// rather than on this type, and under a DIFFERENT string (`noopPuffinCapture` vs Kotlin's
-    /// `noopWhoop5Capture`). That split is exactly why it was missed when this reset first shipped:
-    /// grepping this file for a capture key found nothing, and grepping for the Kotlin key name found
-    /// nothing either. Add new gated probes here, not inline in the reset.
+    /// Raw-frame capture (`RawFrameRecorder.enabledKey`) is deliberately NOT here: it records both
+    /// WHOOP 4.0 and WHOOP 5.0/MG connections now, so a family switch must not reset it — unlike the
+    /// keys below, it never sends anything to the strap. Add new gated probes here, not inline in
+    /// the reset.
     static let fiveMGGatedKeys: [String] = [
         defaultsKey,                     // protocol probes
         deepDataKey,                     // R22 deep-data strap write
         broadcastHrKey,                  // broadcast-HR write
-        PuffinFrameRecorder.enabledKey,  // raw frame capture — declared on PuffinFrameRecorder
     ]
 
     /// Turn OFF every key in [fiveMGGatedKeys] on a strap FAMILY switch (WHOOP 4.0 ↔ 5/MG), so a

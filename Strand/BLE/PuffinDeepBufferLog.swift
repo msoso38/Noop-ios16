@@ -15,9 +15,9 @@ import StrandAnalytics
 /// bursts are ephemeral and backlog-gated, so a byte-perfect decoder can't be captured on demand — it
 /// needs many (raw buffer, wall-clock) pairs accumulated across days of ordinary wear + labeled
 /// activity. This log keeps ONLY the big (≥`minBufferBytes`) type-0x2F buffers, in its own file that
-/// the bulk `PuffinFrameRecorder` eviction never touches, so they survive long enough to reverse.
+/// the bulk `RawFrameRecorder` eviction never touches, so they survive long enough to reverse.
 ///
-/// Gated on the same Settings toggle as the frame recorder (`PuffinFrameRecorder.enabledKey`) —
+/// Gated on the same Settings toggle as the frame recorder (`RawFrameRecorder.enabledKey`) —
 /// capture is passive/read-only with respect to the strap and adds no new setting. One JSONL line per
 /// buffer (`{"ts_ms":…,"strap_ts":…,"size":…,"offload":…,"char":…,"hex":"…"[,"imu":{…}]}`); `strap_ts`
 /// is the unix second the strap stamped at payload offset 15 (frame byte 15), the load-bearing key for
@@ -54,7 +54,7 @@ final class PuffinDeepBufferLog {
     private var disabled = false
 
     private var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: PuffinFrameRecorder.enabledKey)
+        UserDefaults.standard.bool(forKey: RawFrameRecorder.enabledKey)
     }
 
     /// `<AppSupport>/OpenWhoop/puffin-deepbuffers.jsonl` — OUTSIDE `puffin-captures/`, whose soft-cap

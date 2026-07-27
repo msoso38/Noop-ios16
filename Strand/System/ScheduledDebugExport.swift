@@ -82,8 +82,8 @@ enum ScheduledDebugExport {
     }
 
     /// User-initiated immediate export (the "Run now" button). Always writes, ignoring the daily dedup,
-    /// so a tap produces a file there and then. The caller may pass the current raw 5/MG capture URL (from
-    /// `live.puffinCaptureURL`) so a scheduled drop carries the same matched pair the one-tap "Export raw +
+    /// so a tap produces a file there and then. The caller may pass the current raw capture URL (from
+    /// `live.rawCaptureURL`) so a scheduled drop carries the same matched pair the one-tap "Export raw +
     /// log" does. Returns the written log file URL or nil if the body couldn't be written.
     @discardableResult
     static func runNow(captureURL: URL? = nil) -> URL? {

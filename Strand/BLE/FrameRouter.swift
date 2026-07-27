@@ -34,7 +34,11 @@ public final class FrameRouter {
         #if DEBUG
         // Guard the "parse once == parse per consumer" invariant in dev/test builds only (assert is stripped
         // from Release): a threading bug (wrong family / stale frame) trips here, never on a user's wrist.
-        assert(parsed == parseFrame(frame, family: family),
+        // Ticket 03: the live BLE seam now parses with `collectFields: true` whenever raw-frame capture is
+        // on, so the reparse below matches that flag (inferred from `parsed.rawHex` — non-empty only when
+        // the caller collected fields) instead of always defaulting to `false`, which would spuriously trip
+        // this assert on every frame while capture is enabled.
+        assert(parsed == parseFrame(frame, family: family, collectFields: !parsed.rawHex.isEmpty),
                "FrameRouter.handle: threaded ParsedFrame != fresh parse (#47 parse-once invariant)")
         #endif
         guard parsed.ok else { return }

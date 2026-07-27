@@ -67,7 +67,7 @@ enum FileExport {
 
     /// Let the user save / share an existing file at `src`. On macOS this copies to a chosen
     /// destination; on iOS it offers the file through the share sheet. `src` is owned by the caller
-    /// (e.g. a Puffin capture inside the app's container) and is NOT deleted by the share-sheet
+    /// (e.g. a raw-frame capture inside the app's container) and is NOT deleted by the share-sheet
     /// completion handler — only files we staged ourselves get cleaned up.
     @MainActor
     static func exportFile(at src: URL, suggestedName: String? = nil) {

@@ -682,19 +682,19 @@ public final class BLEManager: NSObject, ObservableObject {
     /// Keep each main-actor drain slice small enough that SwiftUI can process input/paint between slices.
     private static let backfillDrainBatchSize = 12
 
-    /// Records WHOOP 5/MG puffin frames to a JSON file for protocol mapping. Passive (read-only on the
-    /// strap) and gated by the Settings → Experimental "Record puffin frames" toggle; a no-op for
-    /// WHOOP 4.0 and when the toggle is off. Lazy so it shares `state` after init. (Cherry-picked from
-    /// @j0b-dev's PR #20.)
-    private lazy var puffinRecorder = PuffinFrameRecorder(state: state)
+    /// Records raw frames (WHOOP 4.0 classic envelope AND WHOOP 5.0/MG puffin) to a JSON file for
+    /// diagnostics. Passive (read-only on the strap) and gated by the Settings → Experimental "Record
+    /// raw frames" toggle; a no-op when the toggle is off. Lazy so it shares `state` after init.
+    /// (Cherry-picked from @j0b-dev's PR #20.)
+    private lazy var rawFrameRecorder = RawFrameRecorder(state: state)
     private lazy var puffinEventLog = PuffinEventLog()
 
     /// Durable log of the WHOOP 5/MG high-rate R22 deep buffers (type-0x2F ≥ 1 KB) for #423 reverse-
     /// engineering. Gated on the same capture toggle; no-op otherwise.
     private lazy var puffinDeepBufferLog = PuffinDeepBufferLog()
 
-    /// Force the puffin capture buffer to disk so the Settings export/reveal targets a current file.
-    public func flushPuffinCaptures() { puffinRecorder.flush() }
+    /// Force the raw capture buffer to disk so the Settings export/reveal targets a current file.
+    public func flushRawCaptures() { rawFrameRecorder.flush() }
 
     // MARK: CoreBluetooth
     private var central: CBCentralManager!
@@ -3573,7 +3573,7 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         keepAliveTimer?.cancel()
         keepAliveTimer = nil
         resetCharacteristics()
-        puffinRecorder.flush()   // persist any buffered puffin capture frames before reconnect
+        rawFrameRecorder.flush()   // persist any buffered raw capture frames before reconnect
         puffinEventLog.close()   // release the event-log handle so the file is safe to export
         puffinDeepBufferLog.close()   // same for the high-rate deep-buffer log (#423)
         Task { @MainActor in await collector?.flushStandardHR() }   // persist any buffered 0x2A37 HR
@@ -4314,13 +4314,15 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     continue
                 }
                 // #47: decode this live WHOOP4 frame ONCE here and thread the result to every consumer
-                // (router / clock-correlation / collector) instead of each re-parsing it — steady-state
-                // drops 2→1 parse per frame, pre-clock 3→1. This is the WHOOP4 custom-notify case (5/MG has
-                // its own case), so parse with `.whoop4` explicitly — the same family this loop already uses
-                // for isOffloadFrame, and byte-identical to all three original parses (router.family /
-                // collector.family / the no-family clock parse all resolve to .whoop4 here; a DEBUG assert in
-                // the router + collector re-checks the invariant).
-                let parsed = parseFrame(frame, family: .whoop4)
+                // (router / clock-correlation / collector / raw capture) instead of each re-parsing it.
+                // This is the WHOOP4 custom-notify case (5/MG has its own case), so parse with `.whoop4`
+                // explicitly — the same family this loop already uses for isOffloadFrame, and
+                // byte-identical to all three original parses (router.family / collector.family / the
+                // no-family clock parse all resolve to .whoop4 here; a DEBUG assert in the router +
+                // collector re-checks the invariant). collectFields is gated on the raw-capture toggle
+                // (ticket 03) so `rawHex` is populated for the capture call below WITHOUT paying D#969's
+                // per-byte hex-build cost on the default (capture-off) path.
+                let parsed = parseFrame(frame, family: .whoop4, collectFields: rawFrameRecorder.isEnabled)
                 router.handle(parsed: parsed, frame: frame)       // live/UI path
                 // #592: the read-only extended-battery probe's COMMAND_RESPONSE — format + publish it for the
                 // Devices dialog (raw hex + payload triage + capture diff). Sibling of the #451 dump below.
@@ -4360,12 +4362,15 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // single parse so the collector's flush doesn't re-decode the batch.
                     collector?.ingest(frame: frame, parsed: parsed)
                 }
+                // Raw capture for diagnostics (no-op unless the Settings toggle is on). Reuses the
+                // single parse above — no reparse (ticket 03).
+                rawFrameRecorder.capture(parsed: parsed, char: characteristic.uuid)
             }
         default:
             // EXPERIMENTAL WHOOP 5.0/MG puffin notify chars (fd4b0003/0004/0005/0007): reassemble with
             // the family-aware reassembler and route through the family-aware FrameRouter so the UI
             // reflects arriving frames. The historical offload uses the WHOOP4 backfill machinery
-            // (family-aware), and live puffin frames are now persisted too — see below. (Clock: the
+            // (family-aware), and live puffin frames are raw-captured too — see below. (Clock: the
             // Collector runs an identity ref for 5/MG via configureCollectorFamily, since live puffin
             // timestamps are already real-unix seconds.) Live HR/battery still also come from the
             // standard 0x2A37 / 0x2A19 profiles handled above.
@@ -4396,7 +4401,13 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                         router.dispatchLiveGestureIfFresh(frame: frame, now: strapClockNow)
                         continue
                     }
-                    router.handle(frame: frame)
+                    // #47/ticket 03: parse this live 5/MG frame ONCE and thread the result to both the
+                    // router and the raw-capture call below, instead of the router's own internal parse
+                    // PLUS a second, independent reparse purely to capture (the old double-parse this
+                    // replaces). collectFields is gated on the raw-capture toggle so `rawHex` is populated
+                    // for capture WITHOUT paying D#969's per-byte hex-build cost when capture is off.
+                    let parsed = parseFrame(frame, family: .whoop5, collectFields: rawFrameRecorder.isEnabled)
+                    router.handle(parsed: parsed, frame: frame)
                     // #592: a 5/MG extended-battery probe COMMAND_RESPONSE (puffin envelope: type @8, cmd
                     // @10). Format + publish it for the Devices dialog, exactly like the 4.0 path above.
                     if frame.count > 10, frame[8] == 0x24, frame[10] == WhoopCommand.getExtendedBatteryInfo.rawValue {
@@ -4421,8 +4432,9 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // decoding HR a second time off the puffin stream stored a duplicate row per heartbeat
                     // at a slightly different second (strap-unix vs Mac-receive), inflating the sample
                     // store. 0x2A37 stays the single authoritative live HR/RR source for 5/MG.
-                    // Capture for protocol mapping (no-op unless the Settings toggle is on). PR #20.
-                    puffinRecorder.capture(frame: frame, char: characteristic.uuid)
+                    // Raw capture for diagnostics (no-op unless the Settings toggle is on). Reuses the
+                    // single parse above — no reparse (ticket 03). PR #20.
+                    rawFrameRecorder.capture(parsed: parsed, char: characteristic.uuid)
                 }
             }
         }

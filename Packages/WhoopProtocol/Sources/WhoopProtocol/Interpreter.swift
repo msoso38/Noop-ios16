@@ -125,7 +125,7 @@ final class FieldBuilder {
 public func parseFrame(_ frame: [UInt8], collectFields: Bool = false) -> ParsedFrame {
     // D#969: only build the whole-frame hex when a consumer will read it. The live ingest fast path
     // (collectFields:false) never reads `rawHex` — only inspector/diagnostic surfaces (whoop-decode,
-    // PuffinCapture, field-asserting tests) do — so on a 1Hz stream or an offload burst this skips a
+    // raw-frame capture, field-asserting tests) do — so on a 1Hz stream or an offload burst this skips a
     // per-byte `String(format:)` allocation pass whose result was discarded.
     let rawHex = collectFields ? frame.map { String(format: "%02x", $0) }.joined() : ""
     if frame.count < 8 || frame[0] != 0xAA {

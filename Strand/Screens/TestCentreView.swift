@@ -349,8 +349,8 @@ struct TestCentreView: View {
     }
 
     private func runScheduledExportNow() {
-        model.ble.flushPuffinCaptures()
-        let url = ScheduledDebugExport.runNow(captureURL: live.puffinCaptureURL)
+        model.ble.flushRawCaptures()
+        let url = ScheduledDebugExport.runNow(captureURL: live.rawCaptureURL)
         if let url {
             infoTitle = String(localized: "Strap log exported")
             #if os(iOS)
