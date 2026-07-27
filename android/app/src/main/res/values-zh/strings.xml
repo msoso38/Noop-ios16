@@ -969,6 +969,7 @@
     <string name="l10n_add_device_wizard_not_now_e4571490">暂不</string>
     <string name="l10n_add_device_wizard_take_over_2c7f5505">接管</string>
     <string name="l10n_add_device_wizard_take_over_this_ring_cc79ef5e">接管这枚智能戒指吗？</string>
+    <string name="l10n_app_changelog_hrv_accuracy_fix_oura_sleep_and_motion_4ed31e39">HRV 修正、Oura 睡眠与运动、更丰富的 5/MG 解码，以及可中断的同步</string>
     <string name="l10n_app_changelog_5_mg_bonding_on_android_health_c94c46ac">Android 版 5.0/MG 配对绑定 + 健康监测器修复</string>
     <string name="l10n_app_changelog_a_beautiful_new_look_aa8c910c">焕然一新的绝美外观设计</string>
     <string name="l10n_app_changelog_a_big_bug_fix_sweep_with_65335764">大规模 Bug 修复，并全新引入“测试中心”用于排查问题</string>
