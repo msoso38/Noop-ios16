@@ -65,18 +65,21 @@ class DeviceConfigReadProbeTest {
     private fun report(
         family: DeviceFamily = DeviceFamily.WHOOP5,
         flags: List<String> = flagKeys,
-        candidates: List<String> = DeviceConfigReadProbe.OXYGEN_CANDIDATE_KEYS,
-    ) = DeviceConfigReadProbeReport(family, flags, candidates)
+        batch: ConfigKeySweep.Batch = ConfigKeySweep.batch(0),
+    ) = DeviceConfigReadProbeReport(family, flags, batch)
 
     // MARK: - The read-only allowlist (the hard safety constraint)
 
     @Test
-    fun allowlistAdmitsOnlyTheTwoReadVerbs() {
-        assertEquals(121, DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD)   // 0x79
-        assertEquals(128, DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD)    // 0x80
-        assertEquals(setOf(121, 128), DeviceConfigReadProbe.READ_ONLY_OPCODES)
-        assertTrue(DeviceConfigReadProbe.isReadOnlyOpcode(121))
-        assertTrue(DeviceConfigReadProbe.isReadOnlyOpcode(128))
+    fun allowlistAdmitsOnlyTheFourReadVerbs() {
+        assertEquals(121, DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD)              // 0x79
+        assertEquals(128, DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD)               // 0x80
+        assertEquals(115, ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD)            // 0x73
+        assertEquals(116, ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD)                     // 0x74
+        assertEquals(setOf(115, 116, 121, 128), DeviceConfigReadProbe.READ_ONLY_OPCODES)
+        for (op in DeviceConfigReadProbe.READ_ONLY_OPCODES) {
+            assertTrue(DeviceConfigReadProbe.isReadOnlyOpcode(op))
+        }
     }
 
     /**
@@ -99,18 +102,22 @@ class DeviceConfigReadProbeTest {
         )
     }
 
-    /** Nothing outside the pair passes either — including the #761 enumerate verbs and the destructive
-     *  opcodes that must never come near this path. */
+    /** Nothing outside the four passes either — including the feature-flag enumerate verbs #872 owns
+     *  (their own probe, their own gate) and the destructive opcodes that must never come near this path. */
     @Test
     fun allowlistRejectsEveryOtherOpcode() {
+        var rejected = 0
         for (op in 0..255) {
             if (DeviceConfigReadProbe.READ_ONLY_OPCODES.contains(op)) continue
             assertFalse("opcode $op must not pass", DeviceConfigReadProbe.isReadOnlyOpcode(op))
+            rejected += 1
         }
+        assertEquals("four admitted, every other opcode rejected", 252, rejected)
         assertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(FeatureFlagProbe.START_KEY_EXCHANGE_CMD))
         assertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(FeatureFlagProbe.SEND_NEXT_FLAG_CMD))
         assertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(25))   // FORCE_TRIM
         assertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(29))   // REBOOT_STRAP
+        assertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(32))   // POWER_CYCLE_STRAP
     }
 
     // MARK: - Request body
@@ -260,235 +267,401 @@ class DeviceConfigReadProbeTest {
         )
     }
 
-    // MARK: - The plan
+    // ---- Enumeration frame builders (the 117/118 record layouts, reused for 115/116) ----
 
-    @Test
-    fun discoveryTriesEachVerbOnceBeforeAnythingElse() {
-        val rep = report()
-        val first = rep.nextStep()!!
-        assertEquals(128, first.opcode)
-        assertEquals("enable_r22_packets", first.key)
-        assertEquals(DeviceConfigReadProbeReport.Group.DISCOVERY, first.group)
-
-        val second = rep.nextStep()!!
-        assertEquals(121, second.opcode)
-        assertEquals(DeviceConfigReadProbe.DEVICE_CONFIG_DISCOVERY_KEY, second.key)
-        assertEquals(DeviceConfigReadProbeReport.Group.DISCOVERY, second.group)
-    }
-
-    @Test
-    fun bothVerbsUnsupportedEndsTheProbeAfterTwoRoundTrips() {
-        val rep = report()
-        repeat(2) {
-            val step = rep.nextStep()!!
-            val frame = whoop5Response(step.opcode, payload(3, byteArrayOf(0, 0, 0)))
-            val r = DeviceConfigReadProbe.parse(frame, DeviceFamily.WHOOP5, step.opcode).value!!
-            rep.noteReply(r, step)
-        }
-        assertNull("a refused verb must not drive sixteen more round-trips", rep.nextStep())
-        assertEquals(2, rep.steps)
-        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNSUPPORTED, rep.featureFlagVerb)
-        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNSUPPORTED, rep.deviceConfigVerb)
-        assertTrue(rep.verdict.contains("rejected as UNSUPPORTED"))
-        assertTrue(rep.render().contains("neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121)"))
-    }
-
-    @Test
-    fun silentVerbsEndTheProbeAndAreSaidPlainly() {
-        val rep = report()
-        repeat(2) { rep.noteTimeout(rep.nextStep()!!, 8) }
-        assertNull(rep.nextStep())
-        assertEquals(DeviceConfigReadProbeReport.VerbStatus.SILENT, rep.featureFlagVerb)
-        assertEquals(DeviceConfigReadProbeReport.VerbStatus.SILENT, rep.deviceConfigVerb)
-        val text = rep.render()
-        assertTrue(text.contains("no reply to either"))
-        assertTrue(text.contains("no COMMAND_RESPONSE within 8s"))
-        assertTrue(text.contains("(none — the verb that would carry them did not answer)"))
-    }
-
-    @Test
-    fun anAnsweringFeatureFlagVerbWalksTheFifteenRemainingKnownFlags() {
-        val rep = report()
-        val s128 = rep.nextStep()!!
-        rep.noteReply(
-            DeviceConfigReadProbe.ValueResponse(1, echoRecord(s128.key, 0x32, byteArrayOf(0x01))), s128,
+    /** `START_DEVICE_CONFIG_KEY_EXCHANGE` reply: record = [revision][count u16 LE]. */
+    private fun enumStart(result: Int, revision: Int, count: Int): ByteArray =
+        whoop5Response(
+            ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD,
+            payload(
+                result,
+                byteArrayOf(revision.toByte(), (count and 0xFF).toByte(), ((count shr 8) and 0xFF).toByte()),
+            ),
         )
-        val s121 = rep.nextStep()!!
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(3, byteArrayOf(0)), s121)
 
-        val flagSteps = mutableListOf<String>()
-        val candidateSteps = mutableListOf<String>()
-        while (true) {
-            val step = rep.nextStep() ?: break
-            assertEquals("the refused verb must never be sent again", 128, step.opcode)
-            when (step.group) {
-                DeviceConfigReadProbeReport.Group.KNOWN_FLAG -> flagSteps.add(step.key)
-                DeviceConfigReadProbeReport.Group.CANDIDATE -> candidateSteps.add(step.key)
-                DeviceConfigReadProbeReport.Group.DISCOVERY -> throw AssertionError("discovery is over")
-            }
-            rep.noteReply(
-                DeviceConfigReadProbe.ValueResponse(1, echoRecord(step.key, 0x31, byteArrayOf(0x01))), step,
-            )
-        }
-        assertEquals(flagKeys.drop(1), flagSteps)
-        assertEquals(DeviceConfigReadProbe.OXYGEN_CANDIDATE_KEYS, candidateSteps)
-        assertEquals(2 + 15 + DeviceConfigReadProbe.OXYGEN_CANDIDATE_KEYS.size, rep.steps)
+    /** `SEND_NEXT_DEVICE_CONFIG` reply: record = [revision][index][validKey][key ASCII NUL-terminated]. */
+    private fun enumNext(index: Int, key: String?, validKey: Boolean = true, result: Int = 1): ByteArray {
+        var record = byteArrayOf(0x0A, index.toByte(), if (validKey) 1 else 0)
+        if (key != null) record += key.toByteArray(Charsets.UTF_8) + byteArrayOf(0)
+        return whoop5Response(ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD, payload(result, record))
     }
 
-    @Test
-    fun candidatesPreferTheDeviceConfigVerbWhenBothAnswer() {
-        val rep = report(flags = listOf("only_flag"), candidates = listOf("enable_spo2"))
-        val a = rep.nextStep()!!
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(1, echoRecord(a.key, 0x32)), a)
-        val b = rep.nextStep()!!
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(1, echoRecord(b.key, 0x31)), b)
+    private fun startReply(frame: ByteArray): FeatureFlagProbe.StartResponse =
+        FeatureFlagProbe.parseStart(
+            frame,
+            DeviceFamily.WHOOP5,
+            ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD,
+        ).value!!
 
-        val c = rep.nextStep()!!
-        assertEquals(DeviceConfigReadProbeReport.Group.CANDIDATE, c.group)
-        assertEquals(121, c.opcode)
-        assertEquals("enable_spo2", c.key)
+    private fun nextReply(frame: ByteArray): FeatureFlagProbe.NextResponse =
+        FeatureFlagProbe.parseNext(
+            frame,
+            DeviceFamily.WHOOP5,
+            ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD,
+        ).value!!
+
+    /** A two-flag report with a two-name candidate slice — small enough to drive step by step. */
+    private fun smallReport(limit: Int = 2) = DeviceConfigReadProbeReport(
+        DeviceFamily.WHOOP5,
+        listOf("enable_r22_packets", "hr_ch_switching"),
+        ConfigKeySweep.batch(0, limit),
+    )
+
+    private fun valueReply(resultCode: Int?, record: ByteArray) =
+        DeviceConfigReadProbe.ValueResponse(resultCode, record)
+
+    // ---- The plan: enumerate first, guess last ----
+
+    /** The whole point of the restructure: nothing is guessed until the strap has been asked to list its
+     *  own keys. */
+    @Test
+    fun theProbeAsksTheStrapToEnumerateBeforeItGuessesAnything() {
+        val report = smallReport()
+        val first = report.nextStep()!!
+        assertEquals(ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD, first.opcode)
+        assertEquals(DeviceConfigReadProbeReport.Group.ENUMERATE, first.group)
+        assertNull(first.derivation)
     }
 
+    /** If the strap lists its own device-config keys there is nothing left to guess, so the sweep is
+     *  skipped entirely rather than spending round-trips on names the answer already covers. */
     @Test
-    fun thePlanIsCappedEvenWithAnAbsurdKeyList() {
-        val many = (0 until 500).map { "key_$it" }
-        val rep = report(family = DeviceFamily.WHOOP4, flags = many, candidates = many)
-        var seen = 0
-        while (true) {
-            val step = rep.nextStep() ?: break
-            seen += 1
-            assertTrue("the plan must terminate", seen <= DeviceConfigReadProbe.MAX_STEPS + 1)
-            rep.noteReply(DeviceConfigReadProbe.ValueResponse(null, echoRecord(step.key, 0x31)), step)
-        }
-        assertEquals(DeviceConfigReadProbe.MAX_STEPS, seen)
-        assertEquals("safety cap of 64 round-trips reached", rep.stopReason)
-    }
+    fun anAnsweringEnumerationSkipsTheGuessedSweepEntirely() {
+        val report = smallReport()
+        val s1 = report.nextStep()!!
+        assertEquals(115, s1.opcode)
+        report.noteEnumerationStart(startReply(enumStart(1, 10, 2)))
 
-    @Test
-    fun anUndecodableReplyRetiresTheVerb() {
-        val rep = report(candidates = emptyList())
-        val step = rep.nextStep()!!
-        rep.noteFailure(DeviceConfigReadProbe.ParseFailure.CRC, step)
-        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNDECODABLE, rep.featureFlagVerb)
-        val next = rep.nextStep()!!
-        assertEquals("the undecodable verb is not retried", 121, next.opcode)
-        rep.noteTimeout(next, 8)
-        assertNull(rep.nextStep())
-        assertEquals("CRC failed — frame rejected (never decoded)", rep.stopReason)
-    }
+        val s2 = report.nextStep()!!
+        assertEquals(ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD, s2.opcode)
+        assertTrue(report.noteEnumerationNext(nextReply(enumNext(1, "whoop_live_hr_in_adv_ind_pkt"))))
+        report.nextStep()!!
+        assertTrue(report.noteEnumerationNext(nextReply(enumNext(2, "whoop_sleep_coach_enabled"))))
+        report.nextStep()!!
+        assertFalse(report.noteEnumerationNext(nextReply(enumNext(0xFF, null, validKey = false))))
 
-    @Test
-    fun aVerdictAlreadyReachedIsNotRewrittenByALaterReply() {
-        val rep = report(flags = listOf("a", "b"), candidates = emptyList())
-        val first = rep.nextStep()!!
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(1, echoRecord("a", 0x31)), first)
-        assertEquals(DeviceConfigReadProbeReport.VerbStatus.ANSWERED, rep.featureFlagVerb)
-        val second = rep.nextStep()!!
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(3, byteArrayOf(0)), second)
-        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNSUPPORTED, rep.deviceConfigVerb)
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(1, byteArrayOf(0)), second)
         assertEquals(
-            "a refusal is not upgraded away",
-            DeviceConfigReadProbeReport.VerbStatus.UNSUPPORTED, rep.deviceConfigVerb,
+            listOf("whoop_live_hr_in_adv_ind_pkt", "whoop_sleep_coach_enabled"),
+            report.enumeratedKeys,
         )
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.ANSWERED, report.enumerationVerb)
+
+        var guard = 0
+        while (guard < 200) {
+            val step = report.nextStep() ?: break
+            guard += 1
+            assertFalse(
+                "the sweep must not run once enumeration answered",
+                step.group == DeviceConfigReadProbeReport.Group.CANDIDATE,
+            )
+            report.noteReply(valueReply(1, echoRecord(step.key, 0x32)), step)
+        }
+        assertTrue(report.render().contains("skipped — the strap enumerated its own device-config keys"))
+        // The Broadcast-HR key is one NOOP already writes, so only the second name is NEW.
+        assertEquals(listOf("whoop_sleep_coach_enabled"), report.newKeysFound)
+        assertTrue(report.verdict.startsWith("1 config key name(s) found that NOOP did not have"))
     }
 
-    // MARK: - Report
-
+    /** The #874 discipline, inherited: the strap's own end marker stops the walk, but a name OUR parser
+     *  declines is counted and stepped over — one bad entry must not throw away every key after it. */
     @Test
-    fun candidateKeysAreLabelledAsGuesses() {
-        val rep = report(flags = listOf("f"), candidates = listOf("enable_spo2"))
-        val a = rep.nextStep()!!
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(1, echoRecord("f", 0x32)), a)
-        val b = rep.nextStep()!!
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(1, echoRecord(b.key, 0x31)), b)
-        val c = rep.nextStep()!!
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(0, byteArrayOf(0)), c)
-        val text = rep.render()
-        assertTrue(text.contains("Candidate oxygen keys — GUESSES, never observed on a wire or in any table"))
-        assertTrue(text.contains("enable_spo2"))
-        assertTrue(text.contains("no value (result=FAILURE(0))"))
+    fun anUndecodableNameIsSteppedOverRatherThanEndingTheWalk() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(1, 10, 3)))
+        report.nextStep()
+        assertTrue(
+            report.noteEnumerationNext(
+                FeatureFlagProbe.NextResponse(1, 10, 1, validKey = true, key = null),
+            ),
+        )
+        report.nextStep()
+        assertTrue(report.noteEnumerationNext(nextReply(enumNext(2, "whoop_after_the_bad_one"))))
+        assertEquals(listOf("whoop_after_the_bad_one"), report.enumeratedKeys)
+        assertEquals(1, report.enumerationSkipped)
+    }
+
+    /** A refused enumeration is the case the guessing fallback exists for — and it must cost exactly one
+     *  round-trip, not one per key. */
+    @Test
+    fun anUnsupportedEnumerationCostsOneRoundTripAndOpensTheFallback() {
+        val report = smallReport()
+        val s1 = report.nextStep()!!
+        assertEquals(115, s1.opcode)
+        report.noteEnumerationStart(startReply(enumStart(3, 0, 0)))
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNSUPPORTED, report.enumerationVerb)
+
+        val s2 = report.nextStep()!!
+        assertEquals(
+            "116 must not be asked once 115 refused",
+            DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD,
+            s2.opcode,
+        )
+        assertEquals(DeviceConfigReadProbeReport.Group.DISCOVERY, s2.group)
+    }
+
+    /** A silent enumeration retires the pair after ONE timeout rather than one per entry. */
+    @Test
+    fun aSilentEnumerationRetiresAfterOneTimeout() {
+        val report = smallReport()
+        val s1 = report.nextStep()!!
+        report.noteTimeout(s1, 8)
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.SILENT, report.enumerationVerb)
+        assertEquals(DeviceConfigReadProbeReport.Group.DISCOVERY, report.nextStep()!!.group)
+        assertTrue(report.render().contains("(none — no reply to 115)"))
     }
 
     @Test
-    fun oxygenCandidateListIsShortAndOxygenNamed() {
-        val keys = DeviceConfigReadProbe.OXYGEN_CANDIDATE_KEYS
-        assertTrue(keys.isNotEmpty())
-        assertTrue("keep the guess list short — it is a guess list", keys.size <= 12)
-        assertEquals(keys.size, keys.toSet().size)
-        for (k in keys) {
-            assertTrue(
-                "$k does not read as oxygen-related",
-                k.contains("spo2") || k.contains("oxygen") || k.contains("pulse_ox"),
-            )
-            assertTrue(
-                "$k would be truncated by the 32-byte name field",
-                k.toByteArray(Charsets.UTF_8).size <= DeviceConfigReadProbe.NAME_FIELD_BYTES,
-            )
+    fun anUndecodableEnumerationReplyRetiresIt() {
+        val report = smallReport()
+        val s1 = report.nextStep()!!
+        report.noteFailure(DeviceConfigReadProbe.ParseFailure.CRC, s1)
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNDECODABLE, report.enumerationVerb)
+        assertEquals(DeviceConfigReadProbeReport.Group.DISCOVERY, report.nextStep()!!.group)
+        assertEquals("CRC failed — frame rejected (never decoded)", report.stopReason)
+    }
+
+    // ---- Cross-namespace ----
+
+    /** Two round-trips that settle whether the namespaces are separate — the result shapes every later
+     *  sweep, so it is asked of each verb that answered. */
+    @Test
+    fun crossNamespaceIsAskedOfEachAnsweringVerb() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(3, 0, 0)))
+
+        val d1 = report.nextStep()!!
+        report.noteReply(valueReply(1, echoRecord(d1.key, 0x32)), d1)
+        val d2 = report.nextStep()!!
+        report.noteReply(valueReply(1, echoRecord(d2.key, 0x30)), d2)
+
+        val x1 = report.nextStep()!!
+        assertEquals(DeviceConfigReadProbeReport.Group.CROSS_NAMESPACE, x1.group)
+        assertEquals(DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD, x1.opcode)
+        assertEquals(DeviceConfigReadProbe.DEVICE_CONFIG_DISCOVERY_KEY, x1.key)
+        report.noteReply(valueReply(0, ByteArray(0)), x1)
+
+        val x2 = report.nextStep()!!
+        assertEquals(DeviceConfigReadProbeReport.Group.CROSS_NAMESPACE, x2.group)
+        assertEquals(DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD, x2.opcode)
+        assertEquals("enable_r22_packets", x2.key)
+        report.noteReply(valueReply(0, ByteArray(0)), x2)
+
+        assertEquals(ConfigKeySweep.Existence.UNKNOWN, report.featureFlagVerbOnDeviceConfigKey)
+        assertEquals(ConfigKeySweep.Existence.UNKNOWN, report.deviceConfigVerbOnFlagKey)
+        assertTrue(report.render().contains("the namespaces are separate"))
+    }
+
+    /** If one verb turns out to serve both namespaces, everything afterwards goes through it — halving
+     *  the work every future sweep needs, on evidence gathered in the same run. */
+    @Test
+    fun aVerbShownToServeBothNamespacesCarriesEverythingAfterwards() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(3, 0, 0)))
+        val d1 = report.nextStep()!!
+        report.noteReply(valueReply(1, echoRecord(d1.key, 0x32)), d1)
+        val d2 = report.nextStep()!!
+        report.noteReply(valueReply(1, echoRecord(d2.key, 0x30)), d2)
+        val x1 = report.nextStep()!!
+        report.noteReply(valueReply(0, ByteArray(0)), x1)
+        val x2 = report.nextStep()!!
+        report.noteReply(valueReply(1, echoRecord(x2.key, 0x32)), x2)
+        assertEquals(ConfigKeySweep.Existence.EXISTS, report.deviceConfigVerbOnFlagKey)
+
+        val k1 = report.nextStep()!!
+        assertEquals(
+            "the verb proved to serve both namespaces carries the rest of the plan",
+            DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD,
+            k1.opcode,
+        )
+        assertTrue(report.render().contains("GET_DEVICE_CONFIG_VALUE(121) serves BOTH namespaces."))
+    }
+
+    // ---- The sweep ----
+
+    /** Drive the plan with enumeration refused, stopping at the FIRST candidate step and handing it back
+     *  alongside the report (a pulled step cannot be pushed back). */
+    private fun driveToCandidates(limit: Int): Pair<DeviceConfigReadProbeReport, DeviceConfigReadProbeReport.Step?> {
+        val report = smallReport(limit)
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(3, 0, 0)))
+        while (true) {
+            val step = report.nextStep() ?: return report to null
+            if (step.group == DeviceConfigReadProbeReport.Group.CANDIDATE) return report to step
+            report.noteReply(valueReply(1, echoRecord(step.key, 0x32)), step)
         }
     }
 
-    /**
-     * GOLDEN: the exact rendered report, byte-for-byte. Its Swift twin
-     * (`DeviceConfigReadProbeTests.testGoldenReportIsByteIdenticalAcrossPlatforms`) asserts the SAME
-     * literal, so a strap log reads identically on either platform.
-     *
-     * The first record's trailing `00`, and the seven-byte UNSUPPORTED record, are the puffin envelope's
-     * 4-byte inner padding showing through — which is exactly why the value is read as "the byte after
-     * the echoed name field" and not "the last byte of the record".
-     */
+    /** A fully-negative sweep is a RESULT, and the verdict must say so rather than reading like a
+     *  failure. */
+    @Test
+    fun aFullyNegativeSweepIsACleanNegativeVerdict() {
+        val (report, first) = driveToCandidates(2)
+        var step = first
+        val asked = mutableListOf<String>()
+        while (step != null) {
+            assertEquals(DeviceConfigReadProbeReport.Group.CANDIDATE, step.group)
+            asked.add(step.key)
+            report.noteReply(valueReply(0, ByteArray(0)), step)
+            step = report.nextStep()
+        }
+        assertEquals(listOf("enable_sig1", "enable_sig2"), asked)
+        assertEquals(
+            "asked 2 candidate key name(s); this firmware has none of them (a clean negative)",
+            report.verdict,
+        )
+        assertTrue(report.newKeysFound.isEmpty())
+    }
+
+    /** And a hit is the headline, named in the verdict so a strap log's first line carries the finding. */
+    @Test
+    fun aCandidateThatExistsBecomesTheHeadline() {
+        val (report, first) = driveToCandidates(2)
+        val c1 = first!!
+        report.noteReply(valueReply(1, echoRecord(c1.key, 0x31)), c1)
+        val c2 = report.nextStep()!!
+        report.noteReply(valueReply(0, ByteArray(0)), c2)
+        assertEquals(listOf("enable_sig1"), report.newKeysFound)
+        assertEquals("1 config key name(s) found that NOOP did not have: enable_sig1", report.verdict)
+        assertTrue(report.trace.any { it.contains("enable_sig1") && it.contains("exists") })
+        assertFalse(report.trace.any { it.contains("enable_sig2") })
+    }
+
+    /** No silent truncation: the report states how many names it asked, how many the catalogue holds, and
+     *  how many remain untested, plus where the next run resumes. */
+    @Test
+    fun theReportStatesTestedAndUntestedCountsAndWhereToResume() {
+        val (report, first) = driveToCandidates(2)
+        var step = first
+        while (step != null) {
+            report.noteReply(valueReply(0, ByteArray(0)), step)
+            step = report.nextStep()
+        }
+        val text = report.render()
+        val total = ConfigKeySweep.CATALOGUE.size
+        assertTrue(text, text.contains("(2 asked of $total in the catalogue; ${total - 2} untested)"))
+        assertTrue(text, text.contains("Run the probe again to continue from catalogue entry 3."))
+    }
+
+    /** The default catalogue is smaller than one run's budget, so a real run reports nothing untested. */
+    @Test
+    fun aFullRunOfTodaysCatalogueLeavesNothingUntested() {
+        val report = report()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(3, 0, 0)))
+        var candidates = 0
+        var steps = 0
+        while (steps < DeviceConfigReadProbe.MAX_STEPS) {
+            val step = report.nextStep() ?: break
+            steps += 1
+            val isCandidate = step.group == DeviceConfigReadProbeReport.Group.CANDIDATE
+            if (isCandidate) candidates += 1
+            report.noteReply(valueReply(if (isCandidate) 0 else 1, echoRecord(step.key, 0x32)), step)
+        }
+        assertEquals(ConfigKeySweep.CATALOGUE.size, candidates)
+        assertNull("a full default run must not hit the safety cap", report.stopReason)
+        assertTrue(report.render().contains("none untested"))
+    }
+
+    /** The safety cap still binds, whatever the plan holds. */
+    @Test
+    fun thePlanIsCappedEvenWhenTheStrapEnumeratesForever() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(1, 10, 9999)))
+        var seen = 0
+        while (seen < 500) {
+            val step = report.nextStep() ?: break
+            seen += 1
+            if (step.group == DeviceConfigReadProbeReport.Group.ENUMERATE) {
+                report.noteEnumerationNext(nextReply(enumNext(1, "whoop_stuck")))
+            } else {
+                report.noteReply(valueReply(0, ByteArray(0)), step)
+            }
+        }
+        assertTrue(report.steps <= DeviceConfigReadProbe.MAX_STEPS)
+        assertNotNull(report.stopReason)
+    }
+
+    // ---- Report ----
+
+    /** Byte-for-byte golden, asserted identically by the Swift twin, so a shared strap log reads the same
+     *  either side and a wording drift fails here rather than in a user's log. */
     @Test
     fun goldenReportIsByteIdenticalAcrossPlatforms() {
-        val rep = report(flags = listOf("enable_r22_packets", "hr_ch_switching"), candidates = listOf("enable_spo2"))
+        val report = smallReport()
+        val s1 = report.nextStep()!!
+        assertEquals(115, s1.opcode)
+        report.noteEnumerationStart(startReply(enumStart(3, 0, 0)))
 
-        val s1 = rep.nextStep()!!
-        val f1 = whoop5Response(128, payload(1, echoRecord("enable_r22_packets", 0x32, byteArrayOf(0x01))))
-        rep.noteReply(DeviceConfigReadProbe.parse(f1, DeviceFamily.WHOOP5, 128).value!!, s1)
-
-        val s2 = rep.nextStep()!!
-        val f2 = whoop5Response(121, payload(3, byteArrayOf(0, 0, 0, 0)))
-        rep.noteReply(DeviceConfigReadProbe.parse(f2, DeviceFamily.WHOOP5, 121).value!!, s2)
-
-        val s3 = rep.nextStep()!!
-        rep.noteReply(
-            DeviceConfigReadProbe.ValueResponse(1, echoRecord("hr_ch_switching", 0x32, byteArrayOf(0x01))), s3,
+        val s2 = report.nextStep()!!
+        report.noteReply(valueReply(1, echoRecord("enable_r22_packets", 0x32)), s2)
+        val s3 = report.nextStep()!!
+        report.noteReply(
+            valueReply(1, echoRecord(DeviceConfigReadProbe.DEVICE_CONFIG_DISCOVERY_KEY, 0x30)),
+            s3,
         )
+        val s4 = report.nextStep()!!
+        report.noteReply(valueReply(0, byteArrayOf(0x01, 0x00)), s4)
+        val s5 = report.nextStep()!!
+        report.noteReply(valueReply(0, byteArrayOf(0x01, 0x00)), s5)
+        val s6 = report.nextStep()!!
+        report.noteReply(valueReply(1, echoRecord("hr_ch_switching", 0x32)), s6)
+        val c1 = report.nextStep()!!
+        report.noteReply(valueReply(0, byteArrayOf(0x01, 0x00)), c1)
+        val c2 = report.nextStep()!!
+        report.noteReply(valueReply(0, byteArrayOf(0x01, 0x00)), c2)
+        assertNull(report.nextStep())
 
-        val s4 = rep.nextStep()!!
-        rep.noteReply(DeviceConfigReadProbe.ValueResponse(0, byteArrayOf(0x01, 0x00)), s4)
-        assertNull(rep.nextStep())
+        assertEquals(GOLDEN_REPORT, report.render())
+    }
 
-        val golden = "#103 DEVICE-CONFIG READ PROBE — WHOOP 5/MG\n" +
-            "Read-only: GET_DEVICE_CONFIG_VALUE(121) + GET_FF_VALUE(128). No value is written; " +
-            "SET_DEVICE_CONFIG_VALUE(119) and SET_FF_VALUE(120) are never sent from this path.\n" +
-            "Follow-up to the #761 enumeration probe: that one asked for key NAMES, this asks for VALUES.\n" +
-            "\n" +
-            "Verdict: 1 of 2 read verbs answered; read 2 config value(s)\n" +
-            "\n" +
-            "Read verbs:\n" +
-            "  GET_FF_VALUE(128)             answered\n" +
-            "  GET_DEVICE_CONFIG_VALUE(121)  unsupported\n" +
-            "\n" +
-            "Discovery — one round-trip per verb against a key it should know (2):\n" +
-            "   1. enable_r22_packets              = '2' (0x32)\n" +
-            "   2. whoop_live_hr_in_adv_ind_pkt    — no value (result=UNSUPPORTED(3))\n" +
-            "\n" +
-            "Known feature-flag values (names NOOP already writes; values never read before) (1):\n" +
-            "   1. hr_ch_switching                 = '2' (0x32)\n" +
-            "\n" +
-            "Candidate oxygen keys — GUESSES, never observed on a wire or in any table (1):\n" +
-            "   1. enable_spo2                     — no value (result=FAILURE(0))\n" +
-            "\n" +
-            "Exchange:\n" +
-            "  GET_FF_VALUE(128) key=\"enable_r22_packets\" → result=SUCCESS(1) value='2' (0x32) " +
-            "record=[01 65 6e 61 62 6c 65 5f 72 32 32 5f 70 61 63 6b 65 74 73 00 00 00 00 00 00 00 00 00 " +
-            "00 00 00 00 00 32 00]\n" +
-            "  GET_DEVICE_CONFIG_VALUE(121) key=\"whoop_live_hr_in_adv_ind_pkt\" → " +
-            "result=UNSUPPORTED(3) record=[00 00 00 00 00 00 00]\n" +
-            "  GET_FF_VALUE(128) key=\"hr_ch_switching\" → result=SUCCESS(1) value='2' (0x32) " +
-            "record=[01 68 72 5f 63 68 5f 73 77 69 74 63 68 69 6e 67 00 00 00 00 00 00 00 00 00 00 00 00 " +
-            "00 00 00 00 00 32]\n" +
-            "  GET_FF_VALUE(128) key=\"enable_spo2\" → result=FAILURE(0) record=[01 00]\n"
-        assertEquals(golden, rep.render())
+    private companion object {
+        const val GOLDEN_REPORT = """#103 CONFIG KEY PROBE — WHOOP 5/MG
+Read-only: START_DEVICE_CONFIG_KEY_EXCHANGE(115), SEND_NEXT_DEVICE_CONFIG(116), GET_DEVICE_CONFIG_VALUE(121), GET_FF_VALUE(128).
+No value is written; SET_DEVICE_CONFIG_VALUE(119) and SET_FF_VALUE(120) are never sent from this path.
+Oracle: result=SUCCESS(1) means the key NAME exists; result=FAILURE(0) means the firmware has no such key.
+
+Verdict: asked 2 candidate key name(s); this firmware has none of them (a clean negative)
+
+Verbs:
+  device-config enumerate(115/116)  unsupported
+  GET_FF_VALUE(128)                 answered
+  GET_DEVICE_CONFIG_VALUE(121)      answered
+
+Device-config keys the strap listed for itself (115/116) (0):
+  (none — the firmware refused 115 as UNSUPPORTED)
+
+Namespace separation:
+  128 asked for a device-config key     unknown
+  121 asked for a feature-flag key      unknown
+  ⇒ the namespaces are separate: neither verb sees the other's keys.
+
+Discovery — one round-trip per value verb against a key it should know (2):
+   1. enable_r22_packets              = '2' (0x32)
+   2. whoop_live_hr_in_adv_ind_pkt    = '0' (0x30)
+
+Known key values (the flags NOOP writes, plus anything enumeration returned) (1):
+   1. hr_ch_switching                 = '2' (0x32)
+
+Candidate key names — GUESSES, never observed on a wire or in any table (2 asked of 54 in the catalogue; 52 untested):
+  0 exist · 2 do not · 0 inconclusive
+
+  sig<N> series (T8) — the firmware numbers its signal chains; sig11/sig12 are the two we have (2):
+    1. enable_sig1                     unknown
+    2. enable_sig2                     unknown
+
+  Run the probe again to continue from catalogue entry 3.
+
+Exchange:
+  START_DEVICE_CONFIG_KEY_EXCHANGE(115) → result=UNSUPPORTED(3) — the firmware does not serve this verb
+  GET_FF_VALUE(128) key="enable_r22_packets" → result=SUCCESS(1) exists value='2' (0x32) record=[65 6e 61 62 6c 65 5f 72 32 32 5f 70 61 63 6b 65 74 73 00 00 00 00 00 00 00 00 00 00 00 00 00 00 32]
+  GET_DEVICE_CONFIG_VALUE(121) key="whoop_live_hr_in_adv_ind_pkt" → result=SUCCESS(1) exists value='0' (0x30) record=[77 68 6f 6f 70 5f 6c 69 76 65 5f 68 72 5f 69 6e 5f 61 64 76 5f 69 6e 64 5f 70 6b 74 00 00 00 00 30]
+  GET_FF_VALUE(128) key="whoop_live_hr_in_adv_ind_pkt" → result=FAILURE(0) unknown record=[01 00]
+  GET_DEVICE_CONFIG_VALUE(121) key="enable_r22_packets" → result=FAILURE(0) unknown record=[01 00]
+  GET_FF_VALUE(128) key="hr_ch_switching" → result=SUCCESS(1) exists value='2' (0x32) record=[68 72 5f 63 68 5f 73 77 69 74 63 68 69 6e 67 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 32]
+"""
     }
 }

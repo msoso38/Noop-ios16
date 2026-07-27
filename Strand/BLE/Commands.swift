@@ -95,6 +95,21 @@ public enum WhoopCommand: UInt8, CaseIterable {
     /// #690: read-only body-location/status probe. Documented in the WHOOP protocol; driven only by the
     /// user-triggered, Test-Centre-gated probeBodyLocationAndStatus(). Decoded to a diagnostic report only.
     case getBodyLocationAndStatus = 84
+    /// START_DEVICE_CONFIG_KEY_EXCHANGE (115 / 0x73) — ask the strap how many DEVICE-CONFIG keys its
+    /// firmware knows. READ-ONLY: the reply carries a count, and nothing on the strap changes. Payload
+    /// `[0x01]`. This is the device-config twin of 117, and the half of the config surface nothing here
+    /// has ever sent: the `CommandNumber` table names 115/116 alongside 119/121, and only 119 (write) and
+    /// 121 (read one value) were implemented. If it answers, the strap lists its own device-config keys
+    /// and #103 stops needing to guess names. Driven ONLY by `BLEManager.probeDeviceConfigValues()` —
+    /// user-initiated, Test Centre → Connection gated. Parsing reuses `FeatureFlagProbe.parseStart` on the
+    /// assumed-symmetric layout. (#103)
+    case startDeviceConfigKeyExchange = 115
+    /// SEND_NEXT_DEVICE_CONFIG (116 / 0x74) — advance the strap's own device-config cursor and report one
+    /// key NAME. READ-ONLY: names only, no values, nothing written. Payload `[0x01]`; a CURSOR, not an
+    /// index, so the same frame is repeated to walk the list. Bounded by
+    /// `ConfigKeySweep.maxEnumerationSteps` and by the strap's own end marker. Driven ONLY by
+    /// `BLEManager.probeDeviceConfigValues()`. (#103)
+    case sendNextDeviceConfig = 116
     /// START_FF_KEY_EXCHANGE (117 / 0x75) — ask the strap how many feature flags its firmware knows.
     /// READ-ONLY: the reply carries a count, and nothing on the strap changes. Payload `[0x01]` (the
     /// inner b3 byte the SET_CONFIG family and GET_HELLO use). This is the READ half of the flag surface
@@ -189,6 +204,8 @@ public enum WhoopCommand: UInt8, CaseIterable {
         case .exitHighFreqSync:      return "Exit High-Freq Sync"
         case .getExtendedBatteryInfo:return "Get Extended Battery Info"
         case .getBodyLocationAndStatus:return "Get Body Location And Status"
+        case .startDeviceConfigKeyExchange: return "Start Device-Config Key Exchange"
+        case .sendNextDeviceConfig:  return "Send Next Device Config"
         case .startFeatureFlagKeyExchange: return "Start Feature-Flag Key Exchange"
         case .sendNextFeatureFlag:   return "Send Next Feature Flag"
         case .getDeviceConfigValue:  return "Get Device Config Value"
