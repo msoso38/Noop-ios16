@@ -14,6 +14,7 @@ import com.noop.analytics.HrZones
 import com.noop.analytics.IllnessSignalEngine
 import com.noop.analytics.IllnessWatch
 import com.noop.analytics.IntelligenceEngine
+import com.noop.analytics.CircadianEngine
 import com.noop.analytics.V5HealthSignals
 import com.noop.analytics.RegistryDayOwnerSource
 import com.noop.analytics.RestScorer
@@ -64,6 +65,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import java.util.TimeZone
 
 /**
  * The single app-wide view model. Holds the BLE client and the Room-backed
@@ -75,6 +77,35 @@ import kotlin.math.roundToInt
 /** Last Health Connect writeback outcome for the Data Sources UI (#660). [code] is a PII-safe
  *  category (see [NoopPrefs.HC_WB_OK] etc.); "" = never attempted. */
 data class HcWritebackStatus(val code: String, val atMs: Long, val written: Int)
+
+/**
+ * The pure half of the body-clock binning (#852): hourly HR buckets + a timezone offset -> a per-hour
+ * activity profile and the number of distinct local days it spans.
+ *
+ * Separated from the store read so it is unit-testable with no Context, no ViewModel and no database.
+ * Byte-for-byte mirror of the maths in Swift `AppModel.computeCircadianPhase`: the >= 24-bucket floor,
+ * pooling by LOCAL hour-of-day, mean bpm per populated hour, and distinct local days as `daysObserved`.
+ */
+internal fun circadianBinsFrom(
+    buckets: List<com.noop.data.HrBucket>,
+    tzOffsetSeconds: Long,
+): Pair<List<CircadianEngine.ActivityBin>, Int> {
+    if (buckets.size < 24) return emptyList<CircadianEngine.ActivityBin>() to 0
+    val sums = DoubleArray(24)
+    val counts = IntArray(24)
+    val days = HashSet<Long>()
+    for (b in buckets) {
+        val local = b.bucket + tzOffsetSeconds
+        val hour = (((local % 86_400L) + 86_400L) % 86_400L / 3_600L).toInt()
+        sums[hour] += b.avgBpm
+        counts[hour] += 1
+        days.add(local / 86_400L)
+    }
+    val bins = (0 until 24).mapNotNull { h ->
+        if (counts[h] > 0) CircadianEngine.ActivityBin(h.toDouble(), sums[h] / counts[h]) else null
+    }
+    return bins to days.size
+}
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -363,6 +394,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  workout union can follow a re-paired strap's fresh "whoop-<id>" instead of stranding its
      *  recordings under a read pinned to the literal "my-whoop" (#814 twin of the Workouts screen). */
     val deviceId = noopApp.activeDeviceId
+
+    /** Last (bins, daysObserved) computed on the collector pass. Reused by the SYNCHRONOUS settings
+     *  re-evaluate below, which has no coroutine to read the store from — without this, flipping the
+     *  cycle-tracking toggle would blank the body clock until the next collector tick. */
+    private var lastCircadianBins: Pair<List<CircadianEngine.ActivityBin>, Int> =
+        emptyList<CircadianEngine.ActivityBin>() to 0
+
+    /**
+     * Per-hour activity profile for the body clock (#852), from the last ~14 days of hourly HR buckets.
+     * HR amplitude is a usable rest/activity rhythm proxy when raw motion is not to hand.
+     *
+     * Byte-for-byte mirror of Swift `AppModel.computeCircadianPhase`: 3600 s buckets, the >= 24-bucket
+     * floor, pooling by LOCAL hour-of-day, and `daysObserved` as the count of distinct local days. The
+     * binning lives here rather than in `CircadianEngine` precisely because Swift keeps it in AppModel —
+     * the engine stays an untouched byte-for-byte mirror on both platforms.
+     *
+     * Returns an empty list when there is too little to read; the caller treats that as "no estimate".
+     */
+    private suspend fun circadianActivityBins(): Pair<List<CircadianEngine.ActivityBin>, Int> {
+        val now = System.currentTimeMillis() / 1000L
+        val from = now - 14L * 86_400L
+        val buckets = runCatching { repository.hrBuckets(deviceId, from, now, 3_600L) }
+            .getOrDefault(emptyList())
+        val tz = TimeZone.getDefault().getOffset(now * 1000L) / 1000L
+        return circadianBinsFrom(buckets, tz)
+    }
 
     /** Live connection + biometric snapshot, surfaced straight from the BLE client. */
     val live: StateFlow<LiveState> = ble.state
@@ -733,10 +790,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // so the contract the notification path relies on is untouched. Best-effort — never let a
                 // signals hiccup kill the collector.
                 runCatching {
+                    lastCircadianBins = circadianActivityBins()
                     _v5Signals.value = V5HealthSignals.evaluate(
                         days = days,
                         cycleOptedIn = _cycleTrackingEnabled.value,
                         journalContext = illnessJournalContext(days),
+                        activityBins = lastCircadianBins.first,
+                        daysObserved = lastCircadianBins.second,
                     )
                 }
                 // Keep the home-screen widget fresh while the app is open — covers users who turned
@@ -2148,6 +2208,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 days = days,
                 cycleOptedIn = enabled,
                 journalContext = illnessJournalContext(days),
+                activityBins = lastCircadianBins.first,
+                daysObserved = lastCircadianBins.second,
             )
         }
     }
