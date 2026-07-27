@@ -237,7 +237,15 @@ enum class CommandNumber(val rawValue: Int) {
     // firmware. Mirrors Swift WhoopCommand.getFeatureFlagValue. (#103)
     GET_FF_VALUE(128),
     STOP_HAPTICS(122),
-    SELECT_WRIST(123);
+    // The WHOOP MG ECG ("Labrador") command family. All four numbers already sit in the shared protocol
+    // table (WhoopProtocol/Resources/whoop_protocol.json) from the upstream whoomp/goose work; they are
+    // named here so a COMMAND_RESPONSE for one is labelled rather than shown as a bare hex opcode.
+    // SELECT_WRIST writes PERSISTENT strap state; the other three are reversible stream toggles. See
+    // com.noop.protocol.Whoop5Ecg and Swift WhoopCommand.selectWrist / .toggleLabrador*.
+    SELECT_WRIST(123),
+    TOGGLE_LABRADOR_DATA_GENERATION(124),
+    TOGGLE_LABRADOR_RAW_SAVE(125),
+    TOGGLE_LABRADOR_FILTERED(139);
 
     companion object {
         private val byRaw = entries.associateBy { it.rawValue }
