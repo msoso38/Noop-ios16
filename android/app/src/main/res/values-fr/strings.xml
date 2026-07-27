@@ -1707,4 +1707,10 @@
         <item quantity="one">Record : %1$d jour</item>
         <item quantity="other">Record : %1$d jours</item>
     </plurals>
+
+    <!-- Alertes de batterie escaladées (passage critique de charge + garde de nuit avant le coucher). -->
+    <string name="battery_critical_title">Rechargez votre WHOOP maintenant</string>
+    <string name="battery_critical_body">Il reste %1$d%%. La sangle cesse d\'enregistrer vers 10%% — elle ne captera pas cette nuit sans recharge.</string>
+    <string name="battery_bedtime_title">Ne tiendra pas la nuit</string>
+    <string name="battery_bedtime_body">Il reste %1$s d\'enregistrement, mais cette nuit en demande environ %2$s. Rechargez avant de vous coucher.</string>
 </resources>

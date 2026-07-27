@@ -1701,4 +1701,10 @@
         <item quantity="one">Recorde: %1$d dia</item>
         <item quantity="other">Recorde: %1$d dias</item>
     </plurals>
+
+    <!-- Alertas de bateria escalados (cruzamento crítico de carga + guarda noturna antes de deitar). -->
+    <string name="battery_critical_title">Carregue já a sua WHOOP</string>
+    <string name="battery_critical_body">Restam %1$d%%. A bracelete deixa de gravar perto dos 10%% – não vai captar esta noite se não a carregar.</string>
+    <string name="battery_bedtime_title">Não dura a noite</string>
+    <string name="battery_bedtime_body">Restam %1$s de gravação, mas esta noite precisa de cerca de %2$s. Carregue antes de se deitar.</string>
 </resources>

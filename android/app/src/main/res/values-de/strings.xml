@@ -1722,4 +1722,10 @@
         <item quantity="one">Längste: %1$d Tag</item>
         <item quantity="other">Längste: %1$d Tage</item>
     </plurals>
+
+    <!-- Eskalations-Akkuwarnungen (kritischer Ladestand + Schutz vor dem Schlafengehen). -->
+    <string name="battery_critical_title">Lade dein WHOOP jetzt auf</string>
+    <string name="battery_critical_body">%1$d%% übrig. Das Band hört bei etwa 10%% auf aufzuzeichnen – ohne Aufladen erfasst es die heutige Nacht nicht.</string>
+    <string name="battery_bedtime_title">Reicht nicht durch die Nacht</string>
+    <string name="battery_bedtime_body">Noch %1$s Aufzeichnung, aber die heutige Nacht braucht etwa %2$s. Lade vor dem Schlafengehen auf.</string>
 </resources>

@@ -1707,4 +1707,10 @@
         <item quantity="one">Máxima: %1$d día</item>
         <item quantity="other">Máxima: %1$d días</item>
     </plurals>
+
+    <!-- Alertas de batería escaladas (cruce crítico de carga + guardia nocturna antes de dormir). -->
+    <string name="battery_critical_title">Cargue su WHOOP ahora</string>
+    <string name="battery_critical_body">Queda %1$d%%. La correa deja de registrar cerca del 10%% — no captará esta noche si no la carga.</string>
+    <string name="battery_bedtime_title">No aguantará la noche</string>
+    <string name="battery_bedtime_body">Queda %1$s de registro, pero esta noche necesita alrededor de %2$s. Cárguela antes de acostarse.</string>
 </resources>
