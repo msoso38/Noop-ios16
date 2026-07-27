@@ -46,6 +46,26 @@ public struct WhoopExportImporter {
         return effort / dayStrainToEffortScale
     }
 
+    /// WHOOP CSVs carry "Sleep efficiency %" on a 0–100 scale; NOOP's `efficiency` columns store the
+    /// 0–1 fraction the native pipeline writes (`AnalyticsEngine`: actual-sleep ÷ in-bed). Convert at
+    /// the WRITE boundary (WhoopImporter → store), NOT at parse time, so the verbatim parsed value
+    /// (`sleepEfficiencyPct`) and the CSV round-trip contract are preserved — the same shape as the
+    /// Day Strain ⇄ Effort pair above. Keep byte-identical to the Android importer (WhoopCsvImporter.kt).
+    public static func fractionFromImportedEfficiencyPct(_ pct: Double?) -> Double? {
+        guard let pct else { return nil }
+        return pct / 100.0
+    }
+
+    /// Inverse: the stored 0–1 fraction back onto the CSV's 0–100 "Sleep efficiency %" column, so an
+    /// exported CSV is WHOOP-compatible and a NOOP export → NOOP import round-trip is lossless to
+    /// 4 decimal places of a percent (1e-6 of the fraction). The rounding matters: `num()` prints
+    /// shortest-round-trip Doubles, and a raw `fraction * 100` carries FP dust (0.923 × 100 =
+    /// 92.30000000000001) straight into the CSV cell.
+    public static func whoopEfficiencyPctFromFraction(_ fraction: Double?) -> Double? {
+        guard let fraction else { return nil }
+        return (fraction * 100.0 * 10_000).rounded() / 10_000
+    }
+
     // Recognised CSV filenames (lowercased).
     private static let cyclesName  = "physiological_cycles.csv"
     private static let sleepsName  = "sleeps.csv"
@@ -364,7 +384,11 @@ public struct WhoopExportImporter {
             r.tzOffsetMin = tz
             r.cycleStart = WhoopTime.parse(row.cell("cycle_start_time"), offsetMinutes: tz)
             r.question = row.cell("question_text", "question")
-            r.answer   = row.cell("answered_yes_no", "answer", "answer_text")
+            // #631: the REAL WHOOP export header is "Answered yes" (-> answered_yes), not the
+            // "Answered yes/no" NOOP's own exporter writes (-> answered_yes_no). Every real WHOOP
+            // journal import silently zeroed out to "without" because neither of the old keys ever
+            // matched, regardless of the account's actual answers.
+            r.answer   = row.cell("answered_yes", "answered_yes_no", "answer", "answer_text")
             r.notes    = row.cell("notes")
 
             // A journal row is only meaningful if it has a question.

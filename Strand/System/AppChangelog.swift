@@ -7,7 +7,7 @@ enum AppChangelog {
 
     /// Bump this when you add a release below. The "What's New" sheet shows automatically when the
     /// stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
-    static let currentVersion = "8.7.0"
+    static let currentVersion = "9.0.2"
 
     struct Release: Identifiable {
         let version: String
@@ -19,6 +19,43 @@ enum AppChangelog {
 
     /// Newest first.
     static let releases: [Release] = [
+        Release(
+            version: "9.0.2",
+            title: "Optimal-strain alerts, faster history sync, and a wave of accuracy fixes",
+            date: "July 2026",
+            items: [
+                "**\"Optimal strain reached\" alert (#593).** Turn it on and NOOP buzzes once when your day's effort hits the optimal range for your recovery — off by default, and only for the day you're actually building.",
+                "**Strap pack voltage in Devices (#592).** NOOP now shows your strap's measured pack voltage next to the battery percent — a truer read of what's actually left.",
+                "**Faster history sync (experimental, #533).** Opt-in toggles let NOOP ask the strap for a quicker connection during a history offload, so a deep backlog catches up in fewer syncs.",
+                "**More accurate steps, workouts and sleep.** Second-strap workouts fill in heart rate again (#512), Today steps count from the right source (#551), foot-sport step totals are no longer halved (#568), and a deleted sleep window can be recomputed (#526).",
+                "**Fixes across the app.** iPhone asks for notification permission during onboarding (#591), pull-to-sync shows a steady \"Syncing…\" (#590), Oura interval imports decode correctly (#511), and the morning recap won't double-fire (#567).",
+            ]
+        ),
+        Release(
+            version: "9.0.1",
+            title: "German, French & Spanish, pull-to-sync on Today, and a wave of polish",
+            date: "July 2026",
+            items: [
+                "**NOOP now speaks German, French and Spanish (#453).** The whole app — every screen and label — is translated across iPhone, Mac and Android, so it reads in your language end to end.",
+                "**Pull to sync on Today (#334).** Pull down on the Today screen to ask your strap for a fresh history sync — on iPhone, Mac and Android. It only fires when the strap is connected and ready, and the sync status keeps you posted.",
+                "**The day-cycle sky shows behind your cards by default.** The Today background now extends behind the whole scroll out of the box; turn it off in Settings if you prefer the flat canvas.",
+                "**Trend charts show the date when you inspect them (#492).** Tap or scrub a point on an Android trend chart and it shows the date beside the value now, matching iPhone and Mac.",
+                "**Fixes.** macOS can hold its Bluetooth permission again (#429), WHOOP 5.0/MG battery % shows reliably (#490), activity-file (FIT) imports fill in your steps (#483), and a batch of Today polish — the day title no longer clips, Strain drops a stray %, and the source badges sit right (#486, #492).",
+            ]
+        ),
+        Release(
+            version: "9.0.0",
+            title: "Power saving that protects your strap, a Gemini-powered coach on Android, and richer metric detail",
+            date: "July 2026",
+            items: [
+                "**Power saving that looks after your strap (#477).** A new Settings → Power saving section eases how hard NOOP works your WHOOP when the strap's own battery is running low: it syncs less often and pauses the always-on background HRV stream, so the band lasts longer until you can charge it. You pick the strap-battery level it kicks in at; it's off by default and never runs while the strap is charging. iPhone, Mac and Android.",
+                "**The AI Coach now runs Google Gemini on Android too (#400).** Android gains the native Gemini coach that iPhone and Mac already had, so your model choice and coaching work the same on every platform. On-device and opt-in as before — nothing is sent anywhere unless you turn it on and add your own key.",
+                "**Richer metric detail (#430, #432, #433, #435).** Key Metrics gains a Detailed-tiles option with tap-to-open trend detail, and every metric's detail timeline gets selectable windows — 1 day, 2 days, up to 3 months, a year, or All — matched across iPhone, Mac and Android.",
+                "**Keep NOOP running overnight on Android (#386).** An opt-in toggle that guides you through exempting NOOP from your phone maker's aggressive background-kill, so an overnight re-score isn't silently stopped. NOOP also now catches up a killed overnight score the moment you open it.",
+                "**More accurate sleep.** Elevated heart rate on a motionless wrist no longer scores as awake (#462), split nights report the whole night's Asleep total and hypnogram (#345), and a sleep-staging tune that was over-calling \"awake\" for healthy sleepers in the field is reverted (#431).",
+                "**WHOOP 5.0 / MG motion, decoded (#423).** For research, NOOP now decodes the strap's 100 Hz 6-axis motion buffer and can capture the high-rate sensor buffers behind the scenes — the groundwork for real activity detection on the 5.0/MG. Thanks vishk23 and tanarchytan.",
+            ]
+        ),
         Release(
             version: "8.7.0",
             title: "A sync chip on Today, clearer strap-clock warnings, and complete German",

@@ -1,6 +1,7 @@
 package com.noop.ble
 
 import android.content.Context
+import com.noop.data.DynAccelDiag
 import com.noop.data.InsertCounts
 import com.noop.data.StreamBatch
 import com.noop.data.WhoopRepository
@@ -108,6 +109,15 @@ class Backfiller(
      */
     private val connectionActive: () -> Boolean = { false },
     private val connectionLog: (String) -> Unit = {},
+    /**
+     * Opt-in "HR-from-PPG sub-lag interpolation" (Test Centre → Experimental algorithms, default OFF).
+     * Read as a live provider so a toggle flip mid-session takes effect on the next decoded chunk. Passed
+     * straight into [extractHistoricalStreams] so the pure decoder never reaches for prefs. Default inert
+     * (always-off) keeps the untraced/test path byte-identical. Mirrors the Swift Backfiller extract seam.
+     */
+    private val ppgHrSubLagInterp: () -> Boolean = { false },
+    /** Live UI/export observation of the historical record layout (`hist_version`). */
+    private val firmwareLayout: (Int) -> Unit = {},
 ) {
 
     /**
@@ -247,6 +257,14 @@ class Backfiller(
      * build whose gate was weaker. Reset in [begin]. Mirrors Swift `Backfiller.sessionDroppedImplausible`.
      */
     var sessionDroppedImplausible = 0
+
+    /**
+     * #520 diagnostic: `dynamic_acceleration` folded across every batch of this session, logged once at the
+     * session boundary. Session-scoped rather than per-batch because a batch is an arbitrary slice of an
+     * offload — a still-fraction only means something over a whole night's worth of records. Twin of Swift
+     * `Backfiller.sessionDynAccel`.
+     */
+    var sessionDynAccel = DynAccelDiag()
         private set
 
     /**
@@ -270,6 +288,7 @@ class Backfiller(
         spo2Dumped = 0
         loggedImplausibleClock = false
         sessionDroppedImplausible = 0
+        sessionDynAccel = DynAccelDiag()
         // #547: the range markers belong to a connection's GET_DATA_RANGE, which the client re-sets per
         // connect; clear them so a fresh session never reuses a previous strap's window (the client
         // re-publishes them as soon as the range reply arrives).
@@ -345,6 +364,7 @@ class Backfiller(
             val decoded = extractHistoricalStreams(
                 frames, ref.device, ref.wall, family,
                 sessionOldestUnix = sessionOldestUnix, sessionNewestUnix = sessionNewestUnix,
+                ppgHrSubLagInterp = ppgHrSubLagInterp(),
             )
             // Observability (PR #241): which historical layout does this strap emit? Only the unmapped/
             // reject path logged a version before, so a healthy sync never revealed v24/v25 (4.0) or
@@ -354,6 +374,7 @@ class Backfiller(
                 ?.let { v ->
                     if (loggedLayoutVersions.add(v)) {
                         log("Backfill: historical records use layout v$v")
+                        firmwareLayout(v)
                         // Connection test mode: the firmware layout as a compact tagged line. A layout that
                         // decoded a signature field (heart_rate / gravity_x / ppg_waveform) is decodable.
                         // Gated zero-cost. Twin of the Swift Backfiller emit.
@@ -394,6 +415,9 @@ class Backfiller(
                     spo2Dumped++
                 }
             }
+            // #520: accumulate the motion-magnitude diagnostic across the session; logged once at the
+            // session boundary, never per batch.
+            sessionDynAccel.merge(decoded.dynAccel)
             // #547: the strap is emitting records with implausible timestamps (a bad clock/flash —
             // far-past, a year-2027 spike, or future-dated `unix`). The ingest gate dropped them so they
             // can't pollute the day-windowed analytics; surface it ONCE per session so a bad-clock strap

@@ -88,6 +88,10 @@ public final class FrameRouter {
             if let pct = parsed.parsed["battery_pct"]?.doubleValue {
                 state.setBattery(pct)
             }
+            // #592: GET_EXTENDED_BATTERY_INFO / GET_BATTERY_LEVEL responses may carry pack voltage.
+            if let mv = parsed.parsed["battery_mV"]?.intValue {
+                state.batteryMv = mv
+            }
             // Firmware version from the connect handshake: WHOOP 4.0 decodes `fw_harvard`
             // (REPORT_VERSION_INFO), WHOOP 5/MG decodes `fw_version` (GET_HELLO). Take whichever the
             // decoder produced; one branch covers both families. It's stable for the connection, so
@@ -153,9 +157,30 @@ public final class FrameRouter {
                             d.set(abs(Int(epoch) - sent) > 120 ? d.integer(forKey: "alarm.rejectStreak") + 1 : 0,
                                   forKey: "alarm.rejectStreak")
                         }
+                    } else if Self.readbackReportsNoAlarm(in: frame) {
+                        // #34 (issue comment 2026-07-12): the strap's "nothing armed" sentinel — the epoch
+                        // field decodes to 0. This is NOT an undocumented layout; it's the strap telling us
+                        // it has no alarm stored, so an arm we just sent did NOT persist. Calling this
+                        // "unrecognised payload" (the old branch) hid the single most diagnostic signal in a
+                        // "didn't buzz" report: SET went out, strap kept nothing. Name it plainly. Log-only.
+                        let raw = Self.commandResponsePayloadHex(in: frame) ?? "empty"
+                        state.append(log: "Alarm: strap reports NO alarm currently stored (epoch 0) — the arm did not persist on the strap (raw \(raw))")
                     } else {
                         state.append(log: "Alarm: strap answered the alarm readback with an unrecognised payload (raw \(Self.commandResponsePayloadHex(in: frame) ?? "empty")) - layout undocumented, log-only")
                     }
+                } else if cmd.hasPrefix("SET_ALARM_TIME") {
+                    // #34 (issue comment 2026-07-12): the strap's OWN answer to the arm we just sent — the
+                    // accept/reject datum that was previously thrown away. armStrapAlarm logs "armed" the
+                    // instant the SET goes out, which only proves NOOP transmitted the frame; if the firmware
+                    // drops it the GET_ALARM_TIME readback then reads back epoch 0 (a silently-unpersisted
+                    // alarm — the exact signature in this report). Logging the raw result byte lets a future
+                    // report distinguish a strap that accepted the arm from one that rejected it. LOG-ONLY,
+                    // never gates behaviour. The WHOOP 4.0 result-code meaning is UNVERIFIED (the 5/MG puffin
+                    // table is 0=FAILURE 1=SUCCESS 2=PENDING 3=UNSUPPORTED, but the 4.0 reboot probe assumed
+                    // 0=accepted), so this claims NO verdict — it surfaces the byte, nothing more.
+                    let r = Self.commandResultByte(in: frame)
+                    let rhex = r.map { String(format: "0x%02x", UInt8(truncatingIfNeeded: $0)) } ?? "none"
+                    state.append(log: "Alarm: strap answered the arm (SET_ALARM_TIME) with result=\(rhex) — log-only, 4.0 result-code meaning unverified")
                 }
             }
 
@@ -181,6 +206,10 @@ public final class FrameRouter {
                 if ev.hasPrefix("BATTERY_LEVEL"),
                    let ch = parsed.parsed["battery_charging"]?.intValue {
                     state.charging = (ch != 0)
+                }
+                // #592: the same battery event carries pack voltage (mv@21) — surface it on the Devices card.
+                if ev.hasPrefix("BATTERY_LEVEL"), let mv = parsed.parsed["battery_mV"]?.intValue {
+                    state.batteryMv = mv
                 }
                 // Physical inputs the strap exposes — live only (this path never sees historical
                 // replay, which goes through the Backfiller). Event strings are "NAME(rawValue)".
@@ -282,6 +311,26 @@ public final class FrameRouter {
         if payload.first == 0x01, let e = u32le(at: 1), isPlausibleAlarmEpoch(e) { return e }
         if let e = u32le(at: 0), isPlausibleAlarmEpoch(e) { return e }
         return nil
+    }
+
+    /// True when a GET_ALARM_TIME readback explicitly reports NO alarm stored — the epoch field decodes
+    /// to 0 in the same shapes `armedAlarmEpoch` reads (SET-mirror `[0x01][u32=0]` first, then a bare
+    /// leading `u32=0`). This is the strap's "nothing armed" sentinel, distinct from a genuinely
+    /// unparseable payload: an arm the strap silently dropped reads back as epoch 0, so labelling it
+    /// "unrecognised" hid the real signal (#34). Only consulted AFTER `armedAlarmEpoch` returns nil, so a
+    /// plausible armed epoch never reaches here. Pure/CoreBluetooth-free so AlarmReadbackDecodeTests pin it.
+    nonisolated static func readbackReportsNoAlarm(in frame: [UInt8]) -> Bool {
+        guard let payload = commandResponsePayload(in: frame) else { return false }
+        func u32le(at i: Int) -> UInt32? {
+            guard payload.count >= i + 4 else { return nil }
+            return UInt32(payload[i])
+                | (UInt32(payload[i + 1]) << 8)
+                | (UInt32(payload[i + 2]) << 16)
+                | (UInt32(payload[i + 3]) << 24)
+        }
+        if payload.first == 0x01, let e = u32le(at: 1) { return e == 0 }
+        if let e = u32le(at: 0) { return e == 0 }
+        return false
     }
 
     /// Local wall-clock render for the readback log line, matching armStrapAlarm's "EEE HH:mm zzz"

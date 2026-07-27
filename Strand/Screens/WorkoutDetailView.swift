@@ -47,10 +47,19 @@ struct WorkoutDetailView: View {
     /// True when the zones bar came from imported WHOOP percentages (vs derived from raw strap HR).
     @State private var zonesFromImport = false
     @State private var loaded = false
+    /// #516: computed from the recorded workout-end + post-workout HR window. nil when the workout was
+    /// not intense enough or the strap did not record enough post-workout coverage.
+    @State private var heartRateRecovery: HeartRateRecovery.Result?
 
     /// The GPS route captured for this session on-device (#524), if any. Decoded from `RouteStore` by the
     /// row's natural key. nil = no route was recorded (honest — the map only shows when points exist).
     @State private var route: [RouteMath.LatLng] = []
+
+    /// Steps over the session window for an on-foot sport (#398): the count plus whether it came from the
+    /// strap's own counter (MG/5.0) or the phone pedometer (fallback for WHOOP 4.0 / not-yet-synced / CSV
+    /// import). nil = not an on-foot sport, or no step source had data for the window.
+    private struct StepReadout { let count: Int; let fromStrap: Bool }
+    @State private var steps: StepReadout?
 
     var body: some View {
         ScreenScaffold(title: "\(WorkoutSource.displaySport(row.sport))",
@@ -70,6 +79,7 @@ struct WorkoutDetailView: View {
             routeCard
             hrCurveCard
             zonesCard
+            heartRateRecoveryCard
             if let strain = row.strain {
                 effortCard(strain: strain)
             }
@@ -116,13 +126,79 @@ struct WorkoutDetailView: View {
             minutes = await repo.workoutZoneMinutes(from: row.startTs, to: row.endTs, age: profile.age)
         }
 
+        let hrr = await repo.workoutHeartRateRecovery(
+            from: row.startTs, to: row.endTs, maxHR: Double(profile.hrMax))
+
+        // Steps for an on-foot session (#398), computed at display time over the exact window so it
+        // "fills in after sync": prefer the strap's own counter (MG/5.0) once it has offloaded the window,
+        // else the phone pedometer (any strap, incl. WHOOP 4.0 / CSV-import). Never shown for non-foot
+        // sports (cycling/rowing/… have no footfalls). Both sources return nil for "no data", so an empty
+        // window stays "–" rather than a fabricated 0.
+        var stepReadout: StepReadout? = nil
+        if WorkoutCatalog.isOnFoot(row.sport) {
+            if let ticks = await repo.strapStepTicks(from: row.startTs, to: row.endTs) {
+                // Same per-user ticks-per-step calibration the daily total applies (#139), floor 0.5.
+                let scaled = Int((Double(ticks) / max(profile.stepTicksPerStep, 0.5)).rounded())
+                if scaled > 0 { stepReadout = StepReadout(count: scaled, fromStrap: true) }
+            }
+            if stepReadout == nil,
+               let ped = await WorkoutPedometer.steps(fromSec: row.startTs, toSec: row.endTs), ped > 0 {
+                stepReadout = StepReadout(count: ped, fromStrap: false)
+            }
+        }
+
         await MainActor.run {
             self.route = routePoints
             self.hrPoints = points
             self.zoneMinutes = minutes
             self.zonesFromImport = fromImport
+            self.heartRateRecovery = hrr
+            self.steps = stepReadout
             self.loaded = true
         }
+    }
+
+    // MARK: - Heart-rate recovery (#516)
+
+    @ViewBuilder private var heartRateRecoveryCard: some View {
+        if let recovery = heartRateRecovery {
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                SectionHeader("Heart Rate Recovery", overline: "After high-intensity effort",
+                              trailing: String(localized: "Peak \(recovery.endHR) bpm"))
+                NoopCard(tint: StrandPalette.metricRose) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 0) {
+                            recoveryStat(String(localized: "1 min"), value: recovery.after1Minute)
+                            recoveryStat(String(localized: "2 min"), value: recovery.after2Minutes)
+                            recoveryStat(String(localized: "5 min"), value: recovery.after5Minutes)
+                        }
+                        Divider().overlay(StrandPalette.hairline)
+                        Text("The change from your heart rate at the end of exercise. Positive values mean your heart rate fell; a dash means the strap did not record enough data around that minute.")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    private func recoveryStat(_ label: String, value: Int?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).strandOverline()
+            Text(value.map { "\($0)" } ?? "–")
+                .font(StrandFont.number(24))
+                .foregroundStyle(value.map { $0 >= 0 ? StrandPalette.statusPositive
+                                                     : StrandPalette.statusWarning }
+                                 ?? StrandPalette.textTertiary)
+            Text("bpm")
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.textTertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(value.map { String(localized: "Heart rate recovery at \(label), \($0) beats per minute") }
+                            ?? String(localized: "Heart rate recovery at \(label), not available"))
     }
 
     // MARK: - Header
@@ -178,6 +254,15 @@ struct WorkoutDetailView: View {
                          value: distanceLabel(row.distanceM),
                          caption: String(localized: "covered"),
                          accent: StrandPalette.metricCyan)
+            }
+            // Steps for an on-foot sport (#398). Shown for the on-foot set even before the value lands, so
+            // the tile doesn't pop in; "–" until a source has data. Caption is honest about the source.
+            if WorkoutCatalog.isOnFoot(row.sport) {
+                StatTile(label: "Steps",
+                         value: steps.map { grouped(Double($0.count)) } ?? "–",
+                         caption: steps.map { $0.fromStrap ? String(localized: "strap")
+                                                          : String(localized: "phone") },
+                         accent: steps != nil ? StrandPalette.metricCyan : StrandPalette.textTertiary)
             }
         }
     }

@@ -182,4 +182,22 @@ final class OuraApiParserSleepTests: XCTestCase {
         XCTAssertEqual(day.totalSleepMin, 13_000 / 60.0)
         XCTAssertEqual(day.restingHr, 55)
     }
+
+    /// Oura's `efficiency` is a 0-100 integer percent. NOOP's own sleep pipeline stores
+    /// sleepSession.efficiency / dailyMetric.efficiency as a 0-1 FRACTION everywhere else it's
+    /// written (StrandAnalytics: asleep ÷ in-bed), so the importer must normalize at the parse
+    /// boundary rather than passing Oura's native percent straight through — both the individual
+    /// session and the day rollup it folds onto.
+    func testEfficiencyIsNormalizedToZeroToOneFraction() throws {
+        let docs: [[String: Any]] = [[
+            "day": "2026-03-01",
+            "bedtime_start": "2026-02-28T23:00:00+00:00",
+            "bedtime_end": "2026-03-01T07:00:00+00:00",
+            "total_sleep_duration": 27_000, "efficiency": 92,
+        ]]
+        let (periods, days) = OuraApiParser.parseSleep(docs)
+        let p = try XCTUnwrap(periods.first)
+        XCTAssertEqual(p.session.efficiencyPct, 0.92)
+        XCTAssertEqual(days.first?.efficiencyPct, 0.92)
+    }
 }

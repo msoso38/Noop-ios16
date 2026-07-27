@@ -68,6 +68,14 @@ object WhoopCsvImporter {
      */
     private const val DAY_STRAIN_TO_EFFORT_SCALE = 100.0 / 21.0
 
+    /**
+     * WHOOP CSVs carry "Sleep efficiency %" on a 0–100 scale, but NOOP's `efficiency` columns store
+     * the 0–1 fraction the native pipeline writes (AnalyticsEngine: actual-sleep ÷ in-bed). Divide at
+     * the WRITE boundary — the verbatim parsed value stays untouched, same shape as the Day Strain
+     * rescale above. Keep byte-identical to Swift (WhoopExportImporter.fractionFromImportedEfficiencyPct).
+     */
+    private fun efficiencyFractionFromPct(pct: Double?): Double? = pct?.let { it / 100.0 }
+
     private val DAY_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
     /**
@@ -353,7 +361,7 @@ object WhoopCsvImporter {
                     deviceId = deviceId,
                     day = day,
                     totalSleepMin = asleepMin,
-                    efficiency = efficiency,
+                    efficiency = efficiencyFractionFromPct(efficiency),
                     deepMin = deepMin,
                     remMin = remMin,
                     lightMin = lightMin,
@@ -443,7 +451,7 @@ object WhoopCsvImporter {
                         deviceId = deviceId,
                         startTs = startTs,
                         endTs = if (endTs >= startTs) endTs else startTs,
-                        efficiency = efficiency,
+                        efficiency = efficiencyFractionFromPct(efficiency),
                         restingHr = null, // resting HR is a cycles/recovery field, not in sleeps.csv
                         avgHrv = null,    // HRV likewise is a recovery field, not in sleeps.csv
                         stagesJSON = stagesJson(lightMin, deepMin, remMin, awakeMin),
@@ -467,7 +475,7 @@ object WhoopCsvImporter {
                             deviceId = deviceId,
                             day = epochSecondsToDay(dayTs, tz),
                             totalSleepMin = asleepMin,
-                            efficiency = efficiency,
+                            efficiency = efficiencyFractionFromPct(efficiency),
                             deepMin = deepMin,
                             remMin = remMin,
                             lightMin = lightMin,
@@ -576,7 +584,11 @@ object WhoopCsvImporter {
             val tz = WhoopTime.tzOffsetMinutes(row["cycle_timezone"])
             val cycleStart = WhoopTime.parseEpochSeconds(row.cell("cycle_start_time"), tz)
             val question = row.cell("question_text", "question")
-            val answer = row.cell("answered_yes_no", "answer", "answer_text")
+            // #631: the REAL WHOOP export header is "Answered yes" (-> answered_yes), not the
+            // "Answered yes/no" NOOP's own exporter writes (-> answered_yes_no). Every real WHOOP
+            // journal import silently zeroed out to "without" because neither of the old keys ever
+            // matched, regardless of the account's actual answers.
+            val answer = row.cell("answered_yes", "answered_yes_no", "answer", "answer_text")
             val notes = row.cell("notes")
 
             // Swift: a journal row is only meaningful if it has a question/answer/notes.

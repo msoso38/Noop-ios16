@@ -4,7 +4,7 @@ package com.noop.ingest
  * Pure (Android-free, HC-SDK-free) planning logic for what NOOP exports INTO Health Connect.
  *
  * Everything here operates on plain Kotlin types so it is unit-testable on the JVM, mirroring
- * [HealthConnectImporter.sumActiveKcalInWindow]. [HealthConnectWriter] turns these descriptors into
+ * [HealthConnectImporter.sumKcalInWindow]. [HealthConnectWriter] turns these descriptors into
  * actual Health Connect records (the untestable SDK glue is kept thin, as in `buildExerciseRecords`).
  *
  * #528 (reimplemented from @sunny-noop): close the export gaps so a strap-only user surfaces the
@@ -74,34 +74,66 @@ object HealthExportPlan {
         return HrPlan(chunks, fresh.last().tsSec)
     }
 
-    // ---- Sleep sessions: AWAKE vs SLEEPING only (fine stages deferred until stager validated) ----
+    // ---- Sleep sessions: preserve detailed stages for Health Connect writeback ----
 
-    data class SleepInput(val startTs: Long, val endTs: Long, val stagesJSON: String?)
-    data class StagePlan(val startSec: Long, val endSec: Long, val asleep: Boolean)
+    /** One stored fragment as the export sees it: [keyStartTs] is the immutable detected onset (the
+     *  dedup identity — a user edit must never change it), [startTs] the EFFECTIVE onset that drives
+     *  the exported span (`startTsAdjusted ?: startTs`, iOS parity #318). */
+    data class SleepInput(val keyStartTs: Long, val startTs: Long, val endTs: Long, val stagesJSON: String?)
+    enum class StageKind { AWAKE, SLEEPING, LIGHT, DEEP, REM }
+    data class StagePlan(val startSec: Long, val endSec: Long, val kind: StageKind)
     data class SleepPlan(
         val clientId: String,
         val startSec: Long,
         val endSec: Long,
         val stages: List<StagePlan>,
+        /** The non-representative fragments' old per-fragment ids (`noop-sleep-<keyStartTs>`). Health
+         *  Connect upserts by clientRecordId but never removes an id we stop writing, so a night that
+         *  previously exported as two records would orphan the second when it becomes one — the
+         *  writer deletes these explicitly. Empty for a single-fragment night. (#364) */
+        val absorbedClientIds: List<String> = emptyList(),
     )
 
-    /** Finalized sessions (endTs <= [nowSec]) only; never the currently-open night. */
-    fun sleepSessions(sessions: List<SleepInput>, nowSec: Long): List<SleepPlan> {
+    /** Finalized sessions (endTs <= [nowSec]) only; never the currently-open night. Fragments are
+     *  grouped into BRIDGED NIGHTS (#364) via [SleepStageTotals.bridgedNightGroups] — the SAME
+     *  two-tier bridge the daily totals score with (#561/#861) — so a night the detector split on a
+     *  brief mid-night wake exports as ONE session whose gap is an explicit AWAKE stage; naps never
+     *  bridge and stay their own records. The clientRecordId keys off the group's EARLIEST fragment's
+     *  immutable detected onset. [offsetSec] is seconds EAST of UTC (the night-tail bridge reads the
+     *  local clock). */
+    fun sleepSessions(sessions: List<SleepInput>, nowSec: Long, offsetSec: Long): List<SleepPlan> {
+        val finalized = sessions.filter { it.endTs > it.startTs && it.endTs <= nowSec }
+        if (finalized.isEmpty()) return emptyList()
+        val blocks = finalized.map { com.noop.analytics.SleepStageTotals.NightBlock(it.startTs, it.endTs) }
         val out = ArrayList<SleepPlan>()
-        for (s in sessions) {
-            if (s.endTs <= s.startTs) continue
-            if (s.endTs > nowSec) continue
-            out.add(SleepPlan("noop-sleep-${s.startTs}", s.startTs, s.endTs, parseStages(s.stagesJSON)))
+        for (group in com.noop.analytics.SleepStageTotals.bridgedNightGroups(blocks, offsetSec)) {
+            val frags = group.indices.map { finalized[it] }.sortedBy { it.startTs }
+            val stages = ArrayList<StagePlan>()
+            var prevEnd: Long? = null
+            for (f in frags) {
+                val p = prevEnd
+                // The inter-fragment seam is time the user was demonstrably awake — export it as an
+                // explicit AWAKE stage so the merged night carries the wake instead of a silent hole.
+                if (p != null && f.startTs > p) stages.add(StagePlan(p, f.startTs, StageKind.AWAKE))
+                stages.addAll(parseStages(f.stagesJSON))
+                prevEnd = maxOf(prevEnd ?: f.endTs, f.endTs)
+            }
+            val rep = frags.minOf { it.keyStartTs }
+            out.add(SleepPlan(
+                clientId = "noop-sleep-$rep",
+                startSec = frags.first().startTs,
+                endSec = frags.maxOf { it.endTs },
+                stages = stages,
+                absorbedClientIds = frags.map { it.keyStartTs }.filter { it != rep }
+                    .sorted().map { "noop-sleep-$it" },
+            ))
         }
         return out
     }
 
-    /** Parse the `{start,end,stage}` segment array; classify `wake`/`awake` as awake, else asleep;
-     *  coalesce consecutive same-class segments. Returns empty on null/malformed JSON.
-     *
-     *  The asleep test mirrors [HealthConnectImporter] / `WhoopRepository.sleepEfficiency`, which
-     *  treat any stage that is not `wake`/`awake` as asleep — so the exported AWAKE/SLEEPING split
-     *  matches what the rest of NOOP already considers asleep. */
+    /** Parse the `{start,end,stage}` segment array and preserve stages Health Connect can represent.
+     * `wake` and `awake` normalize to [StageKind.AWAKE]; unknown asleep labels degrade honestly to
+     * [StageKind.SLEEPING]. Consecutive segments coalesce only when their detailed kind matches. */
     private fun parseStages(json: String?): List<StagePlan> {
         json ?: return emptyList()
         val arr = runCatching { org.json.JSONArray(json) }.getOrNull() ?: return emptyList()
@@ -113,12 +145,19 @@ object HealthExportPlan {
             if (st < 0 || en <= st) continue
             val name = o.optString("stage")
             if (name.isEmpty()) continue // no stage label: leave a gap rather than fabricate asleep
-            raw.add(StagePlan(st, en, asleep = name != "wake" && name != "awake"))
+            val kind = when (name) {
+                "wake", "awake" -> StageKind.AWAKE
+                "light" -> StageKind.LIGHT
+                "deep" -> StageKind.DEEP
+                "rem" -> StageKind.REM
+                else -> StageKind.SLEEPING
+            }
+            raw.add(StagePlan(st, en, kind))
         }
         val merged = ArrayList<StagePlan>()
         for (seg in raw.sortedBy { it.startSec }) {
             val last = merged.lastOrNull()
-            if (last != null && last.asleep == seg.asleep && seg.startSec <= last.endSec) {
+            if (last != null && last.kind == seg.kind && seg.startSec <= last.endSec) {
                 merged[merged.size - 1] = last.copy(endSec = maxOf(last.endSec, seg.endSec))
             } else {
                 merged.add(seg)
