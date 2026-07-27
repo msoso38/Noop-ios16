@@ -99,6 +99,11 @@ private struct DevicesContent: View {
                     device: device,
                     isActive: device.status == .active,
                     isLiveConnected: device.status == .active && live.connected,
+                    // Has this link actually proven itself (any data, or a completed handshake)? `connected`
+                    // alone is just "CoreBluetooth handed us an object" — true before service discovery, and
+                    // true for a state-restored peripheral that is already dead. Without this the card
+                    // pulsed "Active · Live" for a strap that had flat-lined hours earlier.
+                    linkProven: live.linkProven,
                     // #221: a WHOOP 5/MG can be BLE-connected yet have its ENCRYPTED bond refused (the
                     // WHOOP app, or a stale iOS pairing, holds the single-app bond) — no HR/biometric data
                     // flows even though the link is up, so "Active · Live" overstates it. pairingHint is
@@ -342,13 +347,29 @@ struct DevicePillState: Equatable {
     var pulsing: Bool = false
     var showsDot: Bool = true
 
+    /// `linkProven` (see `LiveState.linkProven`): has this link actually carried a byte, or completed its
+    /// connect handshake? `isLiveConnected` is built from `live.connected`, which BLEManager publishes the
+    /// instant CoreBluetooth's `didConnect` fires — BEFORE service discovery, so before any characteristic
+    /// exists or any data flows. Layer iOS state restoration on top (it hands back a peripheral that reads
+    /// `.connected` and re-seeds the bond flags from a PREVIOUS process) and the pill confidently pulsed
+    /// "Active · Live" for a strap that had died on the user's wrist hours earlier.
+    ///
+    /// Defaults `true` so every existing caller — and the whole non-WHOOP source family (Oura, Huami, FTMS,
+    /// standard-HR), none of which touch the flag — keeps its exact current behaviour. An unproven link
+    /// falls back to plain "Active", which is the honest statement: this IS your active device, we just
+    /// can't claim data is flowing. It deliberately does NOT invent a new pill state — the strap may be a
+    /// second away from streaming, and the stalled-handshake watchdog cancels a genuinely dead link inside
+    /// 90 s anyway.
     static func resolve(isArchived: Bool, isActive: Bool, isReconnecting: Bool,
-                         bondRefused: Bool, isLiveConnected: Bool) -> DevicePillState {
+                         bondRefused: Bool, isLiveConnected: Bool,
+                         linkProven: Bool = true) -> DevicePillState {
         if isArchived { return DevicePillState(label: "Removed", tone: .neutral, showsDot: false) }
         guard isActive else { return DevicePillState(label: "Paired", tone: .neutral) }
         if isReconnecting { return DevicePillState(label: "Reconnecting…", tone: .warning, pulsing: true) }
         if bondRefused { return DevicePillState(label: "Connected · not paired", tone: .warning) }
-        if isLiveConnected { return DevicePillState(label: "Active · Live", tone: .positive, pulsing: true) }
+        if isLiveConnected && linkProven {
+            return DevicePillState(label: "Active · Live", tone: .positive, pulsing: true)
+        }
         return DevicePillState(label: "Active", tone: .positive)
     }
 }
@@ -361,6 +382,10 @@ private struct DeviceCard: View {
     let device: PairedDevice
     let isActive: Bool
     let isLiveConnected: Bool
+    /// Has the live link actually carried data / completed its handshake (`LiveState.linkProven`)? Gates the
+    /// "· Live" half of the pill so a raw-but-dead CBPeripheral — the restored-zombie case — reads "Active"
+    /// instead of pulsing "Active · Live". Defaults true: every non-WHOOP source keeps today's behaviour.
+    var linkProven: Bool = true
     /// #221: the active+connected strap is BLE-linked but its encrypted bond was refused (#78 state) —
     /// no HR/biometric data flows despite the link being up. Drives the "Connected · not paired" pill
     /// (which takes priority over "Active · Live") and the honest subtitle/footnote. False for every
@@ -594,7 +619,7 @@ private struct DeviceCard: View {
     private var pillState: DevicePillState {
         DevicePillState.resolve(isArchived: device.status == .archived, isActive: isActive,
                                  isReconnecting: isReconnecting, bondRefused: bondRefused,
-                                 isLiveConnected: isLiveConnected)
+                                 isLiveConnected: isLiveConnected, linkProven: linkProven)
     }
 
     private var statePill: some View {

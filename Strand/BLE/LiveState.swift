@@ -35,6 +35,20 @@ public final class LiveState: ObservableObject {
     /// per-connection guards (`connectHandshakeDone`, the cmd-notify-confirmed flag) reset on disconnect,
     /// so the next connection can bump this again.
     @Published public var connectSettled: Int = 0
+    /// Has the CURRENT link proven itself — i.e. has the strap actually spoken (any notification), or has
+    /// the connect handshake completed? `connected` alone cannot answer that: BLEManager publishes it the
+    /// instant CoreBluetooth's `didConnect` fires, BEFORE service discovery, so it is true while no
+    /// characteristic exists and no byte has moved. Combined with iOS state restoration handing back a
+    /// peripheral that is `.connected` but dead, that made the Devices card advertise "Active · Live" for a
+    /// strap that was a corpse — the user read "Live" all evening on a band that had flat-lined.
+    ///
+    /// DEFAULTS TRUE, and only BLEManager ever clears it. That is deliberate: `connected` is also driven by
+    /// four non-WHOOP sources (Oura, Huami, FTMS, generic standard-HR), and each of those sets it true only
+    /// once it is genuinely subscribed and receiving. They never touch this flag, so they keep their exact
+    /// current behaviour — an inert `true` — instead of being regressed into looking offline. BLEManager
+    /// clears it at connect/restore, sets it on first data or a completed handshake, and restores the inert
+    /// `true` on disconnect so a stale `false` can't outlive the link and poison the next source.
+    @Published public var linkProven: Bool = true
     /// True ONLY when a non-WHOOP live source (currently the Oura ring) is actively streaming live HR.
     /// This is the green "STREAMING" signal for sources that have no WHOOP-style encrypted bond: it is
     /// DELIBERATELY separate from `bonded`, which carries WHOOP encrypted-bond + buzz semantics (it gates
@@ -59,11 +73,23 @@ public final class LiveState: ObservableObject {
     /// replaced) by `setRRIntervals(_:)`; emptied by `clearBiometrics()`.
     @Published public private(set) var rrRecent: [Int] = []
     @Published public var batteryPct: Double? = nil
-    /// Charging flag from the strap's BATTERY_LEVEL events — wire observation: u8 bit0 in the
+    /// RAW charging flag from the strap's BATTERY_LEVEL events — wire observation: u8 bit0 in the
     /// event payload (4.0 @26 / 5.0 @30), pushed ~every 8 min on captured links. nil until the
     /// first event of a session; cleared on disconnect so a stale flag can't outlive the link.
     /// Flag ONLY — the battery % keeps its family-specific source (#77).
+    ///
+    /// This is the WIRE value and stays that way (it's what gets persisted). Do not render it directly:
+    /// the 5.0 offset is unverified and has been observed reporting 0 on a strap that was demonstrably
+    /// charging. `chargingEffective` is the value to display — see `StrapChargeInference`.
     @Published public var charging: Bool? = nil
+    /// The charging state worth showing: the raw flag, rescued by a measurably rising SoC when the flag
+    /// stays silent or wrong. Computed (never stored) over the already-`@Published` `charging` +
+    /// `batterySamples`, exactly like `batteryEstimate` — so any view reading it re-renders when either
+    /// witness changes, and there's no third piece of state to keep in sync.
+    public var chargingEffective: Bool? {
+        StrapChargeInference.resolve(flag: charging, samples: batterySamples,
+                                     nowUnix: Int(Date().timeIntervalSince1970))
+    }
 
     // MARK: - Battery runtime estimate (#713)
 
@@ -192,6 +218,30 @@ public final class LiveState: ObservableObject {
     /// Drop the strap-range snapshot (called on disconnect with the other live clears) so a stale clock-drift
     /// window can't outlive the link.
     public func clearStrapRange() { strapRange = nil }
+
+    /// The newest record WE'VE actually persisted (max HR ts) — our data frontier. Together with
+    /// `strapRange.newestUnix` (the newest the STRAP holds) this is the backlog: the gap between what the
+    /// strap banked and what we've recovered. BLEManager publishes it from the one place that already reads
+    /// it, the per-session auto-continue decision, so the readout costs no extra store queries.
+    ///
+    /// nil until the first offload session ends, and cleared on disconnect — a stale frontier would make the
+    /// progress readout quote a gap that no longer exists.
+    @Published public private(set) var dataFrontierUnix: Int?
+
+    /// Publish the frontier read during an offload session's continuation decision. nil is a legitimate
+    /// answer (nothing persisted yet) and is stored as such.
+    public func setDataFrontier(_ ts: Int?) { dataFrontierUnix = ts }
+
+    /// What to tell the user about history recovery right now. Computed over the already-`@Published`
+    /// `connected` / `backfilling` / `dataFrontierUnix` / `strapRange`, so a view reading it re-renders when
+    /// any input moves — same pattern as `batteryEstimate`. Internal (not public) because `BackfillProgress`
+    /// is: it's an app-module display type, and its threshold defaults come from `BackfillContinuation`,
+    /// which is internal too. Every consumer (the Today card, the tests via @testable) is in-module.
+    var backfillProgress: BackfillProgress {
+        BackfillProgress.resolve(connected: connected, backfilling: backfilling,
+                                 frontierUnix: dataFrontierUnix,
+                                 strapNewestUnix: strapRange.map { $0.newestUnix > 0 ? $0.newestUnix : nil } ?? nil)
+    }
 
     @Published public var lastFrameType: String? = nil
     @Published public var lastEvent: String? = nil
@@ -472,6 +522,7 @@ public final class LiveState: ObservableObject {
         recentHrSamples.removeAll()       // Sleep readout buffers must not outlive the link (Group E)
         recentGravitySamples.removeAll()
         clearStrapRange()                 // a stale clock-drift window must not outlive the link either
+        dataFrontierUnix = nil            // …nor a stale frontier, which would quote a gap that's moved on
         lastFrameAtUnix = nil             // #987: a stale "last frame" freshness must not outlive it either
     }
 

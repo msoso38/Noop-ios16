@@ -10,6 +10,21 @@ unable to tell the wearer any of it.
 > started repeating them. Line numbers are re-derived against `capture-deep` at triage time; where the
 > original pointer had drifted, the drift is noted. Findings not re-verified in this pass say so.
 
+> **Third pass, 2026-07-26 — BLE link-recovery port.** An abandoned local `main` line (diverged
+> 2026-07-14, never merged) held unique work against **A1, A2, A4, A6 and B1**. It was reconciled onto
+> `origin/main` as `ble-link-recovery-port`; those five sections are updated below. Two things in that
+> line were **deliberately not ported**, both cases of the same trap — a change `origin/main` had already
+> examined and reversed, which a naive merge would silently resurrect:
+>
+> 1. the **A5 cap raise** (6 → 120), whose rationale is the §0 contaminated measurement; and
+> 2. a rival `StrapBatteryDisplay` that let a stale percent outlive a disconnect — i.e. **B2**, which A3's
+>    resolver had deliberately fixed.
+>
+> A third such change in that line (`Offload: stop archiving v20/v21 as "undecodable"`) is **E2**, already
+> reverted on `origin/main` as harmful; it was not ported either. Nothing in this pass is strap-validated —
+> both app targets compile and the pure tests pass, which per `CLAUDE.md` proves nothing about BLE
+> behaviour.
+
 | | Meaning |
 |---|---|
 | **CONFIRMED** | re-derived from current code; still true |
@@ -57,7 +72,7 @@ findings that read *code structure* are not.
 
 ## A. BLE / battery / connection
 
-### A1. Battery % on a 5/MG — **headline REFUTED, narrower defect CONFIRMED · OPEN**
+### A1. Battery % on a 5/MG — **headline REFUTED, narrower defect CONFIRMED · FIXED (needs strap validation)**
 
 **REFUTED: "Battery % never lands on a 5.0/MG."** The doc's own A6 evidence disproves it — a
 `soc=31.6` reading exists for 2026-07-15. Two mechanisms the first pass missed:
@@ -84,11 +99,21 @@ of `nil` per connect** — long enough to look like "never" to a wearer, and the
 source (#77)"). The decode exists. The #77 stub-100 hazard is **4.0-only**, so gating on family would
 give a 5/MG a self-healing ~8-min source.
 
-**Not fixed here.** Both candidate fixes are on the BLE connect path, which per `CLAUDE.md` "must be
-validated on a real strap; compile-success proves nothing" — and a live measurement is in progress.
-**Needs the user.**
+**FIXED** (`Strand/BLE/StrapBatteryReadPolicy.swift`, pinned by `StrandTests/StrapBatteryReadPolicyTests.swift`):
+`enableLiveNotifications` now also calls `retryBatteryReadIfDue`, so every moment that already
+re-subscribes notifies — post-bond 5/MG, post-bond 4.0, keep-alive, manual refresh, realtime start — is
+also a moment the read can self-heal. The policy owns the two constraints that make that safe: the **#77
+family gate** (never read a 4.0's stub-100 characteristic, so the fix cannot flash a fake 100% over a real
+charge) and a 30 s throttle, which is load-bearing because the call site re-enters on **every**
+`.withResponse` ack, including every HISTORY_END during a multi-minute offload.
 
-### A2. "Active · Live" overstates a raw link — **CONFIRMED · OPEN**
+Fix 1b (using the 5.0 BATTERY_LEVEL event's discarded `battery_pct` as a second source) was **not** taken —
+the re-issued read closes the same gap without touching `FrameRouter`'s #77 invariant.
+
+**Still needs strap validation:** this is the BLE connect path, and per `CLAUDE.md` compile-success proves
+nothing here. Both app targets build and the pure policy tests pass; the end-to-end behaviour is unverified.
+
+### A2. "Active · Live" overstates a raw link — **CONFIRMED · FIXED (needs strap validation)**
 
 `state.connected = true` at `BLEManager.swift:3108` in `didConnect`, **before**
 `discoverPrimaryServices` — true the instant the raw link object exists, before any characteristic or
@@ -100,7 +125,19 @@ The card already carries a narrower guard for the *bond-refused* case (`DevicesV
 #221) — which shows the shape of the fix — but nothing gates on data actually flowing. `LiveState` has
 the ingredient: `lastFrameAtUnix` (`:203-207`, #987).
 
-**Not fixed here** — BLE/connect semantics, needs strap validation. **Needs the user.**
+**FIXED:** `LiveState.linkProven` (`Strand/BLE/LiveState.swift`) — has this link actually carried a byte,
+or completed its handshake? BLEManager clears it in `didConnect` and `willRestoreState`, sets it on first
+data or a completed handshake, and restores it on disconnect. `DevicePillState.resolve` takes it as a new
+`linkProven:` parameter and gates only the "· Live" half, so an unproven link falls back to plain
+"Active" — the honest statement — rather than inventing a new pill state.
+
+The parameter **defaults `true`**, which is what keeps this narrow: the four non-WHOOP sources (Oura,
+Huami, FTMS, standard-HR) also drive `connected`, and each already sets it only once genuinely subscribed.
+They never touch the flag, so they keep an inert `true` instead of being regressed into looking offline.
+Priority order is unchanged — the #221 bond-refused pill still wins. Pinned by
+`StrandTests/DevicePillStateTests.swift`.
+
+**Still needs strap validation** (connect/restore semantics).
 
 ### A3. Charging was structurally unrenderable without a charge % — **CONFIRMED · FIXED**
 
@@ -127,7 +164,7 @@ a **fresh** charging bit and rendered a crossed-out bolt.
 is now visually distinct from "no link"; the accessibility label no longer says a bare "Strap battery"
 for three different states.
 
-### A4. Zombie restored peripheral spins forever — **NOT RE-VERIFIED · OPEN**
+### A4. Zombie restored peripheral spins forever — **NOT RE-VERIFIED · BOUNDED (needs strap validation)**
 
 First-pass claim: after iOS state-restoration returns a dead peripheral, the app marks it connected, the
 handshake never completes, and it retries the **same dead handle** indefinitely — 40+ minutes of
@@ -135,7 +172,24 @@ handshake never completes, and it retries the **same dead handle** indefinitely 
 
 Re-verified only that the log line exists on both platforms (`BLEManager.swift:1562`,
 `WhoopBleClient.kt:4893`). The restoration/retry behaviour itself was **not** re-traced this pass, and
-it is not strap-testable right now. Treat as unconfirmed. **Needs the user.**
+it is not strap-testable right now. Treat the *claim* as unconfirmed.
+
+**The mechanism WAS since traced, and it is real** (Swift side): `willRestoreState` marks the link up and
+re-discovers services, but the CLIENT_HELLO / bond write that follows is `.withResponse`. On a wedged
+strap it is never acked, so `didWriteValueFor` never fires — and that is the **only** caller of
+`startKeepAlive()`, so the 120 s liveness watchdog inside `keepAliveFire` (the machinery that would have
+bounced exactly this link) is never armed. Nothing else bounds the retry.
+
+**BOUNDED:** `Strand/BLE/StalledHandshakePolicy.swift` arms a 90 s fuse at connect **and at restore**, then
+cancels the peripheral so the existing 3 s disconnect-rescan recovers the link. It deliberately adds no new
+reconnect mechanism. The fuse is picked against the fuses already in the tree — above the 60 s reboot-settle
+backstop, below the 120 s liveness fuse — and every input to `shouldRecover` is a reason to stay out of the
+way (`sawData`, `handshakeDone`, `intentionalDisconnect`, `autoReconnectPaused`, `bondRefused`), so it fires
+only on the narrow case nothing else owns. Pinned by `StrandTests/StalledHandshakePolicyTests.swift`.
+
+This bounds the failure mode whether or not the original 40-minute claim is ever reproduced. **Kotlin twin
+not written** — Android has no `willRestoreState` equivalent, so the trigger does not exist there.
+**Still needs strap validation.**
 
 ### A5. `maxAutoContinues = 6` throttled a healthy recovery — **REFUTED · DECIDED: the cap stays at 6**
 
@@ -151,6 +205,15 @@ root cause was known. The reasoning is now recorded at the constant on both plat
   cap* in EMPTY offloads — the cap is what bounded them.
 - **It applies to WHOOP 4.0 too**, where a long drain starves the realtime keep-alive (`guard
   !backfilling`, #160).
+
+> **It was re-raised a third time, and refused (2026-07-26).** The abandoned local `main` line carried a
+> commit raising the cap to 120 behind an `isDeepDrain` evidence gate. Its rationale — "each session
+> recovers ~29 min of strap history, so an 18-hour backlog needs ~37 sessions" — **is the §0 contaminated
+> measurement**, taken at 28x banking. When that line's unique work was ported onto `origin/main`, the cap
+> change was dropped and `BackfillContinuation` left byte-identical; `StrandTests/BackfillContinuationTests`
+> (21 tests) passes unchanged. Note the gate itself was the shape this section invites ("a conditional
+> bypass while provably behind and advancing"), so the *mechanism* is not what was rejected — the
+> **evidence** is. A raise still needs a deep-backlog case demonstrated on a **default** strap.
 
 The "~12h+ to recover a night" that made this finding look severe was measured **at 28x** (§0). Remove
 the 28x and the arithmetic that condemned the cap evaporates.
@@ -201,7 +264,24 @@ The finding's own evidence contradicts its title. The row was `soc=31.6, chargin
 **OPEN (reframed):** whether the 5/MG's BATTERY_LEVEL bit0 tracks charging **at all** is genuinely
 unknown and worth settling — but it needs a controlled capture (put it on the charger, watch
 `state.charging` change), not a single historical row. A3's fix is what makes that flag visible enough
-to observe.
+to observe. **This stays OPEN: nothing below settles the question.**
+
+**MITIGATED, so a wrong bit stops costing the wearer:** `Strand/BLE/StrapChargeInference.swift` stops
+treating that one unverified bit as the only witness. A **rising SoC** is direct, family-independent,
+decoder-independent evidence of a charge, and this codebase already trusts exactly that inference —
+`BatteryEstimator.chargeStepPct` is documented as "a SoC rise larger than this marks a CHARGE", and the
+runtime estimate has always restarted its discharge run on it. `LiveState.chargingEffective` resolves the
+flag against that second witness; the UI reads it, so a strap on the puck reporting `charging=0` no longer
+renders "not charging" **and** no longer shows a "~2 days left" discharge estimate.
+
+Strictly additive, and deliberately so: a confirmed `true` stays `true`, inference can only ever ADD a
+charge and never deny one, and with neither witness it answers `nil` (unknown) rather than asserting
+"not charging". **`LiveState.charging` remains the raw WIRE value** and is what gets persisted — so no
+stored value diverges from Kotlin and no `.noopbak` contract moves. Pinned by
+`StrandTests/StrapChargeInferenceTests.swift`.
+
+Because it is display-only, this **does not** substitute for the controlled capture — it makes the app
+correct either way while the question stays open. Kotlin twin is a UI-parity item, not a data one.
 
 ### A7. `lastSeenAt` frozen at pairing → "last seen 18 days ago" — **CONFIRMED · OPEN (both platforms)**
 
@@ -228,7 +308,7 @@ link:
 > "All of this stuff, like backfill progress, should be something you can see on the app. It is kind of
 > misleading me right now."
 
-### B1. Backfill progress invisible — **PARTLY REFUTED · iOS half FIXED · remainder OPEN**
+### B1. Backfill progress invisible — **PARTLY REFUTED · iOS half FIXED · remainder now FIXED**
 
 **REFUTED as "the app never surfaces it."** It does, on macOS and in the menu bar:
 `SyncingHistoryNote` ("Syncing strap history… N chunks pulled", `Strand/Screens/ScreenScaffold.swift:199`)
@@ -244,10 +324,22 @@ all**. Not a missing feature — a **v8 redesign regression**, the same class as
 **FIXED (iOS):** `LiquidSyncStatusRow` in the Data Sources card — "Strap history / Syncing… N chunks"
 while `live.backfilling`, else "Synced N ago" from `live.lastSyncedAt`.
 
-**OPEN — the "how far behind" half.** *"Recovering strap history — July 14 14:31, ~15h behind"* still
-isn't possible: it needs our persisted frontier (max HR ts) compared against
-`live.strapRange?.newestUnix`. `strapRange` is in `LiveState` (`:160-176`); **the frontier is not** — it
-is a Repository read. Plumbing it is a real change, not a display tweak, so it was not half-built here.
+**FIXED — the "how far behind" half** (2026-07-26). *"Recovering strap history / Have it through July 14,
+14:31 — ~15h behind"* now renders, via `LiquidBackfillProgressRow` over the pure
+`Strand/BLE/BackfillProgress.swift`.
+
+The plumbing objection above was right, and this is how it was resolved without a new Repository read:
+BLEManager **already** reads the frontier (`collector.latestHRSampleTs()`) once per offload session, for
+the auto-continue decision — exactly the cadence the readout wants. It now publishes it there via
+`LiveState.setDataFrontier`, so `backfillProgress` computes over `connected` / `backfilling` /
+`dataFrontierUnix` / `strapRange`, all already `@Published`. No extra query, no third piece of state.
+
+Two properties worth keeping: the resolver reuses `BackfillContinuation.defaultBehindGapSeconds`, so the
+readout can never claim "behind" about a gap the drain has already decided is closed; and a frontier
+*ahead* of the strap's reported newest (the #451 stale-epoch and #928 future-clock cases) resolves to
+`.unknown` rather than a negative backlog. It also answers **between** sessions — `.pending` — which is the
+state the wearer actually misread as "my data is gone". `LiquidSyncStatusRow` is kept and still answers
+*that* a drain is running. Pinned by `StrandTests/BackfillProgressTests.swift`.
 
 ### B2. Battery shown with no staleness marker — **CONFIRMED · FIXED (worst case)**
 
