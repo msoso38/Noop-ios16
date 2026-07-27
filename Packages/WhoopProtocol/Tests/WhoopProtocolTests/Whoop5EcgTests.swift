@@ -464,25 +464,72 @@ final class Whoop5EcgTests: XCTestCase {
         XCTAssertNil(Whoop5EcgProbe.outcome(frame: [0xAA, 0x01]))
     }
 
+    /// Build a step the way `BLEManager.sendEcgCommand` does — the label from the opcode, and the role
+    /// flag DERIVED from opcode + argument rather than hand-set. Every verdict test below therefore
+    /// exercises the same predicate the app does, so a wrong `requestsRealtimeData` cannot be papered
+    /// over by a test that simply asserts the flag it wants.
+    private func sent(_ cmd: UInt8,
+                      arg: UInt8,
+                      _ outcome: Whoop5EcgProbe.CommandOutcome,
+                      replyHex: String? = nil) -> Whoop5EcgProbe.Step {
+        let name: String
+        switch cmd {
+        case Whoop5Ecg.selectWristCmd: name = "SELECT_WRIST"
+        case Whoop5Ecg.mainControlEcgDataGenerationCmd: name = "TOGGLE_LABRADOR_DATA_GENERATION"
+        case Whoop5Ecg.toggleSaveRawEcgCmd: name = "TOGGLE_LABRADOR_RAW_SAVE"
+        case Whoop5Ecg.toggleRealtimeFilteredEcgCmd: name = "TOGGLE_LABRADOR_FILTERED"
+        default: name = "CMD"
+        }
+        return Whoop5EcgProbe.Step(
+            label: "\(name)(\(cmd))",
+            outcome: outcome,
+            requestsRealtimeData: Whoop5Ecg.requestsRealtimeData(cmd: cmd, arg: arg),
+            replyHex: replyHex)
+    }
+
+    // MARK: - Which commands can produce data at all
+
+    func testOnlyTheStreamAndGenerationVerbsCanProduceRealtimeData() {
+        // The ARGUMENT is half the answer: the same opcode asks for data ON and asks for silence OFF.
+        XCTAssertTrue(Whoop5Ecg.requestsRealtimeData(cmd: Whoop5Ecg.toggleRealtimeFilteredEcgCmd, arg: 1))
+        XCTAssertFalse(Whoop5Ecg.requestsRealtimeData(cmd: Whoop5Ecg.toggleRealtimeFilteredEcgCmd, arg: 0))
+        XCTAssertTrue(Whoop5Ecg.requestsRealtimeData(cmd: Whoop5Ecg.mainControlEcgDataGenerationCmd,
+                                                     arg: Whoop5Ecg.ControlSignal.start.rawValue))
+        XCTAssertTrue(Whoop5Ecg.requestsRealtimeData(cmd: Whoop5Ecg.mainControlEcgDataGenerationCmd,
+                                                     arg: Whoop5Ecg.ControlSignal.restart.rawValue))
+        XCTAssertFalse(Whoop5Ecg.requestsRealtimeData(cmd: Whoop5Ecg.mainControlEcgDataGenerationCmd,
+                                                      arg: Whoop5Ecg.ControlSignal.stop.rawValue))
+        // SELECT_WRIST configures which wrist; it starts nothing, on EITHER argument. This is the
+        // opcode whose silence was being reported as a firmware block.
+        for wrist in Whoop5Ecg.WristSelection.allCases {
+            XCTAssertFalse(Whoop5Ecg.requestsRealtimeData(cmd: Whoop5Ecg.selectWristCmd, arg: wrist.rawValue))
+        }
+        // RAW_SAVE names flash, not a live channel — a realtime window cannot observe it either way, so
+        // it must not unlock a verdict that reads realtime silence as evidence (#891 hypothesis (b)).
+        XCTAssertFalse(Whoop5Ecg.requestsRealtimeData(cmd: Whoop5Ecg.toggleSaveRawEcgCmd, arg: 1))
+        // An opcode outside the family (an unsolicited reply's, say) is never a data request.
+        XCTAssertFalse(Whoop5Ecg.requestsRealtimeData(cmd: 26, arg: 1))
+    }
+
     func testAttestedResultCodesOutrankTheShapeHeuristic() {
         // The packet count comes from a HEURISTIC that ordinary traffic can trip; the result codes are
         // attested wire semantics. So a firmware FAILURE must not be overridden by candidate frames —
         // the old precedence turned one loose match into an unhedged "not blocked".
-        let failed = [Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_DATA_GENERATION(124)", outcome: .failure)]
+        let failed = [sent(124, arg: 1, .failure)]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: failed, ecgPacketsSeen: 12, windowSeconds: 30),
                        .blockedByDeviceFlagsLikely(commands: ["TOGGLE_LABRADOR_DATA_GENERATION(124)"]))
-        let unsupported = [Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_FILTERED(139)", outcome: .unsupported)]
+        let unsupported = [sent(139, arg: 1, .unsupported)]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: unsupported, ecgPacketsSeen: 12, windowSeconds: 30),
                        .opcodeUnsupported(commands: ["TOGGLE_LABRADOR_FILTERED(139)"]))
         // With no contrary result code, candidates are the verdict — as candidates, not as proof.
-        let ok = [Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_DATA_GENERATION(124)", outcome: .success)]
+        let ok = [sent(124, arg: 1, .success)]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: ok, ecgPacketsSeen: 12, windowSeconds: 30),
                        .ecgCandidatesArrived(packets: 12))
     }
 
     func testCandidateVerdictIsHedgedNotAssertedAsProof() {
         let text = Whoop5EcgProbe.report(
-            steps: [Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_DATA_GENERATION(124)", outcome: .success)],
+            steps: [sent(124, arg: 1, .success)],
             ecgPacketsSeen: 3, candidateFrames: ["type=0x28 len=220"], windowSeconds: 30)
         XCTAssertTrue(text.contains("CANDIDATE, not proof"))
         // The old wording asserted the conclusion outright; it must not come back.
@@ -492,32 +539,136 @@ final class Whoop5EcgTests: XCTestCase {
 
     func testVerdictFailureIsTheDeviceFlagSignature() {
         let steps = [
-            Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_FILTERED(139)", outcome: .success),
-            Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_DATA_GENERATION(124)", outcome: .failure),
+            sent(139, arg: 1, .success),
+            sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .failure),
         ]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30),
                        .blockedByDeviceFlagsLikely(commands: ["TOGGLE_LABRADOR_DATA_GENERATION(124)"]))
     }
 
     func testVerdictAllSuccessButSilentIsTheSilentNoOpCase() {
+        // The turn-on run: data WAS requested and the strap said SUCCESS. This is the only shape from
+        // which "accepted, then not honoured" can be read.
         let steps = [
-            Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_FILTERED(139)", outcome: .success),
-            Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_DATA_GENERATION(124)", outcome: .success),
+            sent(139, arg: 1, .success),
+            sent(125, arg: 1, .success),
+            sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .success),
         ]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30),
                        .acceptedButSilent(windowSeconds: 30))
     }
 
+    func testTogglesSentAndPacketsArrivedIsTheCandidateVerdictNotABlock() {
+        let steps = [
+            sent(139, arg: 1, .success),
+            sent(125, arg: 1, .success),
+            sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .success),
+        ]
+        XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 4, windowSeconds: 30),
+                       .ecgCandidatesArrived(packets: 4))
+    }
+
+    // MARK: - A run that asked for nothing is not a test of anything
+
+    func testWristOnlyRunIsNotReportedAsADeviceFlagBlock() {
+        // REGRESSION (#891). A SELECT_WRIST-only run sends NO data-generation command, so zero packets is
+        // the expected outcome. The old logic classified it `acceptedButSilent` and printed "Consistent
+        // with a device-flag block applied as a silent no-op" — manufacturing evidence for hypothesis (e)
+        // out of a run that could not speak to it.
+        let steps = [sent(123, arg: Whoop5Ecg.WristSelection.left.rawValue, .success,
+                          replyHex: "aa010c000100271124d77b81010100007ce76722")]
+        XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30),
+                       .noDataRequested(commands: ["SELECT_WRIST(123)"]))
+        let text = Whoop5EcgProbe.report(steps: steps, ecgPacketsSeen: 0,
+                                         candidateFrames: [], windowSeconds: 30)
+        XCTAssertTrue(text.contains("NOT A TEST"))
+        XCTAssertFalse(text.contains("device-flag block"))
+        XCTAssertFalse(text.contains("Accepted but SILENT"))
+        // The report must say WHY, not just withhold the claim.
+        XCTAssertTrue(text.contains("cannot produce ECG data"))
+        XCTAssertTrue(text.contains("Zero is the EXPECTED result here"))
+    }
+
+    func testWristOnlyRunThatFailsIsARefusalNotADeviceFlagBlock() {
+        // REGRESSION (#891). The same run with the OTHER wrist came back FAILURE(0) on hardware, and the
+        // old logic promoted that to "LIKELY blockedByDeviceFlags". The firmware refused ONE config
+        // write; nothing about ECG generation follows from it.
+        let steps = [sent(123, arg: Whoop5Ecg.WristSelection.right.rawValue, .failure,
+                          replyHex: "aa010c000100271124217bcc000100000213163d")]
+        XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30),
+                       .commandRefused(commands: ["SELECT_WRIST(123)"]))
+        let text = Whoop5EcgProbe.report(steps: steps, ecgPacketsSeen: 0,
+                                         candidateFrames: [], windowSeconds: 30)
+        XCTAssertTrue(text.contains("REFUSED"))
+        XCTAssertFalse(text.contains("blockedByDeviceFlags"))
+    }
+
+    func testOffSequenceAsksForSilenceSoItsSilenceIsNotEvidence() {
+        // The OFF path sends the same three opcodes with the OFF arguments. It asks for exactly the
+        // silence it gets, so it must never render as a block either.
+        let steps = [
+            sent(124, arg: Whoop5Ecg.ControlSignal.stop.rawValue, .success),
+            sent(125, arg: 0, .success),
+            sent(139, arg: 0, .success),
+        ]
+        XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30),
+                       .noDataRequested(commands: ["TOGGLE_LABRADOR_DATA_GENERATION(124)",
+                                                   "TOGGLE_LABRADOR_RAW_SAVE(125)",
+                                                   "TOGGLE_LABRADOR_FILTERED(139)"]))
+    }
+
+    func testRawSaveAloneCannotUnlockTheSilentVerdict() {
+        // RAW_SAVE names flash. A realtime listen window observes nothing from it even on total success,
+        // so a raw-save-only run cannot be read as "accepted and then silent" (#891 hypothesis (b)).
+        let steps = [sent(125, arg: 1, .success)]
+        XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30),
+                       .noDataRequested(commands: ["TOGGLE_LABRADOR_RAW_SAVE(125)"]))
+    }
+
+    func testAnUnacknowledgedDataRequestIsNotAcceptedButSilent() {
+        // "Accepted" needs an ack. The wrist write landed; the request that matters never came back.
+        let steps = [
+            sent(123, arg: Whoop5Ecg.WristSelection.left.rawValue, .success),
+            sent(139, arg: 1, .noReply),
+            sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .noReply),
+        ]
+        XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30),
+                       .dataRequestNotAccepted(commands: ["TOGGLE_LABRADOR_FILTERED(139)",
+                                                          "TOGGLE_LABRADOR_DATA_GENERATION(124)"]))
+    }
+
+    func testNoVerdictClaimsAFlagBlockWithoutADataRequest() {
+        // The invariant, stated once over every reachable outcome: a run that asked for no realtime data
+        // can never produce a headline that reads as evidence about the block question.
+        let outcomes: [Whoop5EcgProbe.CommandOutcome] =
+            [.success, .failure, .pending, .unsupported, .unmapped(42), .noReply]
+        let noDataArgs: [(UInt8, UInt8)] = [(123, 0), (123, 1), (125, 1), (125, 0),
+                                            (139, 0), (124, Whoop5Ecg.ControlSignal.stop.rawValue)]
+        // The two AFFIRMATIVE claims. Matched exactly, because `opcodeUnsupported` legitimately contains
+        // the words "not a device-flag block" — denying the claim is the opposite of making it.
+        let asserts = ["LIKELY blockedByDeviceFlags", "Consistent with a device-flag block"]
+        for (cmd, arg) in noDataArgs {
+            for outcome in outcomes {
+                let verdict = Whoop5EcgProbe.verdict(steps: [sent(cmd, arg: arg, outcome)],
+                                                     ecgPacketsSeen: 0, windowSeconds: 30)
+                for claim in asserts {
+                    XCTAssertFalse(verdict.headline.contains(claim),
+                                   "cmd \(cmd) arg \(arg) outcome \(outcome.token) claimed: \(claim)")
+                }
+            }
+        }
+    }
+
     func testVerdictUnsupportedIsReportedAsItselfNotAsABlock() {
-        let steps = [Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_FILTERED(139)", outcome: .unsupported)]
+        let steps = [sent(139, arg: 1, .unsupported)]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30),
                        .opcodeUnsupported(commands: ["TOGGLE_LABRADOR_FILTERED(139)"]))
     }
 
     func testVerdictSilenceIsNeverCalledABlock() {
         let steps = [
-            Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_FILTERED(139)", outcome: .noReply),
-            Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_DATA_GENERATION(124)", outcome: .noReply),
+            sent(139, arg: 1, .noReply),
+            sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .noReply),
         ]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30), .noReplies)
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: [], ecgPacketsSeen: 0, windowSeconds: 30), .noReplies)
@@ -525,16 +676,16 @@ final class Whoop5EcgTests: XCTestCase {
 
     func testVerdictMixedCodesAreInconclusive() {
         let steps = [
-            Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_FILTERED(139)", outcome: .success),
-            Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_DATA_GENERATION(124)", outcome: .pending),
+            sent(139, arg: 1, .success),
+            sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .pending),
         ]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30), .inconclusive)
     }
 
     func testReportCarriesTheVerdictTheOutcomesAndTheNonMedicalFraming() {
         let steps = [
-            Whoop5EcgProbe.Step(label: "SELECT_WRIST(123)", outcome: .success, replyHex: "aabb"),
-            Whoop5EcgProbe.Step(label: "TOGGLE_LABRADOR_DATA_GENERATION(124)", outcome: .failure, replyHex: "ccdd"),
+            sent(123, arg: Whoop5Ecg.WristSelection.left.rawValue, .success, replyHex: "aabb"),
+            sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .failure, replyHex: "ccdd"),
         ]
         let text = Whoop5EcgProbe.report(steps: steps, ecgPacketsSeen: 0,
                                          candidateFrames: ["type=0x28 len=220"], windowSeconds: 30)

@@ -236,16 +236,16 @@ enum class CommandNumber(val rawValue: Int) {
     // as 121. #761 read the flag NAMES; this reads a named flag's VALUE. MAY NOT BE IMPLEMENTED in
     // firmware. Mirrors Swift WhoopCommand.getFeatureFlagValue. (#103)
     GET_FF_VALUE(128),
-    STOP_HAPTICS(122),
-    // The WHOOP MG ECG ("Labrador") command family. All four numbers already sit in the shared protocol
-    // table (WhoopProtocol/Resources/whoop_protocol.json) from the upstream whoomp/goose work; they are
-    // named here so a COMMAND_RESPONSE for one is labelled rather than shown as a bare hex opcode.
-    // SELECT_WRIST writes PERSISTENT strap state; the other three are reversible stream toggles. See
-    // com.noop.protocol.Whoop5Ecg and Swift WhoopCommand.selectWrist / .toggleLabrador*.
-    SELECT_WRIST(123),
-    TOGGLE_LABRADOR_DATA_GENERATION(124),
-    TOGGLE_LABRADOR_RAW_SAVE(125),
-    TOGGLE_LABRADOR_FILTERED(139);
+    STOP_HAPTICS(122);
+    //
+    // The WHOOP MG ECG ("Labrador") family (123 / 124 / 125 / 139) is deliberately ABSENT from this
+    // enum. This branch originally listed the four here so a COMMAND_RESPONSE for one would be labelled
+    // rather than shown as a bare hex opcode — a reason #893 has since made obsolete, by giving Android
+    // a read-only `CommandNames` label table that names every opcode the schema names without making any
+    // of them constructible. Android has no ECG app layer and sends none of the four, so growing the
+    // SENDER enum to buy a label would widen what the command sender can express for nothing. Apple's
+    // `WhoopCommand` carries them because Apple actually drives the gated probe. See
+    // `com.noop.protocol.Whoop5Ecg` for the decoder and `Whoop5EcgProbe` for the verdict rules.
 
     companion object {
         private val byRaw = entries.associateBy { it.rawValue }

@@ -806,7 +806,16 @@ answer that. `Whoop5EcgProbe` separates the cases from the COMMAND_RESPONSE resu
 (0 FAILURE / 1 SUCCESS / 2 PENDING / 3 UNSUPPORTED): `UNSUPPORTED` means the opcode is not implemented,
 `FAILURE` is the single-frame signature most consistent with a device-flag block, and all-`SUCCESS`
 with zero packets arriving is the same block applied as a silent no-op. Silence alone is never read as
-a block. **Unverified on hardware** — no strap has yet been asked.
+a block.
+
+**Both block verdicts are scoped to what the run actually asked for.** A verdict about "is the feature
+blocked" is only reachable when the run exercised the ECG data path, which `Whoop5Ecg.requestsRealtimeData`
+decides from the opcode AND the argument sent: `SELECT_WRIST` configures and starts nothing on either
+argument, the OFF sequence asks for the silence it gets, and `RAW_SAVE` names flash rather than a live
+channel. So a run built only from those reports "no data-generation command was sent; this run cannot
+speak to whether ECG is blocked", and a `FAILURE` on one of them reports as a refusal of that write.
+Without the scoping a `SELECT_WRIST`-only run rendered as a device-flag block on real hardware — twice,
+once through each verdict — which is what #891 records.
 
 ## 10. SpO₂ on 5.0 / MG — what the wire does and does not carry
 

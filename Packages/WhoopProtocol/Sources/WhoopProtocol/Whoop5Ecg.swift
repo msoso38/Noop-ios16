@@ -338,6 +338,41 @@ public enum Whoop5Ecg {
         commandFrame(cmd: mainControlEcgDataGenerationCmd, arg: signal.rawValue, seq: seq)
     }
 
+    /// Whether this Labrador command, **sent with this argument**, can make the strap emit ECG data on
+    /// the REALTIME channel — the only channel a fixed listen window can observe.
+    ///
+    /// This is the predicate every "the strap accepted it and then produced nothing" claim rests on, so
+    /// it lives here — pure, mirrored in Kotlin, and tested on both platforms — rather than in an app
+    /// layer where only one platform would check it.
+    ///
+    /// The ARGUMENT is half the answer. Three of the four opcodes gate a data path and all three are
+    /// toggles, so `toggleRealtimeFilteredEcg(0)` turns the stream **off** and can no more produce data
+    /// than `selectWrist` can. A run built only from such commands has asked for nothing, and its silence
+    /// is the expected outcome rather than a finding.
+    ///
+    /// Conservative by construction — three cases return `false`:
+    ///
+    /// - `selectWrist` configures which wrist the strap is worn on. It starts nothing, on either
+    ///   argument.
+    /// - `toggleSaveRawEcg` names flash, not a live channel (`RAW_SAVE`), and the name is the only
+    ///   evidence anyone in this repo has about where its output lands. Counting it as observable would
+    ///   let a raw-save-only run be read as "accepted and then silent", which a realtime window cannot
+    ///   support — that is hypothesis (b) in #891, still open.
+    /// - Any opcode outside the family, which includes an UNSOLICITED reply whose sent argument is not
+    ///   known.
+    ///
+    /// A `false` can only ever weaken a verdict, never strengthen one, so an omission here fails safe.
+    public static func requestsRealtimeData(cmd: UInt8, arg: UInt8) -> Bool {
+        switch cmd {
+        case toggleRealtimeFilteredEcgCmd:
+            return arg != 0
+        case mainControlEcgDataGenerationCmd:
+            return arg == ControlSignal.start.rawValue || arg == ControlSignal.restart.rawValue
+        default:
+            return false
+        }
+    }
+
     // MARK: Filtered decode
 
     /// Decode a `FilteredLabradorPacket` from the inner record's PAYLOAD (i.e. the bytes after

@@ -380,10 +380,19 @@ class Whoop5EcgTest {
 
     @Test
     fun commandOpcodesMatchTheRepoProtocolTable() {
-        assertEquals(CommandNumber.SELECT_WRIST.rawValue, Whoop5Ecg.SELECT_WRIST_CMD)
-        assertEquals(CommandNumber.TOGGLE_LABRADOR_DATA_GENERATION.rawValue, Whoop5Ecg.MAIN_CONTROL_ECG_DATA_GENERATION_CMD)
-        assertEquals(CommandNumber.TOGGLE_LABRADOR_RAW_SAVE.rawValue, Whoop5Ecg.TOGGLE_SAVE_RAW_ECG_CMD)
-        assertEquals(CommandNumber.TOGGLE_LABRADOR_FILTERED.rawValue, Whoop5Ecg.TOGGLE_REALTIME_FILTERED_ECG_CMD)
+        // Checked against the READ-ONLY label table (#893), not the sender enum: Android sends none of
+        // these four and they are deliberately absent from `CommandNumber`. `CommandNames` is built from
+        // the shared schema, so this pins the same name<->code mapping without asserting sendability.
+        assertEquals("SELECT_WRIST", CommandNames.byRaw[Whoop5Ecg.SELECT_WRIST_CMD])
+        assertEquals(
+            "TOGGLE_LABRADOR_DATA_GENERATION",
+            CommandNames.byRaw[Whoop5Ecg.MAIN_CONTROL_ECG_DATA_GENERATION_CMD],
+        )
+        assertEquals("TOGGLE_LABRADOR_RAW_SAVE", CommandNames.byRaw[Whoop5Ecg.TOGGLE_SAVE_RAW_ECG_CMD])
+        assertEquals(
+            "TOGGLE_LABRADOR_FILTERED",
+            CommandNames.byRaw[Whoop5Ecg.TOGGLE_REALTIME_FILTERED_ECG_CMD],
+        )
         assertEquals(0x7B, Whoop5Ecg.SELECT_WRIST_CMD)
         assertEquals(0x7C, Whoop5Ecg.MAIN_CONTROL_ECG_DATA_GENERATION_CMD)
         assertEquals(0x7D, Whoop5Ecg.TOGGLE_SAVE_RAW_ECG_CMD)

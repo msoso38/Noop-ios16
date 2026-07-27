@@ -8,10 +8,10 @@ import Foundation
 /// Pure + deterministic, so `swift test` covers it with no strap. Structurally the twin of
 /// `BodyLocationProbe` / `ExtendedBatteryProbe`.
 ///
-/// Deliberately NOT mirrored in Kotlin: this formats the output of an app-layer probe, and the Android
-/// client has no ECG app layer — it takes the decoder (`com.noop.protocol.Whoop5Ecg`) only. The parity
-/// contract binds decoders and stored values, and nothing here decodes or stores anything. If Android
-/// ever grows the probe, this file is what it mirrors.
+/// Mirrored in Kotlin as `com.noop.protocol.Whoop5EcgProbe` even though the Android client has no ECG
+/// app layer to drive it. The classification below decides whether a null result gets reported as
+/// evidence of a firmware block, which is the claim this probe exists to make — a rule that important
+/// is worth two independent implementations and two test suites, and both suites pin the same runs.
 ///
 /// ## How the block is detected
 ///
@@ -31,6 +31,25 @@ import Foundation
 ///
 /// A block is never inferred from silence alone: no reply at all is reported as exactly that, because
 /// an in-flight sync or a dropped notification produces the same silence.
+///
+/// ## What a run has to contain before silence means anything
+///
+/// Signal 3 above reads SILENCE as evidence. Silence only carries information when the run actually
+/// **asked the strap for data**: a wrist selection changes no data path, and the OFF sequence asks for
+/// the silence it gets. So every step records whether the command — *with the argument it was sent
+/// with* — could have produced realtime ECG data (`Whoop5Ecg.requestsRealtimeData`), and the two
+/// verdicts that interpret silence are unreachable without one:
+///
+/// - `acceptedButSilent` needs a data request that came back `SUCCESS`. Requested-but-unacknowledged is
+///   `dataRequestNotAccepted`; nothing requested at all is `noDataRequested`.
+/// - `blockedByDeviceFlagsLikely` needs the refused command to be a data request. A `FAILURE` on a
+///   configuration write is reported as `commandRefused` — the firmware refused *that write*, which is
+///   a fact about that opcode and not about whether ECG generation is gated.
+///
+/// Both defects were live: a `SELECT_WRIST`-only run on a WHOOP 5 MG rendered "Accepted but SILENT …
+/// consistent with a device-flag block" having sent no data-generation command at all, and a second
+/// `SELECT_WRIST`-only run that came back `FAILURE` rendered "LIKELY blockedByDeviceFlags". Both
+/// manufactured evidence for hypothesis (e) of #891 out of runs that could not speak to it.
 public enum Whoop5EcgProbe {
 
     /// The 5/MG COMMAND_RESPONSE result code, at frame[12] — the same offset `BodyLocationProbe` reads.
@@ -73,13 +92,30 @@ public enum Whoop5EcgProbe {
     public struct Step: Equatable, Sendable {
         public let label: String
         public let outcome: CommandOutcome
+        /// Whether this command, with the argument it was actually sent with, could have made the strap
+        /// emit realtime ECG data — `Whoop5Ecg.requestsRealtimeData(cmd:arg:)`.
+        ///
+        /// Deliberately has NO default: every construction site must state it, because the verdicts that
+        /// read silence as evidence turn on this flag and a silently-omitted `true` is exactly the bug
+        /// this field exists to prevent.
+        public let requestsRealtimeData: Bool
         /// The reply frame as hex, when one arrived.
         public let replyHex: String?
 
-        public init(label: String, outcome: CommandOutcome, replyHex: String? = nil) {
+        public init(label: String,
+                    outcome: CommandOutcome,
+                    requestsRealtimeData: Bool,
+                    replyHex: String? = nil) {
             self.label = label
             self.outcome = outcome
+            self.requestsRealtimeData = requestsRealtimeData
             self.replyHex = replyHex
+        }
+
+        /// How the report annotates the step, so a reader can see WHY the verdict is what it is.
+        public var roleNote: String {
+            requestsRealtimeData ? "asks for realtime ECG data"
+                                 : "cannot produce ECG data (configuration or OFF)"
         }
     }
 
@@ -91,10 +127,20 @@ public enum Whoop5EcgProbe {
         /// unrelated packet can match. The verdict says "candidate", and confirming it needs the raw
         /// bytes in the log — never this count alone.
         case ecgCandidatesArrived(packets: Int)
-        /// At least one command came back FAILURE: the opcode exists and execution was refused.
+        /// At least one command that ASKED FOR DATA came back FAILURE: the opcode exists and execution
+        /// was refused.
         case blockedByDeviceFlagsLikely(commands: [String])
-        /// Everything acked SUCCESS and nothing ever arrived.
+        /// A command that asks for no data came back FAILURE. The firmware refused THAT WRITE, which is
+        /// a fact about that opcode and says nothing about whether ECG generation is gated.
+        case commandRefused(commands: [String])
+        /// Everything acked SUCCESS, at least one of them a data request, and nothing ever arrived.
         case acceptedButSilent(windowSeconds: Int)
+        /// The run sent nothing that could produce realtime ECG data, so its silence is the expected
+        /// outcome and is evidence of nothing.
+        case noDataRequested(commands: [String])
+        /// Data WAS requested, but the strap never returned SUCCESS for the request — so the silence
+        /// cannot be read as "accepted, then not honoured".
+        case dataRequestNotAccepted(commands: [String])
         /// The firmware rejected an opcode as unimplemented.
         case opcodeUnsupported(commands: [String])
         /// Nothing replied at all.
@@ -109,11 +155,24 @@ public enum Whoop5EcgProbe {
                     + "the triage is a shape heuristic and unrelated traffic can match it. Confirm against the "
                     + "raw bytes below before concluding anything about whether the feature is blocked."
             case .blockedByDeviceFlagsLikely(let commands):
-                return "LIKELY blockedByDeviceFlags — the firmware returned FAILURE for \(commands.joined(separator: ", ")): "
-                    + "it knows the opcode and refused to run it."
+                return "LIKELY blockedByDeviceFlags — the firmware returned FAILURE for \(commands.joined(separator: ", ")), "
+                    + "which asked it to produce ECG data: it knows the opcode and refused to run it."
+            case .commandRefused(let commands):
+                return "REFUSED — the firmware returned FAILURE for \(commands.joined(separator: ", ")). "
+                    + "That command asks for no ECG data, so this is a fact about that write and NOT evidence "
+                    + "that ECG generation is blocked. Nothing here speaks to the block question."
             case .acceptedButSilent(let windowSeconds):
-                return "Accepted but SILENT — every command returned SUCCESS yet no ECG packet arrived in \(windowSeconds)s. "
+                return "Accepted but SILENT — a command that asks for realtime ECG data returned SUCCESS, every "
+                    + "other command did too, yet no ECG packet arrived in \(windowSeconds)s. "
                     + "Consistent with a device-flag block applied as a silent no-op."
+            case .noDataRequested(let commands):
+                return "NOT A TEST of whether ECG is blocked — this run sent no command that could produce "
+                    + "realtime ECG data (\(commands.joined(separator: ", "))), so zero packets is the EXPECTED "
+                    + "outcome and says nothing either way. Run the turn-on sequence to test the block question."
+            case .dataRequestNotAccepted(let commands):
+                return "INCONCLUSIVE — data was requested (\(commands.joined(separator: ", "))) but the strap never "
+                    + "returned SUCCESS for it, so the silence cannot be read as 'accepted, then not honoured'. "
+                    + "Retry idle."
             case .opcodeUnsupported(let commands):
                 return "Opcode UNSUPPORTED on this firmware for \(commands.joined(separator: ", ")) — "
                     + "not a device-flag block, the command is not implemented."
@@ -137,14 +196,31 @@ public enum Whoop5EcgProbe {
     ///
     /// "Unsupported" is reported as itself rather than folded into the block case, and silence is never
     /// reported as a block.
+    ///
+    /// The SECOND rule the order encodes is SCOPE: a claim about "is the ECG feature blocked" is only
+    /// made when the run exercised the ECG data path. A `FAILURE` on a command that asks for no data is
+    /// a refusal of that write; silence after a run that asked for no data is the expected outcome. Both
+    /// get their own verdict rather than being folded into the block case — see the type doc.
     public static func verdict(steps: [Step], ecgPacketsSeen: Int, windowSeconds: Int) -> Verdict {
-        let failures = steps.filter { $0.outcome == .failure }.map(\.label)
-        if !failures.isEmpty { return .blockedByDeviceFlagsLikely(commands: failures) }
+        let failures = steps.filter { $0.outcome == .failure }
+        if !failures.isEmpty {
+            // A refusal is only evidence about the BLOCK question when what was refused asked for data.
+            let dataFailures = failures.filter(\.requestsRealtimeData).map(\.label)
+            if !dataFailures.isEmpty { return .blockedByDeviceFlagsLikely(commands: dataFailures) }
+            return .commandRefused(commands: failures.map(\.label))
+        }
         let unsupported = steps.filter { $0.outcome == .unsupported }.map(\.label)
         if !unsupported.isEmpty { return .opcodeUnsupported(commands: unsupported) }
         if ecgPacketsSeen > 0 { return .ecgCandidatesArrived(packets: ecgPacketsSeen) }
         guard !steps.isEmpty else { return .noReplies }
         if steps.allSatisfy({ $0.outcome == .noReply }) { return .noReplies }
+        // Past this point the verdict INTERPRETS SILENCE, which only carries information about the ECG
+        // data path when the run asked that path for something and the strap said yes.
+        let requests = steps.filter(\.requestsRealtimeData)
+        guard !requests.isEmpty else { return .noDataRequested(commands: steps.map(\.label)) }
+        guard requests.contains(where: { $0.outcome == .success }) else {
+            return .dataRequestNotAccepted(commands: requests.map(\.label))
+        }
         if steps.allSatisfy({ $0.outcome == .success }) {
             return .acceptedButSilent(windowSeconds: windowSeconds)
         }
@@ -167,11 +243,16 @@ public enum Whoop5EcgProbe {
         if steps.isEmpty {
             sb += "  (none)\n"
         } else {
+            // Each step carries WHY it does or does not bear on the block question, so the verdict above
+            // can be checked against its own inputs without reading the source.
             for step in steps {
-                sb += "  \(step.label): \(step.outcome.token)\n"
+                sb += "  \(step.label): \(step.outcome.token) — \(step.roleNote)\n"
             }
         }
         sb += "\nECG-shaped packets seen in \(windowSeconds)s: \(ecgPacketsSeen)\n"
+        if !steps.isEmpty, !steps.contains(where: \.requestsRealtimeData) {
+            sb += "Zero is the EXPECTED result here: nothing in this run asked the strap for realtime ECG data.\n"
+        }
         if candidateFrames.isEmpty {
             sb += "Candidate packet types: none — no frame passed the structural triage.\n"
         } else {

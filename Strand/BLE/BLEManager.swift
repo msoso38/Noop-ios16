@@ -2975,7 +2975,13 @@ public final class BLEManager: NSObject, ObservableObject {
     /// COMMAND_RESPONSE overwrites it.
     private func sendEcgCommand(_ command: WhoopCommand, arg: UInt8) {
         let label = "\(command.label)(\(command.rawValue))"
-        ecgProbeSteps.append(Whoop5EcgProbe.Step(label: label, outcome: .noReply))
+        // Recorded AT SEND TIME, from the opcode AND the argument: the reply carries neither, so this is
+        // the only point where "could this command have produced data" is knowable. Every verdict that
+        // reads silence as evidence depends on it.
+        let requestsData = Whoop5Ecg.requestsRealtimeData(cmd: command.rawValue, arg: arg)
+        ecgProbeSteps.append(Whoop5EcgProbe.Step(label: label,
+                                                 outcome: .noReply,
+                                                 requestsRealtimeData: requestsData))
         log("ECG probe: → \(label) payload=\(hex(Whoop5Ecg.commandPayload(arg: arg)))")
         send(command, payload: Whoop5Ecg.commandPayload(arg: arg))
     }
@@ -3095,13 +3101,25 @@ public final class BLEManager: NSObject, ObservableObject {
         // Settle the FIRST step still awaiting a reply for this command, so a start-then-stop pair keeps
         // its two outcomes distinct instead of both collapsing onto the last one.
         if let idx = ecgProbeSteps.firstIndex(where: { $0.label == label && $0.outcome == .noReply }) {
-            ecgProbeSteps[idx] = Whoop5EcgProbe.Step(label: label, outcome: outcome, replyHex: replyHex)
+            // Carry the send-time flag across: the reply does not echo the argument, so re-deriving it
+            // here is impossible and dropping it would silently weaken (or, worse, strengthen) the verdict.
+            ecgProbeSteps[idx] = Whoop5EcgProbe.Step(
+                label: label,
+                outcome: outcome,
+                requestsRealtimeData: ecgProbeSteps[idx].requestsRealtimeData,
+                replyHex: replyHex)
             log("ECG probe: ← \(label) \(outcome.token)")
         } else if ecgProbeSteps.count < BLEManager.ecgProbeMaxSteps {
             // An UNSOLICITED reply for one of our opcodes. Recorded, but capped for the same reason the
             // candidate list is: each Step carries a full-frame hex string that is rendered into both the
             // report and the strap log, and a chatty stream must not be able to grow either without bound.
-            ecgProbeSteps.append(Whoop5EcgProbe.Step(label: label, outcome: outcome, replyHex: replyHex))
+            //
+            // `requestsRealtimeData: false` — nothing here sent it, so the argument behind it is unknown,
+            // and an unknown must never be able to unlock a verdict that claims the feature is blocked.
+            ecgProbeSteps.append(Whoop5EcgProbe.Step(label: label,
+                                                     outcome: outcome,
+                                                     requestsRealtimeData: false,
+                                                     replyHex: replyHex))
             log("ECG probe: ← \(label) \(outcome.token) (unsolicited)")
         }
     }
