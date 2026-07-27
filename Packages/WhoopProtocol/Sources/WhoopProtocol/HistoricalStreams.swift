@@ -289,27 +289,35 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
             // `rr_count` IS shared with the 4.0 schema and a presence-based test would start banking a
             // near-empty row for every WHOOP 4.0 second.
             if p["hist_version"]?.intValue == 18 {
+                // Read through `V18AuxSlot.decoderKey` rather than repeating the key strings here. They
+                // used to be two independent literals per slot — the enum's and this extractor's — and
+                // `testEverySlotIsPopulatedFromARealV18Frame` exists precisely because those two can drift
+                // apart while each looks right on its own. With one source there is nothing to drift: a
+                // slot pointed at a retired key now fails BOTH tripwires instead of only the second.
+                func slot(_ s: V18AuxSlot) -> Int? { p[s.decoderKey]?.intValue }
                 let aux = V18AuxSample(
                     ts: ts,
-                    recordIndex: p["record_index"]?.intValue,
-                    rrCount: p["rr_count"]?.intValue,
-                    cardiacFlags: p["cardiac_flags"]?.intValue,
-                    hrQualityFlags: p["hr_quality_flags"]?.intValue,
-                    heartRateAlt: p["heart_rate_alt"]?.intValue,
-                    rrPacked: p["rr_packed"]?.intValue,
-                    cardiacStatus: p["cardiac_status"]?.intValue,
-                    stepCadence: p["step_cadence"]?.intValue,
-                    statusWord: p["status_word"]?.intValue,
-                    statusWord1: p["status_word_1"]?.intValue,
-                    statusWord2: p["status_word_2"]?.intValue,
-                    auxByte82: p["aux_byte_82"]?.intValue,
-                    opticalBaselineA: p["optical_baseline_a"]?.intValue,
-                    opticalBaselineB: p["optical_baseline_b"]?.intValue,
-                    opticalAmpA: p["optical_amp_a"]?.intValue,
-                    opticalAmpB: p["optical_amp_b"]?.intValue,
+                    recordIndex: slot(.recordIndex),
+                    rrCount: slot(.rrCount),
+                    cardiacFlags: slot(.cardiacFlags),
+                    hrQualityFlags: slot(.hrQualityFlags),
+                    heartRateAlt: slot(.heartRateAlt),
+                    rrPacked: slot(.rrPacked),
+                    cardiacStatus: slot(.cardiacStatus),
+                    stepCadence: slot(.stepCadence),
+                    statusWord: slot(.statusWord),
+                    statusWord1: slot(.statusWord1),
+                    statusWord2: slot(.statusWord2),
+                    auxByte82: slot(.auxByte82),
+                    opticalBaselineA: slot(.opticalBaselineA),
+                    opticalBaselineB: slot(.opticalBaselineB),
+                    opticalAmpA: slot(.opticalAmpA),
+                    opticalAmpB: slot(.opticalAmpB),
                     // Banked as the float's raw 32-bit pattern, not a decoded value — the decoder gates this
                     // field to finite floats, which round-trip Double->Float exactly, so no precision is lost.
-                    unknownF32Bits: p["unknown_f32_113"]?.doubleValue.map {
+                    // Reads `doubleValue`, so it cannot use `slot(_:)` above, but the KEY still comes from
+                    // the enum.
+                    unknownF32Bits: p[V18AuxSlot.unknownF32At113.decoderKey]?.doubleValue.map {
                         Int(Float($0).bitPattern)
                     })
                 // A record that decoded none of the slots banks no row at all — absence stays absence.

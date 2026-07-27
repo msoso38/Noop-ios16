@@ -12,6 +12,7 @@ import com.noop.data.RrRow
 import com.noop.data.SkinTempRow
 import com.noop.data.SleepStateRow
 import com.noop.data.V18AuxRow
+import com.noop.data.V18AuxSlot
 import com.noop.data.Spo2Row
 import com.noop.data.StepRow
 import com.noop.data.StreamBatch
@@ -808,27 +809,35 @@ fun extractHistoricalStreams(
                 // positive. `asU32` puts both back in the 0..4294967295 domain, so the two platforms
                 // agree on the NUMBER and not merely on the blob bytes.
                 if (p.intOrNull("hist_version") == 18) {
+                    // Read through [V18AuxSlot.decoderKey] rather than repeating the key strings here.
+                    // They used to be two independent literals per slot — the enum's and this extractor's
+                    // — and `everySlotIsPopulatedFromARealV18Frame` exists precisely because those two can
+                    // drift apart while each looks right on its own. With one source there is nothing to
+                    // drift: a slot pointed at a retired key now fails BOTH tripwires, not only the second.
+                    fun slot(s: V18AuxSlot): Long? = p.intOrNull(s.decoderKey)?.toLong()
                     val aux = V18AuxRow(
                         ts = ts,
-                        recordIndex = p.intOrNull("record_index").asU32(),
-                        rrCount = p.intOrNull("rr_count")?.toLong(),
-                        cardiacFlags = p.intOrNull("cardiac_flags")?.toLong(),
-                        hrQualityFlags = p.intOrNull("hr_quality_flags")?.toLong(),
-                        heartRateAlt = p.intOrNull("heart_rate_alt")?.toLong(),
-                        rrPacked = p.intOrNull("rr_packed")?.toLong(),
-                        cardiacStatus = p.intOrNull("cardiac_status")?.toLong(),
-                        stepCadence = p.intOrNull("step_cadence")?.toLong(),
-                        statusWord = p.intOrNull("status_word")?.toLong(),
-                        statusWord1 = p.intOrNull("status_word_1")?.toLong(),
-                        statusWord2 = p.intOrNull("status_word_2")?.toLong(),
-                        auxByte82 = p.intOrNull("aux_byte_82")?.toLong(),
-                        opticalBaselineA = p.intOrNull("optical_baseline_a")?.toLong(),
-                        opticalBaselineB = p.intOrNull("optical_baseline_b")?.toLong(),
-                        opticalAmpA = p.intOrNull("optical_amp_a")?.toLong(),
-                        opticalAmpB = p.intOrNull("optical_amp_b")?.toLong(),
+                        // Needs asU32(), so it cannot use slot() — but the KEY still comes from the enum.
+                        recordIndex = p.intOrNull(V18AuxSlot.RECORD_INDEX.decoderKey).asU32(),
+                        rrCount = slot(V18AuxSlot.RR_COUNT),
+                        cardiacFlags = slot(V18AuxSlot.CARDIAC_FLAGS),
+                        hrQualityFlags = slot(V18AuxSlot.HR_QUALITY_FLAGS),
+                        heartRateAlt = slot(V18AuxSlot.HEART_RATE_ALT),
+                        rrPacked = slot(V18AuxSlot.RR_PACKED),
+                        cardiacStatus = slot(V18AuxSlot.CARDIAC_STATUS),
+                        stepCadence = slot(V18AuxSlot.STEP_CADENCE),
+                        statusWord = slot(V18AuxSlot.STATUS_WORD),
+                        statusWord1 = slot(V18AuxSlot.STATUS_WORD_1),
+                        statusWord2 = slot(V18AuxSlot.STATUS_WORD_2),
+                        auxByte82 = slot(V18AuxSlot.AUX_BYTE_82),
+                        opticalBaselineA = slot(V18AuxSlot.OPTICAL_BASELINE_A),
+                        opticalBaselineB = slot(V18AuxSlot.OPTICAL_BASELINE_B),
+                        opticalAmpA = slot(V18AuxSlot.OPTICAL_AMP_A),
+                        opticalAmpB = slot(V18AuxSlot.OPTICAL_AMP_B),
                         // Banked as the float's raw 32-bit pattern, not a decoded value — the decoder
                         // gates this field to finite floats, which round-trip Double->Float exactly.
-                        unknownF32Bits = p.doubleOrNull("unknown_f32_113")
+                        // Reads doubleOrNull, so it cannot use slot() either; same rule for the key.
+                        unknownF32Bits = p.doubleOrNull(V18AuxSlot.UNKNOWN_F32_113.decoderKey)
                             ?.let { f -> f.toFloat().toRawBits() }.asU32(),
                     )
                     // A record that decoded none of the slots banks no row at all — absence stays absence.
