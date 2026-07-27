@@ -64,4 +64,37 @@ object DataRange {
         }
         return oldest
     }
+
+    /**
+     * #689/#815: the ring-buffer page backlog ("pages behind") the strap reports in a GET_DATA_RANGE
+     * response — DIAGNOSTIC ONLY (feeds a future sync-progress UI, never gates sync or backfill itself).
+     * Confirmed against real captures on both WHOOP 4.0 (#791) and 5.0/MG (#815): the write/read pointers
+     * and ring capacity below all landed exactly where this predicts, across four independent frames.
+     * Mirrors Swift `DataRange.pagesBehind`.
+     *
+     * Reads three u32s from the command-response INNER payload (byte 0 a subtype), `V(i) = @ (i*4 + 3)`:
+     * write pointer W=V(2), read pointer U=V(3), ring capacity T=V(5) — at frame offsets cmdOff + 12/16/24
+     * (inner payload starts at cmdOff + 1). u32 LITTLE-endian to match the frame's other words. Backlog
+     * with wraparound (unverified — no real capture has crossed it yet, but harmless since this only ever
+     * feeds a diagnostic): W<U ? W+(T-U) : W-U. T has been 131072 in every real capture so far (both
+     * families) but is still read from the frame each time rather than hardcoded, in case a firmware
+     * revision differs. Returns null for a too-short frame or implausible values (capacity 0 or over a
+     * sane ceiling, a pointer at/beyond capacity, or a backlog past capacity).
+     */
+    fun pagesBehind(frame: ByteArray, cmdOff: Int): Long? {
+        if (cmdOff < 0) return null
+        val payloadOffset = cmdOff + 1
+        val wOff = payloadOffset + 11; val uOff = payloadOffset + 15; val tOff = payloadOffset + 23
+        if (tOff + 4 > frame.size) return null
+        fun u32(o: Int): Long =
+            (frame[o].toLong() and 0xFFL) or
+                ((frame[o + 1].toLong() and 0xFFL) shl 8) or
+                ((frame[o + 2].toLong() and 0xFFL) shl 16) or
+                ((frame[o + 3].toLong() and 0xFFL) shl 24)
+        val w = u32(wOff); val u = u32(uOff); val t = u32(tOff)
+        if (t <= 0L || t > 0x00FFFFFFL || w >= t || u >= t) return null
+        val behind = if (w < u) w + (t - u) else w - u
+        if (behind < 0L || behind > t) return null
+        return behind
+    }
 }

@@ -1,10 +1,12 @@
 package com.noop.protocol
 
 import com.noop.data.BatteryRow
+import com.noop.data.DynAccelDiag
 import com.noop.data.EventEntry
 import com.noop.data.GravityRow
 import com.noop.data.HrRow
 import com.noop.data.PpgHrRow
+import com.noop.data.PpgWaveformRow
 import com.noop.data.RespRow
 import com.noop.data.RrRow
 import com.noop.data.SkinTempRow
@@ -66,6 +68,17 @@ const val FUTURE_MARGIN: Long = 86_400L
  * the months-off garbage. Kept in lockstep with Swift `HistoricalStreams.swift` SESSION_RANGE_MARGIN.
  */
 const val SESSION_RANGE_MARGIN: Long = 7L * 86_400L
+
+/**
+ * #520: the stillness cut for the `dynamic_acceleration` diagnostic. Borrowed from
+ * `SleepStager.gravityStillThresholdG` (0.01 g) as a REFERENCE point, not because the two measure the same
+ * thing — the stager thresholds a per-sample DELTA between consecutive gravity vectors, while this field is
+ * an ABSOLUTE gravity-removed magnitude at one instant. Both approach 0 when the wrist is still, so the same
+ * cut is a sensible starting point, but a matching still-fraction would not prove the two are equivalent.
+ * Duplicated as a literal rather than imported — this is the wire layer and must not depend on the analytics
+ * layer. If the stager's constant moves, move this one with it. Twin of Swift `dynAccelStillThresholdG`.
+ */
+const val DYN_ACCEL_STILL_THRESHOLD_G: Double = 0.01
 
 // MARK: - little-endian readers (null when out of range; mirror PostHooks.swift u8/u16/u32/f32)
 
@@ -335,8 +348,22 @@ private fun decodeWhoop5Historical(frame: ByteArray): Map<String, Any?>? {
         out["wake_quality"] = (it shr 2) and 3
         out["onwrist"] = it and 3
     }
-    // @82 a single raw byte adjacent to the flag byte; carried raw, meaning not pinned.
-    frame.histU8(82)?.let { out["aux_byte_82"] = it }
+    // @82 a single raw byte adjacent to the flag byte; nonzero only while sleep_state = asleep.
+    // #103 SpO2 candidate: a decompile-sourced decode (gen5.rs `spo2_pct`, reimplemented here as a
+    // protocol fact with attribution, like the other RE work) reads @82 (= inner 74) as a strap-computed
+    // SpO2 % scalar, tri-mode: 70–100 = a real %, bit-7 values (0x80/0xA0…) = saturation sentinels,
+    // other sub-70 nonzero = diagnostic codes, populated only during sleep. Evidence is SPLIT: an
+    // 8-night independent validation with real spread (corr +0.99, ~0.4 %/night) meets the cross-night
+    // bar, but the two capture nights checked on the original #103 device moved OPPOSITE to the app
+    // value — unresolved. So this ships as an INSTRUMENTATION CANDIDATE only: the in-band value is
+    // decoded and surfaced raw for multi-device correlation against the app's own nightly SpO2. It must
+    // never back a shipped SpO2 metric, never write spo2Pct/spo2_red/spo2_ir, and never feed a
+    // downstream gate (recovery/illness) until the cross-device contradiction is resolved. Mirror of
+    // Swift Interpreter (@82 block).
+    frame.histU8(82)?.let {
+        out["aux_byte_82"] = it
+        if (it in 70..100) out["spo2_candidate_82"] = it
+    }
     // ── The @82–119 "optical/tail" span, reverse-engineered over 18,602 real v18 records (a third strap's
     // overnight R22 stream) + cross-checked on two fixture devices: it is ~85% ZERO PADDING (83–103,
     // 110–112, 117–119 constant 0x00; @104 a constant 0x01 marker). Only @106 (u16), @108/@109 (a paired
@@ -523,6 +550,10 @@ fun extractHistoricalStreams(
     var droppedOldest: Long? = null
     var droppedNewest: Long? = null
     val droppedRtcEvents = ArrayList<DroppedRtcEvent>()
+    // #520 diagnostic: running summary of dynamic_acceleration@41 over this batch. Counted, never
+    // stored — the field has been decoded all along with nothing consuming it, so there is no evidence
+    // on whether it beats the gravity-delta stillness the stager derives today. Twin of Swift.
+    val dynAccel = DynAccelDiag()
 
     // The plausible-timestamp window for this batch (#547): the absolute floor [MIN_PLAUSIBLE_UNIX,
     // wallNow + FUTURE_MARGIN] PLUS, when the strap's GET_DATA_RANGE markers are known AND well-formed
@@ -597,6 +628,10 @@ fun extractHistoricalStreams(
     val battery = ArrayList<BatteryRow>()
     // v26 PPG samples accumulate across the chunk, then get turned into HR after the loop (#156).
     val ppgSamples = ArrayList<PpgHr.Sample>()
+    // The RAW v26 waveform kept PER RECORD (one row per strap-second) for durable storage (#156
+    // follow-up) — the same (ts, samples) the estimator above consumes, but grouped per second so it
+    // persists as its own `ppgWaveformSample` stream rather than being flattened into the HR buffer.
+    val ppgWaveform = ArrayList<PpgWaveformRow>()
 
     for (frame in rawFrames) {
         // Packet type byte: WHOOP 5/MG's longer puffin envelope puts it at frame[8]; WHOOP 4 at frame[4].
@@ -619,6 +654,10 @@ fun extractHistoricalStreams(
                         val baseTs = correctedWall(rec.unix.toLong() and 0xFFFFFFFFL)
                         if (baseTs != null) {
                             for (v in rec.samples) ppgSamples.add(PpgHr.Sample(ts = baseTs, value = v))
+                            // Persist the raw waveform itself too (#156 follow-up), keyed on the record's
+                            // corrected wall-second. Guard on non-empty so a truncated frame that decoded
+                            // zero samples never banks an empty row (mirrors the Swift `!samples.isEmpty`).
+                            if (rec.samples.isNotEmpty()) ppgWaveform.add(PpgWaveformRow(baseTs, rec.samples))
                         }
                     }
                 }
@@ -664,6 +703,11 @@ fun extractHistoricalStreams(
                         ),
                     )
                 }
+                // #520: fold the gravity-removed motion magnitude into the diagnostic summary. The
+                // threshold is the stager's own cut, borrowed as a reference point (the stager thresholds a
+                // per-sample delta, this is an absolute magnitude — related, not the same measurement);
+                // passed as a literal because the protocol layer must not depend on analytics.
+                p.doubleOrNull("dynamic_acceleration")?.let { dynAccel.add(it, DYN_ACCEL_STILL_THRESHOLD_G) }
             }
 
             PacketType.REALTIME_RAW_DATA.rawValue -> {
@@ -732,10 +776,12 @@ fun extractHistoricalStreams(
         spo2 = spo2, skinTemp = skinTemp, resp = resp, gravity = gravity, steps = steps,
         sleepState = sleepState,
         ppgHr = ppgHr,
+        ppgWaveform = ppgWaveform,
         droppedImplausibleTs = droppedImplausible,
         droppedImplausibleOldestTs = droppedOldest,   // #324 poisoned-range epoch span (diag only)
         droppedImplausibleNewestTs = droppedNewest,
         droppedRtcEvents = droppedRtcEvents,
+        dynAccel = dynAccel,
     )
 }
 

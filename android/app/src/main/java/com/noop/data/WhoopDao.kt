@@ -83,6 +83,28 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertPpgHr(rows: List<PpgHrSample>): List<Long>
 
+    /** RAW v26 optical PPG waveform (packed i16 BLOB). Idempotent by (deviceId, ts). (#156 follow-up) */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertPpgWaveform(rows: List<PpgWaveformSampleEntity>): List<Long>
+
+    /** RAW 5/MG IMU offload buffers (packed i16 BLOB). Idempotent by (deviceId, ts). (#423) */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertRawImu(rows: List<RawImuSampleEntity>): List<Long>
+
+    /** Bound the raw-IMU table to the newest [keep] rows for [deviceId] (rolling retention, #423). */
+    @Query(
+        "DELETE FROM rawImuSample WHERE deviceId = :deviceId AND ts < " +
+            "(SELECT MIN(ts) FROM (SELECT ts FROM rawImuSample WHERE deviceId = :deviceId ORDER BY ts DESC LIMIT :keep))"
+    )
+    suspend fun pruneRawImu(deviceId: String, keep: Int)
+
+    /** RAW 5/MG IMU buffers in [from, to] (ascending), packed i16 BLOB. (#423) */
+    @Query(
+        "SELECT * FROM rawImuSample WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
+            "ORDER BY ts ASC LIMIT :limit"
+    )
+    suspend fun rawImuSamples(deviceId: String, from: Long, to: Long, limit: Int): List<RawImuSampleEntity>
+
     // MARK: - Server-derived caches (latest value wins)
 
     @Upsert
@@ -161,6 +183,41 @@ interface WhoopDao : DeviceRegistryDao {
     suspend fun upsertMetricSeries(rows: List<MetricSeriesRow>)
 
     @Upsert
+    suspend fun upsertScoreInputProvenance(rows: List<ScoreInputProvenanceRow>)
+
+    @Query(
+        "SELECT sourceId FROM scoreInputProvenance " +
+            "WHERE deviceId = :deviceId AND day = :day AND key = :key"
+    )
+    suspend fun scoreInputSource(deviceId: String, day: String, key: String): String?
+
+    @Query(
+        "DELETE FROM scoreInputProvenance " +
+            "WHERE deviceId = :deviceId AND day >= :from AND day <= :to"
+    )
+    suspend fun deleteScoreInputProvenanceInRange(deviceId: String, from: String, to: String)
+
+    /**
+     * Replace a computed scoring window atomically. If any score or provenance write fails, Room rolls
+     * the whole transaction back, so an old score can never be labelled with a newer provider.
+     */
+    @Transaction
+    suspend fun replaceComputedScoreWindow(
+        deviceId: String,
+        from: String,
+        to: String,
+        dailyMetrics: List<DailyMetric>,
+        metricPoints: List<MetricSeriesRow>,
+        provenance: List<ScoreInputProvenanceRow>,
+    ) {
+        deleteDailyMetricsInRange(deviceId, from, to)
+        deleteScoreInputProvenanceInRange(deviceId, from, to)
+        if (dailyMetrics.isNotEmpty()) upsertDailyMetrics(dailyMetrics)
+        if (metricPoints.isNotEmpty()) upsertMetricSeries(metricPoints)
+        if (provenance.isNotEmpty()) upsertScoreInputProvenance(provenance)
+    }
+
+    @Upsert
     suspend fun upsertJournal(rows: List<JournalEntry>)
 
     @Upsert
@@ -224,18 +281,45 @@ interface WhoopDao : DeviceRegistryDao {
     )
     suspend fun ppgHrSamples(deviceId: String, from: Long, to: Long, limit: Int): List<PpgHrSample>
 
-    /** Aggregate HR over a window (one indexed (deviceId,ts) range scan — no row materialisation,
-     *  no [hrSamples] LIMIT truncation). Backs the imported-workout HR fallback (#77). */
+    /** RAW v26 optical PPG waveform rows in [from, to] (ascending), packed i16 BLOB. (#156 follow-up) */
     @Query(
-        "SELECT COUNT(*) AS n, AVG(bpm) AS avg, MAX(bpm) AS max FROM hrSample " +
-            "WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to"
+        "SELECT * FROM ppgWaveformSample WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
+            "ORDER BY ts ASC LIMIT :limit"
+    )
+    suspend fun ppgWaveformSamples(deviceId: String, from: Long, to: Long, limit: Int):
+        List<PpgWaveformSampleEntity>
+
+    /** Aggregate HR over a window (one indexed (deviceId,ts) range scan — no row materialisation,
+     *  no [hrSamples] LIMIT truncation). Backs the imported-workout HR fallback (#77).
+     *
+     *  #836: aggregates the SAME measured-∪-PPG rows [hrSamples] returns, not `hrSample` alone. It used
+     *  to read only measured rows, so on a WHOOP 5 — where the firmware banks v26 PPG instead of v18 HR
+     *  per second — a PPG-heavy workout charted a full trace (the chart uses [hrSamples]) while this
+     *  counted under `fillWorkoutHrFromStrap`'s 60-sample floor, and Avg HR rendered blank. iOS never had
+     *  it: its twin reduces `store.hrSamples`, the coalescing read. Same anti-join as [hrSamples], so a
+     *  measured second is never double-counted by its PPG estimate. */
+    @Query(
+        "SELECT COUNT(*) AS n, AVG(bpm) AS avg, MAX(bpm) AS max FROM (" +
+            "SELECT bpm FROM hrSample " +
+            "WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
+            "UNION ALL " +
+            "SELECT p.bpm AS bpm FROM ppgHrSample p " +
+            "WHERE p.deviceId = :deviceId AND p.ts >= :from AND p.ts <= :to " +
+            "AND NOT EXISTS (SELECT 1 FROM hrSample h WHERE h.deviceId = p.deviceId AND h.ts = p.ts)" +
+            ")"
     )
     suspend fun hrWindowStats(deviceId: String, from: Long, to: Long): HrWindowStats
 
     @Query(
-        // ts, rrMs matches Swift Reads.swift; seq only tiebreaks the rare EQUAL same-second beats (v18).
+        // #823: `ord` FIRST, so same-second beats come back in EMISSION order. Ordering by rrMs made
+        // successive beats similar by construction and biased RMSSD (all successive differences) down.
+        // Pre-v24 rows have ord NULL and SQLite sorts NULL first in ASC, so an all-NULL second ties here
+        // and falls through to the old (rrMs, seq) order — unchanged for existing data, and deterministic.
+        // Byte-parity twin of Swift Reads.swift rrIntervals; both are SQLite, so NULL ordering matches.
+        // Note this no longer matches the PK index (ts, rrMs, seq), so SQLite sorts; see the PR for why
+        // that is acceptable at this query's size rather than adding a covering index.
         "SELECT * FROM rrInterval WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
-            "ORDER BY ts ASC, rrMs ASC, seq ASC LIMIT :limit"
+            "ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC LIMIT :limit"
     )
     suspend fun rrIntervals(deviceId: String, from: Long, to: Long, limit: Int): List<RrInterval>
 
@@ -630,6 +714,14 @@ interface WhoopDao : DeviceRegistryDao {
      *  under whichever namespace owned the deleted row. */
     @Query("SELECT * FROM dismissedSleep WHERE deviceId = :deviceId")
     suspend fun dismissedSleeps(deviceId: String): List<DismissedSleep>
+
+    /** Hide one tombstone from the Sleep screen's recompute list while leaving the row in place so the
+     *  detector continues to suppress the sleep the user deliberately deleted (#515). */
+    @Query(
+        "UPDATE dismissedSleep SET managementVisible = 0 " +
+            "WHERE deviceId = :deviceId AND startTs = :startTs",
+    )
+    suspend fun hideDismissedSleepFromManagement(deviceId: String, startTs: Long): Int
 
     /** Lift ONE deleted-sleep tombstone (#65 undo / "allow re-detection"): removes the marker so the
      *  night is re-detected from raw on the next analyze pass. Keyed by (deviceId, startTs): the same
