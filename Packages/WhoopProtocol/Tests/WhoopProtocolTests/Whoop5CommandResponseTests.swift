@@ -82,15 +82,13 @@ final class Whoop5CommandResponseTests: XCTestCase {
     /// Decode only. No claim is made here about what the strap did with the commands — all three answered
     /// SUCCESS and produced no ECG data, which is the open question in #891, not something a test settles.
     ///
-    /// Asserts `resp_cmd` and the envelope, which is what this decoder exposes. The Kotlin twin also
-    /// asserts `resp_seq` and `result` on these same bytes, because the Kotlin decoder publishes both and
-    /// this one publishes neither — on either family. That gap is real and pre-existing (every Swift probe
-    /// re-derives the result byte itself rather than reading a parsed field), but it is the opposite
-    /// divergence from the one this change fixes, so it is filed rather than folded in here.
-    private let mgToggleReplies: [(hex: String, cmd: String)] = [
-        ("aa010c000100271124148b2f01010000845a1705", "TOGGLE_LABRADOR_FILTERED(139)"),
-        ("aa010c000100271124157d300101000067ab1b82", "TOGGLE_LABRADOR_RAW_SAVE(125)"),
-        ("aa010c000100271124167c3101010000ef4bcf45", "TOGGLE_LABRADOR_DATA_GENERATION(124)"),
+    /// Now asserts `resp_seq` and `result` alongside `resp_cmd`, matching the Kotlin twin field for field.
+    /// When these fixtures landed this decoder published neither, which is how that divergence was found;
+    /// #894 closed it, so the two suites finally agree on every field of the same bytes.
+    private let mgToggleReplies: [(hex: String, cmd: String, seq: Int)] = [
+        ("aa010c000100271124148b2f01010000845a1705", "TOGGLE_LABRADOR_FILTERED(139)", 47),
+        ("aa010c000100271124157d300101000067ab1b82", "TOGGLE_LABRADOR_RAW_SAVE(125)", 48),
+        ("aa010c000100271124167c3101010000ef4bcf45", "TOGGLE_LABRADOR_DATA_GENERATION(124)", 49),
     ]
 
     func testMgToggleRepliesDecode() {
@@ -99,7 +97,19 @@ final class Whoop5CommandResponseTests: XCTestCase {
             XCTAssertEqual(f.typeName, "COMMAND_RESPONSE", reply.cmd)
             XCTAssertEqual(f.crcOK, true, reply.cmd)
             XCTAssertEqual(f.parsed["resp_cmd"]?.stringValue, reply.cmd)
+            XCTAssertEqual(f.parsed["resp_seq"]?.intValue, reply.seq)
+            XCTAssertEqual(f.parsed["result"]?.stringValue, "SUCCESS(1)")
         }
+    }
+
+    /// The battery reply already in this file, now also asserting the two new fields — it is the one real
+    /// 5/MG fixture whose value byte is independently known (47%), so it pins that publishing `resp_seq`
+    /// and `result` did not shift the payload offsets the value decode reads from.
+    func testBatteryReplyAlsoReportsSeqAndResult() {
+        let f = parseFrame(bytes(batteryHex), family: .whoop5)
+        XCTAssertEqual(f.parsed["resp_seq"]?.intValue, 2)
+        XCTAssertEqual(f.parsed["result"]?.stringValue, "SUCCESS(1)")
+        XCTAssertEqual(f.parsed["battery_pct"]?.doubleValue, 47)
     }
 
     /// Byte 13 — the first response-payload byte, where `GET_BATTERY_LEVEL` returns its percent — is `0x01`
