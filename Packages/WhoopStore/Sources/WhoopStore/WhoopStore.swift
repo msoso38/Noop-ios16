@@ -9,6 +9,56 @@ public enum WhoopStoreInfo {
     public static let schemaVersion = 18
 }
 
+/// Who is responsible for checkpointing the WAL back into the main database file.
+///
+/// SQLite's `wal_autocheckpoint` is a **per-connection** setting, not a database property, so this
+/// is applied inside `Configuration.prepareDatabase` and therefore reaches every connection a
+/// `DatabasePool` opens.
+///
+/// ## Why this exists
+///
+/// A page-level replicator (Litestream and its embeddable Rust port, `liters`) ships **WAL frames**,
+/// so it must observe every transaction. To stop the WAL being restarted underneath it, it holds a
+/// long-running read transaction — which starves every *other* checkpointer, including SQLite's own
+/// autocheckpoint. If a foreign connection nevertheless succeeds in restarting the WAL, the
+/// replicator finds its resume offset overwritten and must fall back to a **full snapshot of the
+/// entire database**. On iOS that would be a multi-hundred-megabyte upload, on every app launch.
+///
+/// Passing `.external` is what lets such a replicator be the single checkpointer.
+///
+/// ## The obligation `.external` carries — read before using it
+///
+/// With autocheckpoint off, **nothing in this package bounds WAL growth**. `checkpointWAL()` is only
+/// called from bulk-import and backup paths; the hot BLE ingest path never checkpoints. Measured on
+/// a NOOP-shaped workload (a 2M-row base, `Collector.flushStandardHR()`'s ~30 s commit cadence, one
+/// transaction per flush):
+///
+/// | cadence | commits/day | WAL after 1 day | after 7 days |
+/// |---|---|---|---|
+/// | every 10 s | 8,640 | 341 MB | — |
+/// | **every 30 s (NOOP today)** | **2,880** | **166 MB** | **1.17 GB** |
+/// | every 5 min | 288 | 37 MB | — |
+///
+/// The cost is driven by the **commit count**, not the data volume: each commit dirties ~14 pages
+/// (the file header's change counter, each table's rightmost leaf, each index leaf, the interior
+/// spine) whether it carries 30 rows or 300. Only ~11 MB/day of that is new data; the rest is
+/// re-written pages that autocheckpoint would normally reclaim.
+///
+/// So an `.external` caller MUST guarantee a checkpointer actually runs. If it stops running — the
+/// user disables sync, the network is down for a week, the replicator is never started, or it
+/// crashes on launch — the WAL grows without limit and will eventually exhaust device storage. That
+/// is a strictly worse failure than the full re-upload it was meant to avoid, so the caller should
+/// also keep a floor: watch `databaseFileSizeBytes()` and force `checkpointWAL()` if the `-wal`
+/// sibling crosses a ceiling, regardless of replicator state.
+public enum WalCheckpointing: Sendable {
+    /// SQLite's default: each connection auto-checkpoints at ~1000 WAL pages (~4 MB). This is the
+    /// behaviour of every build that does not opt out, and the only behaviour upstream ships.
+    case automatic
+    /// Disable `wal_autocheckpoint` on every connection this store opens, because an external
+    /// component checkpoints instead. See the obligation documented above.
+    case external
+}
+
 /// Serializes `DatabasePool` creation + migration so two concurrent opens of the SAME file can never
 /// run their GRDB migrators at once (#261).
 ///
@@ -83,7 +133,11 @@ public actor WhoopStore {
     ///
     /// Open + migrate runs through `StoreOpenGate` so two concurrent openers of the SAME file never
     /// run their GRDB migrators at once (#261) — see that actor's note for the failure it prevents.
-    public init(path: String) async throws {
+    ///
+    /// `walCheckpointing` defaults to `.automatic`, which is exactly the behaviour every build has
+    /// today. Only an embedder that has taken over checkpointing should pass `.external` — see
+    /// `WalCheckpointing` for the obligation that carries.
+    public init(path: String, walCheckpointing: WalCheckpointing = .automatic) async throws {
         var config = Configuration()
         config.prepareDatabase { db in
             // `DatabasePool` puts the database in WAL mode itself (reads run as concurrent snapshots
@@ -95,6 +149,13 @@ public actor WhoopStore {
             try db.execute(sql: "PRAGMA cache_size = -16000")     // ~16 MB page cache
             try db.execute(sql: "PRAGMA mmap_size = 268435456")   // 256 MB memory-mapped I/O
             try db.execute(sql: "PRAGMA temp_store = MEMORY")
+            // `wal_autocheckpoint` is a PER-CONNECTION setting, so this has to run inside
+            // `prepareDatabase` — it is applied to every connection the pool opens (the writer and
+            // each reader), not once at open. Setting it anywhere else would leave the pool's other
+            // connections still auto-checkpointing, which is the exact bug this guards against.
+            if case .external = walCheckpointing {
+                try db.execute(sql: "PRAGMA wal_autocheckpoint = 0")
+            }
         }
         config.busyMode = .timeout(5)
         let pool = try await StoreOpenGate.shared.openAndMigrate(path: path, configuration: config)
