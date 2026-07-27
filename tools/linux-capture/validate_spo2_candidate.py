@@ -690,19 +690,29 @@ def validate_device(
     checklist["pass"] = all(checklist.values())
 
     # A strap that never emits @82 has not failed a correlation — it has no data to correlate. Say so
-    # explicitly, but only once the capture is long enough that a duty-cycled feature would have had
-    # several chances to fire during sleep; a short capture that missed the window is not evidence.
-    # And only if it was sampled finely enough to SEE one — see NOMINAL_DUTY_WINDOW_S. Without that
-    # last clause the two duration bars pass an aliased capture straight through and a working strap
-    # is reported absent.
+    # explicitly, but only once the capture actually WATCHED the strap long enough, and finely enough,
+    # that a duty-cycled feature would have fired where the capture could see it.
+    #
+    # Both halves of that are easy to get wrong in the same direction:
+    #   • Long enough is OBSERVED time, not wall-clock span. max-minus-min counts the gaps, so a
+    #     capture that ran densely for two minutes and then logged one record eight hours later scores
+    #     an 8 h "span" off 121 s of observation. Sleep samples times cadence is what was watched.
+    #   • Finely enough is NOMINAL_DUTY_WINDOW_S. Missing the window is a phase problem: a cadence
+    #     sharing a large factor with the period only ever occupies period//gcd residues, so it either
+    #     always lands in the window or never does, and no amount of duration fixes that.
+    #
+    # Both failures produce the same wrong answer — a working strap reported as lacking the feature —
+    # and that error is asymmetric, because feature_absent REMOVES a device from the multi-device gate
+    # rather than failing it. Over-claiming absence loosens the promote bar.
     asleep_stamps = [r["unix"] for r in records if r.get("sleep_state") == SLEEP_ASLEEP]
     asleep_span = (max(asleep_stamps) - min(asleep_stamps)) if len(asleep_stamps) >= 2 else 0
     interval = duty.get("record_interval_s")
+    observed_asleep_s = len(asleep_stamps) * interval if interval else 0
     cadence_could_see_window = interval is not None and interval <= NOMINAL_DUTY_WINDOW_S
     feature_absent = (
         duty["mode"] == "absent"
         and len(records) >= ABSENT_MIN_RECORDS
-        and asleep_span >= ABSENT_MIN_ASLEEP_SPAN_S
+        and observed_asleep_s >= ABSENT_MIN_ASLEEP_SPAN_S
         and cadence_could_see_window
     )
     classification = (
@@ -727,6 +737,9 @@ def validate_device(
         "median_window_coverage": median_coverage,
         "low_coverage_nights": low_cov_nights,
         "asleep_span_s": asleep_span,
+        # Reported beside the span on purpose: the two diverging is the signature of a capture with
+        # gaps, and it is the observed figure the absence claim is gated on.
+        "observed_asleep_s": observed_asleep_s,
         "classification": classification,
         "checklist": checklist,
         "nights": nights,

@@ -699,6 +699,29 @@ class FeatureAbsentClassificationTests(unittest.TestCase):
         self.assertEqual(res["duty"]["mode"], "absent")
         self.assertNotEqual(res["classification"], "feature_absent")
 
+    def test_a_dense_burst_plus_one_far_later_record_cannot_claim_absence(self):
+        """Wall-clock span is not observation. 120 records at 1 Hz plus a single record eight hours
+        later clears the record count, spans 8 h, and has a 1 s median cadence — but the capture only
+        ever watched the strap for ~2 minutes, which is no evidence of anything."""
+        t0 = _utc(2026, 5, 1, 23, 0, 0)
+        stamps = list(range(t0, t0 + 120)) + [t0 + 8 * 3600]
+        with tempfile.TemporaryDirectory() as td:
+            frames = [
+                {"hex": make_v18(unix=u, sleep_state=2, hr=52, aux_byte_82=0).hex()} for u in stamps
+            ]
+            cap = os.path.join(td, "sparse.json")
+            with open(cap, "w") as f:
+                json.dump(frames, f)
+            exp_dir = os.path.join(td, "sparse")
+            os.makedirs(exp_dir)
+            start = datetime.fromtimestamp(t0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            _write_export(exp_dir, [(start, 96.0, t0, t0 + 8 * 3600)])
+            res = vs.validate_device(cap, exp_dir, device="sparse")
+        self.assertEqual(res["duty"]["mode"], "absent")
+        self.assertGreaterEqual(res["duty"]["n_records"], vs.ABSENT_MIN_RECORDS)   # count bar clears
+        self.assertLessEqual(res["duty"]["record_interval_s"], vs.NOMINAL_DUTY_WINDOW_S)  # cadence too
+        self.assertEqual(res["classification"], "fail")
+
     def test_a_cadence_at_the_window_length_can_still_claim_absence(self):
         """Boundary: a cadence at or below the window length cannot skip a window whatever the phase,
         so a flat-zero capture there IS evidence. Guards the gate against being over-tightened."""

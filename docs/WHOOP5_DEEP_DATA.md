@@ -174,13 +174,21 @@ aggregates one value **per window** rather than per second, and reports per-nigh
 with a loud warning below the floor. A strap whose `@82` is flat `0x00` across a long enough capture
 is classified **`feature_absent`** — neither a PASS nor a FAIL in the multi-device gate.
 
-That absence claim carries the aliasing caveat back onto itself: it also requires the capture to have
-been sampled **finely enough to see a window**. Missing the window is a phase problem, not a duration
-one — a cadence sharing a large factor with the period only ever occupies `period ÷ gcd` residues, so
-at 300 s against 1200 s it either always lands inside the window or never does, and six nights of
-scored sleep read a flat `0x00` off a perfectly healthy strap. A capture coarser than a nominal 30 s
-window stays a plain FAIL and says why. The conservative direction matters here: `feature_absent`
-*removes* a device from the gate, so over-claiming absence would make promotion easier, not harder.
+That absence claim is gated on the capture having actually **watched** the strap — long enough, and
+finely enough, that a duty-cycled feature would have fired somewhere the capture could see it. Both
+halves fail the same way if you get them wrong, reporting a working strap as lacking the feature:
+
+- **Long enough is observed time, not wall-clock span.** `max − min` counts the gaps, so a capture
+  that ran densely for two minutes and then logged one record eight hours later scores an 8 h "span"
+  off 121 s of observation. Sleep samples × cadence is what was watched, and that is what the bar uses.
+- **Finely enough is a nominal 30 s window.** Missing the window is a phase problem, not a duration
+  one — a cadence sharing a large factor with the period only ever occupies `period ÷ gcd` residues,
+  so at 300 s against 1200 s it either always lands inside the window or never does. Six nights of
+  scored sleep then read a flat `0x00` off a perfectly healthy strap.
+
+A capture failing either test stays a plain FAIL and the duty line says why. The conservative
+direction matters here: `feature_absent` *removes* a device from the gate, so over-claiming absence
+would make promotion easier, not harder.
 
 `--postable` prints a CSV-ish block with **no raw SpO₂ values** — safe to paste on
 [#103](https://github.com/ryanbr/noop/issues/103). Promote `spo2_candidate_82` → `spo2Pct` only when
