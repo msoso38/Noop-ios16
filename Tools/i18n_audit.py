@@ -471,6 +471,12 @@ def scan_android() -> list[tuple[str, int, str]]:
     return findings
 
 
+# Keys that are deliberately identical in every language, so their absence from a locale file is not
+# a gap. ONE definition: both the hard-gated focus locales and the #844 discovered ones subtract this,
+# and a second copy would let the two paths disagree the moment anyone adds a key here.
+ANDROID_EXEMPT_KEYS = {"app_name"}  # brand name
+
+
 def android_strings_xml_gaps() -> dict[str, set[str]]:
     """Keys present in the base values/strings.xml but missing from an
     existing values-<locale>/strings.xml. (Doesn't invent missing locale dirs —
@@ -480,7 +486,6 @@ def android_strings_xml_gaps() -> dict[str, set[str]]:
     # otherwise DROP those keys out of this gate's view entirely, so a locale could silently lose them —
     # fixing the plural model must not open a coverage hole (see #540 for the same class of blind spot).
     base_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', base_path.read_text(encoding="utf-8")))
-    exempt = {"app_name"}  # brand name, deliberately identical everywhere
     gaps: dict[str, set[str]] = {}
     for lang in LANGS:
         locale_dir = ANDROID_LOCALE_DIRS[lang]
@@ -489,7 +494,7 @@ def android_strings_xml_gaps() -> dict[str, set[str]]:
             gaps[lang] = {"<entire %s/ directory is missing>" % locale_dir}
             continue
         lang_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', lang_path.read_text(encoding="utf-8")))
-        missing = (base_keys - exempt) - lang_keys
+        missing = (base_keys - ANDROID_EXEMPT_KEYS) - lang_keys
         if missing:
             gaps[lang] = missing
     return gaps
@@ -1002,8 +1007,18 @@ def ci_check(base_ref: str) -> int:
     ios_fixed = baseline["ios"] - ios_found
     if ios_fixed:
         print(f"  {len(ios_fixed)} baseline entr(y/ies) no longer found — run --update-baseline to shrink the backlog")
+    allowance = extra_locale_allowance()
+    extra_apple_gaps: dict[str, int] = {}
     for _dirs, catalog_path in CATALOGS:
         cat = load_catalog(catalog_path)
+        # #844: count the shipped locales OUTSIDE the focus set while the catalog is already parsed,
+        # and gate them below. Reloading each catalog for a second pass wasted a full re-parse of a
+        # 3255-string file.
+        for extra in sorted(shipped_apple_langs(cat) - set(LANGS)):
+            extra_apple_gaps[f"{catalog_path.relative_to(ROOT)}:{extra}"] = sum(
+                1 for v in cat.get("strings", {}).values()
+                if v.get("shouldTranslate") is not False and not _is_translated(v, extra)
+            )
         for lang in LANGS:
             missing = sum(
                 1 for v in cat.get("strings", {}).values()
@@ -1023,23 +1038,14 @@ def ci_check(base_ref: str) -> int:
     # tolerance; these carry real pre-existing debt (StrandDesign ships 14 of 95 Italian), so the gate
     # blocks GROWTH rather than demanding the backlog be cleared before anyone can merge.
     print("\n--- Locales beyond the focus set: no NEW gaps (ratcheting allowance) ---")
-    allowance = extra_locale_allowance()
     improved: list[str] = []
-    for _dirs, catalog_path in CATALOGS:
-        cat = load_catalog(catalog_path)
-        rel = str(catalog_path.relative_to(ROOT))
-        for lang in sorted(shipped_apple_langs(cat) - set(LANGS)):
-            missing = sum(
-                1 for v in cat.get("strings", {}).values()
-                if v.get("shouldTranslate") is not False and not _is_translated(v, lang)
-            )
-            target = f"{rel}:{lang}"
-            allowed = allowance.get(target, 0)
-            if missing > allowed:
-                failed = True
-                print(f"FAIL {target}: missing={missing} exceeds the allowance of {allowed}")
-            elif missing < allowed:
-                improved.append(f"{target}: {allowed} -> {missing}")
+    for target, missing in sorted(extra_apple_gaps.items()):
+        allowed = allowance.get(target, 0)
+        if missing > allowed:
+            failed = True
+            print(f"FAIL {target}: missing={missing} exceeds the allowance of {allowed}")
+        elif missing < allowed:
+            improved.append(f"{target}: {allowed} -> {missing}")
     base_path = ROOT / "android/app/src/main/res/values/strings.xml"
     base_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', base_path.read_text(encoding="utf-8")))
     for locale_dir in shipped_android_locale_dirs():
@@ -1047,7 +1053,7 @@ def ci_check(base_ref: str) -> int:
             continue   # already hard-gated above
         lang_path = ROOT / f"android/app/src/main/res/{locale_dir}/strings.xml"
         lang_keys = set(re.findall(r'<(?:string|plurals) name="([^"]+)"', lang_path.read_text(encoding="utf-8")))
-        missing = len((base_keys - {"app_name"}) - lang_keys)
+        missing = len((base_keys - ANDROID_EXEMPT_KEYS) - lang_keys)
         target = f"{locale_dir}/strings.xml"
         allowed = allowance.get(target, 0)
         if missing > allowed:
@@ -1088,7 +1094,7 @@ def main() -> int:
     ap.add_argument("--platform", choices=["ios", "android", "all"], default="all")
     ap.add_argument("--full", action="store_true", help="print every finding, not just counts")
     ap.add_argument("--ci", metavar="BASE_REF", help="strict coverage gate (BASE_REF is retained for workflow compatibility); see ci_check() docstring")
-    ap.add_argument("--update-baseline", action="store_true", help="rewrite Tools/i18n_audit_baseline.json from the current hardcoded-literal scan (see load_baseline() docstring)")
+    ap.add_argument("--update-baseline", action="store_true", help="rewrite Tools/i18n_audit_baseline.json from the current hardcoded-literal scan (see load_baseline() docstring). Does NOT touch Tools/i18n_extra_locale_baseline.txt — that one is lowered by hand, so shrinking it stays a deliberate act")
     args = ap.parse_args()
 
     if args.update_baseline:
