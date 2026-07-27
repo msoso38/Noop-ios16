@@ -109,3 +109,9 @@ Strand/Oura/OuraSecrets.xcconfig
 
 # Personal bundle id prefix (BYO; never committed)
 Config/BundleIdSecrets.xcconfig
+
+# liters linkage, written by Rust/build-ios.sh from the xcframework it just produced. Untracked
+# because it names slice directories under Rust/target/, which is itself untracked — committing it
+# would point every other checkout at an archive that is not there. Config/Liters.xcconfig is the
+# tracked wrapper that optionally includes it.
+Config/LitersLocal.xcconfig

@@ -41,6 +41,13 @@ struct TestCentreView: View {
     @AppStorage(PuffinExperiment.ppgHrSubLagInterpKey) private var ppgHrSubLagInterpEnabled = false
     @AppStorage(PuffinExperiment.hrvReadinessKey) private var hrvReadinessEnabled = false
 
+    #if CLOUD_SYNC
+    // Section 5: the page-replication trial. Bound to the SAME UserDefaults key SyncReplicationTrial
+    // reads at launch, so this toggle IS the switch rather than a mirror of it. Default false, which is
+    // what a missing key reads as, so a fresh install and an explicit "off" are the same state.
+    @AppStorage(SyncReplicationTrial.enabledKey) private var replicationTrialEnabled = false
+    #endif
+
     /// True when the connected strap is a 5/MG, so the 5/MG experimental block shows. Mirrors the
     /// SettingsView gate (#22): a confident 4.0 owner never sees controls that cannot touch their strap.
     private var is5MG: Bool { selectedWhoopModelRaw == WhoopModel.whoop5mg.rawValue }
@@ -60,6 +67,9 @@ struct TestCentreView: View {
                 diagnosticToolsCard.staggeredAppear(index: 1)
                 exportCard.staggeredAppear(index: 2)
                 experimentalAlgorithmsCard.staggeredAppear(index: 3)
+                #if CLOUD_SYNC
+                replicationTrialCard.staggeredAppear(index: 4)
+                #endif
             }
         }
         .id(refreshToken)
@@ -315,6 +325,60 @@ struct TestCentreView: View {
             return acc
         }
     }
+
+    // MARK: - Section 5: Page-replication trial (CLOUD_SYNC only, opt-in, off by default)
+
+    #if CLOUD_SYNC
+    /// The one UI for `SyncReplicationTrial`. Until this existed the switch was a bare `UserDefaults`
+    /// key with no way to flip it short of attaching a debugger, which meant the measurement it exists
+    /// to produce could not be started on the device that has the data.
+    ///
+    /// Three things are shown, deliberately, because they are three different facts:
+    ///
+    /// - the **intent** (this toggle, i.e. the persisted flag);
+    /// - the **reality** (`SyncReplicationTrial.statusLine`, which reports what the store actually
+    ///   opened with) — these differ for the whole of the launch you flip the toggle in, because
+    ///   `wal_autocheckpoint` is applied at pool-open time and cannot be changed on a live pool; and
+    /// - the **result so far** (the telemetry aggregate, carried inside `statusLine`).
+    ///
+    /// Reading only the first would let a user conclude the trial is running when it is not.
+    @ViewBuilder private var replicationTrialCard: some View {
+        NoopCard {
+            VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                Text("PAGE REPLICATION TRIAL")
+                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                Text("Measures whether shipping only the changed pages of your database could replace the whole-database Cloud Sync upload. Opt-in, off by default.")
+                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle(isOn: $replicationTrialEnabled) {
+                    Text("Hand WAL checkpointing to the replicator")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch).tint(StrandPalette.accent)
+                .accessibilityLabel("Page replication trial")
+
+                Text("When on, NOOP stops letting SQLite checkpoint the write-ahead log on its own and records one measurement per Cloud Sync upload. It does NOT change what gets uploaded: today's full-database upload is untouched, so the worst case is a larger write-ahead log between syncs. Takes effect the next time NOOP starts.")
+                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Divider().overlay(StrandPalette.hairline)
+
+                // The state actually in force, which is NOT the toggle above until the next launch.
+                Text(SyncReplicationTrial.statusLine)
+                    .font(StrandFont.caption).foregroundStyle(StrandPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+
+                if replicationTrialEnabled, !SyncReplicationTrial.isInForce {
+                    Text("Restart NOOP to start measuring.")
+                        .font(StrandFont.caption).foregroundStyle(StrandPalette.statusWarning)
+                }
+            }
+        }
+    }
+    #endif
 
     // MARK: - Shared actions (same calls as the SettingsView controls these re-host)
 

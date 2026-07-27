@@ -43,6 +43,18 @@ enum SyncReplicationTrial {
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
 
+    /// Whether the trial is actually *running in this process*, as opposed to merely switched on.
+    ///
+    /// The two differ for exactly one launch after every flip, in both directions, and the difference is
+    /// the thing a user is most likely to get wrong: `applyAtLaunch` runs once in `init()` and
+    /// `wal_autocheckpoint` is a per-connection PRAGMA applied at pool-open time, so flipping the toggle
+    /// cannot retroactively change a pool that is already open. The Test Centre card shows this next to
+    /// the toggle so "on" and "measuring" are never conflated.
+    static var isInForce: Bool {
+        if case .external = StoreReplication.walCheckpointing { return true }
+        return false
+    }
+
     /// Install the process-wide store policy. **Must be called before the first `WhoopStore` open**,
     /// i.e. at the top of the app's `init()`, ahead of `AppModel()`.
     ///

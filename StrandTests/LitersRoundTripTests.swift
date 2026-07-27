@@ -1,0 +1,277 @@
+// The liters round trip, run against real SQLite files on disk.
+//
+// Gated on BOTH flags. CLOUD_SYNC because this is fork-local sync work; LITERS because the symbols
+// come from Liters.xcframework, which `Rust/build-ios.sh` produces and which is deliberately not
+// tracked (see Config/Liters.xcconfig). A checkout that has never built the Rust side compiles none
+// of this rather than failing to link.
+#if CLOUD_SYNC && LITERS
+import XCTest
+import SQLite3
+@testable import Strand
+
+/// End-to-end proof that the Rust archive in `Liters.xcframework` actually replicates a database,
+/// rather than merely linking.
+///
+/// ## Why these tests open SQLite through `import SQLite3` and not GRDB
+///
+/// The single load-bearing decision in `Rust/Cargo.toml` is `default-features = false`, which makes
+/// liters link the *platform* `libsqlite3` instead of compiling its own copy of the amalgamation.
+/// The reason is that two SQLite libraries in one process do not share the process-global
+/// `unixInodeInfo` table SQLite uses to work around POSIX's "close any descriptor, lose all locks"
+/// rule, so either can silently drop the other's advisory locks — and liters' correctness rests on a
+/// long-running read lock.
+///
+/// `import SQLite3` resolves to exactly the `libsqlite3.dylib` GRDB links through
+/// `.systemLibrary(name: "CSQLite")`. So these tests are not a stand-in for the app's arrangement;
+/// they *are* it: one process, one SQLite, opened from Swift on one side and from Rust on the other,
+/// against the same file. A test written through GRDB would prove the same thing less directly and
+/// drag a package dependency into a target that does not otherwise need one.
+///
+/// ## Why a real file and not an in-memory database
+///
+/// liters replicates WAL frames. An in-memory database has no WAL, no `-wal` sidecar, and no file
+/// locks, so it would exercise none of the machinery under test and would pass whether or not the
+/// linkage were correct.
+final class LitersRoundTripTests: XCTestCase {
+
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("liters-rt-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let dir { try? FileManager.default.removeItem(at: dir) }
+        try super.tearDownWithError()
+    }
+
+    private var originPath: String { dir.appendingPathComponent("origin.sqlite").path }
+    private var bucketPath: String { dir.appendingPathComponent("bucket", isDirectory: true).path }
+    private var replicaPath: String { dir.appendingPathComponent("replica.sqlite").path }
+
+    // MARK: - The round trip
+
+    /// Writer pushes to a `Storage.dir` bucket, replica syncs out of it, and the rows arrive.
+    ///
+    /// This is the whole premise in one test: if the Swift bindings, the UniFFI scaffolding, the Rust
+    /// archive, and the platform `libsqlite3` are all wired correctly, a row written through Swift's
+    /// SQLite shows up in a second file that only Rust ever wrote. Any break in that chain fails here
+    /// rather than three integration layers later.
+    func testWriterPushesAndReplicaReceivesTheRows() throws {
+        try makeOriginDatabase(rows: 1...50)
+
+        let writer = try LitersWriter(dbPath: originPath, storage: .dir(path: bucketPath))
+        defer { writer.close() }
+        let push = try writer.push()
+
+        XCTAssertTrue(push.synced, "the first push must capture the database's committed content")
+        XCTAssertGreaterThan(push.uploaded, 0, "the first push must upload at least one LTX file")
+        XCTAssertGreaterThan(push.bytesUploaded, 0)
+        XCTAssertGreaterThan(push.txid, 0)
+
+        let replica = try LitersReplica(dbPath: replicaPath, storage: .dir(path: bucketPath), autoReset: true)
+        defer { replica.close() }
+        let sync = try replica.sync()
+
+        XCTAssertGreaterThan(sync.toTxid, 0)
+        XCTAssertEqual(try readIds(at: replicaPath), Array(1...50),
+                       "the replica must contain exactly the rows the origin committed")
+    }
+
+    /// The second push must ship a WAL delta, not another copy of the database.
+    ///
+    /// `snapshotted` is the number the whole trial exists to measure. A replicator that snapshots on
+    /// every push is a full upload with extra steps, which is precisely what the current `/ingest`
+    /// path already does. Asserting it is `false` for a plain "write more rows, push again" is the
+    /// minimum bar; anything less and there is no reason to adopt this at all.
+    func testASecondPushIsIncrementalAndNotASnapshot() throws {
+        try makeOriginDatabase(rows: 1...10)
+
+        let writer = try LitersWriter(dbPath: originPath, storage: .dir(path: bucketPath))
+        defer { writer.close() }
+        let first = try writer.push()
+        XCTAssertTrue(first.synced)
+
+        try appendRows(11...20, to: originPath)
+        let second = try writer.push()
+
+        XCTAssertFalse(second.snapshotted,
+                       "an ordinary follow-up push must ship a WAL delta. reason: \(second.snapshotReason ?? "nil")")
+        XCTAssertGreaterThan(second.txid, first.txid)
+
+        let replica = try LitersReplica(dbPath: replicaPath, storage: .dir(path: bucketPath), autoReset: true)
+        defer { replica.close() }
+        _ = try replica.sync()
+        XCTAssertEqual(try readIds(at: replicaPath), Array(1...20))
+    }
+
+    /// An incremental sync onto an ALREADY-restored replica applies the delta rather than restoring.
+    ///
+    /// The server half of this design keeps `replica.db` current with repeated `sync()` calls, so
+    /// "second sync does not re-download the world" is a property of the deployment, not a nicety.
+    func testSecondSyncAppliesIncrementallyWithoutRestoring() throws {
+        try makeOriginDatabase(rows: 1...10)
+        let writer = try LitersWriter(dbPath: originPath, storage: .dir(path: bucketPath))
+        defer { writer.close() }
+        _ = try writer.push()
+
+        let replica = try LitersReplica(dbPath: replicaPath, storage: .dir(path: bucketPath), autoReset: true)
+        defer { replica.close() }
+        let firstSync = try replica.sync()
+        XCTAssertTrue(firstSync.restored, "the first sync onto an empty path is a restore by definition")
+
+        try appendRows(11...30, to: originPath)
+        _ = try writer.push()
+
+        let secondSync = try replica.sync()
+        XCTAssertFalse(secondSync.restored, "a replica that is already current must apply a delta, not restore")
+        XCTAssertGreaterThan(secondSync.toTxid, secondSync.fromTxid)
+        XCTAssertEqual(try readIds(at: replicaPath), Array(1...30))
+    }
+
+    // MARK: - The iOS-shaped failure mode
+
+    /// Close the writer, reopen it, push. This is what iOS does to the app on every relaunch, and the
+    /// design document names it as the one thing that must be measured before committing:
+    ///
+    /// > the issue-#927 "expected truncation" shortcut is deliberately not trusted across an app
+    /// > restart — which on iOS is every single time.
+    ///
+    /// The test does not assert `snapshotted == false`, because a snapshot here would be *correct*
+    /// behaviour, not a bug — liters is refusing to trust a stale shortcut. It asserts the weaker,
+    /// genuinely required property: a reopened writer resumes against the same bucket and the replica
+    /// still converges. Whether the reopen costs a snapshot in practice is what
+    /// `SyncPushTelemetry.snapshotRate` measures on VK's device; recording the observed value here
+    /// documents which way it fell on this platform.
+    func testWriterReopenResumesAgainstTheSameBucket() throws {
+        try makeOriginDatabase(rows: 1...10)
+
+        let first = try LitersWriter(dbPath: originPath, storage: .dir(path: bucketPath))
+        let firstPush = try first.push()
+        first.close()
+
+        try appendRows(11...25, to: originPath)
+
+        let second = try LitersWriter(dbPath: originPath, storage: .dir(path: bucketPath))
+        defer { second.close() }
+        let secondPush = try second.push()
+
+        XCTAssertGreaterThan(secondPush.txid, firstPush.txid,
+                             "a reopened writer must resume from the bucket, not start over at txid 0")
+
+        let replica = try LitersReplica(dbPath: replicaPath, storage: .dir(path: bucketPath), autoReset: true)
+        defer { replica.close() }
+        _ = try replica.sync()
+        XCTAssertEqual(try readIds(at: replicaPath), Array(1...25),
+                       "no commit may be lost across a writer close/reopen")
+
+        // Not an assertion: the measurement. Printed so a CI log records which way the reopen fell.
+        print("[liters] reopen push snapshotted=\(secondPush.snapshotted) reason=\(secondPush.snapshotReason ?? "nil")")
+    }
+
+    // MARK: - Errors cross the FFI as errors
+
+    /// A failure has to arrive in Swift as a thrown `LitersError`, not a crash and not a silent
+    /// success. UniFFI's error mapping is generated code, so this checks the generated code works for
+    /// the one path the app will actually hit at 3am.
+    func testOpeningAMissingDatabaseThrows() {
+        let missing = dir.appendingPathComponent("nope/absent.sqlite").path
+        XCTAssertThrowsError(try LitersWriter(dbPath: missing, storage: .dir(path: bucketPath)))
+    }
+
+    // MARK: - SQLite helpers (the platform libsqlite3, the same one GRDB links)
+
+    /// Creates a WAL-mode database and inserts `rows`, through Apple's system SQLite.
+    private func makeOriginDatabase(rows: ClosedRange<Int>) throws {
+        var db: OpaquePointer?
+        let rc = sqlite3_open_v2(originPath, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+        defer { sqlite3_close(db) }
+        guard rc == SQLITE_OK, db != nil else {
+            throw SQLiteFailure(code: rc, message: "open \(originPath)")
+        }
+
+        // WAL is not incidental. liters replicates WAL frames, so a rollback-journal database would
+        // have nothing for it to ship and the round trip would prove nothing.
+        let mode = try queryString(db, "PRAGMA journal_mode = WAL;")
+        guard mode == "wal" else { throw SQLiteFailure(code: -1, message: "journal_mode is \(mode)") }
+        try exec(db, "CREATE TABLE sample (id INTEGER PRIMARY KEY, payload TEXT NOT NULL);")
+        try insert(db, rows)
+    }
+
+    /// Runs a statement that returns one text column. `PRAGMA journal_mode = WAL` is such a
+    /// statement — it reports the mode actually in force, which is the only way to know the switch
+    /// took (it silently stays in rollback mode inside a transaction, for instance).
+    private func queryString(_ db: OpaquePointer?, _ sql: String) throws -> String {
+        var stmt: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard rc == SQLITE_OK else { throw SQLiteFailure(code: rc, message: sql) }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW, let text = sqlite3_column_text(stmt, 0) else {
+            throw SQLiteFailure(code: -1, message: "no row from \(sql)")
+        }
+        return String(cString: text)
+    }
+
+    /// Writes through a SECOND connection while the liters writer holds its read lock open. That is
+    /// the app's real arrangement — GRDB writing while the replicator watches — and it is the case
+    /// the read lock is designed to allow: it blocks foreign *checkpoints*, not foreign writes.
+    private func appendRows(_ rows: ClosedRange<Int>, to path: String) throws {
+        var db: OpaquePointer?
+        let rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, nil)
+        defer { sqlite3_close(db) }
+        guard rc == SQLITE_OK, db != nil else { throw SQLiteFailure(code: rc, message: "reopen \(path)") }
+        try insert(db, rows)
+    }
+
+    private func insert(_ db: OpaquePointer?, _ rows: ClosedRange<Int>) throws {
+        try exec(db, "BEGIN;")
+        for i in rows {
+            // Padded so each row is big enough that a batch spans more than one 4 KB page, which is
+            // what makes "the second push shipped a delta" a statement about pages and not about an
+            // empty WAL.
+            try exec(db, "INSERT INTO sample (id, payload) VALUES (\(i), '\(String(repeating: "x", count: 512))');")
+        }
+        try exec(db, "COMMIT;")
+    }
+
+    /// Reads back every id, ascending. The assertion target for "did the bytes arrive".
+    private func readIds(at path: String) throws -> [Int] {
+        var db: OpaquePointer?
+        // READWRITE, not READONLY, and that is not arbitrary: Apple's libsqlite3 cannot run a
+        // statement on a WAL-mode database opened SQLITE_OPEN_READONLY when the -shm sidecar is
+        // absent, which it is right after a liters restore. Opening read-only here would fail with
+        // SQLITE_CANTOPEN for reasons that have nothing to do with whether the bytes arrived.
+        let rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, nil)
+        defer { sqlite3_close(db) }
+        guard rc == SQLITE_OK, db != nil else { throw SQLiteFailure(code: rc, message: "open replica \(path)") }
+
+        var stmt: OpaquePointer?
+        let prepared = sqlite3_prepare_v2(db, "SELECT id FROM sample ORDER BY id;", -1, &stmt, nil)
+        guard prepared == SQLITE_OK else { throw SQLiteFailure(code: prepared, message: "prepare select") }
+        defer { sqlite3_finalize(stmt) }
+
+        var ids: [Int] = []
+        while sqlite3_step(stmt) == SQLITE_ROW { ids.append(Int(sqlite3_column_int64(stmt, 0))) }
+        return ids
+    }
+
+    private func exec(_ db: OpaquePointer?, _ sql: String) throws {
+        var err: UnsafeMutablePointer<CChar>?
+        let rc = sqlite3_exec(db, sql, nil, nil, &err)
+        guard rc == SQLITE_OK else {
+            let message = err.map { String(cString: $0) } ?? sql
+            sqlite3_free(err)
+            throw SQLiteFailure(code: rc, message: message)
+        }
+    }
+
+    private struct SQLiteFailure: Error, CustomStringConvertible {
+        let code: Int32
+        let message: String
+        var description: String { "sqlite rc \(code): \(message)" }
+    }
+}
+#endif

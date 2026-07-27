@@ -144,6 +144,13 @@ targets:
         # distributed (ad-hoc) build. The app uses no JIT / unsigned-exec memory, so it's safe.
         ENABLE_HARDENED_RUNTIME: YES
         COMBINE_HIDPI_IMAGES: YES
+        # liters (page-replication trial). All three variables are defined EMPTY in the tracked
+        # Config/Liters.xcconfig and only filled in by the untracked Config/LitersLocal.xcconfig that
+        # Rust/build-ios.sh writes, so on a checkout that has never built the Rust side these three
+        # lines append nothing and this target links exactly what it links today. See Config/Liters.xcconfig.
+        LIBRARY_SEARCH_PATHS: $(inherited) $(LITERS_LIB_DIR)
+        SWIFT_INCLUDE_PATHS: $(inherited) $(LITERS_HEADER_DIR)
+        OTHER_LDFLAGS: $(inherited) $(LITERS_LDFLAGS)
     dependencies:
       - package: WhoopProtocol
       - package: WhoopStore
@@ -330,6 +337,12 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_EMIT_LOC_STRINGS: YES
+        # liters (page-replication trial) — same inert-by-default seam as the macOS target above.
+        # The slice these resolve to is chosen per-SDK inside Config/LitersLocal.xcconfig, so the
+        # device and simulator builds pick up their own archive without a second setting here.
+        LIBRARY_SEARCH_PATHS: $(inherited) $(LITERS_LIB_DIR)
+        SWIFT_INCLUDE_PATHS: $(inherited) $(LITERS_HEADER_DIR)
+        OTHER_LDFLAGS: $(inherited) $(LITERS_LDFLAGS)
     dependencies:
       - package: WhoopProtocol
       - package: WhoopStore
