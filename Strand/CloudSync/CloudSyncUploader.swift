@@ -64,8 +64,19 @@ enum CloudSyncUploader {
     /// `defer`, whatever happens: success, an export failure, or a network failure. The DB can be
     /// 100-300MB, so `CloudSyncClient.ingest` streams it from this file via
     /// `URLSession.upload(for:fromFile:)` rather than loading it into memory.
+    ///
+    /// `telemetry` records one `SyncPushObservation` per successful upload. Today every one of them
+    /// is `snapshotted: true` with reason `full-ingest`, because `/ingest` *is* a full snapshot —
+    /// that is not a placeholder, it is the honest baseline the page-replication trial is measured
+    /// against. What the field actually buys before a replicator exists is the other half of each
+    /// record: the `-wal` size at push time and the interval between pushes. Those are the two
+    /// numbers that decide whether `WalCheckpointing.external` is safe on this device, and neither is
+    /// observable anywhere else. Injectable so a test writes to a temp directory rather than the
+    /// app's real Application Support.
     static func upload(store: WhoopStore, client: any CloudIngesting,
-                        exporter: Exporter = defaultExporter) async throws -> (bytes: Int, latestDay: String?) {
+                        exporter: Exporter = defaultExporter,
+                        telemetry: SyncPushTelemetry? = SyncReplicationTrial.shared)
+                        async throws -> (bytes: Int, latestDay: String?) {
         // Refuse an empty/trivial store BEFORE touching export or the network at all — see
         // `CloudSyncUploadError.emptyStore`'s doc comment for the incident this guards against.
         // `dailyMetric` is written by every ingest path (BLE-derived recompute, WHOOP/Apple
@@ -77,9 +88,36 @@ enum CloudSyncUploader {
         let tempURL = cachesDir.appendingPathComponent("cloudsync-upload-\(UUID().uuidString).noopbak")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
+        // Sampled BEFORE the exporter runs, because `defaultExporter`'s first act is
+        // `checkpointWAL()` (a `wal_checkpoint(TRUNCATE)`), which leaves the `-wal` at ~0 bytes.
+        // Reading it afterwards would record that zero and measure nothing. What is wanted is how far
+        // the WAL had grown by the time a sync began — the quantity `WalCheckpointing.external` puts
+        // at risk. One `stat(2)`; nil only for an in-memory test store.
+        //
+        // Worth flagging for the replicator work that follows: that same `checkpointWAL()` is exactly
+        // what a page replicator must be the only caller of. Leaving it here while a replicator is
+        // also running would restart the WAL underneath it and force a full snapshot on every sync —
+        // i.e. the upload path would defeat the thing it is being replaced by.
+        let walBytes = store.walFileSizeBytes() ?? 0
+
         switch await exporter(store, tempURL) {
         case .exported:
-            return try await client.ingest(fileURL: tempURL)
+            let result = try await client.ingest(fileURL: tempURL)
+            // Recorded only on success, deliberately: a failed upload shipped nothing, and counting it
+            // would understate the byte cost per delivered sync. Never allowed to throw — `record` is
+            // best-effort by construction (see `SyncPushTelemetry.persist`).
+            if let telemetry {
+                telemetry.record(snapshotted: true,
+                                 snapshotReason: "full-ingest",
+                                 bytesUploaded: Int64(result.bytes),
+                                 walBytes: walBytes,
+                                 txid: 0)
+                // The trial has no UI. This line is how it is read — off a device console, or from the
+                // container's log — so it has to carry the aggregate and not just this one push.
+                NSLog("SyncPushTelemetry: %@ walAtPush=%lld backstopFirings=%d",
+                      telemetry.oneLineSummary, walBytes, store.walBackstopFirings)
+            }
+            return result
         case .failure(let message):
             throw CloudSyncUploadError.exportFailed(message)
         case .cancelled, .imported:

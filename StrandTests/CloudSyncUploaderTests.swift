@@ -193,4 +193,124 @@ final class CloudSyncModelAutoSyncGateTests: XCTestCase {
         XCTAssertTrue(CloudSyncModel.isRunningUnderXCTest)
     }
 }
+
+/// The push-telemetry hook on the upload path. This is the instrument for the page-replication
+/// trial, so the properties that matter are the ones that keep the *measurement* honest: a record
+/// per delivered sync, none for a sync that delivered nothing, and a WAL size that was sampled at a
+/// moment when it means something.
+final class CloudSyncUploaderTelemetryTests: XCTestCase {
+    override func setUp() { super.setUp(); OuraURLProtocolStub.reset() }
+
+    private func makeClient() -> CloudSyncClient {
+        CloudSyncClient(baseURL: URL(string: "https://cloud.example.com")!, token: "tok",
+                        session: OuraURLProtocolStub.session())
+    }
+
+    private func makeTelemetry() -> SyncPushTelemetry {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("push-telemetry-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return SyncPushTelemetry(url: url)
+    }
+
+    private func nonEmptyStore() async throws -> WhoopStore {
+        let store = try await WhoopStore.inMemory()
+        try await store.upsertDailyMetrics([
+            DailyMetric(day: "2026-07-11", totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil,
+                        lightMin: nil, disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil,
+                        strain: nil, exerciseCount: nil),
+        ], deviceId: "devA")
+        return store
+    }
+
+    private func fakeExporter() -> CloudSyncUploader.Exporter {
+        { _, dest in try? Data("bytes".utf8).write(to: dest); return .exported(dest) }
+    }
+
+    /// One record per successful upload, carrying the server's own byte count. `snapshotted` is true
+    /// with reason `full-ingest` because `/ingest` genuinely ships the whole database — this is the
+    /// baseline the replicator is measured against, and labelling it as anything else would make the
+    /// eventual comparison meaningless.
+    func testRecordsOneSnapshotObservationPerSuccessfulUpload() async throws {
+        OuraURLProtocolStub.queue = [.init(status: 200,
+            body: #"{"ok":true,"bytes":153400000,"latestDay":"2026-07-11"}"#.data(using: .utf8)!)]
+        let telemetry = makeTelemetry()
+
+        _ = try await CloudSyncUploader.upload(store: try await nonEmptyStore(), client: makeClient(),
+                                               exporter: fakeExporter(), telemetry: telemetry)
+
+        let stats = telemetry.stats
+        XCTAssertEqual(stats.pushes, 1)
+        XCTAssertEqual(stats.snapshots, 1)
+        XCTAssertEqual(stats.bytesUploaded, 153_400_000)
+        XCTAssertEqual(stats.snapshotRate, 1.0, accuracy: 0.0001,
+                       "today every /ingest IS a full snapshot; the baseline must say so")
+        XCTAssertEqual(stats.reasonCounts["full-ingest"], 1)
+    }
+
+    /// A failed POST delivered no bytes. Counting it would understate cost-per-delivered-sync and
+    /// would make the trial's byte comparison against the replicator wrong in the replicator's favour.
+    func testDoesNotRecordWhenTheUploadFails() async throws {
+        OuraURLProtocolStub.queue = [.init(status: 507, body: Data())]
+        let telemetry = makeTelemetry()
+
+        do {
+            _ = try await CloudSyncUploader.upload(store: try await nonEmptyStore(), client: makeClient(),
+                                                   exporter: fakeExporter(), telemetry: telemetry)
+            XCTFail("a 507 must propagate")
+        } catch {}
+
+        XCTAssertEqual(telemetry.stats.pushes, 0)
+    }
+
+    /// The empty-store guard refuses before export or network. Nothing was pushed, so nothing is
+    /// recorded — otherwise a device that never syncs would still accumulate a push history.
+    func testDoesNotRecordWhenTheEmptyStoreGuardRefuses() async throws {
+        let telemetry = makeTelemetry()
+
+        do {
+            _ = try await CloudSyncUploader.upload(store: try await WhoopStore.inMemory(),
+                                                   client: makeClient(),
+                                                   exporter: fakeExporter(), telemetry: telemetry)
+            XCTFail("an empty store must be refused")
+        } catch {}
+
+        XCTAssertEqual(telemetry.stats.pushes, 0)
+    }
+
+    /// Repeated uploads accumulate, and the gap between them is derived rather than passed in — the
+    /// push cadence is half the trial's answer (a snapshot every launch is fine at 1/day and fatal at
+    /// 8/day), and a caller that had to remember to supply it would eventually not.
+    func testAccumulatesAcrossPushesAndDerivesTheInterval() async throws {
+        OuraURLProtocolStub.queue = [
+            .init(status: 200, body: #"{"ok":true,"bytes":10,"latestDay":"2026-07-11"}"#.data(using: .utf8)!),
+            .init(status: 200, body: #"{"ok":true,"bytes":20,"latestDay":"2026-07-12"}"#.data(using: .utf8)!),
+        ]
+        let telemetry = makeTelemetry()
+        let store = try await nonEmptyStore()
+
+        _ = try await CloudSyncUploader.upload(store: store, client: makeClient(),
+                                               exporter: fakeExporter(), telemetry: telemetry)
+        _ = try await CloudSyncUploader.upload(store: store, client: makeClient(),
+                                               exporter: fakeExporter(), telemetry: telemetry)
+
+        XCTAssertEqual(telemetry.stats.pushes, 2)
+        XCTAssertEqual(telemetry.stats.bytesUploaded, 30)
+        XCTAssertNil(telemetry.recentRecords.first?.secondsSinceLastPush)
+        XCTAssertNotNil(telemetry.recentRecords.last?.secondsSinceLastPush,
+                        "the second push must carry a measured interval")
+    }
+
+    /// Telemetry is an instrument, not a dependency. A caller that passes none still uploads.
+    func testUploadSucceedsWithNoTelemetry() async throws {
+        OuraURLProtocolStub.queue = [.init(status: 200,
+            body: #"{"ok":true,"bytes":7,"latestDay":"2026-07-11"}"#.data(using: .utf8)!)]
+
+        let result = try await CloudSyncUploader.upload(store: try await nonEmptyStore(),
+                                                        client: makeClient(),
+                                                        exporter: fakeExporter(), telemetry: nil)
+
+        XCTAssertEqual(result.bytes, 7)
+    }
+}
 #endif // CLOUD_SYNC
