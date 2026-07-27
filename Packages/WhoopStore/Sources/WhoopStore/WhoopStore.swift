@@ -138,8 +138,17 @@ public actor WhoopStore {
     /// what keeps the observer alive for the life of the store.
     let walBackstop: WalBackstopMonitor?
 
-    private init(dbWriter: any DatabaseWriter, walBackstop: WalBackstopMonitor? = nil) throws {
+    /// The checkpointing mode this store actually opened with, whether it came from an explicit
+    /// argument or from `StoreReplication`. Worth surfacing on a diagnostics screen next to
+    /// `walBackstopFirings`: "external + 0 firings" and "automatic" are very different states that
+    /// otherwise look identical from outside.
+    public nonisolated let walCheckpointing: WalCheckpointing
+
+    private init(dbWriter: any DatabaseWriter,
+                 walCheckpointing: WalCheckpointing = .automatic,
+                 walBackstop: WalBackstopMonitor? = nil) throws {
         self.dbWriter = dbWriter
+        self.walCheckpointing = walCheckpointing
         self.walBackstop = walBackstop
         try WhoopStore.makeMigrator().migrate(dbWriter)
     }
@@ -148,8 +157,11 @@ public actor WhoopStore {
     /// `StoreOpenGate` (below) opened the pool and migrated it under the process-wide open lock, so
     /// re-migrating here would be a redundant (and, if it raced a sibling opener, failing) second run.
     /// (#261)
-    private init(preMigrated dbWriter: any DatabaseWriter, walBackstop: WalBackstopMonitor? = nil) {
+    private init(preMigrated dbWriter: any DatabaseWriter,
+                 walCheckpointing: WalCheckpointing = .automatic,
+                 walBackstop: WalBackstopMonitor? = nil) {
         self.dbWriter = dbWriter
+        self.walCheckpointing = walCheckpointing
         self.walBackstop = walBackstop
     }
 
@@ -160,17 +172,24 @@ public actor WhoopStore {
     /// Open + migrate runs through `StoreOpenGate` so two concurrent openers of the SAME file never
     /// run their GRDB migrators at once (#261) — see that actor's note for the failure it prevents.
     ///
-    /// `walCheckpointing` defaults to `.automatic`, which is exactly the behaviour every build has
-    /// today. Only an embedder that has taken over checkpointing should pass `.external` — see
-    /// `WalCheckpointing` for the obligation that carries.
+    /// Both checkpointing parameters default to the process-wide `StoreReplication` policy, which is
+    /// itself `.automatic` + `.standard` unless something called `StoreReplication.configure`. So a
+    /// build that never configures replication behaves exactly as every build does today.
+    ///
+    /// The default deliberately comes from a process-wide value rather than being written out at each
+    /// call site: `wal_autocheckpoint` is per-connection, this app opens the same file from two
+    /// independent places, and an opener that forgets `.external` silently defeats it for all the
+    /// others. See `StoreReplication` for the full argument. Only an embedder that has taken over
+    /// checkpointing should select `.external` — see `WalCheckpointing` for the obligation that
+    /// carries. Passing the arguments explicitly still overrides the policy, which is what tests do.
     ///
     /// `walBackstop` is inert under `.automatic` (SQLite's autocheckpoint already bounds the WAL) and
     /// is what discharges `.external`'s obligation: it forces a checkpoint if the `-wal` sibling
     /// crosses its ceiling no matter what the external replicator is doing. Pass `.disabled` only if
     /// something outside this package provably bounds WAL growth.
     public init(path: String,
-                walCheckpointing: WalCheckpointing = .automatic,
-                walBackstop: WalBackstopPolicy = .standard) async throws {
+                walCheckpointing: WalCheckpointing = StoreReplication.walCheckpointing,
+                walBackstop: WalBackstopPolicy = StoreReplication.walBackstop) async throws {
         var config = Configuration()
         config.prepareDatabase { db in
             // `DatabasePool` puts the database in WAL mode itself (reads run as concurrent snapshots
@@ -201,7 +220,10 @@ public actor WhoopStore {
             m.attach(to: pool)
             monitor = m
         }
-        self.init(preMigrated: pool, walBackstop: monitor)
+        // Recorded after the open succeeds, so a `configure` that lands between a failed open and a
+        // successful retry is not reported as late. See `StoreReplication.configuredAfterFirstOpen`.
+        StoreReplication.noteStoreOpened()
+        self.init(preMigrated: pool, walCheckpointing: walCheckpointing, walBackstop: monitor)
     }
 
     /// Move aside a database file that has our data tables but no GRDB migration bookkeeping — the
