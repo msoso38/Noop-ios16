@@ -136,4 +136,36 @@ class AlarmReadbackDecodeTest {
     fun shortGarbage_isNotReportedAsNoAlarm() {
         assertFalse(whoop4ReadbackReportsNoAlarm(responseFrame(payload = bytes(0x03))))
     }
+
+    // MARK: - WHOOP 5.0/MG (#864 close-out) — envelope offset confirmed, GET_ALARM_TIME body still guessed
+
+    /**
+     * The real captured SET_ALARM_TIME ack from a 5/MG strap (2026-07-26 trace). Decodes at the whoop5
+     * inner offset as [type 0x24][seq 0x4b][cmd 0x42=SET_ALARM_TIME][origin_seq 0x04][result
+     * 0x01=SUCCESS] — confirming the envelope-offset mirror from 4.0, independent of the (still
+     * unconfirmed) GET_ALARM_TIME response body shape.
+     */
+    private val realWhoop5SetAlarmAck = bytes(
+        0xaa, 0x01, 0x0c, 0x00, 0x01, 0x00, 0x27, 0x11, 0x24, 0x4b, 0x42, 0x04, 0x01,
+        0x04, 0x01, 0x00, 0x19, 0x61, 0xac, 0x4f,
+    )
+
+    @Test
+    fun whoop5RealCapturedSetAlarmAck_payloadDecodesTrailingBytes() {
+        assertEquals("04 01 00", whoop5AlarmReadbackPayloadHex(realWhoop5SetAlarmAck))
+    }
+
+    /**
+     * A GET_ALARM_TIME SET-mirror shape decodes the same way at the whoop5 offset as it does at the
+     * whoop4 offset — this is a mirrored GUESS (no real 5/MG GET_ALARM_TIME response has been captured),
+     * pinned so the guess itself can't silently drift.
+     */
+    @Test
+    fun whoop5MirroredSetMirrorPayload_decodesCaptureEpoch() {
+        val inner = bytes(36, 0x29, 67, 0x42, 1, 0x01, 0x30, 0xD5, 0x35, 0x6A, 0x00, 0x00, 0x00, 0x00)
+        val declLen = inner.size + 4
+        val frame = bytes(0xAA, 0x01, declLen and 0xFF, (declLen shr 8) and 0xFF, 0x00, 0x01, 0x00, 0x00) +
+            inner + bytes(0xDE, 0xAD, 0xBE, 0xEF)
+        assertEquals(1_781_912_880L, whoop5ArmedAlarmEpoch(frame))
+    }
 }

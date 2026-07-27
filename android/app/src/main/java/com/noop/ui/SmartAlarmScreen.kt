@@ -38,7 +38,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.noop.ble.PuffinExperiment
 
 /**
  * Smart alarm (#207) — Android phone-based wake, with a guaranteed hard-deadline fallback.
@@ -193,15 +192,11 @@ fun SmartAlarmScreen(vm: AppViewModel) {
  */
 @Composable
 private fun StrapAlarmCard(vm: AppViewModel) {
-    val context = LocalContext.current
     val smartAlarm by vm.smartAlarmEnabled.collectAsStateWithLifecycle()
     val alarmMinutes by vm.smartAlarmMinutes.collectAsStateWithLifecycle()
     val alarmWeekdays by vm.smartAlarmWeekdays.collectAsStateWithLifecycle()
     val alarmDayOverrides by vm.smartAlarmDayOverrides.collectAsStateWithLifecycle()
     val live = vm.live.collectAsStateWithLifecycle().value
-    // The firmware alarm is EXPERIMENTAL on a WHOOP 5/MG: it only arms when Experimental probes are on,
-    // otherwise enabling it silently arms nothing (#111), so the UI says so instead of promising a wake.
-    val experimentalOn = PuffinExperiment.from(context).isEnabled
 
     NoopCard(padding = 20.dp, tint = if (smartAlarm) Palette.accent else null) {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -213,12 +208,12 @@ private fun StrapAlarmCard(vm: AppViewModel) {
                     Text(uiString(R.string.l10n_smart_alarm_screen_strap_wake_alarm_1828fff3), style = NoopType.title2, color = Palette.textPrimary)
                 }
             }
-            // Truth-sync (#535): the WHOOP 4.0 alarm payload was captured from the official app and
-            // confirmed buzzing on a real 4.0 by the capture author, so the copy no longer calls the
-            // 4.0 path experimental. The 5/MG Experimental-gate branch below is deliberately untouched.
+            // #864 close-out (2026-07-26): a strap-driven wake is now confirmed on BOTH families — WHOOP
+            // 4.0 by PR #535, 5/MG by a captured trace (SET → STRAP_DRIVEN_ALARM_EXECUTED → HAPTICS_FIRED
+            // → dismiss). Neither path is called experimental any more.
             ToggleRowLocal(
                 label = uiString(R.string.l10n_smart_alarm_screen_wake_me_with_a_strap_buzz_1681ba1d),
-                help = "Arms the strap to buzz at your wake time, even if NOOP is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real WHOOP 4.0 (community wire capture + on-device test, #535). Keep a backup alarm for anything you truly can't miss.",
+                help = "Arms the strap to buzz at your wake time, even if NOOP is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real strap (WHOOP 4.0: community wire capture + on-device test, #535; 5/MG: captured strap-driven wake, #864). Keep a backup alarm for anything you truly can't miss.",
                 checked = smartAlarm,
                 onChange = { vm.setSmartAlarmEnabled(it) },
             )
@@ -247,34 +242,17 @@ private fun StrapAlarmCard(vm: AppViewModel) {
                     onSetOverride = { dow, minutes -> vm.setSmartAlarmDayOverride(dow, minutes) },
                 )
                 RowDividerLocal()
-                if (live.whoop5Detected && !experimentalOn) {
-                    Text(
-                        uiString(R.string.l10n_smart_alarm_screen_your_whoop_5_mg_won_t_75029bae) +
-                            "Experimental). Right now your wake time is saved but the strap is NOT armed.",
-                        style = NoopType.footnote, color = Palette.statusWarning,
-                    )
-                } else if (live.whoop5Detected) {
-                    // 5/MG with Experimental ON: the strap IS armed (experimental rev-4 payload) but a
-                    // strap-driven wake has NEVER been captured on 5/MG, so the "confirmed on 4.0" copy must
-                    // NOT show here (#864 honesty). Byte-identical wording to the Swift SmartAlarmView twin.
-                    Text(
-                        if (live.bonded)
-                            "Armed on the strap itself with the experimental 5/MG command. A strap-driven wake is still unconfirmed on 5/MG on our side (confirmed only on WHOOP 4.0), so keep a backup alarm for anything you truly can't miss."
-                        else
-                            "Connect your strap to arm this; it's set on the strap's own firmware alarm. Confirmed working on WHOOP 4.0; still experimental on 5.0 and MG. Keep a backup alarm for anything you truly can't miss.",
-                        style = NoopType.footnote, color = Palette.textTertiary,
-                    )
-                } else {
-                    Text(
-                        if (live.bonded)
-                            // Truth-sync (#535): confirmed buzzing on a real WHOOP 4.0; byte-identical
-                            // wording to the Swift SmartAlarmView.
-                            "Armed on the strap itself, so it can buzz at your wake time even if your phone is asleep or NOOP is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real WHOOP 4.0 (community wire capture + on-device test, #535). Keep a backup alarm for anything you truly can't miss."
-                        else
-                            "Connect your strap to arm this; it's set on the strap's own firmware alarm. Confirmed working on WHOOP 4.0; still experimental on 5.0 and MG. Keep a backup alarm for anything you truly can't miss.",
-                        style = NoopType.footnote, color = Palette.textTertiary,
-                    )
-                }
+                // #864 close-out (2026-07-26): one unified copy for both families now that a strap-driven
+                // wake is confirmed on each (WHOOP 4.0: PR #535; 5/MG: captured trace, see the toggle help
+                // text above). Same "backup alarm" caveat 4.0 always kept — one device/firmware confirmed
+                // is not every device/firmware. Byte-identical wording to the Swift SmartAlarmView twin.
+                Text(
+                    if (live.bonded)
+                        "Armed on the strap itself, so it can buzz at your wake time even if your phone is asleep or NOOP is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real strap (WHOOP 4.0: community wire capture + on-device test, #535; 5/MG: captured strap-driven wake, #864). Keep a backup alarm for anything you truly can't miss."
+                    else
+                        "Connect your strap to arm this; it's set on the strap's own firmware alarm. Confirmed working on WHOOP 4.0 and 5/MG. Keep a backup alarm for anything you truly can't miss.",
+                    style = NoopType.footnote, color = Palette.textTertiary,
+                )
             }
         }
     }

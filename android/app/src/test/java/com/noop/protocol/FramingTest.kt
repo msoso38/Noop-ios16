@@ -1,7 +1,10 @@
 package com.noop.protocol
 
+import com.noop.ble.WhoopBleClient
+import com.noop.ble.whoop5ReadbackReportsNoAlarm
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -446,6 +449,80 @@ class FramingTest {
         assertEquals(1, out.size)
         assertArrayEquals(frame, out[0])
         assertTrue(Reassembler(DeviceFamily.WHOOP4).feed(frame).isEmpty())
+    }
+
+    // MARK: - WHOOP 5/MG firmware alarm (#864 close-out, 2026-07-26 real capture)
+
+    /**
+     * The real captured STRAP_DRIVEN_ALARM_EXECUTED (event 57) trace from a 5/MG strap — the evidence
+     * that flipped 5/MG alarm-fire from "never captured" to confirmed (#864). Full sequence observed:
+     * STRAP_DRIVEN_ALARM_SET → this frame → HAPTICS_FIRED → a DOUBLE_TAP dismiss → HAPTICS_TERMINATED.
+     */
+    private val whoop5RealAlarmExecutedHex =
+        "aa0110000100208130c1390010e3656a7a34000039db9579"
+
+    @Test
+    fun whoop5_realCapturedAlarmExecuted_decodesEvent57() {
+        val f = Framing.parseFrame(fromHex(whoop5RealAlarmExecutedHex), DeviceFamily.WHOOP5)
+        assertTrue(f.ok)
+        assertEquals(true, f.crcOk)
+        assertEquals("EVENT", f.typeName)
+        assertEquals("STRAP_DRIVEN_ALARM_EXECUTED(57)", f.parsed["event"])
+    }
+
+    @Test
+    fun whoop5_realCapturedAlarmExecuted_firesSmartAlarmNotGesture() {
+        val event = "STRAP_DRIVEN_ALARM_EXECUTED(57)"
+        assertFalse(WhoopBleClient.isGestureEvent(event))
+        assertTrue(WhoopBleClient.smartAlarmFiredForEvent(event, replayedOffload = false))
+    }
+
+    /**
+     * The real captured SET_ALARM_TIME ack from the same 5/MG session: decodes at the hardware-confirmed
+     * whoop5 COMMAND_RESPONSE offsets (resp_cmd@10, result@12, #78 fork) as SET_ALARM_TIME → SUCCESS.
+     */
+    private val whoop5RealSetAlarmAckHex =
+        "aa010c0001002711244b4204010401001961ac4f"
+
+    @Test
+    fun whoop5_realCapturedSetAlarmAck_decodesSetAlarmTimeSuccess() {
+        val f = Framing.parseFrame(fromHex(whoop5RealSetAlarmAckHex), DeviceFamily.WHOOP5)
+        assertTrue(f.ok)
+        assertEquals(true, f.crcOk)
+        assertEquals("COMMAND_RESPONSE", f.typeName)
+        assertEquals("SET_ALARM_TIME(66)", f.parsed["resp_cmd"])
+        assertEquals("SUCCESS(1)", f.parsed["result"])
+    }
+
+    /**
+     * Real captured GET_ALARM_TIME readback from the same 5/MG session: immediately after the
+     * SUCCESSFUL SET_ALARM_TIME above, the readback itself answers result=FAILURE(0) — not SUCCESS
+     * with an epoch. This decodes the exact bug scenario [WhoopBleClient]'s handleFrame now guards
+     * against: without gating on `result`, [whoop5ReadbackReportsNoAlarm] would misread this
+     * zero-ish FAILURE payload as "the arm did NOT persist", when the arm had just succeeded.
+     */
+    private val whoop5RealGetAlarmFailureHex =
+        "aa01100001002081242543050000000000df00009c8ee62e"
+
+    @Test
+    fun whoop5_realCapturedGetAlarmFailure_decodesFailureNotSuccess() {
+        val f = Framing.parseFrame(fromHex(whoop5RealGetAlarmFailureHex), DeviceFamily.WHOOP5)
+        assertTrue(f.ok)
+        assertEquals(true, f.crcOk)
+        assertEquals("COMMAND_RESPONSE", f.typeName)
+        assertEquals("GET_ALARM_TIME(67)", f.parsed["resp_cmd"])
+        assertEquals("FAILURE(0)", f.parsed["result"])
+    }
+
+    /**
+     * The exact payload this FAILURE frame carries would, without the result-gate, decode as the
+     * "no alarm stored" sentinel — proving the gate in [WhoopBleClient] (checking `result` before
+     * trusting [whoop5ReadbackReportsNoAlarm]) is load-bearing, not redundant.
+     */
+    @Test
+    fun whoop5_realCapturedGetAlarmFailure_payloadWouldMisreadAsNoAlarmWithoutGate() {
+        val frame = fromHex(whoop5RealGetAlarmFailureHex)
+        assertTrue(whoop5ReadbackReportsNoAlarm(frame))
     }
 
     // MARK: - WHOOP 5/MG command + decode vectors (real-hardware captures, #78 fork)

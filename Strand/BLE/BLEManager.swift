@@ -2943,10 +2943,11 @@ public final class BLEManager: NSObject, ObservableObject {
     /// (event STRAP_DRIVEN_ALARM_EXECUTED=57). This is the only alarm path: the strap fires at
     /// the fixed time — NOOP has no light-sleep early-wake layer.
     ///
-    /// EXPERIMENTAL / UNCONFIRMED on 5/MG (same posture as the Android client): the byte-identical
-    /// Android rev-4 frame has been ACKed by a real 5/MG when arming, but a strap-driven wake fire
-    /// has NOT been captured on our side (no STRAP_DRIVEN_ALARM_EXECUTED event observed yet) — do
-    /// not present the 5/MG alarm as guaranteed until one is.
+    /// CONFIRMED on 5/MG (#864 close-out, 2026-07-26): a captured trace shows the full sequence —
+    /// STRAP_DRIVEN_ALARM_SET → STRAP_DRIVEN_ALARM_EXECUTED (event 57) → HAPTICS_FIRED → a DOUBLE_TAP
+    /// dismiss → HAPTICS_TERMINATED — on a real 5/MG strap, the same bar 4.0 was confirmed on (PR #535,
+    /// one wire capture + on-device test). No longer gated behind Experimental, matching 4.0. The
+    /// GET_ALARM_TIME readback added below is a separate, still-unconfirmed question (see its comment).
     func armStrapAlarm(at date: Date) {
         // Log the wake time in the user's LOCAL zone. `Date` prints in UTC by default, so an alarm
         // for (say) 07:00 in New York logged as "11:00:00 +0000" reads like a timezone bug — but it
@@ -2955,14 +2956,6 @@ public final class BLEManager: NSObject, ObservableObject {
         let localFmt = DateFormatter()
         localFmt.dateFormat = "EEE HH:mm zzz"
         if selectedModel.deviceFamily == .whoop5 {
-            // The 5/MG firmware alarm is unconfirmed (arming ACKs, but the wake actually FIRING is not
-            // verified), so only arm it when the user has opted into Experimental — matching the Android
-            // client, which refuses to arm it otherwise. Without this a normal 5/MG user is silently
-            // armed onto an alarm that may never fire.
-            guard PuffinExperiment.isEnabled else {
-                log("Alarm: 5/MG firmware alarm needs the Experimental toggle (unconfirmed) — not armed")
-                return
-            }
             // 5/MG SET_ALARM_TIME is REVISION_4: [04][id][u32 sec][u16 subsec][12-byte 47/152
             // pattern, overallLoop 7, 30 s]. No SET_CLOCK preamble (see doc comment above).
             let wakeMs = Int64((date.timeIntervalSince1970 * 1000).rounded())
@@ -2973,6 +2966,12 @@ public final class BLEManager: NSObject, ObservableObject {
             log(commandChannelReady   // #613: reflect whether send() actually reached the strap, not just a non-nil uuid
                 ? "Alarm: armed 5/MG rev4 for \(localFmt.string(from: date)) — your local wake time"
                 : "Alarm: queued 5/MG rev4 for \(localFmt.string(from: date)) — strap not connected; will send on next connect")
+            // Arm READBACK (#401 close-out, #864 5/MG parity): ask the strap what it now has armed
+            // (GET_ALARM_TIME, cmd 67), mirroring the WHOOP 4.0 tail below. UNCONFIRMED on 5/MG: the
+            // envelope offset is confirmed (a captured SET_ALARM_TIME ack decodes cleanly at it), but no
+            // GET_ALARM_TIME response has ever been captured on 5/MG, so the body decode is a mirrored
+            // guess of the 4.0 shape. Log-only: FrameRouter never gates behaviour on it.
+            send(.getAlarmTime, payload: [0x01])
             return
         }
         // Clamp rather than trap: an out-of-range alarm date (pre-1970 / post-2106) must not crash.

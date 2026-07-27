@@ -3343,18 +3343,20 @@ class WhoopBleClient(
     fun armStrapAlarm(epochSec: Long) {
         if (connectedFamily == DeviceFamily.WHOOP5) {
             // 5/MG SET_ALARM_TIME is REVISION_4 (the strap arms its own RTC alarm + fires the wake
-            // haptic itself). EXPERIMENTAL/UNCONFIRMED on our side — gated behind the Experimental
-            // probes opt-in so a normal user can't rely on an alarm that might silently not fire.
-            // The strap maintains its RTC from the connect handshake / history sync, so no SET_CLOCK
-            // here. (PR #85, AlarmPayload)
-            if (!PuffinExperiment.from(context).isEnabled) {
-                log("Alarm: 5/MG firmware alarm needs the Experimental toggle (unconfirmed) — not armed")
-                return
-            }
+            // haptic itself). CONFIRMED (#864 close-out): a captured trace shows the full sequence on a
+            // real 5/MG strap (SET → STRAP_DRIVEN_ALARM_EXECUTED → HAPTICS_FIRED → dismiss), the same bar
+            // 4.0 was confirmed on — no longer gated behind Experimental. The strap maintains its RTC
+            // from the connect handshake / history sync, so no SET_CLOCK here. (PR #85, AlarmPayload)
             send(CommandNumber.SET_ALARM_TIME, AlarmPayload.build(epochSec * 1000L))
             recordAlarmArm(epochSec)
-            log(if (_state.value.connected) "Alarm: armed 5/MG rev4 EXPERIMENTAL (epoch $epochSec)"
-                else "Alarm: queued 5/MG rev4 EXPERIMENTAL (epoch $epochSec) — strap not connected")
+            log(if (_state.value.connected) "Alarm: armed 5/MG rev4 (epoch $epochSec)"
+                else "Alarm: queued 5/MG rev4 (epoch $epochSec) — strap not connected")
+            // Arm READBACK (#401 close-out, #864 5/MG parity): ask the strap what it now has armed
+            // (GET_ALARM_TIME, cmd 67), mirroring the WHOOP 4.0 tail below. UNCONFIRMED on 5/MG: the
+            // envelope offsets (resp_cmd@10, result@12) are hardware-confirmed (#78 fork), but no
+            // GET_ALARM_TIME response BODY has ever been captured on 5/MG, so [whoop5ArmedAlarmEpoch] is
+            // a mirrored guess of the 4.0 shape. Log-only: handleFrame never gates behaviour on it.
+            send(CommandNumber.GET_ALARM_TIME, byteArrayOf(0x01))
             return
         }
         sendSetClockBothForms()
@@ -4734,41 +4736,58 @@ class WhoopBleClient(
                 if (result != null && !result.startsWith("SUCCESS")) {
                     log("Command response: ${respCmd ?: "?"} → $result")
                 }
-                // Arm-readback diagnostic (#401 close-out): armStrapAlarm follows every WHOOP 4.0 arm
-                // with GET_ALARM_TIME (67) so the log proves what the STRAP believes is armed, not just
-                // what we sent. LOG-ONLY, never gates behaviour: the 4.0 response layout is undocumented,
-                // so the decode is defensive ([whoop4ArmedAlarmEpoch]: SET-mirror form first, bare u32
-                // second, plausibility-gated) and an unrecognised payload still logs its raw hex - which
-                // is exactly as diagnostic. Labelled "strap reports", not "verified" (one firmware's
-                // answer format must never mislead a triage). Twin of macOS FrameRouter.
-                if (connectedFamily == DeviceFamily.WHOOP4 && respCmd?.startsWith("GET_ALARM_TIME") == true) {
-                    val epoch = whoop4ArmedAlarmEpoch(frame)
-                    if (epoch != null) {
-                        // #34: log the RAW response bytes alongside the decoded epoch (previously only the
-                        // decode-FAILURE branch below carried them). A successful-but-mismatched decode — the
-                        // strap reporting a plausible epoch that never matches what we armed, the corrupted-
-                        // register signature — needs the raw frame to tell a genuinely-stored stale alarm from
-                        // a misdecode of a fixed response field. Log-only; the decode/behaviour is unchanged.
-                        val raw = whoop4AlarmReadbackPayloadHex(frame) ?: "empty"
-                        log("Alarm: strap reports armed for ${alarmReadbackLocalTime(epoch)} (epoch $epoch) [raw $raw]")
-                        // #34: persist what the strap reports so the debug export can show sent-vs-reported.
-                        runCatching {
-                            NoopPrefs.of(context).edit()
-                                .putLong("alarm.lastReportedEpoch", epoch)
-                                .putLong("alarm.lastReportedAt", System.currentTimeMillis())
-                                .apply()
-                        }
-                    } else if (whoop4ReadbackReportsNoAlarm(frame)) {
-                        // #34 (issue comment 2026-07-12): the strap's "nothing armed" sentinel — the epoch
-                        // field decodes to 0. This is NOT an undocumented layout; it's the strap telling us
-                        // it has no alarm stored, so an arm we just sent did NOT persist. Calling this
-                        // "unrecognised payload" hid the single most diagnostic signal in a "didn't buzz"
-                        // report: SET went out, strap kept nothing. Name it plainly. Log-only. Twin of Swift.
-                        val raw = whoop4AlarmReadbackPayloadHex(frame) ?: "empty"
-                        log("Alarm: strap reports NO alarm currently stored (epoch 0) — the arm did not persist on the strap (raw $raw)")
+                // Arm-readback diagnostic (#401 close-out, #864 5/MG parity): armStrapAlarm follows every
+                // arm with GET_ALARM_TIME (67) so the log proves what the STRAP believes is armed, not just
+                // what we sent. LOG-ONLY, never gates behaviour: the 4.0 response layout is undocumented, so
+                // the decode is defensive ([whoop4ArmedAlarmEpoch]: SET-mirror form first, bare u32 second,
+                // plausibility-gated) and an unrecognised payload still logs its raw hex - which is exactly
+                // as diagnostic. Labelled "strap reports", not "verified" (one firmware's answer format must
+                // never mislead a triage). Runs on BOTH families now that 5/MG alarm FIRING is confirmed
+                // (#864); the 5/MG GET_ALARM_TIME response BODY itself is still unconfirmed (mirrored guess
+                // of the 4.0 shape at the whoop5 offset — see [whoop5ArmedAlarmEpoch]). Twin of macOS FrameRouter.
+                if (respCmd?.startsWith("GET_ALARM_TIME") == true) {
+                    val whoop5 = connectedFamily == DeviceFamily.WHOOP5
+                    val unconfirmedNote = if (whoop5) " (5/MG, mirrored-4.0 layout, unconfirmed)" else ""
+                    // 5/MG close-out (2026-07-26, real captures): GET_ALARM_TIME on this firmware
+                    // consistently answers result=FAILURE(0), not SUCCESS with an epoch — a captured
+                    // session showed SET_ALARM_TIME succeed (result=SUCCESS) immediately followed by
+                    // GET_ALARM_TIME failing every time. Reading a FAILURE payload as "epoch 0 ⇒ arm did
+                    // not persist" is WRONG and actively misleading (the arm just succeeded one line
+                    // earlier) — a failed QUERY says nothing about whether the SET was kept. So on 5/MG
+                    // the already-decoded `result` string gates interpretation, BEFORE the epoch is even
+                    // decoded: only SUCCESS is decoded as an epoch/no-alarm answer; anything else just
+                    // reports the result plainly.
+                    if (whoop5 && result?.startsWith("SUCCESS") != true) {
+                        log("Alarm: strap answered the readback (GET_ALARM_TIME) with result=${result ?: "none"} — the arm itself is unaffected (see the SET_ALARM_TIME result above); this firmware just doesn't answer GET_ALARM_TIME with an epoch, log-only")
                     } else {
-                        val raw = whoop4AlarmReadbackPayloadHex(frame) ?: "empty"
-                        log("Alarm: strap answered the alarm readback with an unrecognised payload (raw $raw) - layout undocumented, log-only")
+                        val epoch = if (whoop5) whoop5ArmedAlarmEpoch(frame) else whoop4ArmedAlarmEpoch(frame)
+                        if (epoch != null) {
+                            // #34: log the RAW response bytes alongside the decoded epoch (previously only the
+                            // decode-FAILURE branch below carried them). A successful-but-mismatched decode — the
+                            // strap reporting a plausible epoch that never matches what we armed, the corrupted-
+                            // register signature — needs the raw frame to tell a genuinely-stored stale alarm from
+                            // a misdecode of a fixed response field. Log-only; the decode/behaviour is unchanged.
+                            val raw = (if (whoop5) whoop5AlarmReadbackPayloadHex(frame) else whoop4AlarmReadbackPayloadHex(frame)) ?: "empty"
+                            log("Alarm: strap reports armed for ${alarmReadbackLocalTime(epoch)} (epoch $epoch) [raw $raw]$unconfirmedNote")
+                            // #34: persist what the strap reports so the debug export can show sent-vs-reported.
+                            runCatching {
+                                NoopPrefs.of(context).edit()
+                                    .putLong("alarm.lastReportedEpoch", epoch)
+                                    .putLong("alarm.lastReportedAt", System.currentTimeMillis())
+                                    .apply()
+                            }
+                        } else if (if (whoop5) whoop5ReadbackReportsNoAlarm(frame) else whoop4ReadbackReportsNoAlarm(frame)) {
+                            // #34 (issue comment 2026-07-12): the strap's "nothing armed" sentinel — the epoch
+                            // field decodes to 0. This is NOT an undocumented layout; it's the strap telling us
+                            // it has no alarm stored, so an arm we just sent did NOT persist. Calling this
+                            // "unrecognised payload" hid the single most diagnostic signal in a "didn't buzz"
+                            // report: SET went out, strap kept nothing. Name it plainly. Log-only. Twin of Swift.
+                            val raw = (if (whoop5) whoop5AlarmReadbackPayloadHex(frame) else whoop4AlarmReadbackPayloadHex(frame)) ?: "empty"
+                            log("Alarm: strap reports NO alarm currently stored (epoch 0) — the arm did not persist on the strap (raw $raw)$unconfirmedNote")
+                        } else {
+                            val raw = (if (whoop5) whoop5AlarmReadbackPayloadHex(frame) else whoop4AlarmReadbackPayloadHex(frame)) ?: "empty"
+                            log("Alarm: strap answered the alarm readback with an unrecognised payload (raw $raw) - layout undocumented, log-only$unconfirmedNote")
+                        }
                     }
                 }
                 // #34 (issue comment 2026-07-12): the strap's OWN answer to the arm we just sent — the
@@ -4777,15 +4796,17 @@ class WhoopBleClient(
                 // GET_ALARM_TIME readback then reads back epoch 0 (a silently-unpersisted alarm — the exact
                 // signature in this report). Logging the raw result byte lets a future report distinguish a
                 // strap that accepted the arm from one that rejected it. LOG-ONLY, never gates behaviour. The
-                // WHOOP 4.0 result-code meaning is UNVERIFIED (the 5/MG puffin table is 0=FAILURE 1=SUCCESS
-                // 2=PENDING 3=UNSUPPORTED, but the 4.0 reboot probe assumed 0=accepted), so no verdict is
-                // claimed — it surfaces the byte, nothing more. Twin of Swift FrameRouter. WHOOP4-only: the
-                // 4.0 result byte sits at frame[8]; the 5/MG result lives at a different offset (decoded as
-                // the `result` string above) and its alarm path is the Experimental one.
+                // WHOOP 4.0 result-code meaning is UNVERIFIED (the 4.0 reboot probe only assumed 0=accepted);
+                // the 5/MG puffin table IS hardware-confirmed (0=FAILURE 1=SUCCESS 2=PENDING 3=UNSUPPORTED,
+                // #78 fork) — a captured SET_ALARM_TIME ack decoded result=SUCCESS(1) — so 5/MG can name the
+                // verdict while 4.0 can't. Twin of Swift FrameRouter. WHOOP4 reads the raw byte at frame[8];
+                // WHOOP5 reuses the already-decoded `result` string (decodeCommandResponseWhoop5, frame[12]).
                 if (connectedFamily == DeviceFamily.WHOOP4 && respCmd?.startsWith("SET_ALARM_TIME") == true) {
                     val r = frame.getOrNull(8)?.toInt()?.and(0xFF)
                     val rhex = if (r != null) "0x%02x".format(r) else "none"
                     log("Alarm: strap answered the arm (SET_ALARM_TIME) with result=$rhex — log-only, 4.0 result-code meaning unverified")
+                } else if (connectedFamily == DeviceFamily.WHOOP5 && respCmd?.startsWith("SET_ALARM_TIME") == true) {
+                    log("Alarm: strap answered the arm (SET_ALARM_TIME) with result=${result ?: "none"} — log-only")
                 }
             }
 
@@ -6962,6 +6983,70 @@ internal fun whoop4ArmedAlarmEpoch(frame: ByteArray): Long? {
  */
 internal fun whoop4ReadbackReportsNoAlarm(frame: ByteArray): Boolean {
     val payload = whoop4CommandResponsePayload(frame) ?: return false
+    fun u32le(at: Int): Long? {
+        if (payload.size < at + 4) return null
+        return (payload[at].toLong() and 0xFFL) or
+            ((payload[at + 1].toLong() and 0xFFL) shl 8) or
+            ((payload[at + 2].toLong() and 0xFFL) shl 16) or
+            ((payload[at + 3].toLong() and 0xFFL) shl 24)
+    }
+    if (payload.isNotEmpty() && payload[0] == 0x01.toByte()) {
+        return u32le(1)?.let { it == 0L } ?: false
+    }
+    return u32le(0)?.let { it == 0L } ?: false
+}
+
+/**
+ * The payload of a WHOOP 5.0/MG COMMAND_RESPONSE: the bytes after `[type,seq,cmd,origin_seq,result]`
+ * (payload starts at absolute offset 13 — the whoop5 inner record starts at frame[8], +5 skips
+ * type/seq/cmd/origin_seq/result) up to the crc32 trailer. `declLen` (u16 LE at frame[2..4)) gives the
+ * trailer start as `declLen + 8 - 4` ([Framing.verifyWhoop5]'s arithmetic), not the WHOOP4 `length`
+ * field read. null when the frame is too short. Twin of the Swift
+ * `FrameRouter.commandResponsePayload(in:family:.whoop5)` (#864 5/MG parity).
+ */
+internal fun whoop5CommandResponsePayload(frame: ByteArray): ByteArray? {
+    if (frame.size < 8) return null
+    val declLen = (frame[2].toInt() and 0xFF) or ((frame[3].toInt() and 0xFF) shl 8)
+    val payloadEnd = declLen + 8 - 4
+    val start = 13   // whoop5 inner offset 8 + type,seq,cmd,origin_seq,result(5)
+    if (payloadEnd > frame.size || start >= payloadEnd) return null
+    return frame.copyOfRange(start, payloadEnd)
+}
+
+/** Space-separated lowercase hex of a WHOOP 5.0/MG COMMAND_RESPONSE payload — the raw-hex diagnostic
+ *  fallback when a readback payload doesn't decode. null when the frame carries no payload. */
+internal fun whoop5AlarmReadbackPayloadHex(frame: ByteArray): String? =
+    whoop5CommandResponsePayload(frame)?.takeIf { it.isNotEmpty() }
+        ?.joinToString(" ") { "%02x".format(it) }
+
+/**
+ * Extract the armed-alarm epoch from a WHOOP 5.0/MG GET_ALARM_TIME (cmd 67) COMMAND_RESPONSE. UNLIKE
+ * [whoop4ArmedAlarmEpoch], this is not just an undocumented-layout guess — no GET_ALARM_TIME response
+ * has EVER been captured on a real 5/MG strap, so this mirrors the 4.0 shape (SET-mirror
+ * `[form 0x01][u32 LE epoch]…` then a bare leading u32 LE, plausibility-gated) at the whoop5 envelope
+ * offset purely as a best-effort guess. The envelope OFFSET itself is confirmed (a captured
+ * SET_ALARM_TIME ack decodes cleanly at it — see [whoop5CommandResponsePayload]); the response BODY
+ * shape is not. Twin of the Swift `FrameRouter.armedAlarmEpoch(in:family:.whoop5)`.
+ */
+internal fun whoop5ArmedAlarmEpoch(frame: ByteArray): Long? {
+    val payload = whoop5CommandResponsePayload(frame) ?: return null
+    fun u32le(at: Int): Long? {
+        if (payload.size < at + 4) return null
+        return (payload[at].toLong() and 0xFFL) or
+            ((payload[at + 1].toLong() and 0xFFL) shl 8) or
+            ((payload[at + 2].toLong() and 0xFFL) shl 16) or
+            ((payload[at + 3].toLong() and 0xFFL) shl 24)
+    }
+    if (payload.isNotEmpty() && payload[0] == 0x01.toByte()) {
+        u32le(1)?.takeIf { isPlausibleAlarmEpoch(it) }?.let { return it }
+    }
+    return u32le(0)?.takeIf { isPlausibleAlarmEpoch(it) }
+}
+
+/** WHOOP 5.0/MG twin of [whoop4ReadbackReportsNoAlarm] — same mirrored-guess caveat as
+ *  [whoop5ArmedAlarmEpoch] applies here too. */
+internal fun whoop5ReadbackReportsNoAlarm(frame: ByteArray): Boolean {
+    val payload = whoop5CommandResponsePayload(frame) ?: return false
     fun u32le(at: Int): Long? {
         if (payload.size < at + 4) return null
         return (payload[at].toLong() and 0xFFL) or

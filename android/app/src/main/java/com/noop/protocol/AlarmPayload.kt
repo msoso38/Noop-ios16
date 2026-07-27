@@ -11,11 +11,11 @@ import java.time.ZoneId
  * as factual wire-format observations for interoperability; no proprietary code is reproduced.
  * (Adopted from PR #85, iHateSubscriptions.)
  *
- * EXPERIMENTAL / UNCONFIRMED: unlike the maverick buzz (hardware-confirmed on a real MG), the rev4
- * alarm layout below is self-consistent and modelled on the official app but has NOT been confirmed
- * to actually wake a strap on our side (no captured STRAP_DRIVEN_ALARM_EXECUTED event). The caller
- * therefore gates it behind the Experimental opt-in so a normal user can't rely on an alarm that
- * might silently not fire. All multi-byte fields are little-endian.
+ * CONFIRMED (#864 close-out, 2026-07-26): the rev4 alarm layout below arms AND fires — a captured
+ * trace shows the full sequence on a real 5/MG strap (SET → STRAP_DRIVEN_ALARM_EXECUTED event 57 →
+ * HAPTICS_FIRED → dismiss), the same bar the maverick buzz and the WHOOP 4.0 alarm were each
+ * confirmed on (one wire capture + on-device test). The caller no longer gates arming behind the
+ * Experimental opt-in. All multi-byte fields are little-endian.
  */
 object AlarmPayload {
     private const val OVERALL_LOOP: Byte = 7        // overallWaveformLoopControl (alarm pattern)

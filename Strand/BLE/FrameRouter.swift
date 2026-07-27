@@ -128,22 +128,48 @@ public final class FrameRouter {
                     }
                 } else if cmd.hasPrefix("SET_ADVERTISING_NAME_HARVARD") {
                     state.renameStatus = Self.renameAck(for: Self.commandResultByte(in: frame))
-                } else if cmd.hasPrefix("GET_ALARM_TIME") {
-                    // Arm-readback diagnostic (#401 close-out): armStrapAlarm follows every WHOOP 4.0 arm
-                    // with GET_ALARM_TIME (67) so the log proves what the STRAP believes is armed, not
+                }
+            }
+            // Alarm readback/ack (#401 close-out, #864 5/MG parity): runs on BOTH families now that
+            // 5/MG firmware-alarm FIRING is confirmed (own captured trace: SET → STRAP_DRIVEN_ALARM_EXECUTED
+            // → HAPTICS_FIRED → dismiss, 2026-07-26). The 5/MG envelope offset itself is confirmed too — a
+            // captured SET_ALARM_TIME ack (`aa010c0001002711244b4204010401001961ac4f`) decodes cleanly as
+            // [type 0x24][seq][cmd 0x42=SET_ALARM_TIME][origin_seq][result 0x01=SUCCESS] at the whoop5 inner
+            // offset — but the GET_ALARM_TIME response BODY (the armed epoch) has never been captured on
+            // 5/MG, so that decode is still a mirrored guess of the 4.0 shape, not verified.
+            if let cmd = parsed.cmdName {
+                if cmd.hasPrefix("GET_ALARM_TIME") {
+                    // Arm-readback diagnostic (#401 close-out): armStrapAlarm follows every arm with
+                    // GET_ALARM_TIME (67) so the log proves what the STRAP believes is armed, not
                     // just what we sent. LOG-ONLY, never gates behaviour: the 4.0 response layout is
                     // undocumented, so the decode is defensive (SET-mirror form first, bare u32 second,
                     // plausibility-gated) and an unrecognised payload still logs its raw hex - which is
                     // exactly as diagnostic. Labelled "strap reports", not "verified" (one firmware's
-                    // answer format must never mislead a triage).
-                    if let epoch = Self.armedAlarmEpoch(in: frame) {
+                    // answer format must never mislead a triage). On 5/MG the epoch-body shape is
+                    // additionally a mirrored guess (mirrored from 4.0, see note above), so that line
+                    // says so explicitly.
+                    let unconfirmedNote = family == .whoop4 ? "" : " (5/MG, mirrored-4.0 layout, unconfirmed)"
+                    // 5/MG close-out (2026-07-26, real captures): GET_ALARM_TIME on this firmware
+                    // consistently answers result=FAILURE(0), not SUCCESS with an epoch — a captured
+                    // session showed SET_ALARM_TIME succeed (result=SUCCESS) immediately followed by
+                    // GET_ALARM_TIME failing every time. Reading a FAILURE payload as "epoch 0 ⇒ arm did
+                    // not persist" is WRONG and actively misleading (the arm just succeeded one line
+                    // earlier) — a failed QUERY says nothing about whether the SET was kept. So on 5/MG
+                    // the result byte gates interpretation: only a SUCCESS response is decoded as an
+                    // epoch/no-alarm answer; anything else just reports the result plainly.
+                    let whoop5ResultByte = family == .whoop5 ? Self.commandResultByte(in: frame, family: .whoop5) : nil
+                    if family == .whoop5, whoop5ResultByte != 1 {
+                        let rhex = whoop5ResultByte.map { String(format: "0x%02x", UInt8(truncatingIfNeeded: $0)) } ?? "none"
+                        let verdict = ["0": "FAILURE", "2": "PENDING", "3": "UNSUPPORTED"][whoop5ResultByte.map(String.init) ?? ""] ?? "unknown"
+                        state.append(log: "Alarm: strap answered the readback (GET_ALARM_TIME) with result=\(rhex) (\(verdict)) — the arm itself is unaffected (see the SET_ALARM_TIME result above); this firmware just doesn't answer GET_ALARM_TIME with an epoch, log-only")
+                    } else if let epoch = Self.armedAlarmEpoch(in: frame, family: family) {
                         // #34: log the RAW response bytes alongside the decoded epoch (previously only the
                         // decode-FAILURE branch below carried them). A successful-but-mismatched decode — the
                         // strap reporting a plausible epoch that never matches what we armed, the corrupted-
                         // register signature — needs the raw frame to tell a genuinely-stored stale alarm from
                         // a misdecode of a fixed response field. Log-only; the decode/behaviour is unchanged.
-                        let raw = Self.commandResponsePayloadHex(in: frame) ?? "empty"
-                        state.append(log: "Alarm: strap reports armed for \(Self.alarmLocalTime(epoch: epoch)) (epoch \(epoch)) [raw \(raw)]")
+                        let raw = Self.commandResponsePayloadHex(in: frame, family: family) ?? "empty"
+                        state.append(log: "Alarm: strap reports armed for \(Self.alarmLocalTime(epoch: epoch)) (epoch \(epoch)) [raw \(raw)]\(unconfirmedNote)")
                         // #34: persist what the strap reports so the debug export can show sent-vs-reported.
                         let d = UserDefaults.standard
                         d.set(Int(epoch), forKey: "alarm.lastReportedEpoch")
@@ -157,16 +183,16 @@ public final class FrameRouter {
                             d.set(abs(Int(epoch) - sent) > 120 ? d.integer(forKey: "alarm.rejectStreak") + 1 : 0,
                                   forKey: "alarm.rejectStreak")
                         }
-                    } else if Self.readbackReportsNoAlarm(in: frame) {
+                    } else if Self.readbackReportsNoAlarm(in: frame, family: family) {
                         // #34 (issue comment 2026-07-12): the strap's "nothing armed" sentinel — the epoch
                         // field decodes to 0. This is NOT an undocumented layout; it's the strap telling us
                         // it has no alarm stored, so an arm we just sent did NOT persist. Calling this
                         // "unrecognised payload" (the old branch) hid the single most diagnostic signal in a
                         // "didn't buzz" report: SET went out, strap kept nothing. Name it plainly. Log-only.
-                        let raw = Self.commandResponsePayloadHex(in: frame) ?? "empty"
-                        state.append(log: "Alarm: strap reports NO alarm currently stored (epoch 0) — the arm did not persist on the strap (raw \(raw))")
+                        let raw = Self.commandResponsePayloadHex(in: frame, family: family) ?? "empty"
+                        state.append(log: "Alarm: strap reports NO alarm currently stored (epoch 0) — the arm did not persist on the strap (raw \(raw))\(unconfirmedNote)")
                     } else {
-                        state.append(log: "Alarm: strap answered the alarm readback with an unrecognised payload (raw \(Self.commandResponsePayloadHex(in: frame) ?? "empty")) - layout undocumented, log-only")
+                        state.append(log: "Alarm: strap answered the alarm readback with an unrecognised payload (raw \(Self.commandResponsePayloadHex(in: frame, family: family) ?? "empty")) - layout undocumented, log-only\(unconfirmedNote)")
                     }
                 } else if cmd.hasPrefix("SET_ALARM_TIME") {
                     // #34 (issue comment 2026-07-12): the strap's OWN answer to the arm we just sent — the
@@ -176,11 +202,17 @@ public final class FrameRouter {
                     // alarm — the exact signature in this report). Logging the raw result byte lets a future
                     // report distinguish a strap that accepted the arm from one that rejected it. LOG-ONLY,
                     // never gates behaviour. The WHOOP 4.0 result-code meaning is UNVERIFIED (the 5/MG puffin
-                    // table is 0=FAILURE 1=SUCCESS 2=PENDING 3=UNSUPPORTED, but the 4.0 reboot probe assumed
-                    // 0=accepted), so this claims NO verdict — it surfaces the byte, nothing more.
-                    let r = Self.commandResultByte(in: frame)
+                    // table IS confirmed — 0=FAILURE 1=SUCCESS 2=PENDING 3=UNSUPPORTED, matching a captured
+                    // SET_ALARM_TIME ack that decoded result=0x01=SUCCESS — but the 4.0 reboot probe only
+                    // assumed 0=accepted), so 4.0 claims NO verdict while 5/MG can name the result.
+                    let r = Self.commandResultByte(in: frame, family: family)
                     let rhex = r.map { String(format: "0x%02x", UInt8(truncatingIfNeeded: $0)) } ?? "none"
-                    state.append(log: "Alarm: strap answered the arm (SET_ALARM_TIME) with result=\(rhex) — log-only, 4.0 result-code meaning unverified")
+                    if family == .whoop4 {
+                        state.append(log: "Alarm: strap answered the arm (SET_ALARM_TIME) with result=\(rhex) — log-only, 4.0 result-code meaning unverified")
+                    } else {
+                        let verdict = ["0": "FAILURE", "1": "SUCCESS", "2": "PENDING", "3": "UNSUPPORTED"][r.map(String.init) ?? ""] ?? "unknown"
+                        state.append(log: "Alarm: strap answered the arm (SET_ALARM_TIME) with result=\(rhex) (\(verdict)) — log-only")
+                    }
                 }
             }
 
@@ -246,9 +278,22 @@ public final class FrameRouter {
     /// SOF(1) + length(2) + crc8(1). Mirrors `WhoopCommand.frame` / `parseFrame`.
     private static let whoop4InnerOffset = 4
 
+    /// Offset of the same inner record in a WHOOP 5.0/MG frame: SOF(1) + format(1) + declLen(2) +
+    /// header(2) + CRC16(2) = 8 (`Framing.verifyFrameWhoop5`). The captured SET_ALARM_TIME ack
+    /// (`aa010c0001002711244b4204010401001961ac4f`) decodes cleanly at this offset as
+    /// [type 0x24][seq][cmd 0x42=SET_ALARM_TIME][origin_seq][result 0x01=SUCCESS] — the same
+    /// [type,seq,cmd,origin_seq,result,payload…] shape as 4.0, confirming the envelope mirror (though
+    /// not the GET_ALARM_TIME response BODY, which has never been captured on 5/MG).
+    private static let whoop5InnerOffset = 8
+
+    nonisolated private static func innerOffset(for family: DeviceFamily) -> Int {
+        family == .whoop4 ? whoop4InnerOffset : whoop5InnerOffset
+    }
+
     /// Extract the advertising name from a GET_ADVERTISING_NAME COMMAND_RESPONSE: printable ASCII from
     /// the payload that follows [type,seq,cmd,origin_seq,result] (payload starts at inner+5), up to the
     /// crc32 trailer at `length`. Mirrors the whoop-rename prototype's `extract_name`. nil if too short.
+    /// WHOOP 4.0 only — renaming isn't a 5/MG feature.
     static func advertisingName(in frame: [UInt8]) -> String? {
         guard frame.count > 2 else { return nil }
         let length = Int(frame[1]) | (Int(frame[2]) << 8)        // crc32 starts here
@@ -260,28 +305,40 @@ public final class FrameRouter {
     }
 
     /// The result byte of a COMMAND_RESPONSE: inner offset + 4 ([type,seq,cmd,origin_seq] then result).
-    static func commandResultByte(in frame: [UInt8]) -> Int? {
-        let idx = whoop4InnerOffset + 4
+    /// `family` selects the envelope (4.0 offset 4, 5/MG offset 8); defaults to `.whoop4` so existing
+    /// (4.0-only) call sites are unchanged.
+    nonisolated static func commandResultByte(in frame: [UInt8], family: DeviceFamily = .whoop4) -> Int? {
+        let idx = innerOffset(for: family) + 4
         return idx < frame.count ? Int(frame[idx]) : nil
     }
 
-    // MARK: - Alarm-readback decode (WHOOP 4.0, GET_ALARM_TIME cmd 67 - #401 close-out)
+    // MARK: - Alarm-readback decode (GET_ALARM_TIME cmd 67 - #401 close-out, #864 5/MG parity)
 
-    /// The payload of a WHOOP 4.0 COMMAND_RESPONSE: the bytes after [type,seq,cmd,origin_seq,result]
-    /// (payload starts at inner+5) up to the crc32 trailer at `length`. Same envelope walk as
-    /// `advertisingName(in:)`. nil when the frame is too short to carry any payload.
-    nonisolated static func commandResponsePayload(in frame: [UInt8]) -> [UInt8]? {
+    /// The payload of a COMMAND_RESPONSE: the bytes after [type,seq,cmd,origin_seq,result] (payload
+    /// starts at inner+5) up to the crc32 trailer. `family` selects the envelope and — for whoop5 —
+    /// the declared-length/trailer arithmetic from `Framing.verifyFrameWhoop5` (payload ends at
+    /// `declLen + 8 - 4`, not at a `length` field read the WHOOP4 way). nil when the frame is too short.
+    nonisolated static func commandResponsePayload(in frame: [UInt8], family: DeviceFamily = .whoop4) -> [UInt8]? {
         guard frame.count > 2 else { return nil }
-        let length = Int(frame[1]) | (Int(frame[2]) << 8)        // crc32 starts here
-        let start = whoop4InnerOffset + 5                        // skip type,seq,cmd,origin_seq,result
-        guard length <= frame.count, start < length else { return nil }
-        return Array(frame[start..<length])
+        let start = innerOffset(for: family) + 5                 // skip type,seq,cmd,origin_seq,result
+        switch family {
+        case .whoop4:
+            let length = Int(frame[1]) | (Int(frame[2]) << 8)    // crc32 starts here
+            guard length <= frame.count, start < length else { return nil }
+            return Array(frame[start..<length])
+        case .whoop5:
+            guard frame.count >= 8 else { return nil }
+            let declLen = Int(frame[2]) | (Int(frame[3]) << 8)
+            let payloadEnd = declLen + 8 - 4                      // crc32 (4 bytes) starts here
+            guard payloadEnd <= frame.count, start < payloadEnd else { return nil }
+            return Array(frame[start..<payloadEnd])
+        }
     }
 
     /// Space-separated lowercase hex of a COMMAND_RESPONSE payload, for the raw-hex diagnostic fallback
     /// when a readback payload doesn't decode. nil when the frame carries no payload.
-    nonisolated static func commandResponsePayloadHex(in frame: [UInt8]) -> String? {
-        guard let payload = commandResponsePayload(in: frame), !payload.isEmpty else { return nil }
+    nonisolated static func commandResponsePayloadHex(in frame: [UInt8], family: DeviceFamily = .whoop4) -> String? {
+        guard let payload = commandResponsePayload(in: frame, family: family), !payload.isEmpty else { return nil }
         return payload.map { String(format: "%02x", $0) }.joined(separator: " ")
     }
 
@@ -298,9 +355,12 @@ public final class FrameRouter {
     /// plausibly answer with - the SET_ALARM_TIME mirror (`[form 0x01][u32 LE epoch]…`, matching the
     /// 9-byte payload we arm with) first, then a bare leading u32 LE - and accepts a candidate only when
     /// it passes `isPlausibleAlarmEpoch`. Anything else returns nil and the caller logs raw hex instead.
+    /// `family: .whoop5` reads the SAME two candidate shapes at the 5/MG envelope offset — a mirrored
+    /// GUESS (the envelope offset is confirmed via the SET_ALARM_TIME ack, but no real GET_ALARM_TIME
+    /// response has been captured on 5/MG, so the body shape itself is unverified there).
     /// Pure and CoreBluetooth-free so golden tests pin it (AlarmReadbackDecodeTests).
-    nonisolated static func armedAlarmEpoch(in frame: [UInt8]) -> UInt32? {
-        guard let payload = commandResponsePayload(in: frame) else { return nil }
+    nonisolated static func armedAlarmEpoch(in frame: [UInt8], family: DeviceFamily = .whoop4) -> UInt32? {
+        guard let payload = commandResponsePayload(in: frame, family: family) else { return nil }
         func u32le(at i: Int) -> UInt32? {
             guard payload.count >= i + 4 else { return nil }
             return UInt32(payload[i])
@@ -319,8 +379,8 @@ public final class FrameRouter {
     /// unparseable payload: an arm the strap silently dropped reads back as epoch 0, so labelling it
     /// "unrecognised" hid the real signal (#34). Only consulted AFTER `armedAlarmEpoch` returns nil, so a
     /// plausible armed epoch never reaches here. Pure/CoreBluetooth-free so AlarmReadbackDecodeTests pin it.
-    nonisolated static func readbackReportsNoAlarm(in frame: [UInt8]) -> Bool {
-        guard let payload = commandResponsePayload(in: frame) else { return false }
+    nonisolated static func readbackReportsNoAlarm(in frame: [UInt8], family: DeviceFamily = .whoop4) -> Bool {
+        guard let payload = commandResponsePayload(in: frame, family: family) else { return false }
         func u32le(at i: Int) -> UInt32? {
             guard payload.count >= i + 4 else { return nil }
             return UInt32(payload[i])

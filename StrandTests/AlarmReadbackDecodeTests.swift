@@ -186,4 +186,83 @@ final class AlarmReadbackDecodeTests: XCTestCase {
         XCTAssertTrue(live.log.contains { $0.contains("SET_ALARM_TIME") && $0.contains("result=0x03") },
                       "SET_ALARM_TIME response must log the raw result byte: \(live.log)")
     }
+
+    // MARK: - WHOOP 5.0/MG (#864 close-out) — envelope offset confirmed, GET_ALARM_TIME body still guessed
+
+    /// The real captured SET_ALARM_TIME ack from a 5/MG strap (2026-07-26 trace). Decodes at the whoop5
+    /// inner offset as [type 0x24][seq 0x4b][cmd 0x42=SET_ALARM_TIME][origin_seq 0x04][result 0x01=SUCCESS]
+    /// — confirming the envelope-offset mirror from 4.0, independent of the (still-unconfirmed)
+    /// GET_ALARM_TIME response body shape.
+    private let realWhoop5SetAlarmAck: [UInt8] = [
+        0xaa, 0x01, 0x0c, 0x00, 0x01, 0x00, 0x27, 0x11, 0x24, 0x4b, 0x42, 0x04, 0x01,
+        0x04, 0x01, 0x00, 0x19, 0x61, 0xac, 0x4f,
+    ]
+
+    func testWhoop5RealCapturedSetAlarmAck_resultByteDecodesSuccess() {
+        XCTAssertEqual(FrameRouter.commandResultByte(in: realWhoop5SetAlarmAck, family: .whoop5), 1)
+    }
+
+    func testWhoop5RealCapturedSetAlarmAck_payloadDecodesTrailingBytes() {
+        XCTAssertEqual(FrameRouter.commandResponsePayloadHex(in: realWhoop5SetAlarmAck, family: .whoop5), "04 01 00")
+    }
+
+    /// The 4.0 offset must NOT accidentally decode the whoop5 frame — proves the two offsets are
+    /// genuinely distinct, not coincidentally compatible.
+    func testWhoop5RealCapturedSetAlarmAck_whoop4OffsetDoesNotAlias() {
+        XCTAssertNotEqual(FrameRouter.commandResultByte(in: realWhoop5SetAlarmAck, family: .whoop4), 1)
+    }
+
+    /// A GET_ALARM_TIME SET-mirror shape decodes the same way at the whoop5 offset as it does at the
+    /// whoop4 offset — this is a mirrored GUESS (no real 5/MG GET_ALARM_TIME response has been captured),
+    /// pinned so the guess itself can't silently drift.
+    func testWhoop5MirroredSetMirrorPayload_decodesCaptureEpoch() {
+        let inner: [UInt8] = [36, 0x29, 67, 0x42, 1, 0x01, 0x30, 0xD5, 0x35, 0x6A, 0x00, 0x00, 0x00, 0x00]
+        let declLen = inner.count + 4
+        var frame: [UInt8] = [0xAA, 0x01, UInt8(declLen & 0xFF), UInt8(declLen >> 8), 0x00, 0x01, 0x00, 0x00]
+        frame.append(contentsOf: inner)
+        frame.append(contentsOf: [0xDE, 0xAD, 0xBE, 0xEF])
+        XCTAssertEqual(FrameRouter.armedAlarmEpoch(in: frame, family: .whoop5), 1_781_912_880)
+    }
+
+    /// Real captured trace (2026-07-26): STRAP_DRIVEN_ALARM_SET → STRAP_DRIVEN_ALARM_EXECUTED (event 57)
+    /// → HAPTICS_FIRED → dismiss — the evidence that flipped 5/MG alarm-fire from "never captured" to
+    /// confirmed (#864). Pins that the router fires the wake callback and logs the event on the whoop5
+    /// family, not just on 4.0.
+    @MainActor
+    func testHandle_whoop5RealCapturedAlarmExecuted_firesWakeCallback() {
+        let live = LiveState()
+        var fired = false
+        live.onSmartAlarmFired = { fired = true }
+        let router = FrameRouter(state: live)
+        router.family = .whoop5
+        let frame: [UInt8] = [
+            0xaa, 0x01, 0x10, 0x00, 0x01, 0x00, 0x20, 0x81, 0x30, 0xc1, 0x39, 0x00, 0x10, 0xe3, 0x65, 0x6a,
+            0x7a, 0x34, 0x00, 0x00, 0x39, 0xdb, 0x95, 0x79,
+        ]
+        router.handle(frame: frame)
+        XCTAssertTrue(fired, "a real captured STRAP_DRIVEN_ALARM_EXECUTED frame must fire onSmartAlarmFired")
+        XCTAssertTrue(live.log.contains { $0.contains("strap-driven wake fired") },
+                      "must log the fire on whoop5, not just whoop4: \(live.log)")
+    }
+
+    /// Real captured GET_ALARM_TIME readback from the same 5/MG session (2026-07-26): immediately after a
+    /// SUCCESSFUL SET_ALARM_TIME, the readback itself answers result=FAILURE(0). Before this fix, the
+    /// zero-ish payload fell through to `readbackReportsNoAlarm` and logged "the arm did NOT persist" —
+    /// actively wrong, since the arm had just succeeded one line earlier. Pins that a FAILURE result is
+    /// now reported plainly, and that the misleading "did not persist" line never fires for it.
+    @MainActor
+    func testHandle_whoop5RealCapturedFailedReadback_reportsResultNotFalseNegative() {
+        let live = LiveState()
+        let router = FrameRouter(state: live)
+        router.family = .whoop5
+        let frame: [UInt8] = [
+            0xaa, 0x01, 0x10, 0x00, 0x01, 0x00, 0x20, 0x81, 0x24, 0x25, 0x43, 0x05, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0xdf, 0x00, 0x00, 0x9c, 0x8e, 0xe6, 0x2e,
+        ]
+        router.handle(frame: frame)
+        XCTAssertTrue(live.log.contains { $0.contains("readback (GET_ALARM_TIME)") && $0.contains("FAILURE") },
+                      "a FAILURE readback must be reported plainly: \(live.log)")
+        XCTAssertFalse(live.log.contains { $0.contains("did not persist") },
+                        "a failed QUERY must never be misread as a failed ARM: \(live.log)")
+    }
 }

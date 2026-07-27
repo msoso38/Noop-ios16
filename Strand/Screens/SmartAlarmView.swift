@@ -216,33 +216,17 @@ struct SmartAlarmView: View {
                     .frame(minHeight: 42)
                     Divider().overlay(StrandPalette.hairline)
                     alarmWeekdayPicker
-                    // #864: a WHOOP 5/MG only arms its firmware alarm when Experimental is on (see
-                    // BLEManager.armStrapAlarm, which logs "not armed" and returns otherwise). Without this
-                    // branch the card claimed "Armed on the strap itself" to a 5/MG owner whose strap was
-                    // NOT armed, an honest-data violation (reporter: 5/MG, Experimental off, never buzzed).
-                    // Mirrors the Android SmartAlarmScreen StrapAlarmCard wording exactly. The else copy
-                    // was truth-synced once a real 4.0 wake was confirmed (PR #535: official-app wire
-                    // capture + on-device buzz by the capture author); 5/MG remains unconfirmed, so this
-                    // gated branch keeps its honesty wording.
-                    if model.whoop5Detected && !PuffinExperiment.isEnabled {
-                        Text("Your WHOOP 5/MG won't arm this until Experimental mode is on (Settings, Experimental). Right now your wake time is saved but the strap is NOT armed. Even with Experimental on, a 5/MG strap-driven wake is still unconfirmed on our side, so keep a backup alarm.")
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(StrandPalette.statusWarning)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else if model.whoop5Detected {
-                        // 5/MG with Experimental ON: the strap IS armed (the rev-4 puffin payload), but a
-                        // strap-driven wake has NEVER been captured on 5/MG - so the "confirmed on 4.0" copy
-                        // must NOT show here (#864 honesty). Keep the 5/MG-unconfirmed caveat.
-                        Text("Armed on the strap itself with the experimental 5/MG command. A strap-driven wake is still unconfirmed on 5/MG on our side (confirmed only on WHOOP 4.0), so keep a backup alarm for anything you truly can't miss.")
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(StrandPalette.textTertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Text("Armed on the strap itself, so it can buzz at your wake time even if your phone is asleep or NOOP is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real WHOOP 4.0 (community wire capture + on-device test, #535). Keep a backup alarm for anything you truly can't miss.")
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(StrandPalette.textTertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    // #864 close-out (2026-07-26): a strap-driven wake is now confirmed on BOTH families —
+                    // WHOOP 4.0 by PR #535 (official-app wire capture + on-device buzz), 5/MG by a captured
+                    // trace showing SET → STRAP_DRIVEN_ALARM_EXECUTED (event 57) → HAPTICS_FIRED → dismiss on
+                    // a real strap. 5/MG no longer needs the Experimental toggle to arm (BLEManager.armStrapAlarm
+                    // sends unconditionally now). One unified copy, same "backup alarm" caveat 4.0 always kept
+                    // (one device/firmware confirmed is not every device/firmware). Mirrors the Android
+                    // SmartAlarmScreen StrapAlarmCard wording exactly.
+                    Text("Armed on the strap itself, so it can buzz at your wake time even if your phone is asleep or NOOP is closed. Sends the exact alarm command the official app sends, confirmed buzzing on a real strap (WHOOP 4.0: community wire capture + on-device test, #535; 5/MG: captured strap-driven wake, #864). Keep a backup alarm for anything you truly can't miss.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .onChangeCompat(of: behavior.smartAlarmEnabled) { _ in model.applySmartAlarm() }
