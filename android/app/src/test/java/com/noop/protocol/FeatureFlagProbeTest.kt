@@ -195,6 +195,37 @@ class FeatureFlagProbeTest {
     }
 
     /**
+     * The verdict must never blame the strap for our own decode. A firmware whose names all fail our
+     * printable-ASCII/length filter DID name them; reporting "named none" points at the strap and is the
+     * sentence someone would paste into #103.
+     */
+    @Test fun verdictBlamesOurParserNotTheStrapWhenEveryNameFails() {
+        val report = FeatureFlagProbeReport(DeviceFamily.WHOOP4)
+        report.noteStart(FeatureFlagProbe.StartResponse(1, 1, 3))
+        for (i in 0 until 3) {
+            report.noteNext(FeatureFlagProbe.NextResponse(1, 1, i, true, null))
+        }
+        assertTrue(report.keys.isEmpty())
+        assertEquals(3, report.skipped)
+        val v = report.verdict
+        assertTrue(v, v.contains("strap named 3 flag(s)"))
+        assertTrue(v, v.contains("our parser rejecting them"))
+        assertFalse("must not report our limitation as the strap's behaviour", v.contains("named none"))
+    }
+
+    /** A partial success says so in the headline too, not only in the flag-count line. */
+    @Test fun verdictReportsSkippedAlongsideTheKeysItDidGet() {
+        val report = FeatureFlagProbeReport(DeviceFamily.WHOOP4)
+        report.noteStart(FeatureFlagProbe.StartResponse(1, 1, 3))
+        report.noteNext(FeatureFlagProbe.NextResponse(1, 1, 0, true, "enable_r22_packets"))
+        report.noteNext(FeatureFlagProbe.NextResponse(1, 1, 1, true, null))
+        assertEquals(
+            "enumerated 1 feature-flag key name(s); 1 further name(s) did not decode",
+            report.verdict,
+        )
+    }
+
+    /**
      * The skip cannot become an unbounded walk: [FeatureFlagProbe.MAX_FLAGS] still terminates a firmware
      * that answers forever with entries whose names never decode.
      */

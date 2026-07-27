@@ -224,6 +224,36 @@ final class FeatureFlagProbeTests: XCTestCase {
         XCTAssertEqual(report.stopReason, "firmware reported validKey=false")
     }
 
+    /// The verdict must never blame the strap for our own decode. A firmware whose names all fail our
+    /// printable-ASCII/length filter DID name them; reporting "named none" points at the strap and is the
+    /// sentence someone would paste into #103.
+    func testVerdictBlamesOurParserNotTheStrapWhenEveryNameFails() {
+        var report = FeatureFlagProbeReport(family: .whoop4)
+        report.noteStart(FeatureFlagProbe.StartResponse(resultCode: 1, revision: 1, count: 3))
+        for i in 0..<3 {
+            _ = report.noteNext(FeatureFlagProbe.NextResponse(
+                resultCode: 1, revision: 1, index: i, validKey: true, key: nil))
+        }
+        XCTAssertTrue(report.keys.isEmpty)
+        XCTAssertEqual(report.skipped, 3)
+        let v = report.verdict
+        XCTAssertTrue(v.contains("strap named 3 flag(s)"), v)
+        XCTAssertTrue(v.contains("our parser rejecting them"), v)
+        XCTAssertFalse(v.contains("named none"), "must not report our limitation as the strap's behaviour")
+    }
+
+    /// A partial success says so in the headline too, not only in the flag-count line.
+    func testVerdictReportsSkippedAlongsideTheKeysItDidGet() {
+        var report = FeatureFlagProbeReport(family: .whoop4)
+        report.noteStart(FeatureFlagProbe.StartResponse(resultCode: 1, revision: 1, count: 3))
+        _ = report.noteNext(FeatureFlagProbe.NextResponse(
+            resultCode: 1, revision: 1, index: 0, validKey: true, key: "enable_r22_packets"))
+        _ = report.noteNext(FeatureFlagProbe.NextResponse(
+            resultCode: 1, revision: 1, index: 1, validKey: true, key: nil))
+        XCTAssertEqual(report.verdict,
+                       "enumerated 1 feature-flag key name(s); 1 further name(s) did not decode")
+    }
+
     /// The skip cannot become an unbounded walk: `maxFlags` still terminates a firmware that answers
     /// forever with entries whose names never decode.
     func testEveryReplyUndecodableStillStopsAtTheSafetyCap() {

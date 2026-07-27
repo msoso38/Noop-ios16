@@ -315,7 +315,19 @@ class FeatureFlagProbeReport(private val family: DeviceFamily) {
             if (_keys.isEmpty() && reportedCount == null) {
                 return "no usable reply — the enumerate path is unconfirmed on this firmware"
             }
+            // "named none" would blame the strap for OUR decode. If entries were skipped the strap did
+            // name them and this parser rejected the names, which is the opposite conclusion and the one
+            // a reader would carry into #103. Same class as [FeatureFlagProbe.NextResponse.isSkippable]:
+            // never report our limitation as the strap's behaviour.
+            if (_keys.isEmpty() && skipped > 0) {
+                return "strap named $skipped flag(s), none of which decoded as printable ASCII within " +
+                    "${FeatureFlagProbe.MAX_KEY_LENGTH} chars — this is our parser rejecting them, NOT " +
+                    "the strap serving blanks; see the trace for the raw replies"
+            }
             if (_keys.isEmpty()) return "strap announced ${reportedCount ?: 0} flag(s) but named none"
+            if (skipped > 0) {
+                return "enumerated ${_keys.size} feature-flag key name(s); $skipped further name(s) did not decode"
+            }
             return "enumerated ${_keys.size} feature-flag key name(s)"
         }
 
