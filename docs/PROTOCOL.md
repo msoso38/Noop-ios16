@@ -497,6 +497,49 @@ reimplemented in NOOP's own code — facts, not copied expression (see [`ATTRIBU
 **Unverified on 5/MG:** the published key dump is a 4.0's R19-era list; whether a 5/MG answers 117 at all
 is what the probe exists to establish (§10).
 
+**Device-config read probe (#103, read-only).** The #761 follow-up: that probe asked the strap for key
+NAMES, this one asks for a named key's VALUE — and it reaches the namespace 117/118 never covered. NOOP
+writes config through two different verbs into two different namespaces (`SET_FF_VALUE` / 120 for the
+sixteen R22 feature flags in `Whoop5Config.enableR22Sequence`, `SET_DEVICE_CONFIG_VALUE` / 119 for the
+Broadcast-HR key, #181) and has never read either. The `CommandNumber` table names the read side of both:
+121 `GET_DEVICE_CONFIG_VALUE` and 128 `GET_FF_VALUE`.
+
+**Both opcodes may simply not be implemented.** A number in the table is not a served verb — opcode 96
+(`ENTER_HIGH_FREQ_HISTORICAL_MODE`) is the standing example of one nothing in the wild sends. So the
+probe's primary deliverable is a per-verb verdict — **answered**, **rejected as UNSUPPORTED**, or
+**silent** — and a clean "neither verb is served" is a useful result, not a failure. It spends exactly one
+round-trip per verb establishing that (128 against a flag NOOP writes, 121 against the known-good
+Broadcast-HR key) before doing anything else; a verb that is refused, silent or undecodable is **retired**,
+so a dead verb costs one 8 s window rather than one per key.
+
+Only a verb that answers goes on to read values: the sixteen known flag names (whose values NOOP has only
+ever written, never read), then a short list of **guessed** oxygen-related key names against the
+device-config namespace — `DeviceConfigReadProbe.oxygenCandidateKeys`, the one constant to extend, and
+labelled as guesses everywhere they surface. That list is the #103 question in probe form: the byte at
+deep-record offset 82 reads as real SpO2 on some straps and flat `0x00` on others, which is what a
+subscription gate would look like, and a config key governing it would sit in the device-config namespace.
+
+Request body is `[0x01]` (the inner b3 byte) + the key as ASCII NUL-padded to 32 bytes — the SET side's own
+name field minus its value byte. That shape is **inferred from the SET side, not observed**; if it is wrong
+the strap answers FAILURE or nothing, which the report says plainly. The reply is an ordinary
+COMMAND_RESPONSE whose record sits behind the 2-byte response header, and **beyond that offset no field
+layout is assumed**: the record is reported as raw hex. A value is only ever *claimed* when the reply
+echoes the requested key inside a 32-byte NUL-padded field, in which case the byte immediately after that
+field is the value — the SET layout, checked rather than assumed. (On 5/MG the puffin envelope pads the
+inner payload to a 4-byte boundary, so trailing NULs in a record are envelope padding; reading "the byte
+after the echoed field" rather than "the last byte" is what keeps that out of the answer.)
+
+Read-only by construction. `DeviceConfigReadProbe.readOnlyOpcodes` is `{121, 128}` and
+`isReadOnlyOpcode` is the *same predicate* the 5/MG `send()` allowlist consults — admitting them only
+while a probe is in flight — so the "119/120 are never sent from this path" claim is a unit-tested property
+of the allowlist rather than a comment. The plan is capped at 64 round-trips. Driven by
+`BLEManager.probeDeviceConfigValues()` / `WhoopBleClient.probeDeviceConfigValues()` (user-triggered, Test
+Centre → Connection, both families); parsed + planned + rendered by the pure `DeviceConfigReadProbe` /
+`DeviceConfigReadProbeReport` twins (Swift↔Kotlin byte-parity, unit-tested on synthetic frames). Result
+goes to a copyable dialog + the strap log; no storage. The opcode numbers come from this repo's own
+protocol table (`Resources/whoop_protocol.json`). **Unverified on any strap:** nothing in this project has
+ever had 121 or 128 answered.
+
 **GET_DATA_RANGE ring backlog (#689, diagnostic only).** Beyond the oldest/newest timestamps NOOP already
 scans from a `GET_DATA_RANGE` reply, the app computes a ring-buffer page backlog from three u32s in the
 command-response inner payload (whose byte 0 is a subtype): write page `W = V(2)`, read pointer `U = V(3)`,

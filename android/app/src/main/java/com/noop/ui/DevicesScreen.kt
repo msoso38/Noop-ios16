@@ -118,6 +118,8 @@ fun DevicesScreen(
     val bodyLocationProbeResult by viewModel.bodyLocationProbe.collectAsStateWithLifecycle()
     // #761: the read-only feature-flag ENUMERATION report (or the waiting sentinel while it walks).
     val featureFlagProbeResult by viewModel.featureFlagProbe.collectAsStateWithLifecycle()
+    // #103: the read-only device-config READ report (or the waiting sentinel while the plan runs).
+    val deviceConfigProbeResult by viewModel.deviceConfigProbe.collectAsStateWithLifecycle()
 
     // Liquid sky backdrop gate — the SAME "Day-cycle background" preference the liquid Today honours (#698,
     // default ON). Off falls back to the flat dark canvas, so the setting governs every liquid screen alike.
@@ -144,6 +146,7 @@ fun DevicesScreen(
     var batteryProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var bodyLocationProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var featureFlagProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
+    var deviceConfigProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     // After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     var pickNewActive by remember { mutableStateOf(false) }
 
@@ -283,6 +286,12 @@ fun DevicesScreen(
                 onAbortSync = if (device.status == DeviceStatus.active.name && live.connected &&
                     WhoopBleClient.canAbortSync(live.backfilling) && SourceCoordinator.isWhoop(device)
                 ) { { viewModel.abortBackfill() } } else null,
+                // #103 device-config READ probe: read-only (asks for VALUES, writes none), both
+                // families. Same Test Centre gate.
+                onDeviceConfigProbe = if (device.status == DeviceStatus.active.name && live.connected &&
+                    SourceCoordinator.isWhoop(device) &&
+                    TestCentre.from(context).active(TestDomain.CONNECTION)
+                ) { { deviceConfigProbeTarget = device } } else null,
             )
         }
 
@@ -438,6 +447,19 @@ fun DevicesScreen(
             onDismiss = { viewModel.clearFeatureFlagProbe() },
         )
     }
+    // #103 device-config READ probe: read-only VALUE reads (121/128); no value is written to the strap.
+    deviceConfigProbeTarget?.let {
+        DeviceConfigProbeDialog(
+            onSend = { viewModel.probeDeviceConfigValues(); deviceConfigProbeTarget = null },
+            onDismiss = { deviceConfigProbeTarget = null },
+        )
+    }
+    deviceConfigProbeResult?.let { result ->
+        DeviceConfigProbeResultDialog(
+            text = result,
+            onDismiss = { viewModel.clearDeviceConfigProbe() },
+        )
+    }
 
     // --- Second, strongly-worded delete-data confirm (from the Removed card's secondary control) ---
     deleteDataTarget?.let { device ->
@@ -517,6 +539,9 @@ private fun DeviceCard(
      *  it reads the flag NAMES the strap's firmware knows and writes nothing. */
     onFeatureFlagProbe: (() -> Unit)? = null,
     onAbortSync: (() -> Unit)? = null,
+    /** #103 device-config READ probe (Test Centre → Connection, both WHOOP families). Read-only: it asks
+     *  the strap for a config key's VALUE and writes none. */
+    onDeviceConfigProbe: (() -> Unit)? = null,
 ) {
     val profile = deviceProfile(device)
     // The per-device actions menu's open state is hoisted here so the WHOLE card is a tap target that opens
@@ -635,6 +660,7 @@ private fun DeviceCard(
                     onBodyLocationProbe = onBodyLocationProbe,
                     onFeatureFlagProbe = onFeatureFlagProbe,
                 onAbortSync = onAbortSync,
+                    onDeviceConfigProbe = onDeviceConfigProbe,
                 )
             }
         }
@@ -759,6 +785,9 @@ private fun DeviceActionsMenu(
      *  it reads the flag NAMES the strap's firmware knows and writes nothing. */
     onFeatureFlagProbe: (() -> Unit)? = null,
     onAbortSync: (() -> Unit)? = null,
+    /** #103 device-config READ probe (Test Centre → Connection, both WHOOP families). Read-only: it asks
+     *  the strap for a config key's VALUE and writes none. */
+    onDeviceConfigProbe: (() -> Unit)? = null,
 ) {
     Box {
         IconButton(
@@ -822,6 +851,10 @@ private fun DeviceActionsMenu(
                 }
                 if (onFeatureFlagProbe != null) {
                     MenuItem(uiString(R.string.l10n_devices_screen_feature_flag_probe_761_re_21241d68), Icons.Filled.BugReport) { onOpenChange(false); onFeatureFlagProbe() }
+                }
+                // #103 device-config READ probe (RE): read-only VALUE reads, both families.
+                if (onDeviceConfigProbe != null) {
+                    MenuItem(uiString(R.string.l10n_devices_screen_device_config_read_probe_103_re_837f46de), Icons.Filled.BugReport) { onOpenChange(false); onDeviceConfigProbe() }
                 }
                 if (onRemove != null) {
                     HorizontalDivider(color = Palette.hairline)
@@ -1150,6 +1183,75 @@ private fun FeatureFlagProbeResultDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.surfaceOverlay,
         title = { Text(uiString(R.string.l10n_devices_screen_feature_flag_probe_result_761_c50ef4d4), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                SelectionContainer {
+                    Text(shown, style = if (waiting) NoopType.subhead else NoopType.mono, color = Palette.textSecondary)
+                }
+            }
+        },
+        confirmButton = {
+            if (!waiting) {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(text)) }) {
+                    Text(uiString(R.string.l10n_devices_screen_copy_af74f7c5), style = NoopType.body, color = Palette.accent)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_close_bbfa773e), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #103 device-config READ probe: a read-only walk that asks the strap for config VALUES (121/128), one
+ *  key per round-trip. Nothing is written to the strap. Gated to Test Centre → Connection + a live WHOOP
+ *  at the call site. Twin of the Swift DeviceConfigProbeSheets confirm dialog. */
+@Composable
+private fun DeviceConfigProbeDialog(
+    onSend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_device_config_read_probe_103_re_837f46de), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Text(
+                uiString(R.string.l10n_devices_screen_device_config_probe_explainer_dd23169f),
+                style = NoopType.subhead,
+                color = Palette.textSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onSend) {
+                Text(uiString(R.string.l10n_devices_screen_send_probe_read_only_36b318bc), style = NoopType.body, color = Palette.accent)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #103 probe result: the per-verb verdict, the values read, and the exchange transcript (or a
+ *  "waiting…" state), with a Copy button. Read-only; dismiss clears the result. Twin of the Swift
+ *  DeviceConfigProbeResultView. */
+@Composable
+private fun DeviceConfigProbeResultDialog(
+    text: String,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val waiting = text == WhoopBleClient.WAITING_DEVICE_CONFIG_PROBE
+    val shown = if (waiting) uiString(R.string.l10n_devices_screen_waiting_for_the_straps_reply_5a06e7ac) else text
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_device_config_read_probe_result_103_67d02ec9), style = NoopType.title2, color = Palette.textPrimary) },
         text = {
             Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
                 SelectionContainer {

@@ -224,6 +224,18 @@ enum class CommandNumber(val rawValue: Int) {
     // repeated to walk the list; bounded by FeatureFlagProbe.MAX_FLAGS and the strap's own end marker.
     // Mirrors Swift WhoopCommand.sendNextFeatureFlag. (#761)
     SEND_NEXT_FF(118),
+    // GET_DEVICE_CONFIG_VALUE (121 / 0x79) — READ-ONLY: ask for ONE device-config value by key name.
+    // Body is [0x01] + the key ASCII NUL-padded to 32 bytes (the SET side's name field minus its value
+    // byte). The read half of the DEVICE-CONFIG namespace SET_DEVICE_CONFIG/119 writes, which the #761
+    // enumerate pair (117/118, feature flags only) never reached. MAY NOT BE IMPLEMENTED in firmware —
+    // establishing that is the point. Driven ONLY by probeDeviceConfigValues() (user-initiated, Test
+    // Centre → Connection gated); parsing lives in the pure com.noop.protocol.DeviceConfigReadProbe.
+    // Mirrors Swift WhoopCommand.getDeviceConfigValue. (#103, follow-up to #761.)
+    GET_DEVICE_CONFIG_VALUE(121),
+    // GET_FF_VALUE (128 / 0x80) — READ-ONLY: ask for ONE feature-flag value by key name, same body shape
+    // as 121. #761 read the flag NAMES; this reads a named flag's VALUE. MAY NOT BE IMPLEMENTED in
+    // firmware. Mirrors Swift WhoopCommand.getFeatureFlagValue. (#103)
+    GET_FF_VALUE(128),
     STOP_HAPTICS(122),
     SELECT_WRIST(123);
 

@@ -38,6 +38,8 @@ import com.noop.protocol.BackfillCaptureRecord
 import com.noop.protocol.BackfillCaptureSummary
 import com.noop.protocol.CommandNumber
 import com.noop.protocol.DeviceFamily
+import com.noop.protocol.DeviceConfigReadProbe
+import com.noop.protocol.DeviceConfigReadProbeReport
 import com.noop.protocol.FeatureFlagProbe
 import com.noop.protocol.FeatureFlagProbeReport
 import com.noop.protocol.Framing
@@ -1206,6 +1208,13 @@ class WhoopBleClient(
          *  bounds one round-trip, not the whole walk. */
         const val FEATURE_FLAG_PROBE_TIMEOUT_MS = 8_000L
 
+        /** #103: sentinel value of [deviceConfigProbe] while the read-only VALUE probe is walking. */
+        const val WAITING_DEVICE_CONFIG_PROBE = "__waiting__"
+
+        /** #103: per-step reply window. Each read is only sent after the previous reply lands (or times
+         *  out), so this bounds one round-trip, not the whole plan. */
+        const val DEVICE_CONFIG_PROBE_TIMEOUT_MS = 8_000L
+
         /**
          * #690: format a GET_BODY_LOCATION_AND_STATUS (0x54) COMMAND_RESPONSE into a clean, readable,
          * copyable report — verdict, full raw hex, an offset-labelled payload grid, the four decoded fields
@@ -1525,6 +1534,19 @@ class WhoopBleClient(
     private var featureFlagStep = 0
     /** The opcode whose reply we are waiting for (117 or 118), null between steps. */
     private var featureFlagAwaiting: Int? = null
+
+    // #103: the READ-ONLY device-config READ report — what 121/128 answer when asked for a key's VALUE —
+    // or the waiting sentinel while the plan runs. Nothing is written to the strap to produce it.
+    private val _deviceConfigProbe = MutableStateFlow<String?>(null)
+    val deviceConfigProbe: StateFlow<String?> = _deviceConfigProbe.asStateFlow()
+
+    /** The in-flight #103 report; null when no probe is running. Doubles as the [send] allowlist's
+     *  in-flight gate — 121/128 cannot leave the app unless this is non-null. */
+    private var deviceConfigReport: DeviceConfigReadProbeReport? = null
+    /** The step whose reply we are waiting for, null between steps. */
+    private var deviceConfigAwaiting: DeviceConfigReadProbeReport.Step? = null
+    /** Monotonic step counter so a late timeout from an earlier step can't cancel a live walk. */
+    private var deviceConfigStep = 0
 
     private val _connectedPeripheralAddress = MutableStateFlow<String?>(null)
     /** The BLE address of the strap currently connected, or null when disconnected. Twin of macOS
@@ -2829,6 +2851,14 @@ class WhoopBleClient(
                 // probeFeatureFlags() (user-initiated, Test Centre gated).
                 !((cmd == CommandNumber.START_FF_KEY_EXCHANGE || cmd == CommandNumber.SEND_NEXT_FF) &&
                     featureFlagReport != null) &&
+                // GET_DEVICE_CONFIG_VALUE (121) / GET_FF_VALUE (128) over puffin: the READ-ONLY
+                // device-config READ probe (#103) — it asks for a key's VALUE and writes none. Gated the
+                // same way as 117/118: allowed ONLY while a probe is actually in flight, and the opcode
+                // must additionally satisfy DeviceConfigReadProbe.isReadOnlyOpcode, the same predicate a
+                // unit test proves rejects SET_FF_VALUE(120) and SET_DEVICE_CONFIG_VALUE(119). Those two
+                // keep their own separate opt-in clauses below and are never sent from this path. Driven
+                // only by probeDeviceConfigValues() (user-initiated, Test Centre gated).
+                !(DeviceConfigReadProbe.isReadOnlyOpcode(cmd.rawValue) && deviceConfigReport != null) &&
                 // SET_CONFIG (the R22 deep-stream unlock) is allowed ONLY while the deep-data experiment
                 // is opted in — it writes a persistent feature flag to the strap, so it must never fire
                 // on a default install. Reversible; driven only by enableWhoop5DeepData(). (#174)
@@ -3330,6 +3360,117 @@ class WhoopBleClient(
 
     /** Clear the #761 probe result (Devices dialog dismissed). */
     fun clearFeatureFlagProbe() { _featureFlagProbe.value = null }
+
+    /**
+     * #103 read-only probe: ask the strap for config VALUES — `GET_DEVICE_CONFIG_VALUE(121)` and
+     * `GET_FF_VALUE(128)`, one key per round-trip. The #761 probe asked the strap for key NAMES in the
+     * feature-flag namespace; this asks for a named key's VALUE, and reaches the DEVICE-CONFIG namespace
+     * (the one `SET_DEVICE_CONFIG_VALUE`/119 writes) that 117/118 never covered.
+     *
+     * NOTHING is written: no `SET_FF_VALUE(120)`, no `SET_DEVICE_CONFIG_VALUE(119)`, no value of any kind
+     * — this writes command frames purely to read, exactly like the Oura feature-status probes NOOP
+     * already ships.
+     *
+     * **Both target opcodes may simply be unimplemented.** The probe spends one round-trip per verb
+     * establishing that before it does anything else, and a clean "neither verb is served" is a useful
+     * result. Only a verb that answers goes on to read the sixteen known flag values and the short list
+     * of guessed oxygen key names. The report goes to the Devices dialog and the strap log — no new
+     * storage. User-initiated only, Test Centre → Connection gated at the call site. Twin of macOS
+     * BLEManager.probeDeviceConfigValues().
+     */
+    fun probeDeviceConfigValues() {
+        if (!_state.value.connected) {
+            log("Device-config read probe (#103) ignored — not connected")
+            return
+        }
+        // Defence in depth: the menu entry is already Test-Centre gated, but the sender re-checks so no
+        // other path can start a probe on a default install (twin of the macOS guard).
+        if (!testCentre.active(com.noop.testcentre.TestDomain.CONNECTION)) {
+            log("Device-config read probe (#103) ignored — Test Centre → Connection is off")
+            return
+        }
+        if (deviceConfigReport != null) {
+            log("Device-config read probe (#103) ignored — a probe is already walking its plan")
+            return
+        }
+        deviceConfigReport = DeviceConfigReadProbeReport(
+            connectedFamily,
+            // The flag names come from NOOP's own R22 sequence — never restated here.
+            Whoop5Config.enableR22Sequence.map { it.name },
+            DeviceConfigReadProbe.OXYGEN_CANDIDATE_KEYS,
+        )
+        _deviceConfigProbe.value = WAITING_DEVICE_CONFIG_PROBE
+        log(
+            "Device-config read probe (#103): asking for config VALUES via GET_DEVICE_CONFIG_VALUE(121) + " +
+                "GET_FF_VALUE(128) on family=$connectedFamily; read-only (SET_FF_VALUE/120 and " +
+                "SET_DEVICE_CONFIG_VALUE/119 are never sent from this path)",
+        )
+        advanceDeviceConfigProbe()
+    }
+
+    /** Send the next planned read, or finish when the plan is done. */
+    private fun advanceDeviceConfigProbe() {
+        val step = deviceConfigReport?.nextStep()
+        if (step == null) {
+            finishDeviceConfigProbe()
+            return
+        }
+        val cmd = CommandNumber.fromRaw(step.opcode)
+        if (cmd == null || !DeviceConfigReadProbe.isReadOnlyOpcode(step.opcode)) {
+            // Unreachable with the plan as written; failing closed here means a future edit that widened
+            // the plan cannot put a non-read opcode on the wire.
+            log("Device-config read probe (#103): refusing to send opcode ${step.opcode} — not a read verb")
+            finishDeviceConfigProbe()
+            return
+        }
+        deviceConfigStep += 1
+        deviceConfigAwaiting = step
+        val armed = deviceConfigStep
+        send(cmd, DeviceConfigReadProbe.requestBody(step.key))
+        // A reply that already landed advanced deviceConfigStep, so this stale closure no-ops.
+        handler.postDelayed({
+            if (deviceConfigReport != null && deviceConfigStep == armed && deviceConfigAwaiting != null) {
+                deviceConfigAwaiting = null
+                deviceConfigReport?.noteTimeout(step, (DEVICE_CONFIG_PROBE_TIMEOUT_MS / 1000).toInt())
+                // A silent verb is retired by the report, so the plan skips its remaining steps rather
+                // than spending another eight seconds on each of them.
+                advanceDeviceConfigProbe()
+            }
+        }, DEVICE_CONFIG_PROBE_TIMEOUT_MS)
+    }
+
+    /** Render + publish + log the report and end the probe (which also re-closes the send() allowlist). */
+    private fun finishDeviceConfigProbe() {
+        val report = deviceConfigReport ?: return
+        deviceConfigReport = null
+        deviceConfigAwaiting = null
+        val text = report.render()
+        log("Device-config read probe (#103):\n$text")
+        _deviceConfigProbe.value = text
+    }
+
+    /** Clear the #103 probe result (Devices dialog dismissed). */
+    fun clearDeviceConfigProbe() { _deviceConfigProbe.value = null }
+
+    /**
+     * #103: one COMMAND_RESPONSE for 121/128. Guarded on a probe being IN-FLIGHT (like #690/#761) so a
+     * stray byte match can never surface a result. Parsing — including the CRC gate — lives in the pure
+     * [DeviceConfigReadProbe]; a frame that fails any check retires that verb with a named reason instead
+     * of being decoded. Twin of macOS BLEManager.handleDeviceConfigProbeResponse.
+     */
+    private fun handleDeviceConfigProbeResponse(frame: ByteArray) {
+        if (deviceConfigReport == null) return
+        val step = deviceConfigAwaiting ?: return
+        deviceConfigAwaiting = null
+        val parsed = DeviceConfigReadProbe.parse(frame, connectedFamily, step.opcode)
+        val value = parsed.value
+        if (value != null) {
+            deviceConfigReport?.noteReply(value, step)
+        } else {
+            deviceConfigReport?.noteFailure(parsed.failure!!, step)
+        }
+        advanceDeviceConfigProbe()
+    }
 
     /**
      * #761: one COMMAND_RESPONSE for 117/118. Guarded on a probe being IN-FLIGHT (like #690) so a stray
@@ -4659,6 +4800,16 @@ class WhoopBleClient(
                             (frame[cmdOff].toInt() and 0xFF) == CommandNumber.SEND_NEXT_FF.rawValue)
                     ) {
                         handleFeatureFlagProbeResponse(frame)
+                    }
+                    // #103: a reply to the read-only device-config READ probe (121/128). In-flight-guarded
+                    // inside handleDeviceConfigProbeResponse, so this is a byte compare on other frames.
+                    // The COMMAND_RESPONSE type gate (cmdOff - 2 on both families) is checked HERE as well
+                    // as in the parser: a data frame that happens to carry 121/128 at the cmd offset would
+                    // otherwise abort a live walk with an envelope failure instead of being ignored.
+                    if (frame.size > cmdOff && (frame[cmdOff - 2].toInt() and 0xFF) == 0x24 &&
+                        DeviceConfigReadProbe.isReadOnlyOpcode(frame[cmdOff].toInt() and 0xFF)
+                    ) {
+                        handleDeviceConfigProbeResponse(frame)
                     }
                     if (frame.size > cmdOff && (frame[cmdOff].toInt() and 0xFF) == CommandNumber.GET_DATA_RANGE.rawValue) {
                         // #451: dump raw GET_DATA_RANGE response bytes unconditionally (even if decode returns
@@ -6654,6 +6805,11 @@ class WhoopBleClient(
         _featureFlagProbe.value = null
         featureFlagReport = null
         featureFlagAwaiting = null
+        // #103: same for the device-config READ probe — dropping the report re-closes the 121/128
+        // send() allowlist.
+        _deviceConfigProbe.value = null
+        deviceConfigReport = null
+        deviceConfigAwaiting = null
         reset()
 
         // close() can itself throw DeadObjectException on a dead binder — teardown must NEVER throw,
