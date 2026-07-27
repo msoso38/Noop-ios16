@@ -4456,4 +4456,5 @@ public func uniffiEnsureLitersFfiInitialized() {
     }
 }
 
-// swiftlint:enable all#endif
+// swiftlint:enable all
+#endif
