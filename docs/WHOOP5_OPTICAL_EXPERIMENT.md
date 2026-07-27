@@ -1,6 +1,8 @@
 # WHOOP 5/MG optical block experiment
 
-**Status:** passive capture and offline comparison implemented on branch `whoop-decode-audit`.
+**Status:** passive capture and offline comparison implemented. No labelled run has been analysed yet
+— the harness exists so one can be. Related: #423 (the 5/MG high-rate offload thread this came out
+of), #858 (the capture request), #845 (the field inventory that names the open questions).
 
 ## Purpose
 
