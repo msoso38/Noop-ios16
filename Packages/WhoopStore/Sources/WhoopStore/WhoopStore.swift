@@ -47,15 +47,33 @@ public enum WhoopStoreInfo {
 /// So an `.external` caller MUST guarantee a checkpointer actually runs. If it stops running — the
 /// user disables sync, the network is down for a week, the replicator is never started, or it
 /// crashes on launch — the WAL grows without limit and will eventually exhaust device storage. That
-/// is a strictly worse failure than the full re-upload it was meant to avoid, so the caller should
-/// also keep a floor: watch `databaseFileSizeBytes()` and force `checkpointWAL()` if the `-wal`
-/// sibling crosses a ceiling, regardless of replicator state.
+/// is a strictly worse failure than the full re-upload it was meant to avoid.
+///
+/// ## How that obligation is discharged
+///
+/// It is **not** left to the caller. Choosing `.external` installs a `WalBackstopMonitor` on the
+/// pool's writer connection: one `stat(2)` of the `-wal` sibling per committed transaction, and a
+/// forced `wal_checkpoint(TRUNCATE)` once it crosses `WalBackstopPolicy.ceilingBytes` (64 MiB by
+/// default — see `WalBackstopPolicy` for how that number was chosen). Growth is therefore bounded
+/// even when the replicator never runs at all.
+///
+/// Opting out is possible (`walBackstop: .disabled`) but is an assertion that something else bounds
+/// the WAL. Nothing in this package does.
+///
+/// ## The multi-pool caveat, which is load-bearing
+///
+/// `StoreOpenGate` gives every opener its **own** `DatabasePool` on the same file — in this app both
+/// `Repository` and `BLEManager` open one (see `StoreOpenGate`'s note). `wal_autocheckpoint` is
+/// per-connection, so a second store opened with `.automatic` on the same file will happily restart
+/// the WAL under a replicator that the first store's `.external` was protecting. **Every** opener of
+/// a replicated file must pass `.external`, or the option does nothing.
 public enum WalCheckpointing: Sendable {
     /// SQLite's default: each connection auto-checkpoints at ~1000 WAL pages (~4 MB). This is the
     /// behaviour of every build that does not opt out, and the only behaviour upstream ships.
     case automatic
     /// Disable `wal_autocheckpoint` on every connection this store opens, because an external
-    /// component checkpoints instead. See the obligation documented above.
+    /// component checkpoints instead. See the obligation documented above — which the
+    /// `walBackstop` parameter of `init(path:walCheckpointing:walBackstop:)` discharges by default.
     case external
 }
 
@@ -114,8 +132,15 @@ public actor WhoopStore {
     /// (the Pool serializes writes and runs reads in parallel under WAL).
     public nonisolated var registryWriter: any DatabaseWriter { dbWriter }
 
-    private init(dbWriter: any DatabaseWriter) throws {
+    /// Bounds WAL growth when `walCheckpointing` is `.external`. `nil` for `.automatic` (SQLite's own
+    /// autocheckpoint is the bound) and for a store with no backstop policy. Held strongly here
+    /// because GRDB's `.observerLifetime` registration keeps only a weak reference — this property is
+    /// what keeps the observer alive for the life of the store.
+    let walBackstop: WalBackstopMonitor?
+
+    private init(dbWriter: any DatabaseWriter, walBackstop: WalBackstopMonitor? = nil) throws {
         self.dbWriter = dbWriter
+        self.walBackstop = walBackstop
         try WhoopStore.makeMigrator().migrate(dbWriter)
     }
 
@@ -123,8 +148,9 @@ public actor WhoopStore {
     /// `StoreOpenGate` (below) opened the pool and migrated it under the process-wide open lock, so
     /// re-migrating here would be a redundant (and, if it raced a sibling opener, failing) second run.
     /// (#261)
-    private init(preMigrated dbWriter: any DatabaseWriter) {
+    private init(preMigrated dbWriter: any DatabaseWriter, walBackstop: WalBackstopMonitor? = nil) {
         self.dbWriter = dbWriter
+        self.walBackstop = walBackstop
     }
 
     /// Open (creating if needed) a database at `path` and run migrations.
@@ -137,7 +163,14 @@ public actor WhoopStore {
     /// `walCheckpointing` defaults to `.automatic`, which is exactly the behaviour every build has
     /// today. Only an embedder that has taken over checkpointing should pass `.external` — see
     /// `WalCheckpointing` for the obligation that carries.
-    public init(path: String, walCheckpointing: WalCheckpointing = .automatic) async throws {
+    ///
+    /// `walBackstop` is inert under `.automatic` (SQLite's autocheckpoint already bounds the WAL) and
+    /// is what discharges `.external`'s obligation: it forces a checkpoint if the `-wal` sibling
+    /// crosses its ceiling no matter what the external replicator is doing. Pass `.disabled` only if
+    /// something outside this package provably bounds WAL growth.
+    public init(path: String,
+                walCheckpointing: WalCheckpointing = .automatic,
+                walBackstop: WalBackstopPolicy = .standard) async throws {
         var config = Configuration()
         config.prepareDatabase { db in
             // `DatabasePool` puts the database in WAL mode itself (reads run as concurrent snapshots
@@ -159,7 +192,16 @@ public actor WhoopStore {
         }
         config.busyMode = .timeout(5)
         let pool = try await StoreOpenGate.shared.openAndMigrate(path: path, configuration: config)
-        self.init(preMigrated: pool)
+
+        // Only `.external` needs a backstop: under `.automatic` SQLite's own autocheckpoint already
+        // bounds the WAL, and installing an observer there would be pure cost for upstream builds.
+        var monitor: WalBackstopMonitor?
+        if case .external = walCheckpointing, walBackstop.isEnabled {
+            let m = WalBackstopMonitor(databasePath: path, policy: walBackstop)
+            m.attach(to: pool)
+            monitor = m
+        }
+        self.init(preMigrated: pool, walBackstop: monitor)
     }
 
     /// Move aside a database file that has our data tables but no GRDB migration bookkeeping — the
@@ -276,6 +318,38 @@ public actor WhoopStore {
         }
         return found ? total : nil
     }
+
+    // MARK: - WAL backstop
+
+    /// Size of the `-wal` sibling alone, in bytes; `0` when there is no WAL and `nil` for an
+    /// in-memory store. A single `stat(2)` — cheap enough to poll. Unlike `databaseFileSizeBytes()`
+    /// this isolates the component that `WalCheckpointing.external` puts at risk.
+    public nonisolated func walFileSizeBytes() -> Int64? {
+        let base = dbWriter.path
+        guard base != ":memory:", !base.isEmpty else { return nil }
+        var st = stat()
+        guard (base + "-wal").withCString({ stat($0, &st) }) == 0 else { return 0 }
+        return Int64(st.st_size)
+    }
+
+    /// How many times the WAL backstop has forced a checkpoint because the `-wal` crossed its
+    /// ceiling. `0` when no backstop is installed (`.automatic`, or `.disabled`).
+    ///
+    /// **This is the number to watch on a replicated device.** A healthy external replicator keeps
+    /// the WAL near its own ~4 MB threshold, so any non-zero value means the replicator stopped
+    /// running long enough for the WAL to grow 16× past that — and that each firing may have cost
+    /// the replicator its incremental resume point.
+    public nonisolated var walBackstopFirings: Int { walBackstop?.firings ?? 0 }
+
+    /// Forced checkpoints that finished with the WAL still over the ceiling — i.e. a `TRUNCATE`
+    /// blocked by a pool reader holding an open snapshot. Persistently non-zero means the ceiling is
+    /// not actually being enforced and a reader is pinning the WAL.
+    public nonisolated var walBackstopIneffectiveAttempts: Int { walBackstop?.ineffectiveAttempts ?? 0 }
+
+    /// The installed backstop, or `nil` when none is (`.automatic`, or `.disabled`). `nonisolated`
+    /// for the same reason `registryWriter` is: the monitor does its own locking. Used by tests and
+    /// by the fork-side sync telemetry.
+    nonisolated var walBackstopMonitor: WalBackstopMonitor? { walBackstop }
 
     // MARK: - Introspection (used by tests)
 
