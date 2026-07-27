@@ -1145,6 +1145,7 @@
     <string name="l10n_app_changelog_personal_vital_baselines_mac_analytics_parity_744972d1">Linhas de base vitais pessoais + paridade analítica Mac</string>
     <string name="l10n_app_changelog_polish_matched_to_the_iphone_mac_cc34126b">Polaco - compatível com o design do iPhone e Mac</string>
     <string name="l10n_app_changelog_german_french_spanish_pull_to_sync_1109bda2">Alemão, francês e espanhol, pull-to-sync no Today e uma onda de polimento</string>
+    <string name="l10n_app_changelog_hrv_accuracy_fix_oura_sleep_and_motion_4ed31e39">Correção da VFC, sono e movimento Oura, mais dados 5/MG e uma sincronização que podes parar</string>
     <string name="l10n_app_changelog_optimal_strain_alerts_faster_history_sync_6488a27a">Alertas de tensão ideal, sincronização mais rápida do histórico e uma onda de correções de precisão</string>
     <string name="l10n_app_changelog_power_saving_that_protects_your_strap_57a32503">Economia de energia que protege a tua bracelete, treinador com tecnologia Gemini no Android e detalhes métricos mais ricos</string>
     <string name="l10n_app_changelog_raw_spo_honest_units_and_a_55e83a59">SpO₂ bruto, unidades honestas e uma aplicação mais leve</string>
