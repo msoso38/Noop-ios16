@@ -797,11 +797,11 @@ fun extractHistoricalStreams(
                 //
                 // Every lookup below is BY DECODER KEY, and every one is nullable. That makes a decoder
                 // rename silent: the key stops existing, the slot banks nothing, and neither the compiler
-                // nor a runtime check says a word (absence is a legal state here). Each key is also
-                // declared as `V18AuxSlot.decoderKey`, and
-                // `DeepCaptureChannelsTest.everySlotDecoderKeyExistsInARealV18Decode` asserts every one
-                // still decodes off a real v18 frame, so a rename fails a test instead of losing a
-                // channel. Swift twin: `extractHistoricalStreams`.
+                // nor a runtime check says a word (absence is a legal state here). Each key comes from
+                // `V18AuxSlot.decoderKey` and is written down nowhere else on this side, so
+                // `DeepCaptureChannelsTest.everySlotDecoderKeyExistsInARealV18Decode` — which asserts every
+                // one still decodes off a real v18 frame — is checking the same string this code reads
+                // with, not a copy of it. Swift twin: `extractHistoricalStreams`.
                 // Every slot is carried as a Long in the UNSIGNED domain, matching Swift's 64-bit Int.
                 // The 1- and 2-byte slots are already non-negative, but the two 4-byte ones are not: the
                 // decoder narrows `record_index` to an Int (`histU32(11)!!.toInt()`) and `toRawBits`

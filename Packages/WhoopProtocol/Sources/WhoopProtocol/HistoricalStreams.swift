@@ -279,9 +279,9 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
             // rename silent: the key stops existing, the slot banks nothing, and neither the compiler
             // (the type is `Int?`) nor a runtime check (absence is a legal state here) says a word — in a
             // capture format whose only job is preserving fields before the strap trims them. Each key
-            // below is also declared as `V18AuxSlot.decoderKey`, and
-            // `testEverySlotDecoderKeyExistsInARealV18Decode` asserts every one of those still decodes
-            // off a real v18 frame, so a future rename fails a test instead of quietly losing a channel.
+            // below comes from `V18AuxSlot.decoderKey` and is written down nowhere else on this side, so
+            // `testEverySlotDecoderKeyExistsInARealV18Decode` — which asserts every one still decodes off
+            // a real v18 frame — is checking the same string this code reads with, not a copy of it.
             //
             // Gated on `hist_version == 18` — the exact layout these offsets were read off. Every other
             // layout adds NOTHING: a WHOOP 4.0 v24/v25 record and a 5/MG v20/v21/v26 record are untouched.
