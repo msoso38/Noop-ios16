@@ -118,7 +118,12 @@ public enum DeviceConfigReadProbe {
     /// `ConfigKeySweep.maxKeysPerRun` candidate names (when it did not) — never both, because guessing is
     /// pointless once the strap has handed over its own list. Worst case is 101 round-trips, comfortably
     /// under this; a plan that somehow exceeds it stops with a named reason rather than truncating silently.
-    public static let maxSteps = 128
+    /// Hard ceiling on round-trips in one probe. Raised from 128 when the sweep began asking every
+    /// candidate through EVERY answering verb: the worst case is enumeration + 2 discovery + 2 cross +
+    /// the known-key reads + 2 × the catalogue, which passes 128 and would otherwise have been silently
+    /// truncated by the cap — reported as "safety cap reached", but still a short sweep presented as a
+    /// finished one.
+    public static let maxSteps = 320
 
     /// The one device-config key NOOP already knows a real strap accepts: the Broadcast-HR flag written
     /// via `SET_DEVICE_CONFIG_VALUE` and hardware-validated in #181. Used as the discovery key for opcode
@@ -206,11 +211,43 @@ public enum DeviceConfigReadProbe {
         /// The value byte, reported ONLY when the strap echoed `key` in a 32-byte NUL-padded name field
         /// and the record extends one byte past it — the same `[name 32][value]` layout the SET bodies
         /// use. nil means "no value claimed", never "value is zero".
+        ///
+        /// **First byte only.** Values are not all one byte (see `stringValue(for:)`); this stays as it is
+        /// because every caller that reports a single flag character wants exactly this, and widening it
+        /// would silently change what the sweep prints.
         public func value(for key: String) -> UInt8? {
             guard let off = echoOffset(of: key) else { return nil }
             let valueIndex = off + DeviceConfigReadProbe.nameFieldBytes
             guard valueIndex < record.count else { return nil }
             return record[valueIndex]
+        }
+
+        /// The value as the strap actually stores it — the WHOLE NUL-terminated ASCII string after the
+        /// echoed name field, not just its first byte.
+        ///
+        /// Device-config values are **not** all single characters. A WHOOP 5 MG's own 115/116 enumeration
+        /// listed `max_collection_backlog`, whose value reads `"0.0"` — three characters. `value(for:)`
+        /// would report that as `'0'` and quietly lose the rest, which is fine for a flag and wrong for
+        /// anything else, so any caller comparing a value against what it asked for must use this.
+        ///
+        /// Stops at the first NUL, which is what keeps the puffin envelope's 4-byte-boundary padding out
+        /// of the answer (the same reasoning `value(for:)` relies on for reading the byte after the name
+        /// rather than the last byte of the record). Returns nil — "no value claimed", never "empty" — when
+        /// the key was not echoed, when nothing follows the name field, or when what follows is not
+        /// printable ASCII, since a non-ASCII run is not a value this layout can honestly claim to have read.
+        public func stringValue(for key: String) -> String? {
+            guard let off = echoOffset(of: key) else { return nil }
+            let start = off + DeviceConfigReadProbe.nameFieldBytes
+            guard start < record.count else { return nil }
+            var bytes: [UInt8] = []
+            for i in start..<record.count {
+                let b = record[i]
+                if b == 0 { break }
+                guard (0x20...0x7E).contains(b) else { return nil }
+                bytes.append(b)
+            }
+            guard !bytes.isEmpty else { return nil }
+            return String(decoding: bytes, as: UTF8.self)
         }
     }
 
@@ -367,6 +404,8 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
     public let knownFlagKeys: [String]
     /// This run's slice of the candidate catalogue, and the cursor to hand the next run.
     public let batch: ConfigKeySweep.Batch
+    /// Run the candidate sweep EVEN IF enumeration succeeded. Default false — see `runsCandidateSweep`.
+    public let forceCandidateSweep: Bool
 
     // MARK: Accumulated state
 
@@ -407,11 +446,29 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
     /// `"opcode:key"` pairs already attempted, so an earlier phase's key is not re-read in a later one.
     private var attempted: Set<String> = []
 
-    public init(family: DeviceFamily, knownFlagKeys: [String], batch: ConfigKeySweep.Batch) {
+    public init(family: DeviceFamily, knownFlagKeys: [String], batch: ConfigKeySweep.Batch,
+                forceCandidateSweep: Bool = false) {
         self.family = family
         self.knownFlagKeys = knownFlagKeys
         self.batch = batch
+        self.forceCandidateSweep = forceCandidateSweep
     }
+
+    /// Whether this run will ask the guessed names at all.
+    ///
+    /// By default the sweep is a FALLBACK: a strap that enumerated its own device-config keys has already
+    /// answered the question guessing was for, so the sweep is skipped.
+    ///
+    /// That default is right for the device-config namespace and **incomplete as a general claim**, which
+    /// is why `forceCandidateSweep` exists. Enumeration reports the keys the firmware holds; a key it
+    /// would accept but has never been given a value for need not be among them, and the oracle cannot
+    /// separate that case from "no such key" because both answer `FAILURE(0)`. A successful enumeration is
+    /// therefore evidence about what the strap HAS, not proof of what it would ACCEPT — and it says
+    /// nothing at all about the FEATURE-FLAG namespace, which is where most of the catalogue is aimed.
+    ///
+    /// So the forced run stays available, and stays explicit: it costs one round-trip per catalogue name,
+    /// which is not something to spend by default.
+    public var runsCandidateSweep: Bool { forceCandidateSweep || enumeratedKeys.isEmpty }
 
     // MARK: - Plan
 
@@ -501,15 +558,37 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
             return Step(opcode: verb, key: entry.key, group: .knownKey)
         case 4:
             // Guessing is the FALLBACK. If the strap enumerated its own device-config keys there is
-            // nothing to guess at in that namespace, so the sweep is skipped and said so in the report.
-            guard enumeratedKeys.isEmpty, cursor < batch.candidates.count else { return nil }
-            let candidate = batch.candidates[cursor]
-            guard let verb = verb(for: candidate.namespace) else { return nil }
-            return Step(opcode: verb, key: candidate.key, group: .candidate,
+            // nothing to guess at in that namespace, so the sweep is skipped and said so in the report —
+            // unless this run was explicitly asked to sweep anyway (see `runsCandidateSweep` for why a
+            // successful enumeration does not close the question).
+            //
+            // EVERY candidate goes through EVERY answering verb, not through the one its `namespace`
+            // field guesses. That field is an author's expectation, and the namespaces are now PROVEN
+            // SEPARATE on hardware: 128 asked for a device-config key answers FAILURE, and 121 asked for a
+            // feature-flag key answers FAILURE. So a candidate that really is a device-config key, asked
+            // only through 128, comes back FAILURE and is indistinguishable from "no such key" — which
+            // would have made a negative sweep worthless for exactly the names it most needed to settle.
+            // Asking both costs one extra round-trip per name and is what lets a negative be called clean.
+            guard runsCandidateSweep else { return nil }
+            let verbs = candidateVerbs
+            guard !verbs.isEmpty else { return nil }
+            let idx = cursor / verbs.count
+            guard idx < batch.candidates.count else { return nil }
+            let candidate = batch.candidates[idx]
+            return Step(opcode: verbs[cursor % verbs.count], key: candidate.key, group: .candidate,
                         derivation: candidate.derivation)
         default:
             return nil
         }
+    }
+
+    /// The VALUE verbs a candidate name is asked through — every one that answered, in a stable order
+    /// (121 before 128) so the plan is deterministic. Empty when neither answered, which retires the sweep.
+    private var candidateVerbs: [UInt8] {
+        var verbs: [UInt8] = []
+        if deviceConfigVerb == .answered { verbs.append(DeviceConfigReadProbe.getDeviceConfigValueCmd) }
+        if featureFlagVerb == .answered { verbs.append(DeviceConfigReadProbe.getFeatureFlagValueCmd) }
+        return verbs
     }
 
     /// The keys whose values are worth reading because they are already known to exist: the sixteen flags
@@ -678,7 +757,9 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
         if !newKeysFound.isEmpty {
             return "\(newKeysFound.count) config key name(s) found that NOOP did not have: \(newKeysFound.joined(separator: ", "))"
         }
-        if enumerationVerb == .answered {
+        // Only claim "enumeration settled it" when enumeration was in fact the whole run. A forced sweep
+        // asked dozens of names as well, and its clean negative is the more informative headline.
+        if enumerationVerb == .answered, candidateReadings.isEmpty {
             return "the strap enumerated its device-config namespace and returned no key NOOP did not already have"
         }
         let answered = [featureFlagVerb, deviceConfigVerb].filter { $0 == .answered }.count
@@ -692,13 +773,26 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
             }
             return both
         }
-        let asked = candidateReadings.count
+        // Counted in NAMES, not round-trips: each name is asked through every answering verb, so the
+        // headline would otherwise double. A name only counts as "does not exist" when EVERY verb that
+        // asked it said so.
+        var names: [String] = []
+        for r in candidateReadings where !names.contains(r.key) { names.append(r.key) }
+        let asked = names.count
         if asked == 0 {
             return "\(answered) of 2 read verbs answered; no candidate name was asked"
         }
-        let unknown = candidateReadings.filter { $0.existence == .unknown }.count
+        let unknown = names.filter { key in
+            let rows = candidateReadings.filter { $0.key == key }
+            return !rows.isEmpty && rows.allSatisfy { $0.existence == .unknown }
+        }.count
         if unknown == asked {
-            return "asked \(asked) candidate key name(s); this firmware has none of them (a clean negative)"
+            // A fully-negative sweep is worth more when enumeration ALSO answered: the device-config
+            // namespace is then fully listed and the guessed names are all refused, which is a much
+            // stronger negative than a sweep run against a strap that never listed anything.
+            return enumerationVerb == .answered
+                ? "asked \(asked) candidate key name(s); this firmware has none of them, and its device-config namespace enumerated in full (a clean negative)"
+                : "asked \(asked) candidate key name(s); this firmware has none of them (a clean negative)"
         }
         return "asked \(asked) candidate key name(s); \(unknown) do not exist, \(asked - unknown) inconclusive"
     }
@@ -789,16 +883,26 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
     /// The candidate sweep, grouped by derivation, with the tested/untested arithmetic spelled out.
     private func candidateSection() -> String {
         let rows = candidateReadings
-        let tested = rows.count
+        // NAMES, not round-trips: each name is now asked through every answering verb, so counting rows
+        // would report "108 asked of 54 in the catalogue". The arithmetic has to stay in the same units
+        // the catalogue is measured in or the untested figure goes negative and stops meaning anything.
+        var seen: [String] = []
+        for r in rows where !seen.contains(r.key) { seen.append(r.key) }
+        let tested = seen.count
         let total = ConfigKeySweep.catalogue.count
         let untested = total - batch.start - tested
         var sb = "\nCandidate key names — GUESSES, never observed on a wire or in any table"
+        if forceCandidateSweep {
+            sb += " [FULL SWEEP: asked even though enumeration succeeded]"
+        }
         sb += " (\(tested) asked of \(total) in the catalogue"
         sb += untested > 0 ? "; \(untested) untested" : "; none untested"
         sb += "):\n"
         if rows.isEmpty {
-            if !enumeratedKeys.isEmpty {
-                sb += "  (skipped — the strap enumerated its own device-config keys, so nothing needs guessing)\n"
+            if !enumeratedKeys.isEmpty && !forceCandidateSweep {
+                sb += "  (skipped — the strap enumerated its own device-config keys, so nothing needs guessing.\n"
+                sb += "   Enumeration lists what the firmware HOLDS, not everything it would ACCEPT, and says\n"
+                sb += "   nothing about the feature-flag namespace: re-run with the full name sweep to ask anyway.)\n"
             } else if featureFlagVerb != .answered && deviceConfigVerb != .answered {
                 sb += "  (none — no value verb answered, so no name could be asked)\n"
             } else {
@@ -806,17 +910,29 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
             }
             return sb
         }
-        let exists = rows.filter { $0.existence == .exists }.count
-        let unknown = rows.filter { $0.existence == .unknown }.count
-        sb += "  \(exists) exist · \(unknown) do not · \(tested - exists - unknown) inconclusive\n"
+        // A NAME exists if ANY verb said so, and is only "does not exist" when EVERY verb that asked said
+        // so — the whole reason both verbs are asked.
+        let exists = seen.filter { key in rows.contains { $0.key == key && $0.existence == .exists } }.count
+        let unknown = seen.filter { key in
+            let asked = rows.filter { $0.key == key }
+            return !asked.isEmpty && asked.allSatisfy { $0.existence == .unknown }
+        }.count
+        sb += "  \(exists) exist · \(unknown) do not · \(tested - exists - unknown) inconclusive"
+        sb += "  (each name asked through \(candidateVerbs.count) verb(s))\n"
         for derivation in ConfigKeySweep.Derivation.allCases {
-            let group = rows.filter { $0.derivation == derivation }
-            guard !group.isEmpty else { continue }
-            sb += "\n  \(derivation.title) (\(group.count)):\n"
-            for (i, r) in group.enumerated() {
-                sb += String(format: "   %2d. ", i + 1) + DeviceConfigReadProbe.padded(r.key, to: 32)
-                    + r.existence.label
-                if let v = r.value { sb += " = " + DeviceConfigReadProbe.valueLabel(v) }
+            let names = seen.filter { key in rows.contains { $0.key == key && $0.derivation == derivation } }
+            guard !names.isEmpty else { continue }
+            sb += "\n  \(derivation.title) (\(names.count)):\n"
+            for (i, key) in names.enumerated() {
+                sb += String(format: "   %2d. ", i + 1) + DeviceConfigReadProbe.padded(key, to: 32)
+                // Per-verb, so a name that answered differently on 121 and 128 is visible rather than
+                // collapsed into one word.
+                let asked = rows.filter { $0.key == key }
+                sb += asked.map { r in
+                    var cell = "\(r.opcode)=\(r.existence.label)"
+                    if let v = r.value { cell += "(" + DeviceConfigReadProbe.valueLabel(v) + ")" }
+                    return cell
+                }.joined(separator: " · ")
                 sb += "\n"
             }
         }

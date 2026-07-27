@@ -311,6 +311,85 @@ final class DeviceConfigReadProbeTests: XCTestCase {
         XCTAssertTrue(report.verdict.hasPrefix("1 config key name(s) found that NOOP did not have"))
     }
 
+    /// A successful enumeration is evidence about what the firmware HOLDS, not proof of what it would
+    /// ACCEPT — and it says nothing at all about the feature-flag namespace, where most of the catalogue
+    /// is aimed. So a run can be asked to sweep anyway, and then the candidate steps must actually happen.
+    func testAForcedSweepAsksTheCandidatesEvenAfterEnumerationSucceeds() {
+        var report = DeviceConfigReadProbeReport(
+            family: .whoop5,
+            knownFlagKeys: ["enable_r22_packets", "hr_ch_switching"],
+            batch: ConfigKeySweep.batch(from: 0, limit: 2),
+            forceCandidateSweep: true)
+        XCTAssertTrue(report.runsCandidateSweep)
+
+        guard report.nextStep() != nil else { return XCTFail("s1") }
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 1)))
+        guard report.nextStep() != nil else { return XCTFail("s2") }
+        // The Broadcast-HR key: enumerated, and one NOOP already had — so `newKeysFound` stays empty and
+        // the headline is free to report what the sweep established rather than what enumeration found.
+        XCTAssertTrue(report.noteEnumerationNext(
+            nextReply(enumNext(index: 1, key: "whoop_live_hr_in_adv_ind_pkt"))))
+        guard report.nextStep() != nil else { return XCTFail("s3") }
+        XCTAssertFalse(report.noteEnumerationNext(nextReply(enumNext(index: 0xFF, key: nil, validKey: false))))
+        XCTAssertEqual(report.enumerationVerb, .answered)
+        XCTAssertFalse(report.enumeratedKeys.isEmpty)
+
+        var candidates: [String] = []
+        var guard_ = 0
+        while let step = report.nextStep(), guard_ < 200 {
+            guard_ += 1
+            if step.group == .candidate { candidates.append(step.key) }
+            // Every candidate answers FAILURE(0) — "the firmware has no key by this name".
+            let code = step.group == .candidate ? 0 : 1
+            report.noteReply(.init(resultCode: code, record: echoRecord(step.key, value: 0x30)), for: step)
+        }
+        // Both verbs answered in this fixture, so each name appears once per verb.
+        var distinct: [String] = []
+        for k in candidates where !distinct.contains(k) { distinct.append(k) }
+        XCTAssertEqual(distinct, ConfigKeySweep.batch(from: 0, limit: 2).candidates.map(\.key))
+        // The report must SAY the sweep was forced, and must not claim enumeration settled the question.
+        let text = report.render()
+        XCTAssertTrue(text.contains("FULL SWEEP: asked even though enumeration succeeded"))
+        XCTAssertFalse(text.contains("skipped — the strap enumerated its own device-config keys"))
+        // A fully-negative forced sweep against a fully-enumerated strap is the strong clean negative.
+        XCTAssertTrue(report.verdict.contains("clean negative"), report.verdict)
+        XCTAssertTrue(report.verdict.contains("enumerated in full"), report.verdict)
+    }
+
+    /// The default is unchanged: forcing is opt-in, so an ordinary run still skips the sweep and still
+    /// tells the reader that a forced run is available.
+    func testTheSweepStaysAFallbackByDefaultAndSaysAForcedRunExists() {
+        var report = smallReport()
+        XCTAssertTrue(report.runsCandidateSweep, "with nothing enumerated yet the sweep is still on the table")
+        guard report.nextStep() != nil else { return XCTFail("s1") }
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 1)))
+        guard report.nextStep() != nil else { return XCTFail("s2") }
+        XCTAssertTrue(report.noteEnumerationNext(nextReply(enumNext(index: 1, key: "enable_rfid"))))
+        guard report.nextStep() != nil else { return XCTFail("s3") }
+        XCTAssertFalse(report.noteEnumerationNext(nextReply(enumNext(index: 0xFF, key: nil, validKey: false))))
+        XCTAssertFalse(report.runsCandidateSweep, "an enumerated namespace turns the fallback off")
+
+        var guard_ = 0
+        while let step = report.nextStep(), guard_ < 200 {
+            guard_ += 1
+            XCTAssertNotEqual(step.group, .candidate)
+            report.noteReply(.init(resultCode: 1, record: echoRecord(step.key, value: 0x32)), for: step)
+        }
+        let text = report.render()
+        XCTAssertTrue(text.contains("skipped — the strap enumerated its own device-config keys"))
+        XCTAssertTrue(text.contains("re-run with the full name sweep"))
+        XCTAssertFalse(text.contains("FULL SWEEP"))
+    }
+
+    /// The `sig<N>` line is the family the forced sweep exists to reach: it lives in the FEATURE-FLAG
+    /// namespace, which the device-config enumeration never covers.
+    func testTheCatalogueStillLeadsWithTheSigSeriesInTheFeatureFlagNamespace() {
+        let sig = ConfigKeySweep.catalogue.filter { $0.derivation == .sigSeries }
+        XCTAssertFalse(sig.isEmpty)
+        XCTAssertTrue(sig.allSatisfy { $0.namespace == .featureFlag })
+        XCTAssertEqual(ConfigKeySweep.catalogue.first?.derivation, .sigSeries)
+    }
+
     /// The #874 discipline, inherited: the strap's own end marker stops the walk, but a name OUR parser
     /// declines is counted and stepped over — one bad entry must not throw away every key after it.
     func testAnUndecodableNameIsSteppedOverRatherThanEndingTheWalk() {
@@ -431,10 +510,36 @@ final class DeviceConfigReadProbeTests: XCTestCase {
             guard let next = report.nextStep() else { break }
             step = next
         }
-        XCTAssertEqual(asked, ["enable_sig1", "enable_sig2"])
+        // Each NAME is asked through every verb that answered — here both, so each appears twice. That is
+        // the point: a name asked only through the verb its namespace guess named would answer FAILURE
+        // from the wrong namespace and be indistinguishable from "no such key".
+        XCTAssertEqual(asked, ["enable_sig1", "enable_sig1", "enable_sig2", "enable_sig2"])
+        XCTAssertEqual(Set(asked.map { $0 }).count, 2)
+        // The verdict counts NAMES, not round-trips.
         XCTAssertEqual(report.verdict,
                        "asked 2 candidate key name(s); this firmware has none of them (a clean negative)")
         XCTAssertTrue(report.newKeysFound.isEmpty)
+    }
+
+    /// The routing fix itself: every candidate is asked through BOTH value verbs when both answered, and
+    /// through only the survivor when one is dead.
+    func testEveryCandidateIsAskedThroughEveryAnsweringVerb() {
+        var (report, first) = driveToCandidates(limit: 2)
+        guard var step: DeviceConfigReadProbeReport.Step = first else { return XCTFail("no candidate") }
+        var byKey: [String: [UInt8]] = [:]
+        while true {
+            byKey[step.key, default: []].append(step.opcode)
+            report.noteReply(.init(resultCode: 0, record: []), for: step)
+            guard let next = report.nextStep() else { break }
+            step = next
+        }
+        for (key, opcodes) in byKey {
+            XCTAssertEqual(Set(opcodes), [121, 128], "\(key) must be asked through both verbs")
+        }
+        // And the per-name rendering shows which verb said what, rather than collapsing them.
+        let text = report.render()
+        XCTAssertTrue(text.contains("121=unknown · 128=unknown"), text)
+        XCTAssertTrue(text.contains("each name asked through 2 verb(s)"), text)
     }
 
     /// And a hit is the headline, named in the verdict so a strap log's first line carries the finding.
@@ -481,7 +586,10 @@ final class DeviceConfigReadProbeTests: XCTestCase {
             report.noteReply(.init(resultCode: step.group == .candidate ? 0 : 1,
                                    record: echoRecord(step.key, value: 0x32)), for: step)
         }
-        XCTAssertEqual(candidates, ConfigKeySweep.catalogue.count)
+        // One round-trip per (name × answering verb) — both verbs answered here, so the whole catalogue
+        // costs twice its length. This is also the case that proves the safety cap was raised enough:
+        // the old cap of 128 would have truncated this run and reported it as "cap reached".
+        XCTAssertEqual(candidates, ConfigKeySweep.catalogue.count * 2)
         XCTAssertNil(report.stopReason, "a full default run must not hit the safety cap")
         XCTAssertTrue(report.render().contains("none untested"))
     }
@@ -541,10 +649,12 @@ final class DeviceConfigReadProbeTests: XCTestCase {
         report.noteReply(.init(resultCode: 0, record: [0x01, 0x00]), for: s5)
         guard let s6 = report.nextStep() else { return XCTFail("s6") }
         report.noteReply(.init(resultCode: 1, record: echoRecord("hr_ch_switching", value: 0x32)), for: s6)
-        guard let c1 = report.nextStep() else { return XCTFail("c1") }
-        report.noteReply(.init(resultCode: 0, record: [0x01, 0x00]), for: c1)
-        guard let c2 = report.nextStep() else { return XCTFail("c2") }
-        report.noteReply(.init(resultCode: 0, record: [0x01, 0x00]), for: c2)
+        // Two names × two answering verbs = four candidate round-trips.
+        for label in ["c1", "c2", "c3", "c4"] {
+            guard let c = report.nextStep() else { return XCTFail(label) }
+            XCTAssertEqual(c.group, .candidate)
+            report.noteReply(.init(resultCode: 0, record: [0x01, 0x00]), for: c)
+        }
         XCTAssertNil(report.nextStep())
 
         XCTAssertEqual(report.render(), DeviceConfigReadProbeTests.goldenReport)
@@ -579,11 +689,11 @@ Known key values (the flags NOOP writes, plus anything enumeration returned) (1)
    1. hr_ch_switching                 = '2' (0x32)
 
 Candidate key names — GUESSES, never observed on a wire or in any table (2 asked of 54 in the catalogue; 52 untested):
-  0 exist · 2 do not · 0 inconclusive
+  0 exist · 2 do not · 0 inconclusive  (each name asked through 2 verb(s))
 
   sig<N> series (T8) — the firmware numbers its signal chains; sig11/sig12 are the two we have (2):
-    1. enable_sig1                     unknown
-    2. enable_sig2                     unknown
+    1. enable_sig1                     121=unknown · 128=unknown
+    2. enable_sig2                     121=unknown · 128=unknown
 
   Run the probe again to continue from catalogue entry 3.
 

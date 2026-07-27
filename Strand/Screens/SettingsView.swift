@@ -10,6 +10,9 @@ import PhotosUI
 import StrandDesign
 import StrandAnalytics
 import WhoopStore
+// #891: EcgRawDataGateReport / Whoop5Variant — the ECG-gate row reports the strap's read-back verdict and
+// gates on the attested hardware variant.
+import WhoopProtocol
 
 /// Settings — profile (powers zones / calories / recovery), strap connection, and about.
 /// Grouped cards on surface.raised with a two-column form feel.
@@ -40,6 +43,11 @@ struct SettingsView: View {
     /// Opt-in "Broadcast heart rate" (off by default) — makes the strap advertise its HR as a standard
     /// BLE sensor for Garmin/Zwift/gym kit. See [PuffinExperiment.broadcastHrKey]. (#181)
     @AppStorage(PuffinExperiment.broadcastHrKey) private var broadcastHrEnabled = false
+
+    /// #891 opt-in: writes the device-config key `enable_raw_data_w_ecg` on an attested WHOOP MG. A
+    /// persistent strap write, so it gets its own deliberate switch like #174 and #181.
+    /// See [PuffinExperiment.ecgRawDataKey].
+    @AppStorage(PuffinExperiment.ecgRawDataKey) private var ecgRawDataEnabled = false
 
     /// Opt-in "Continuous HRV capture" (off by default) — holds the dense realtime stream armed 24/7 so
     /// the strap banks beat-to-beat R-R for better overnight HRV/recovery/sleep, at a battery cost.
@@ -1405,6 +1413,52 @@ struct SettingsView: View {
         #endif
     }
 
+    /// The #891 ECG-gate buttons need the same encrypted bond the R22 writes do (a config write over the
+    /// live-HR-only link silently fails, #269) AND a strap that has positively attested itself an MG. Not
+    /// wear-gated: this stores a value, it does not start an on-wrist stream.
+    private var ecgGateReady: Bool {
+        #if os(macOS)
+        return false
+        #else
+        return live.encryptedBond && live.whoop5Variant.isMG
+        #endif
+    }
+
+    /// The reason line under the #891 buttons. Each case names the ONE thing that is missing.
+    private var ecgGateReason: String {
+        #if os(macOS)
+        return String(localized: "The ECG gate needs an iPhone or Android. A Mac can't form the encrypted bond a 5/MG requires.")
+        #else
+        if !live.encryptedBond {
+            return String(localized: "Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can't carry a config write).")
+        }
+        if !live.whoop5Variant.isMG {
+            // `.unknown` lands here too, and deliberately: an unattested strap is not an MG.
+            return String(localized: "Waiting for your strap to identify itself as an MG. Only a WHOOP MG has ECG electrodes, so NOOP won't write this key to anything else.")
+        }
+        return String(localized: "One tap writes the key; NOOP then reads it back off the strap and reports the value it actually stores — the write's own \"success\" is not treated as proof.")
+        #endif
+    }
+
+    /// Icon per read-back verdict. Only a confirmed read-back gets the success mark.
+    private func ecgGateIcon(_ v: EcgRawDataGateReport.Verdict) -> String {
+        switch v {
+        case .confirmed: return "checkmark.seal.fill"
+        case .unchanged: return "xmark.seal.fill"
+        case .pending:   return "ellipsis"
+        default:         return "questionmark.circle"
+        }
+    }
+
+    /// Tint per read-back verdict. Anything that isn't a confirmed read-back is never shown as positive.
+    private func ecgGateTint(_ v: EcgRawDataGateReport.Verdict) -> Color {
+        switch v {
+        case .confirmed: return StrandPalette.statusPositive
+        case .unchanged: return StrandPalette.statusWarning
+        default:         return StrandPalette.textSecondary
+        }
+    }
+
     private var fiveMGCard: some View {
         SettingsSection(
             icon: "flask.fill",
@@ -1501,6 +1555,57 @@ struct SettingsView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityElement(children: .combine)
+                }
+
+                Divider().overlay(StrandPalette.hairline)
+
+                // MARK: #891 ECG raw-data gate — the second key this app may write, and MG-only.
+                Toggle(isOn: $ecgRawDataEnabled) {
+                    Text("ECG raw-data gate (WHOOP MG only)")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                Text("Your strap listed its own device-config keys, and one of them is enable_raw_data_w_ecg. On an MG with no ECG subscription it reads '0' — while all three ECG commands answer SUCCESS and send no data at all (#891). This is the leading guess for what's holding ECG shut. Nobody knows whether flipping it actually produces ECG data: finding out is the point, and \"still nothing\" is a useful answer worth posting to #891.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if ecgRawDataEnabled {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(StrandPalette.statusWarning)
+                            .accessibilityHidden(true)
+                        Text("This writes a setting that STAYS ON YOUR STRAP until you change it back — it isn't an app preference, and closing NOOP won't undo it. \"Turn gate off\" below writes '0' again, in one tap. Only this one key is ever written; the other six your strap listed are never touched.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.statusWarning)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+
+                    NoopButton("Turn gate on (write '1')", systemImage: "waveform.path.ecg", kind: .primary) {
+                        model.ble.setEcgRawDataGate(true)
+                    }
+                    .disabled(!ecgGateReady)
+                    NoopButton("Turn gate off (write '0')", systemImage: "arrow.uturn.backward", kind: .secondary) {
+                        model.ble.setEcgRawDataGate(false)
+                    }
+                    .disabled(!ecgGateReady)
+                    Text(ecgGateReason)
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    // The read-back — the only thing reported as a result. The write's own ack is in the
+                    // strap log for the record and is deliberately not surfaced as an outcome here.
+                    if let report = live.ecgRawDataGate {
+                        Label(report.summary, systemImage: ecgGateIcon(report.verdict))
+                            .font(StrandFont.caption)
+                            .foregroundStyle(ecgGateTint(report.verdict))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 Toggle(isOn: $puffinCapture) {

@@ -323,6 +323,69 @@ class DeviceConfigReadProbeTest {
         assertNull(first.derivation)
     }
 
+    /** A successful enumeration is evidence about what the firmware HOLDS, not proof of what it would
+     *  ACCEPT — and it says nothing at all about the feature-flag namespace, where most of the catalogue
+     *  is aimed. So a run can be asked to sweep anyway, and then the candidate steps must actually happen. */
+    @Test
+    fun aForcedSweepAsksTheCandidatesEvenAfterEnumerationSucceeds() {
+        val report = DeviceConfigReadProbeReport(
+            DeviceFamily.WHOOP5,
+            listOf("enable_r22_packets", "hr_ch_switching"),
+            ConfigKeySweep.batch(0, 2),
+            forceCandidateSweep = true,
+        )
+        assertTrue(report.runsCandidateSweep)
+
+        report.nextStep()!!
+        report.noteEnumerationStart(startReply(enumStart(1, 10, 1)))
+        report.nextStep()!!
+        // The Broadcast-HR key: enumerated, and one NOOP already had — so newKeysFound stays empty and the
+        // headline is free to report what the sweep established rather than what enumeration found.
+        assertTrue(report.noteEnumerationNext(nextReply(enumNext(1, "whoop_live_hr_in_adv_ind_pkt"))))
+        report.nextStep()!!
+        assertFalse(report.noteEnumerationNext(nextReply(enumNext(0xFF, null, validKey = false))))
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.ANSWERED, report.enumerationVerb)
+        assertTrue(report.enumeratedKeys.isNotEmpty())
+
+        val candidates = mutableListOf<String>()
+        var guard = 0
+        while (guard < 200) {
+            val step = report.nextStep() ?: break
+            guard += 1
+            val isCandidate = step.group == DeviceConfigReadProbeReport.Group.CANDIDATE
+            if (isCandidate) candidates.add(step.key)
+            report.noteReply(valueReply(if (isCandidate) 0 else 1, echoRecord(step.key, 0x30)), step)
+        }
+        assertEquals(
+            ConfigKeySweep.batch(0, 2).candidates.map { it.key },
+            candidates.distinct(),
+        )
+        val text = report.render()
+        assertTrue(text.contains("FULL SWEEP: asked even though enumeration succeeded"))
+        assertFalse(text.contains("skipped — the strap enumerated its own device-config keys"))
+        assertTrue(report.verdict, report.verdict.contains("clean negative"))
+        assertTrue(report.verdict, report.verdict.contains("enumerated in full"))
+    }
+
+    /** The routing fix itself: every candidate is asked through BOTH value verbs when both answered. */
+    @Test
+    fun everyCandidateIsAskedThroughEveryAnsweringVerb() {
+        val (report, first) = driveToCandidates(2)
+        var step = first
+        val byKey = mutableMapOf<String, MutableList<Int>>()
+        while (step != null) {
+            byKey.getOrPut(step.key) { mutableListOf() }.add(step.opcode)
+            report.noteReply(valueReply(0, ByteArray(0)), step)
+            step = report.nextStep()
+        }
+        for ((key, opcodes) in byKey) {
+            assertEquals("$key must be asked through both verbs", setOf(121, 128), opcodes.toSet())
+        }
+        val text = report.render()
+        assertTrue(text, text.contains("121=unknown · 128=unknown"))
+        assertTrue(text, text.contains("each name asked through 2 verb(s)"))
+    }
+
     /** If the strap lists its own device-config keys there is nothing left to guess, so the sweep is
      *  skipped entirely rather than spending round-trips on names the answer already covers. */
     @Test
@@ -507,7 +570,9 @@ class DeviceConfigReadProbeTest {
             report.noteReply(valueReply(0, ByteArray(0)), step)
             step = report.nextStep()
         }
-        assertEquals(listOf("enable_sig1", "enable_sig2"), asked)
+        // Each NAME is asked through every verb that answered — here both, so each appears twice.
+        assertEquals(listOf("enable_sig1", "enable_sig1", "enable_sig2", "enable_sig2"), asked)
+        assertEquals(2, asked.distinct().size)
         assertEquals(
             "asked 2 candidate key name(s); this firmware has none of them (a clean negative)",
             report.verdict,
@@ -560,7 +625,8 @@ class DeviceConfigReadProbeTest {
             if (isCandidate) candidates += 1
             report.noteReply(valueReply(if (isCandidate) 0 else 1, echoRecord(step.key, 0x32)), step)
         }
-        assertEquals(ConfigKeySweep.CATALOGUE.size, candidates)
+        // One round-trip per (name x answering verb) — both verbs answered here.
+        assertEquals(ConfigKeySweep.CATALOGUE.size * 2, candidates)
         assertNull("a full default run must not hit the safety cap", report.stopReason)
         assertTrue(report.render().contains("none untested"))
     }
@@ -609,10 +675,12 @@ class DeviceConfigReadProbeTest {
         report.noteReply(valueReply(0, byteArrayOf(0x01, 0x00)), s5)
         val s6 = report.nextStep()!!
         report.noteReply(valueReply(1, echoRecord("hr_ch_switching", 0x32)), s6)
-        val c1 = report.nextStep()!!
-        report.noteReply(valueReply(0, byteArrayOf(0x01, 0x00)), c1)
-        val c2 = report.nextStep()!!
-        report.noteReply(valueReply(0, byteArrayOf(0x01, 0x00)), c2)
+        // Two names × two answering verbs = four candidate round-trips.
+        repeat(4) {
+            val c = report.nextStep()!!
+            assertEquals(DeviceConfigReadProbeReport.Group.CANDIDATE, c.group)
+            report.noteReply(valueReply(0, byteArrayOf(0x01, 0x00)), c)
+        }
         assertNull(report.nextStep())
 
         assertEquals(GOLDEN_REPORT, report.render())
@@ -647,11 +715,11 @@ Known key values (the flags NOOP writes, plus anything enumeration returned) (1)
    1. hr_ch_switching                 = '2' (0x32)
 
 Candidate key names — GUESSES, never observed on a wire or in any table (2 asked of 54 in the catalogue; 52 untested):
-  0 exist · 2 do not · 0 inconclusive
+  0 exist · 2 do not · 0 inconclusive  (each name asked through 2 verb(s))
 
   sig<N> series (T8) — the firmware numbers its signal chains; sig11/sig12 are the two we have (2):
-    1. enable_sig1                     unknown
-    2. enable_sig2                     unknown
+    1. enable_sig1                     121=unknown · 128=unknown
+    2. enable_sig2                     121=unknown · 128=unknown
 
   Run the probe again to continue from catalogue entry 3.
 

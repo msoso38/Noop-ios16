@@ -107,11 +107,14 @@ object DeviceConfigReadProbe {
 
     /** Hard ceiling on round-trips in one probe, independent of how many keys the plan holds. The plan is
      *  1 enumerate-start + up to [ConfigKeySweep.MAX_ENUMERATION_STEPS] enumerate-next + 2 discovery + 2
-     *  cross-namespace + 16 known flags, then EITHER up to [ConfigKeySweep.MAX_ENUMERATED_VALUE_READS]
-     *  value reads (when enumeration produced a list) OR up to [ConfigKeySweep.MAX_KEYS_PER_RUN] candidate
-     *  names (when it did not) — never both, because guessing is pointless once the strap has handed over
-     *  its own list. Worst case is 101 round-trips, comfortably under this. */
-    const val MAX_STEPS = 128
+     *  cross-namespace + 16 known flags, plus up to [ConfigKeySweep.MAX_ENUMERATED_VALUE_READS] value
+     *  reads when enumeration produced a list, and — when the sweep runs — every candidate name asked
+     *  through EVERY answering verb.
+     *
+     *  Raised from 128 when that per-verb fan-out landed: 2 × the catalogue on top of the rest passes 128,
+     *  and the cap would have truncated the walk. It still says "safety cap reached", but a short sweep
+     *  presented as a finished one is exactly the failure this number exists to prevent. */
+    const val MAX_STEPS = 320
 
     /** The one device-config key NOOP already knows a real strap accepts: the Broadcast-HR flag written
      *  via SET_DEVICE_CONFIG_VALUE and hardware-validated in #181. Used as the discovery key for opcode
@@ -199,6 +202,34 @@ object DeviceConfigReadProbe {
             return record[valueIndex].toInt() and 0xFF
         }
 
+        /**
+         * The value as the strap actually stores it — the WHOLE NUL-terminated ASCII string after the
+         * echoed name field, not just its first byte.
+         *
+         * Device-config values are **not** all single characters. A WHOOP 5 MG's own 115/116 enumeration
+         * listed `max_collection_backlog`, whose value reads `"0.0"` — three characters. [valueFor] would
+         * report that as `'0'` and quietly lose the rest, which is fine for a flag and wrong for anything
+         * else, so any caller comparing a value against what it asked for must use this.
+         *
+         * Stops at the first NUL, which is what keeps the puffin envelope's 4-byte-boundary padding out of
+         * the answer. Returns null — "no value claimed", never "empty" — when the key was not echoed, when
+         * nothing follows the name field, or when what follows is not printable ASCII.
+         * Keep in lockstep with the Swift `ValueResponse.stringValue(for:)`.
+         */
+        fun stringValueFor(key: String): String? {
+            val off = echoOffset(key) ?: return null
+            val start = off + NAME_FIELD_BYTES
+            if (start >= record.size) return null
+            val out = StringBuilder()
+            for (i in start until record.size) {
+                val b = record[i].toInt() and 0xFF
+                if (b == 0) break
+                if (b < 0x20 || b > 0x7E) return null
+                out.append(b.toChar())
+            }
+            return if (out.isEmpty()) null else out.toString()
+        }
+
         // ByteArray fields need explicit equals/hashCode for a data class to compare by content.
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -274,7 +305,27 @@ class DeviceConfigReadProbeReport(
     private val knownFlagKeys: List<String>,
     /** This run's slice of the candidate catalogue, and the cursor to hand the next run. */
     val batch: ConfigKeySweep.Batch,
+    /** Run the candidate sweep EVEN IF enumeration succeeded. Default false — see [runsCandidateSweep]. */
+    val forceCandidateSweep: Boolean = false,
 ) {
+
+    /**
+     * Whether this run will ask the guessed names at all.
+     *
+     * By default the sweep is a FALLBACK: a strap that enumerated its own device-config keys has already
+     * answered the question guessing was for, so the sweep is skipped.
+     *
+     * That default is right for the device-config namespace and **incomplete as a general claim**, which
+     * is why [forceCandidateSweep] exists. Enumeration reports the keys the firmware holds; a key it would
+     * accept but has never been given a value for need not be among them, and the oracle cannot separate
+     * that case from "no such key" because both answer `FAILURE(0)`. A successful enumeration is therefore
+     * evidence about what the strap HAS, not proof of what it would ACCEPT — and it says nothing at all
+     * about the FEATURE-FLAG namespace, which is where most of the catalogue is aimed.
+     *
+     * So the forced run stays available, and stays explicit: it costs one round-trip per catalogue name,
+     * which is not something to spend by default.
+     */
+    val runsCandidateSweep: Boolean get() = forceCandidateSweep || _enumeratedKeys.isEmpty()
 
     /** Which part of the plan a step belongs to. Drives both the ordering and the report's sections. */
     enum class Group { ENUMERATE, DISCOVERY, CROSS_NAMESPACE, KNOWN_KEY, CANDIDATE }
@@ -483,20 +534,46 @@ class DeviceConfigReadProbeReport(
         }
         4 -> {
             // Guessing is the FALLBACK. If the strap enumerated its own device-config keys there is
-            // nothing to guess at in that namespace, so the sweep is skipped and said so in the report.
-            if (_enumeratedKeys.isNotEmpty() || cursor >= batch.candidates.size) {
+            // nothing to guess at in that namespace, so the sweep is skipped and said so in the report —
+            // unless this run was explicitly asked to sweep anyway (see [runsCandidateSweep] for why a
+            // successful enumeration does not close the question).
+            //
+            // EVERY candidate goes through EVERY answering verb, not through the one its `namespace`
+            // field guesses. That field is an author's expectation, and the namespaces are now PROVEN
+            // SEPARATE on hardware: 128 asked for a device-config key answers FAILURE, and 121 asked for a
+            // feature-flag key answers FAILURE. So a candidate that really is a device-config key, asked
+            // only through 128, comes back FAILURE and is indistinguishable from "no such key" — which
+            // would have made a negative sweep worthless for exactly the names it most needed to settle.
+            // Asking both costs one extra round-trip per name and is what lets a negative be called clean.
+            val verbs = candidateVerbs()
+            if (!runsCandidateSweep || verbs.isEmpty()) {
                 null
             } else {
-                val candidate = batch.candidates[cursor]
-                val verb = verbFor(candidate.namespace)
-                if (verb == null) {
+                val idx = cursor / verbs.size
+                if (idx >= batch.candidates.size) {
                     null
                 } else {
-                    Step(verb, candidate.key, Group.CANDIDATE, candidate.derivation)
+                    val candidate = batch.candidates[idx]
+                    Step(verbs[cursor % verbs.size], candidate.key, Group.CANDIDATE, candidate.derivation)
                 }
             }
         }
         else -> null
+    }
+
+    /**
+     * The VALUE verbs a candidate name is asked through — every one that answered, in a stable order
+     * (121 before 128) so the plan is deterministic. Empty when neither answered, which retires the sweep.
+     */
+    private fun candidateVerbs(): List<Int> {
+        val verbs = mutableListOf<Int>()
+        if (deviceConfigVerb == VerbStatus.ANSWERED) {
+            verbs.add(DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD)
+        }
+        if (featureFlagVerb == VerbStatus.ANSWERED) {
+            verbs.add(DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD)
+        }
+        return verbs
     }
 
     /**
@@ -701,7 +778,9 @@ class DeviceConfigReadProbeReport(
             if (found.isNotEmpty()) {
                 return "${found.size} config key name(s) found that NOOP did not have: ${found.joinToString(", ")}"
             }
-            if (enumerationVerb == VerbStatus.ANSWERED) {
+            // Only claim "enumeration settled it" when enumeration was in fact the whole run. A forced
+            // sweep asked dozens of names as well, and its clean negative is the more informative headline.
+            if (enumerationVerb == VerbStatus.ANSWERED && candidateReadings.isEmpty()) {
                 return "the strap enumerated its device-config namespace and returned no key NOOP did not already have"
             }
             val answered = listOf(featureFlagVerb, deviceConfigVerb).count { it == VerbStatus.ANSWERED }
@@ -716,13 +795,27 @@ class DeviceConfigReadProbeReport(
                 }
                 return both
             }
-            val asked = candidateReadings.size
+            // Counted in NAMES, not round-trips: each name is asked through every answering verb, so the
+            // headline would otherwise double. A name only counts as "does not exist" when EVERY verb that
+            // asked it said so.
+            val names = candidateReadings.map { it.key }.distinct()
+            val asked = names.size
             if (asked == 0) {
                 return "$answered of 2 read verbs answered; no candidate name was asked"
             }
-            val unknown = candidateReadings.count { it.existence == ConfigKeySweep.Existence.UNKNOWN }
+            val unknown = names.count { key ->
+                val rows = candidateReadings.filter { it.key == key }
+                rows.isNotEmpty() && rows.all { it.existence == ConfigKeySweep.Existence.UNKNOWN }
+            }
             if (unknown == asked) {
-                return "asked $asked candidate key name(s); this firmware has none of them (a clean negative)"
+                // A fully-negative sweep is worth more when enumeration ALSO answered: the device-config
+                // namespace is then fully listed and the guessed names are all refused, which is a much
+                // stronger negative than a sweep run against a strap that never listed anything.
+                return if (enumerationVerb == VerbStatus.ANSWERED) {
+                    "asked $asked candidate key name(s); this firmware has none of them, and its device-config namespace enumerated in full (a clean negative)"
+                } else {
+                    "asked $asked candidate key name(s); this firmware has none of them (a clean negative)"
+                }
             }
             return "asked $asked candidate key name(s); $unknown do not exist, ${asked - unknown} inconclusive"
         }
@@ -835,19 +928,26 @@ class DeviceConfigReadProbeReport(
     /** The candidate sweep, grouped by derivation, with the tested/untested arithmetic spelled out. */
     private fun candidateSection(): String {
         val rows = candidateReadings
-        val tested = rows.size
+        // NAMES, not round-trips: each name is now asked through every answering verb, so counting rows
+        // would report "108 asked of 54 in the catalogue". The arithmetic has to stay in the same units
+        // the catalogue is measured in or the untested figure goes negative and stops meaning anything.
+        val seen = rows.map { it.key }.distinct()
+        val tested = seen.size
         val total = ConfigKeySweep.CATALOGUE.size
         val untested = total - batch.start - tested
         val sb = StringBuilder()
         sb.append("\nCandidate key names — GUESSES, never observed on a wire or in any table")
+        if (forceCandidateSweep) sb.append(" [FULL SWEEP: asked even though enumeration succeeded]")
         sb.append(" ($tested asked of $total in the catalogue")
         sb.append(if (untested > 0) "; $untested untested" else "; none untested")
         sb.append("):\n")
         if (rows.isEmpty()) {
             sb.append(
                 when {
-                    _enumeratedKeys.isNotEmpty() ->
-                        "  (skipped — the strap enumerated its own device-config keys, so nothing needs guessing)\n"
+                    _enumeratedKeys.isNotEmpty() && !forceCandidateSweep ->
+                        "  (skipped — the strap enumerated its own device-config keys, so nothing needs guessing.\n" +
+                            "   Enumeration lists what the firmware HOLDS, not everything it would ACCEPT, and says\n" +
+                            "   nothing about the feature-flag namespace: re-run with the full name sweep to ask anyway.)\n"
                     featureFlagVerb != VerbStatus.ANSWERED && deviceConfigVerb != VerbStatus.ANSWERED ->
                         "  (none — no value verb answered, so no name could be asked)\n"
                     else -> "  (none asked)\n"
@@ -855,18 +955,32 @@ class DeviceConfigReadProbeReport(
             )
             return sb.toString()
         }
-        val exists = rows.count { it.existence == ConfigKeySweep.Existence.EXISTS }
-        val unknown = rows.count { it.existence == ConfigKeySweep.Existence.UNKNOWN }
-        sb.append("  $exists exist · $unknown do not · ${tested - exists - unknown} inconclusive\n")
+        // A NAME exists if ANY verb said so, and is only "does not exist" when EVERY verb that asked said
+        // so — the whole reason both verbs are asked.
+        val exists = seen.count { key ->
+            rows.any { it.key == key && it.existence == ConfigKeySweep.Existence.EXISTS }
+        }
+        val unknown = seen.count { key ->
+            val asked = rows.filter { it.key == key }
+            asked.isNotEmpty() && asked.all { it.existence == ConfigKeySweep.Existence.UNKNOWN }
+        }
+        sb.append("  $exists exist · $unknown do not · ${tested - exists - unknown} inconclusive")
+        sb.append("  (each name asked through ${candidateVerbs().size} verb(s))\n")
         for (derivation in ConfigKeySweep.Derivation.entries) {
-            val group = rows.filter { it.derivation == derivation }
-            if (group.isEmpty()) continue
-            sb.append("\n  ${derivation.title} (${group.size}):\n")
-            group.forEachIndexed { i, r ->
-                sb.append("   %2d. ".format(i + 1)).append(DeviceConfigReadProbe.padded(r.key, 32))
-                    .append(r.existence.label)
-                val v = r.value
-                if (v != null) sb.append(" = ").append(DeviceConfigReadProbe.valueLabel(v))
+            val names = seen.filter { key -> rows.any { it.key == key && it.derivation == derivation } }
+            if (names.isEmpty()) continue
+            sb.append("\n  ${derivation.title} (${names.size}):\n")
+            names.forEachIndexed { i, key ->
+                sb.append("   %2d. ".format(i + 1)).append(DeviceConfigReadProbe.padded(key, 32))
+                // Per-verb, so a name that answered differently on 121 and 128 is visible rather than
+                // collapsed into one word.
+                sb.append(
+                    rows.filter { it.key == key }.joinToString(" · ") { r ->
+                        val v = r.value
+                        "${r.opcode}=${r.existence.label}" +
+                            if (v != null) "(${DeviceConfigReadProbe.valueLabel(v)})" else ""
+                    },
+                )
                 sb.append("\n")
             }
         }
