@@ -530,8 +530,12 @@ final class IntelligenceEngine: ObservableObject {
         // the 5/MG cumulative @57 series + wrap-aware deltas + dropped deltas, replayed below tagged `.steps`.
         // The trace recomputes the SAME wrap-aware sum analyzeDay already did, so the steps total is unchanged.
         let stepsTraceActive = TestCentre.active(.steps)
-        let scanned: [DayScan] = await Task.detached(priority: .utility) {
+        let (scanned, skippedDayLines): ([DayScan], [String]) = await Task.detached(priority: .utility) {
             var out: [DayScan] = []
+            // Days skipped below (too few HR samples) never get a DayScan, so this diagnostic can't ride
+            // along on one; carried out alongside `out` and replayed through `diagnosticSink` on the main
+            // actor below, same as `rhrLine`/the trace arrays. Mirrors the Kotlin `diag` sink.
+            var skippedDayLines: [String] = []
             // #938: the WHOOP 4.0 ADC offset is per-device, not per-night. Learn one anchor per owner
             // from the whole scan window and reuse it for every night so cross-night deviations survive.
             let skinAnchorScanFrom = nowLocalMidnight - (maxDays - 1) * 86_400 - 30 * 3_600
@@ -561,7 +565,10 @@ final class IntelligenceEngine: ObservableObject {
                                                        registry: registry, fallbackDeviceId: ownerFallbackId)
 
                 let hr = (try? await store.hrSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
-                guard hr.count >= 200 else { continue }   // need real raw data, not a stray sample
+                guard hr.count >= 200 else {
+                    skippedDayLines.append("sleep day=\(day) SKIPPED hrSamples=\(hr.count) (need ≥200)")
+                    continue
+                }
                 let rr = (try? await store.rrIntervals(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
                 let resp = (try? await store.respSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
                 let grav = (try? await store.gravitySamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
@@ -748,10 +755,24 @@ final class IntelligenceEngine: ObservableObject {
                     // R-R) + exact-duplicate beat count, so a "reads ~2x too high" report is self-diagnosing
                     // from the always-on log instead of hand-computing beat density.
                     let ts = sleepRrRows.map { $0.ts }
-                    let cov = String(format: "%.2f", HRVAnalyzer.rrCoverage(tsSec: ts, rrMs: sleepRr))
+                    // Computed ONCE and reused for both the formatted field and the verdict below:
+                    // collapsedCoverage sorts and de-dups the whole night's R-R (tens of thousands of rows
+                    // on a dense capture), and this runs per day across a full re-score.
+                    let covVal = HRVAnalyzer.rrCoverage(tsSec: ts, rrMs: sleepRr)
+                    let cov = String(format: "%.2f", covVal)
+                    // #550: collapsedCov previews a same-second R-R de-dup — well below `coverage` ⇒ the
+                    // over-count is same-second (a dedup fix would work); still high ⇒ cross-second overlap.
+                    let colCovVal = HRVAnalyzer.collapsedCoverage(tsSec: ts, rrMs: sleepRr)
+                    let colCov = String(format: "%.2f", colCovVal)
                     let dup = HRVAnalyzer.duplicateBeatCount(tsSec: ts, rrMs: sleepRr)
+                    // #550: state the CONCLUSION, not just the evidence. Reading coverage against
+                    // collapsedCov is what distinguishes a same-second over-count (a de-dup would fix it)
+                    // from a cross-second one (it would not) — a rule that lived only in the comment above,
+                    // so triaging an "HRV reads ~2x high" report required knowing it. Now the line says which.
+                    let verdict = HRVAnalyzer.classifyCoverage(coverage: covVal, collapsed: colCovVal)
                     hrvDiag = "hrv diag day=\(res.daily.day) rmssd=\(ms(h.rmssd))ms sdnn=\(ms(h.sdnn))ms "
-                        + "meanNN=\(ms(h.meanNN))ms rr=\(h.nInput)/\(h.nClean) rejected=\(rej)% coverage=\(cov) dupBeats=\(dup)"
+                        + "meanNN=\(ms(h.meanNN))ms rr=\(h.nInput)/\(h.nClean) rejected=\(rej)% coverage=\(cov) collapsedCov=\(colCov) dupBeats=\(dup) "
+                        + "rrIntegrity=\(verdict.rawValue)"
                 }
                 // ── Steps test mode: 5/MG raw-counter trace ──────────────────────────────────────────────
                 // Only built when the Steps mode is on (the gate was read once before the loop). Recomputes
@@ -793,8 +814,12 @@ final class IntelligenceEngine: ObservableObject {
                                    sleepTrace: sleepTrace, stepsTrace: stepsTrace, hrvTrace: hrvTrace,
                                    hrvDiag: hrvDiag))
             }
-            return out
+            return (out, skippedDayLines)
         }.value
+
+        // #714: replay each skipped day's diagnostic now that we're back on the main actor (diagnosticSink
+        // is MainActor-bound). Always-on , not gated behind a test mode, mirroring the Kotlin `diag` sink.
+        for line in skippedDayLines { diagnosticSink?(line, nil) }
 
         // CAPTURE-B (#814/#799): per-day resolved READ owner + that owner's HR-row count, keyed by day, so
         // the second pass (which has the provenance sets) can emit the universal `dayOwner …` line. The
@@ -802,6 +827,7 @@ final class IntelligenceEngine: ObservableObject {
         // side uses; when they DIVERGE on a day that has data, that's the #814 read/write split made
         // visible in every export.
         var readOwnerByDay: [String: (owner: String, hrRows: Int)] = [:]
+        var resolvedScoreOwnerByDay: [String: String] = [:]
 
         // Back on the main actor: fold the off-actor results into the pass-2 state in the SAME order the
         // loop produced them. Pure assignment / appends , no further store reads , so this is cheap and the
@@ -809,6 +835,7 @@ final class IntelligenceEngine: ObservableObject {
         for scan in scanned {
             let res = scan.result
             readOwnerByDay[res.daily.day] = (scan.readOwner, scan.hrRows)
+            resolvedScoreOwnerByDay[res.daily.day] = scan.readOwner
             nightlyHrvByDay[res.daily.day] = res.daily.avgHrv
             nightlyRhrByDay[res.daily.day] = res.daily.restingHr.map(Double.init)
             nightlyRespByDay[res.daily.day] = res.daily.respRateBpm
@@ -897,6 +924,10 @@ final class IntelligenceEngine: ObservableObject {
         var dailies: [DailyMetric] = []
         var cachedSleep: [CachedSleepSession] = []
         var workoutRows: [WorkoutRow] = []
+        // #510: backfilled fields for a REAL (non-detected) row a dropped bout collided with, grouped by
+        // the deviceId it must be upserted under (see the collision branch below) — never mixed into
+        // `workoutRows`, which is always written under `computedId`.
+        var backfilledByDevice: [String: [WorkoutRow]] = [:]
         // Rest composite (0–100) per computed night, persisted as the `sleep_performance` metric
         // series so the dashboard's Rest score reflects the new composite, not raw efficiency.
         var restPoints: [MetricPoint] = []
@@ -1043,9 +1074,28 @@ final class IntelligenceEngine: ObservableObject {
                 // manual session even though their SPORTS differ ("detected" vs the user's sport) , the
                 // #975 "two workouts, one vanished" seam. Find the collider so the trace can name its source.
                 if let hit = realWorkouts.first(where: { s.start < $0.endTs && $0.startTs < s.end }) {
+                    // #510: the detected bout's own avgHR/calories/maxHR/strain come from the SAME
+                    // motion+HR trace the detector used to find this activity's actual boundaries —
+                    // often a tighter match than the colliding row's own [startTs,endTs] (e.g. a manual
+                    // entry typed in afterward, whose guessed boundaries can clip most of the real
+                    // HR-rich period and leave the display-time strap-HR fill's raw window read too
+                    // thin, silently showing no HR/calories). Same natural key (deviceId, startTs,
+                    // sport), so the upsert below updates the existing row in place rather than
+                    // duplicating it.
+                    let backfilled = WorkoutDetector.backfillWorkout(
+                        hit, avgBpm: avgBpm, peakHR: s.peakHR, caloriesKcal: s.caloriesKcal, strain: s.strain)
+                    let didBackfill = backfilled != hit
+                    if didBackfill {
+                        // realWorkouts merges TWO device groups (see above): the strap's own `deviceId`
+                        // (imported WHOOP rows AND manual/re-labelled ones) and "apple-health" — the
+                        // Swift WorkoutRow carries no deviceId of its own, so route by that same split.
+                        let hitDeviceId = hit.source == "apple-health" ? "apple-health" : deviceId
+                        backfilledByDevice[hitDeviceId, default: []].append(backfilled)
+                    }
                     if workoutsTraceActive {
                         diagnosticSink?(WorkoutsTrace.detectedBoutLine(
-                            verdict: "droppedOverlap", durMin: durMin, avgBpm: avgBpm,
+                            verdict: didBackfill ? "droppedOverlapBackfilled" : "droppedOverlap",
+                            durMin: durMin, avgBpm: avgBpm,
                             overlapSource: WorkoutSource.sourceLabel(hit)), .workouts)
                     }
                     continue
@@ -1133,6 +1183,7 @@ final class IntelligenceEngine: ObservableObject {
                 let scored = row.with(recovery: recovery, skinTempDevC: row.skinTempDevC)
                 dailies.append(scored)
                 importScoredDays.insert(w.day)
+                resolvedScoreOwnerByDay[w.day] = source
                 if let rest = AnalyticsEngine.Rest.composite(daily: scored) {
                     restPoints.append(MetricPoint(day: w.day, key: "sleep_performance", value: rest))
                 }
@@ -1152,8 +1203,34 @@ final class IntelligenceEngine: ObservableObject {
         // Fitness Age gate can't be undercut by this pass's own scoring/eviction. Windowed to the range.
         let faPriorDaily = await repo.dailyMetrics(fromDay: oldestDay, toDay: newestDay)
 
-        // Upsert FIRST so the row count never transiently dips (#521).
-        if !dailies.isEmpty { _ = try? await store.upsertDailyMetrics(dailies, deviceId: computedId) }
+        // Score provenance is metric-specific and lives outside dayOwnership (which remains solely a
+        // resolver override). Persist scores + provenance atomically so a failed write can never label an
+        // older score with a newer provider. The last row for a duplicate day wins, matching the upsert.
+        var provenanceByCell: [String: ScoreInputProvenanceRow] = [:]
+        for daily in dailies {
+            guard let source = resolvedScoreOwnerByDay[daily.day] else { continue }
+            if daily.recovery != nil {
+                provenanceByCell["\(daily.day)\u{1F}recovery"] =
+                    ScoreInputProvenanceRow(day: daily.day, key: "recovery", sourceId: source)
+            }
+            if daily.strain != nil {
+                provenanceByCell["\(daily.day)\u{1F}strain"] =
+                    ScoreInputProvenanceRow(day: daily.day, key: "strain", sourceId: source)
+            }
+        }
+        for point in restPoints {
+            guard let source = resolvedScoreOwnerByDay[point.day] else { continue }
+            provenanceByCell["\(point.day)\u{1F}\(point.key)"] =
+                ScoreInputProvenanceRow(day: point.day, key: point.key, sourceId: source)
+        }
+        try? await store.persistComputedScores(
+            dailyMetrics: dailies,
+            metricPoints: restPoints,
+            provenance: Array(provenanceByCell.values),
+            deviceId: computedId,
+            from: oldestDay,
+            to: newestDay
+        )
 
         // Now evict only the STALE computed rows in the window , those a prior (e.g. UTC-keyed) run left
         // behind that the current local-keyed run no longer produces. Read the window, diff against the
@@ -1165,8 +1242,6 @@ final class IntelligenceEngine: ObservableObject {
         for stale in existingWindow where !freshKeys.contains(stale.day) {
             _ = try? await store.deleteDailyMetrics(deviceId: computedId, from: stale.day, to: stale.day)
         }
-        if !restPoints.isEmpty { _ = try? await store.upsertMetricSeries(restPoints, deviceId: computedId) }
-
         // ── Fitness Age (Phase 2) , weekly, keyed to the week's Saturday ────────────────────────────
         // Roll the last 7 computed days into the Nes/HUNT inputs and upsert a weekly Fitness Age (+ an
         // optional VO₂max when a waist is set) under the same "-noop" source. Idempotent on the Saturday
@@ -1423,6 +1498,12 @@ final class IntelligenceEngine: ObservableObject {
         _ = try? await store.deleteWorkouts(deviceId: computedId, sport: "detected",
                                             from: windowStart, to: now)
         if !workoutRows.isEmpty { _ = try? await store.upsertWorkouts(workoutRows, deviceId: computedId) }
+        // #510: write back any real (manual/imported) rows a dropped detected bout backfilled, one
+        // upsert per owning deviceId (see the collision branch above for why these can't share the
+        // `computedId` batch above).
+        for (devId, rows) in backfilledByDevice {
+            _ = try? await store.upsertWorkouts(rows, deviceId: devId)
+        }
 
         // #137: a manually-started workout is scored from sparse live HR at save time , near-zero
         // calories/strain on a 5/MG. Now that offloaded HR may cover the window, re-score the

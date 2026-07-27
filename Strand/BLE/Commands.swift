@@ -22,6 +22,19 @@ public enum WhoopCommand: UInt8, CaseIterable {
     case reportVersionInfo     = 7
     case setClock              = 10
     case getClock              = 11
+    /// ABORT_HISTORICAL_TRANSMITS (20) — ask the strap to stop streaming the offload it is part-way
+    /// through. NON-DESTRUCTIVE, and specifically not a trim: the strap only frees banked records when
+    /// NOOP acks a HISTORY_END, so anything unacked when the abort lands stays in flash and re-offloads
+    /// on the next sync. Nothing is deleted and no cursor moves.
+    ///
+    /// The counterpart to `sendHistoricalData` (22), which NOOP has always had with no way to stop it:
+    /// until now a drain ran to completion, the 15-minute timeout, or a dropped link.
+    ///
+    /// `BLEManager.abortBackfill()` tears the session down LOCALLY whether or not the strap honours the
+    /// opcode, so a firmware that ignores 20 degrades to exactly today's behaviour rather than leaving
+    /// the UI stuck. Confirmed in use on WHOOP 4.0 by OpenStrap Edge (`Cmd.abortHistoricalTransmits`);
+    /// the 5/MG form is the same opcode over puffin framing and is NOT hardware-confirmed here.
+    case abortHistoricalTransmits = 20
     case sendHistoricalData    = 22
     case historicalDataResult  = 23
     case getBatteryLevel       = 26
@@ -59,12 +72,42 @@ public enum WhoopCommand: UInt8, CaseIterable {
     case setAdvertisingNameHarvard = 77
     case startRawData          = 81
     case stopRawData           = 82
+    /// UNCONFIRMED number (#592): no build in this repo's history has ever SENT 96 (`git log -S` finds no
+    /// send site), so the value rests on whoomp's table alone — an independent APK decompile reads this
+    /// family 11 lower (85/86/87). Two mechanisms could explain that shift without whoomp being wrong: the
+    /// EVENT space has HIGH_FREQ_SYNC_PROMPT/ENABLED/DISABLED at exactly 96/97/98 (a decompile reading a
+    /// neighbouring table lands −11), or enum ordinals vs wire values (ordinal drift grows with value,
+    /// matching the reporter's low anchor 29 agreeing while 96 reads −11). Unresolved — see #592.
     case enterHighFreqSync     = 96
     /// Leave high-frequency-sync mode. Sent defensively on connect to release a strap left parked in
-    /// high-freq by an older app build (we no longer ENTER it — see the sync-hardening design). Payload
-    /// [0x00]. Safe/reversible.
+    /// high-freq by a PREVIOUS app (not this codebase — see 96's note; straps found parked in the field
+    /// were a real failure mode per the sync-hardening notes). Payload [0x00]. Safe/reversible. Sent on
+    /// every connect; note the release EFFECT on a genuinely-parked strap is not separately documented, so
+    /// this exercises the opcode without fully confirming its semantics (#592).
     case exitHighFreqSync      = 97
+    /// PARTIAL hardware support (#592): sent to a real WHOOP 5 (fw 50.38.1.0) and ANSWERED — but with a
+    /// short stub (see Interpreter.decodeWhoop5CommandResponse's note), which could be either
+    /// valid-but-minimal (REPORT_VERSION_INFO, definitely valid, also stubs on that firmware) or a generic
+    /// unknown-command ack. Not yet probed on a 4.0, where EXTENDED_BATTERY_INFORMATION events carry real
+    /// payloads. If probing (#592): send THIS curated number first and capture the response — do NOT lead
+    /// with the decompile's 87, an opcode unknown to this table (the curated-safe-subset rule).
     case getExtendedBatteryInfo = 98
+    /// #690: read-only body-location/status probe. Documented in the WHOOP protocol; driven only by the
+    /// user-triggered, Test-Centre-gated probeBodyLocationAndStatus(). Decoded to a diagnostic report only.
+    case getBodyLocationAndStatus = 84
+    /// START_FF_KEY_EXCHANGE (117 / 0x75) — ask the strap how many feature flags its firmware knows.
+    /// READ-ONLY: the reply carries a count, and nothing on the strap changes. Payload `[0x01]` (the
+    /// inner b3 byte the SET_CONFIG family and GET_HELLO use). This is the READ half of the flag surface
+    /// NOOP has only ever written (`setConfig`/120): the protocol's own `CommandNumber` table names
+    /// 117/118 alongside 119/120, and only the SET pair was implemented. Driven ONLY by
+    /// `BLEManager.probeFeatureFlags()` — user-initiated, Test Centre → Connection gated. Parsing lives in
+    /// `FeatureFlagProbe` (pure, unit-tested). (#761, and #103 which it exists to answer.)
+    case startFeatureFlagKeyExchange = 117
+    /// SEND_NEXT_FF (118 / 0x76) — advance the strap's own key cursor and report one flag NAME.
+    /// READ-ONLY: names only, no values, nothing written. Payload `[0x01]`; the body is a CURSOR, not an
+    /// index, so the same frame is repeated to walk the list. Bounded by `FeatureFlagProbe.maxFlags` and
+    /// by the strap's own end marker. Driven ONLY by `BLEManager.probeFeatureFlags()`. (#761)
+    case sendNextFeatureFlag = 118
     case toggleIMUMode         = 106
     case enableOpticalData     = 107
     /// SET_CONFIG / SET_FF_VALUE (0x78) — write one persistent device feature-flag. Used by the
@@ -116,6 +159,7 @@ public enum WhoopCommand: UInt8, CaseIterable {
         case .reportVersionInfo:     return "Report Version Info"
         case .setClock:              return "Set Clock"
         case .getClock:              return "Get Clock"
+        case .abortHistoricalTransmits: return "Abort Historical Transmits"
         case .sendHistoricalData:    return "Send Historical Data"
         case .historicalDataResult:  return "Historical Data Result"
         case .getBatteryLevel:       return "Get Battery Level"
@@ -131,6 +175,9 @@ public enum WhoopCommand: UInt8, CaseIterable {
         case .enterHighFreqSync:     return "Enter High-Freq Sync"
         case .exitHighFreqSync:      return "Exit High-Freq Sync"
         case .getExtendedBatteryInfo:return "Get Extended Battery Info"
+        case .getBodyLocationAndStatus:return "Get Body Location And Status"
+        case .startFeatureFlagKeyExchange: return "Start Feature-Flag Key Exchange"
+        case .sendNextFeatureFlag:   return "Send Next Feature Flag"
         case .toggleIMUMode:         return "Toggle IMU Mode"
         case .enableOpticalData:     return "Enable Optical Data"
         case .setConfig:             return "Set Config (R22 feature flag)"

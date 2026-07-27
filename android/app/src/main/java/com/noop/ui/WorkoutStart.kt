@@ -1,5 +1,7 @@
 package com.noop.ui
 
+import com.noop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -89,12 +91,12 @@ fun StartWorkoutSheet(vm: AppViewModel, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Start a workout") },
+        title = { Text(uiString(R.string.l10n_workout_start_start_a_workout_32caf94d)) },
         text = {
             Column {
                 OutlinedTextField(
                     value = query, onValueChange = { query = it },
-                    label = { Text("Search sport") }, singleLine = true,
+                    label = { Text(uiString(R.string.l10n_workout_start_search_sport_004b7928)) }, singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Column(
@@ -121,7 +123,7 @@ fun StartWorkoutSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 ) {
-                    Text("Track GPS route", style = NoopType.body, color = Palette.textPrimary)
+                    Text(uiString(R.string.l10n_workout_start_track_gps_route_133861c5), style = NoopType.body, color = Palette.textPrimary)
                     Spacer(Modifier.weight(1f))
                     Switch(checked = gpsOn, onCheckedChange = { gpsOn = it })
                 }
@@ -139,11 +141,11 @@ fun StartWorkoutSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                     showLiveWorkout = true
                 }
             }) {
-                Text("Start ${selected.name}")
+                Text(uiString(R.string.l10n_workout_start_start_selected_name_10603889, selected.name))
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+            OutlinedButton(onClick = onDismiss) { Text(uiString(R.string.l10n_workout_start_cancel_77dfd213)) }
         },
     )
 }
@@ -163,7 +165,7 @@ private fun StartSportRow(sp: Sport, isSelected: Boolean, onPick: () -> Unit) {
         )
         if (sp.isDistanceSport) {
             Spacer(Modifier.width(6.dp))
-            Text("· GPS", style = NoopType.footnote, color = Palette.textTertiary)
+            Text(uiString(R.string.l10n_workout_start_gps_124667d8), style = NoopType.footnote, color = Palette.textTertiary)
         }
     }
 }
@@ -179,6 +181,7 @@ fun WorkoutStartSection(vm: AppViewModel) {
     val live by vm.live.collectAsStateWithLifecycle()
     val activeWorkout by vm.activeWorkout.collectAsStateWithLifecycle()
     var showSportPicker by remember { mutableStateOf(false) }
+    var confirmingEnd by remember { mutableStateOf(false) }
     // Live workout mode (#238): the full-screen in-exercise view. StartWorkoutSheet opens it the
     // moment a workout begins; this re-entry lets the user re-open it from the compact banner after
     // dismissing. Closing just hides the overlay — the workout keeps recording in the background.
@@ -193,7 +196,7 @@ fun WorkoutStartSection(vm: AppViewModel) {
         val elapsedS = ((nowMs - w.startMs) / 1000).coerceAtLeast(0)
         NoopCard {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("● ${w.sport.name.uppercase()}", style = NoopType.overline, color = Palette.statusCritical)
+                Text(uiString(R.string.l10n_workout_start_w_sport_name_uppercase_e59bc678, w.sport.name.uppercase()), style = NoopType.overline, color = Palette.statusCritical)
                 Spacer(Modifier.width(10.dp))
                 Text(
                     String.format("%d:%02d", elapsedS / 60, elapsedS % 60),
@@ -205,15 +208,15 @@ fun WorkoutStartSection(vm: AppViewModel) {
                     onClick = { showLiveWorkout = true },
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Palette.accent),
-                ) { Text("Open", style = NoopType.captionNumber) }
+                ) { Text(uiString(R.string.l10n_workout_start_open_cf9b7706), style = NoopType.captionNumber) }
                 Spacer(Modifier.width(8.dp))
                 Button(
-                    onClick = { vm.endWorkout() },
+                    onClick = { confirmingEnd = true },
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Palette.statusCritical, contentColor = Palette.surfaceBase,
                     ),
-                ) { Text("End", style = NoopType.captionNumber) }
+                ) { Text(uiString(R.string.l10n_workout_start_end_a2bb9d34), style = NoopType.captionNumber) }
             }
         }
     } else if (live.bonded) {
@@ -224,7 +227,7 @@ fun WorkoutStartSection(vm: AppViewModel) {
             colors = ButtonDefaults.buttonColors(
                 containerColor = Palette.accent, contentColor = Palette.surfaceBase,
             ),
-        ) { Text("Start workout", style = NoopType.captionNumber) }
+        ) { Text(uiString(R.string.l10n_workout_start_start_workout_d0f3f2cd), style = NoopType.captionNumber) }
     }
 
     if (showSportPicker) {
@@ -240,6 +243,16 @@ fun WorkoutStartSection(vm: AppViewModel) {
         ) {
             LiveWorkoutScreen(vm = vm, onClose = { showLiveWorkout = false })
         }
+    }
+
+    if (confirmingEnd) {
+        EndWorkoutConfirmationDialog(
+            onConfirm = {
+                confirmingEnd = false
+                vm.endWorkout()
+            },
+            onDismiss = { confirmingEnd = false },
+        )
     }
 }
 

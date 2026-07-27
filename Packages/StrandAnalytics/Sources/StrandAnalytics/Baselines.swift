@@ -236,6 +236,36 @@ public enum Baselines {
         return .trusted
     }
 
+    /// #612: calendar days since the newest night that carried a usable HRV reading (the baseline's input),
+    /// or nil when there is none / a key can't be parsed. This is DISTINCT from `calibrationNights` (which
+    /// counts progress TOWARD a usable baseline) — it measures staleness, so a surface can say "no new nights
+    /// from your strap for N days" when the baseline aged out silently instead of only "building your
+    /// baseline". Pure and TZ-free (civil-day arithmetic); mirror EXACTLY in the Kotlin twin.
+    /// `dayKeys`/`nightlyHrv` are parallel (same night per index); `today` is an ISO `yyyy-MM-dd` key.
+    public static func nightsSinceNewestValidNight(dayKeys: [String], nightlyHrv: [Double?], today: String) -> Int? {
+        var newest: String? = nil
+        for i in 0..<Swift.min(dayKeys.count, nightlyHrv.count) where nightlyHrv[i] != nil {
+            let k = dayKeys[i]
+            if newest == nil || k > newest! { newest = k }
+        }
+        guard let n = newest, let a = isoEpochDay(n), let b = isoEpochDay(today) else { return nil }
+        let d = b - a
+        return d >= 0 ? d : nil
+    }
+
+    /// Days from civil epoch (proleptic Gregorian) for an ISO `yyyy-MM-dd`, or nil if unparseable. TZ-free
+    /// (Howard Hinnant's algorithm), so Swift and Kotlin agree bit-for-bit on the day difference.
+    static func isoEpochDay(_ iso: String) -> Int? {
+        let p = iso.split(separator: "-")
+        guard p.count == 3, let y = Int(p[0]), let m = Int(p[1]), let d = Int(p[2]), m >= 1, m <= 12 else { return nil }
+        let yy = m <= 2 ? y - 1 : y
+        let era = (yy >= 0 ? yy : yy - 399) / 400
+        let yoe = yy - era * 400
+        let doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        return era * 146097 + doe - 719468
+    }
+
     // MARK: - Winsorized EWMA update (production model)
 
     /// Incorporate one new nightly value into the baseline state.
@@ -385,6 +415,30 @@ public enum Baselines {
     /// When `baselineEpoch <= 0` (the default / no recalibration) this is byte-identical to the plain
     /// `foldHistory(_:cfg:)`. When `baselineEpoch` is nil it is read from UserDefaults via
     /// `hrvBaselineEpoch()` so callers that already use the HRV config get recalibration for free.
+    /// Diagnostic companion to the epoch-aware `foldHistory` (#731): how many nights that fold DROPS
+    /// because they predate the recalibration epoch, plus the epoch itself as a `yyyy-MM-dd` day key
+    /// (nil when no recalibration is set).
+    ///
+    /// Exists because a "Charge is stuck" report is otherwise unexplainable from a strap log. A user who
+    /// taps "Recalibrate baseline" discards every earlier night and must re-earn `minNightsSeed` nights;
+    /// tapping it again resets that progress to zero. A reporter did exactly that for two weeks — 15 valid
+    /// HRV nights on file, but `nValid=3` and no Charge — and nothing in the log said the epoch was why.
+    /// Mirrors the fold's drop rule EXACTLY (same UTC day-start parse, same strict `<` comparison), so the
+    /// number reported is the number actually dropped.
+    public static func epochDropDiagnostic(dayKeys: [String],
+                                           baselineEpoch: Double? = nil) -> (dropped: Int, epochDay: String?) {
+        let epoch = baselineEpoch ?? hrvBaselineEpoch()
+        guard epoch > 0 else { return (0, nil) }
+        let fmt = DateFormatter()
+        fmt.calendar = Calendar(identifier: .gregorian)
+        fmt.timeZone = TimeZone(secondsFromGMT: 0)
+        fmt.dateFormat = "yyyy-MM-dd"
+        let dropped = dayKeys.reduce(into: 0) { acc, key in
+            if let d = fmt.date(from: key), d.timeIntervalSince1970 < epoch { acc += 1 }
+        }
+        return (dropped, fmt.string(from: Date(timeIntervalSince1970: epoch)))
+    }
+
     public static func foldHistory(_ values: [Double?], dayKeys: [String], cfg: MetricCfg,
                                    baselineEpoch: Double? = nil) -> BaselineState {
         let epoch = baselineEpoch ?? hrvBaselineEpoch()

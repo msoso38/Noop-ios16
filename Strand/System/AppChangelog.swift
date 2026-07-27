@@ -7,7 +7,7 @@ enum AppChangelog {
 
     /// Bump this when you add a release below. The "What's New" sheet shows automatically when the
     /// stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
-    static let currentVersion = "9.0.0"
+    static let currentVersion = "9.2.0"
 
     struct Release: Identifiable {
         let version: String
@@ -19,6 +19,42 @@ enum AppChangelog {
 
     /// Newest first.
     static let releases: [Release] = [
+        Release(
+            version: "9.2.0",
+            title: "HRV accuracy fix, Oura sleep and motion, richer 5/MG decoding, and a stoppable sync",
+            date: "July 2026",
+            items: [
+                "**HRV was reading low (#823).** Same-second R-R beats were sorted by size instead of the order the strap sent them, which biased RMSSD downward. Fixed on both platforms — your HRV numbers will shift slightly, and the new ones are the correct ones.",
+                "**Oura nights now actually score (#774, #773).** Overnight beats banked by the ring are turned into heart-rate samples, so a night no longer comes back empty, and the ring's own sleep hypnogram appears as its own stage timeline.",
+                "**Workout heart rate reads from the right strap (#856).** The chart, the zones and the Avg HR now agree on which device recorded a bout, instead of quietly disagreeing after you re-add a strap.",
+                "**Battery warnings that arrive in time (#864).** A critical alert at 12%, plus a bedtime warning when the strap will not last the night — both fire even after the earlier alerts have already gone quiet.",
+                "**You can stop a sync (#875).** A long history offload no longer has to run to the end; nothing is lost, and the rest arrives on the next sync.",
+            ]
+        ),
+        Release(
+            version: "9.0.2",
+            title: "Optimal-strain alerts, faster history sync, and a wave of accuracy fixes",
+            date: "July 2026",
+            items: [
+                "**\"Optimal strain reached\" alert (#593).** Turn it on and NOOP buzzes once when your day's effort hits the optimal range for your recovery — off by default, and only for the day you're actually building.",
+                "**Strap pack voltage in Devices (#592).** NOOP now shows your strap's measured pack voltage next to the battery percent — a truer read of what's actually left.",
+                "**Faster history sync (experimental, #533).** Opt-in toggles let NOOP ask the strap for a quicker connection during a history offload, so a deep backlog catches up in fewer syncs.",
+                "**More accurate steps, workouts and sleep.** Second-strap workouts fill in heart rate again (#512), Today steps count from the right source (#551), foot-sport step totals are no longer halved (#568), and a deleted sleep window can be recomputed (#526).",
+                "**Fixes across the app.** iPhone asks for notification permission during onboarding (#591), pull-to-sync shows a steady \"Syncing…\" (#590), Oura interval imports decode correctly (#511), and the morning recap won't double-fire (#567).",
+            ]
+        ),
+        Release(
+            version: "9.0.1",
+            title: "German, French & Spanish, pull-to-sync on Today, and a wave of polish",
+            date: "July 2026",
+            items: [
+                "**NOOP now speaks German, French and Spanish (#453).** The whole app — every screen and label — is translated across iPhone, Mac and Android, so it reads in your language end to end.",
+                "**Pull to sync on Today (#334).** Pull down on the Today screen to ask your strap for a fresh history sync — on iPhone, Mac and Android. It only fires when the strap is connected and ready, and the sync status keeps you posted.",
+                "**The day-cycle sky shows behind your cards by default.** The Today background now extends behind the whole scroll out of the box; turn it off in Settings if you prefer the flat canvas.",
+                "**Trend charts show the date when you inspect them (#492).** Tap or scrub a point on an Android trend chart and it shows the date beside the value now, matching iPhone and Mac.",
+                "**Fixes.** macOS can hold its Bluetooth permission again (#429), WHOOP 5.0/MG battery % shows reliably (#490), activity-file (FIT) imports fill in your steps (#483), and a batch of Today polish — the day title no longer clips, Strain drops a stray %, and the source badges sit right (#486, #492).",
+            ]
+        ),
         Release(
             version: "9.0.0",
             title: "Power saving that protects your strap, a Gemini-powered coach on Android, and richer metric detail",

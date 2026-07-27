@@ -37,6 +37,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DailyMetric::class,
         SleepSession::class,
         MetricSeriesRow::class,
+        ScoreInputProvenanceRow::class,
         JournalEntry::class,
         WorkoutRow::class,
         DismissedWorkout::class,
@@ -48,8 +49,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LabMarkerRow::class,
         LiveSessionRow::class,
         PpgWaveformSampleEntity::class,
+        RawImuSampleEntity::class,
+        V18AuxSampleEntity::class,
     ],
-    version = 20,
+    version = 25,
     exportSchema = false,
 )
 abstract class WhoopDatabase : RoomDatabase() {
@@ -553,6 +556,134 @@ abstract class WhoopDatabase : RoomDatabase() {
             }
         }
 
+        /** #423: the WHOOP 5/MG raw-IMU offload-capture table. Additive; GRDB twin is `v28-raw-imu`
+         *  (Swift's next slot after v27-ppg-waveform), so the migration COUNTS stay aligned. Column order ==
+         *  [RawImuSampleEntity] field order, matching the GRDB schema's t.column(deviceId/ts/samples). */
+        internal val RAW_IMU_MIGRATION_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `rawImuSample` (`deviceId` TEXT NOT NULL, " +
+                "`ts` INTEGER NOT NULL, `samples` BLOB NOT NULL, PRIMARY KEY(`deviceId`, `ts`))",
+        )
+
+        internal val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in RAW_IMU_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /** #515 follow-up: keep deleted-sleep suppression independent from the Android Sleep screen's
+         *  recompute list. Existing markers remain visible after upgrade; hiding one only flips this
+         *  additive flag and never removes the tombstone that protects against re-detection. */
+        internal val DISMISSED_SLEEP_VISIBILITY_MIGRATION_SQL: List<String> = listOf(
+            "ALTER TABLE `dismissedSleep` ADD COLUMN `managementVisible` INTEGER NOT NULL DEFAULT 1",
+        )
+
+        internal val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in DISMISSED_SLEEP_VISIBILITY_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /** Metric-level provenance for NOOP-computed scores. Additive and intentionally independent
+         *  from dayOwnership, whose resolver semantics remain unchanged. */
+        internal val SCORE_INPUT_PROVENANCE_MIGRATION_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `scoreInputProvenance` (`deviceId` TEXT NOT NULL, " +
+                "`day` TEXT NOT NULL, `key` TEXT NOT NULL, `sourceId` TEXT NOT NULL, " +
+                "PRIMARY KEY(`deviceId`, `day`, `key`))",
+            "CREATE INDEX IF NOT EXISTS `idx_scoreInputProvenance_source` " +
+                "ON `scoreInputProvenance` (`sourceId`)",
+        )
+
+        internal val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in SCORE_INPUT_PROVENANCE_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /**
+         * #823: record each R-R beat's EMISSION order within its second so reads can stop returning
+         * them in magnitude order (which biases RMSSD down — see the RrInterval doc).
+         *
+         * Additive and nullable, the MIGRATION_3_4 form: no table rebuild, no row touched, and
+         * critically NOT part of the primary key, which must stay (deviceId, ts, rrMs, seq) — an
+         * insertion counter in the key would collide distinct beats across insert batches, the
+         * data-loss regression assignRrSeq's doc warns about.
+         *
+         * Existing rows stay NULL. The order was never recorded, so it cannot be backfilled and a
+         * guess would be worse than an admission; NULL sorts first in SQLite ASC, so a pre-v24
+         * second ties on `ord` and falls through to the old (rrMs, seq) order unchanged.
+         *
+         * Exposed as [RR_ORD_MIGRATION_SQL] so a plain-JVM unit test can assert its shape without an
+         * emulator, like the migrations above.
+         */
+        internal val RR_ORD_MIGRATION_SQL: List<String> = listOf(
+            "ALTER TABLE `rrInterval` ADD COLUMN `ord` INTEGER",
+        )
+
+        internal val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in RR_ORD_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /**
+         * Stop DISCARDING the per-second channels the 5/MG v18 decoder already produces. Twin of the
+         * Swift GRDB migration `v31-deep-capture-channels`.
+         *
+         * `extractHistoricalStreams` is a narrow funnel — a field the decoder produces but the funnel
+         * does not name is computed and dropped one line later. That drop is PERMANENT: the strap trims
+         * its banked history as soon as NOOP acks the offload, so those seconds are not re-fetchable.
+         *
+         *   gravitySample.dynAccel     `dynamic_acceleration@41` (f32 g), the strap's OWN gravity-removed
+         *                              motion magnitude, stored BESIDE the 1 Hz vector the motion spine
+         *                              actually derives stillness from.
+         *   sleepStateSample.rawByte   the WHOLE @81 flag byte. `state` remains exactly its high nibble,
+         *                              so #175 behaviour is bit-identical; this keeps b0-1 `onwrist`,
+         *                              b2-3 `wake_quality`, and the uninterpreted b6-7.
+         *   skinTempSample.aux1Raw     `temp_aux_1_raw@69` / `temp_aux_2_raw@71` (i16, °C = value/10 — a
+         *   skinTempSample.aux2Raw     DIFFERENT scale from the primary's /100).
+         *   v18AuxSample               the remaining fifteen slots as one compact blob (see [V18AuxCodec]
+         *                              for the wire format and the column-vs-blob tradeoff). Its own
+         *                              table because no existing per-second table is guaranteed present
+         *                              for a v18 record, and to keep unpinned bytes out of the tables
+         *                              analytics read.
+         *
+         * Additive only, the MIGRATION_3_4 / MIGRATION_23_24 form: no table rebuild, no row touched, no
+         * key changed. The three added columns are nullable with NO SQL DEFAULT, and `fields` is NOT NULL
+         * only because a row is written solely when at least one slot is present — absence is encoded as
+         * "no row" and, within a row, as a clear bitmap bit. Never a fabricated 0: a WHOOP 4.0 emits none
+         * of these, and history banked before this migration cannot be backfilled (the strap already
+         * trimmed it), so an absent channel must stay absent.
+         *
+         * The columns are appended by ALTER TABLE, which places them LAST — matching the entity field
+         * order (each new field is declared after the existing ones), so a migrated schema and a
+         * freshly-created one agree. The CREATE TABLE column order matches [V18AuxSampleEntity]'s field
+         * order and the GRDB schema, so a `.noopbak` round-trips.
+         *
+         * INSTRUMENTATION ONLY. Nothing reads these: no analytic, no score, no gate, no UI.
+         *
+         * Retention: `v18AuxSample` is CAPPED at [WhoopRepository.V18_AUX_RETENTION_ROWS] rolling rows per
+         * device, the same shape `rawImuSample` uses — it is the only genuinely new row growth here. The
+         * three added columns widen rows that were already being written and add no rows at all.
+         *
+         * Exposed as [DEEP_CAPTURE_MIGRATION_SQL] so a plain-JVM unit test can assert its shape without
+         * an emulator, like the migrations above.
+         */
+        internal val DEEP_CAPTURE_MIGRATION_SQL: List<String> = listOf(
+            "ALTER TABLE `gravitySample` ADD COLUMN `dynAccel` REAL",
+            "ALTER TABLE `sleepStateSample` ADD COLUMN `rawByte` INTEGER",
+            "ALTER TABLE `skinTempSample` ADD COLUMN `aux1Raw` INTEGER",
+            "ALTER TABLE `skinTempSample` ADD COLUMN `aux2Raw` INTEGER",
+            "CREATE TABLE IF NOT EXISTS `v18AuxSample` (`deviceId` TEXT NOT NULL, " +
+                "`ts` INTEGER NOT NULL, `fields` BLOB NOT NULL, " +
+                "PRIMARY KEY(`deviceId`, `ts`))",
+        )
+
+        internal val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in DEEP_CAPTURE_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
         private fun build(appContext: Context): WhoopDatabase =
             Room.databaseBuilder(appContext, WhoopDatabase::class.java, DB_NAME)
                 // #1014: replace ONLY the corruption handling of the default open-helper. The
@@ -568,7 +699,8 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18,
-                    MIGRATION_18_19, MIGRATION_19_20,
+                    MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22,
+                    MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25,
                 )
                 // #1037: a FRESH install builds the schema straight at the current version and runs NO
                 // migrations, so the MIGRATION_7_8 "my-whoop" registry seed never fires and the WHOOP,

@@ -1,5 +1,7 @@
 package com.noop.ui
 
+import com.noop.R
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -138,7 +140,7 @@ fun AutoWorkoutNudgeCard(
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("Looks like a workout", style = NoopType.headline, color = Palette.textPrimary)
+                    Text(uiString(R.string.l10n_auto_workout_nudge_looks_like_a_workout_e745e403), style = NoopType.headline, color = Palette.textPrimary)
                 }
                 // Standard × dismiss → record the window durably so it never re-prompts.
                 IconButton(
@@ -150,7 +152,7 @@ fun AutoWorkoutNudgeCard(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .size(Metrics.iconButton)
-                        .semantics { contentDescription = "Dismiss this workout suggestion" },
+                        .semantics { contentDescription = uiString(R.string.l10n_auto_workout_nudge_dismiss_this_workout_suggestion_52ace8f3) },
                 ) {
                     Icon(
                         Icons.Filled.Close,
@@ -199,7 +201,7 @@ fun AutoWorkoutNudgeCard(
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Palette.accent, contentColor = Palette.surfaceBase,
                     ),
-                ) { Text("Save it") }
+                ) { Text(uiString(R.string.l10n_auto_workout_nudge_save_it_01d23661)) }
 
                 OutlinedButton(
                     onClick = {
@@ -207,7 +209,7 @@ fun AutoWorkoutNudgeCard(
                         handledThisSession = true
                         candidate = null
                     },
-                ) { Text("Not a workout", color = Palette.textSecondary) }
+                ) { Text(uiString(R.string.l10n_auto_workout_nudge_not_a_workout_15c5f784), color = Palette.textSecondary) }
             }
         }
     }
@@ -227,7 +229,11 @@ private suspend fun autoDetectCandidate(
     val fromSec = nowSec - AUTO_DETECT_DAYS_BACK * 86_400L
     val repo = viewModel.repo
 
-    val hr = repo.hrSamples(AUTO_DETECT_DEVICE, fromSec, nowSec, limit = 200_000)
+    // #767/#717: read HR over the ACTIVE-strap UNION, not the hardcoded "my-whoop" id. A live-BLE strap
+    // banks its raw under its OWN fresh id ("whoop-<uuid>", #908), so a read pinned to "my-whoop" finds
+    // NOTHING and auto-detect goes silent — even though sleep/charge (which read the union) keep working.
+    // Mirrors iOS Repository.autoDetectCandidate(), which reads the hrSamples(from:to:) union.
+    val hr = repo.hrSamplesUnion(viewModel.deviceId, fromSec, nowSec, limit = 200_000)
     if (hr.size < 2) return null
 
     // Resting HR: most recent nightly RHR in history, else the detector's own default (60). Byte-faithful

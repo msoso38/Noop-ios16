@@ -13,6 +13,10 @@ val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
+val isStagingRelease = project.hasProperty("stagingRelease")
+val requestedReleaseBuild = gradle.startParameter.taskNames.any {
+    it.contains("Release", ignoreCase = true)
+}
 
 android {
     namespace = "com.noop"
@@ -22,8 +26,8 @@ android {
         applicationId = "com.noop.whoop"
         minSdk = 26
         targetSdk = 34
-        versionCode = 289
-        versionName = "9.0.0"
+        versionCode = 302
+        versionName = "9.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -69,16 +73,23 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Real release key when keystore.properties is present; otherwise the debug key,
-            // so a fresh clone can still build an installable release APK.
-            signingConfig = if (keystorePropsFile.exists())
+            if (!keystorePropsFile.exists() && !isStagingRelease && requestedReleaseBuild) {
+                throw GradleException(
+                    "Refusing to build a real release without keystore.properties. " +
+                        "Use -PstagingRelease for debug-key staging artifacts only."
+                )
+            }
+            // Real release key when keystore.properties is present. The debug-key fallback is allowed
+            // only for explicit fork/staging artifacts that install under their own application id.
+            signingConfig = if (keystorePropsFile.exists()) {
                 signingConfigs.getByName("release")
-            else
+            } else {
                 signingConfigs.getByName("debug")
+            }
             // Fork staging release: built with -PstagingRelease (the fork testing-build CI only), the
             // release APK gets its own id/name so it installs BESIDE both the official app and the
             // .debug staging build. A real release (no property) keeps the true com.noop.whoop id.
-            if (project.hasProperty("stagingRelease")) {
+            if (isStagingRelease) {
                 applicationIdSuffix = ".staging"
                 versionNameSuffix = "-staging"
             }
@@ -131,6 +142,14 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+}
+
+// Resolve every external module to the exact version recorded in app/gradle.lockfile. Direct
+// dependencies are already pinned below; this also freezes the transitive graph selected through
+// AndroidX POMs and the Compose BOM. Update intentionally with `./gradlew :app:dependencies
+// --write-locks` and review the lockfile diff alongside the dependency declaration change (#658).
+dependencyLocking {
+    lockAllConfigurations()
 }
 
 dependencies {

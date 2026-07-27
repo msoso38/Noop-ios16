@@ -216,8 +216,12 @@ class OuraDriver(
                 phase = OuraDriverPhase.Streaming
                 emptyList()
             } else {
-                // Ack-fetch (max=0) at the new cursor advances without re-pulling data (s5.3 step 4).
-                listOf(OuraCommands.getEvents(cursor = after.cursor, maxEvents = 0))
+                // Continuation fetch at the ADVANCED cursor (max seen ring-time + 1), same shape as the
+                // initial request — open_oura drain_events re-issues (start, 255, -1) every batch. The
+                // old open_ring "ack-fetch" (max=0 at a non-advancing cursor) made the ring RESTART its
+                // serve from that cursor: the observed same-window re-serve loop (s5.3). Parity with
+                // Swift 2bbdaa42.
+                listOf(OuraCommands.getEvents(cursor = after.cursor, maxEvents = 255))
             }
         }
     }
@@ -338,6 +342,20 @@ class OuraDriver(
      */
     fun isPlausibleAnchorEpoch(epochSeconds: Long): Boolean = plausibleAnchorMs(epochSeconds) != null
 
+    /**
+     * Adopt a ring-time→UTC anchor from the 0x13 SyncTime response pair (`rt` = the ring's clock
+     * counter in ticks when it processed our SyncTime, `unixSeconds` = host wall-clock at receipt).
+     * Same plausibility gate as the 0x42/0x85 paths; returns whether the anchor was set. The freshest
+     * possible pair, so it overwrites any earlier anchor (an in-log 0x42 from the same clock domain
+     * yields the same mapping anyway). Byte-identical twin of Swift's adoptSyncTimeAnchor.
+     */
+    fun adoptSyncTimeAnchor(ringTimestamp: Long, unixSeconds: Long): Boolean {
+        val ms = plausibleAnchorMs(unixSeconds) ?: return false
+        anchorUtcMs = ms
+        anchorRingTime = ringTimestamp
+        return true
+    }
+
     // MARK: - Record ingest (decode)
 
     /**
@@ -389,12 +407,14 @@ class OuraDriver(
             OuraEventTag.MOTION_PERIOD ->
                 (OuraDecoders.decodeMotionPeriod(record) ?: emptyList()).map { OuraEvent.MotionEvent(it) }
             OuraEventTag.MOTION ->
-                // 0x47 motion_events: surfaced as state-free motion is out of v1 scope; decode to nothing
-                // rather than guess the partial layout. Per OURA_PROTOCOL.md s6.13.
-                emptyList()
+                // 0x47 motion_events: the ring's averaged accel vector (orientation + avg x/y/z ×8 +
+                // high_intensity), the same shape as a WHOOP 4.0 gravity sample. open_oura decode_motion,
+                // OURA_PROTOCOL.md s6.13. Tier-A. Byte-identical twin of Swift.
+                OuraDecoders.decodeMotionEvents(record)?.let { listOf(OuraEvent.MotionVectorEvent(it)) }
+                    ?: emptyList()
 
-            // --- Tier A: Sleep phase (2-bit codes are verified) ---
-            OuraEventTag.SLEEP_PHASE, OuraEventTag.SLEEP_PHASE_ALT ->
+            // --- Tier A: Sleep phase (2-bit codes are verified; 0x4B is the same layout, s6.12) ---
+            OuraEventTag.SLEEP_PHASE_B, OuraEventTag.SLEEP_PHASE, OuraEventTag.SLEEP_PHASE_ALT ->
                 (OuraDecoders.decodeSleepPhase(record) ?: emptyList()).map { OuraEvent.SleepPhaseEvent(it) }
 
             // --- Tier A: Lifecycle / state / time ---
@@ -444,7 +464,7 @@ class OuraDriver(
                         ),
                     ),
                 )
-            OuraEventTag.SLEEP_SUMMARY_1, OuraEventTag.SLEEP_SUMMARY_B, OuraEventTag.SLEEP_SUMMARY_C,
+            OuraEventTag.SLEEP_SUMMARY_1, OuraEventTag.SLEEP_SUMMARY_C,
             OuraEventTag.SLEEP_SUMMARY_D, OuraEventTag.SLEEP_SUMMARY_E, OuraEventTag.SLEEP_SUMMARY_F ->
                 listOf(
                     OuraEvent.TierB(
@@ -532,7 +552,17 @@ class OuraDriver(
         // Live-HR enable ACKs advance the triplet (s5.6): 0x21 is the dhr_read feature-read ACK from
         // step 1 (`2f 06 21 02 01 11 02 00`), 0x23 acks the enable write (step 2), 0x27 acks the
         // subscribe write (step 3). All three must be recognised or the sequencer stalls at step 0.
-        if (frame.subop == 0x21 || frame.subop == 0x23 || frame.subop == 0x27) {
+        if (frame.subop == 0x21) {
+            // A 0x21 is a feature-status read reply. The daytime-HR read (feature 0x02) is step 1 of the
+            // live-HR triplet and MUST advance it; a diagnostic read (SpO2 0x04 / real_steps 0x0b) instead
+            // surfaces the ring's own feature report so a capture can confirm the server-flag gate.
+            val st = OuraDecoders.decodeFeatureStatus(frame.subBody)
+            if (st != null && st.feature != OuraCommands.featureDaytimeHR) {
+                return SecureRouting.FeatureStatus(st)
+            }
+            return SecureRouting.EnableAck
+        }
+        if (frame.subop == 0x23 || frame.subop == 0x27) {
             return SecureRouting.EnableAck
         }
         return SecureRouting.Unhandled
@@ -561,6 +591,7 @@ class OuraDriver(
         }
 
         object EnableAck : SecureRouting()
+        data class FeatureStatus(val value: OuraFeatureStatus) : SecureRouting()
         object Unhandled : SecureRouting()
     }
 
@@ -574,5 +605,24 @@ class OuraDriver(
          */
         private const val MIN_PLAUSIBLE_EPOCH_SECONDS = 1_577_836_800L
         private const val MAX_PLAUSIBLE_EPOCH_SECONDS = 2_051_222_400L
+
+        /**
+         * Resolve the 0x13 SyncTime-response device timestamp into ring TICKS, or null when no
+         * unambiguous reading exists. ringverse BLE.md labels the field "seconds" but the ring's record
+         * clock runs in 100 ms ticks, so both readings are tried: the raw value (already ticks) and
+         * value×10 (seconds→ticks). The ring's clock at connect must sit shortly AFTER where the last
+         * drain ended, so a candidate is plausible iff it falls in `[historyCursor, historyCursor +
+         * 7 days]`; exactly one must fit (ambiguity or a fresh/reset cursor → null → the caller logs
+         * raw instead of guessing). Pure. Byte-identical twin of Swift's syncTimeAnchorCandidate.
+         */
+        fun syncTimeAnchorCandidate(responseValue: Long, historyCursor: Long): Long? {
+            if (historyCursor <= 0) return null
+            val lower = historyCursor
+            val upper = lower + 6_048_000L   // 7 days of 100 ms ticks
+            val readings = listOf(responseValue, responseValue * 10)
+            val fits = readings.filter { it in lower..upper && it <= 0xFFFF_FFFFL }
+            if (fits.size != 1) return null
+            return fits[0]
+        }
     }
 }

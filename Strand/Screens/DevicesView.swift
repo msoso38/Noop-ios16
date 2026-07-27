@@ -59,6 +59,12 @@ private struct DevicesContent: View {
     @State private var rebootTarget: PairedDevice?
     /// WHOOP 4.0 reboot probe (Test Centre → Connection, 4.0 only) — the device whose probe sheet is open.
     @State private var probeTarget: PairedDevice?
+    /// #592 extended-battery probe (Test Centre → Connection) — the device whose confirm dialog is open.
+    @State private var batteryProbeTarget: PairedDevice?
+    /// #690 body-location probe (Test Centre → Connection) — the device whose confirm dialog is open.
+    @State private var bodyLocationProbeTarget: PairedDevice?
+    /// #761 feature-flag enumeration probe (Test Centre → Connection) — the device whose dialog is open.
+    @State private var featureFlagProbeTarget: PairedDevice?
     /// After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     @State private var pickNewActive = false
 
@@ -87,14 +93,50 @@ private struct DevicesContent: View {
         return (String(localized: "Clock latched: \(latched) · last frame \(frame)"), warning)
     }
 
+    /// #802: same shape and copy as `LiveView.reconnectGuideBanner`. Duplicated rather than hoisted
+    /// because the two live in different view files with no shared banner container today; the STRING is
+    /// shared, which is the part that must not drift.
+    private func repairGuideBanner(_ guide: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(StrandPalette.statusWarning)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Can't connect: your strap's pairing was reset")
+                    .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                Text(guide)
+                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(NoopMetrics.space3)
+        .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .strokeBorder(StrandPalette.statusWarning.opacity(0.5), lineWidth: 1))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Reconnect help: \(guide)")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
+            // #802: the re-pair guide belongs HERE too, not only on Live. A strap that connects but never
+            // finishes bonding leaves the user on this screen — it is where you go to fix a device — while
+            // the four steps that resolve it were rendered one tab away. The reporter in #802 filed an issue
+            // with the guide already armed, because nothing on Devices said so. Same state and same string
+            // as LiveView's banner; no new copy.
+            if let guide = live.reconnectGuide { repairGuideBanner(guide) }
             // UPPERCASE overline section header, matching the liquid Today. Counts the paired bands so the
             // multi-WHOOP reality reads at a glance.
             sectionHead("YOUR BANDS", trailing: activeDevices.count == 1
                         ? String(localized: "1 paired")
                         : String(localized: "\(activeDevices.count) paired"))
             ForEach(Array(activeDevices.enumerated()), id: \.element.id) { idx, device in
+                // Shared read-only probe gate (Test Centre → Connection + a live WHOOP), hoisted so the two
+                // probe closures below don't each re-inline a 4-term && chain — which tips the iOS Swift
+                // type-checker over its budget ("unable to type-check this expression in reasonable time").
+                let probeGate = device.status == .active && live.connected
+                    && SourceCoordinator.isWhoop(device) && TestCentre.active(.connection)
                 DeviceCard(
                     device: device,
                     isActive: device.status == .active,
@@ -119,6 +161,7 @@ private struct DevicesContent: View {
                     // The live battery belongs to whichever device is ACTIVE + connected (the WHOOP, a
                     // generic strap, or an FTMS machine all funnel into live.batteryPct). nil otherwise.
                     liveBatteryPct: (device.status == .active && live.connected) ? live.batteryPct.map { Int($0.rounded()) } : nil,
+                    liveBatteryMv: (device.status == .active && live.connected) ? live.batteryMv : nil,
                     // Firmware version belongs to the active + connected strap only; nil otherwise (and
                     // for a non-WHOOP source that never reports one).
                     liveFirmware: (device.status == .active && live.connected) ? live.strapFirmware : nil,
@@ -143,7 +186,22 @@ private struct DevicesContent: View {
                     onRebootProbe: (device.status == .active && live.connected
                                     && SourceCoordinator.isWhoop(device)
                                     && model.ble.isWhoop4
-                                    && TestCentre.active(.connection)) ? { probeTarget = device } : nil)
+                                    && TestCentre.active(.connection)) ? { probeTarget = device } : nil,
+                    // #592 extended-battery probe: read-only, BOTH families (the 4.0 is discriminating).
+                    // Same Test Centre → Connection gate as the reboot probe, minus the 4.0-only clause.
+                    onExtendedBatteryProbe: probeGate ? { batteryProbeTarget = device } : nil,
+                    // #690 body-location probe: read-only, both families. Same Test Centre → Connection gate.
+                    onBodyLocationProbe: probeGate ? { bodyLocationProbeTarget = device } : nil,
+                    // #761 feature-flag ENUMERATION probe: read-only (names only, nothing written), both
+                    // families. Same Test Centre → Connection gate.
+                    onFeatureFlagProbe: probeGate ? { featureFlagProbeTarget = device } : nil,
+                    // Stop an offload already in flight. Offered ONLY while one is running on this
+                    // strap — not a Test Centre probe but an ordinary escape hatch, because until now
+                    // a long drain could only be ended by the 15-minute timeout or walking out of
+                    // range. Nothing is lost: unacked records stay on the strap.
+                    onAbortSync: (device.status == .active && live.connected && live.backfilling
+                                  && SourceCoordinator.isWhoop(device))
+                        ? { model.ble.abortBackfill() } : nil)
                     .staggeredAppear(index: idx)
             }
 
@@ -222,6 +280,32 @@ private struct DevicesContent: View {
         } message: { _ in
             Text("The WHOOP 4.0 reboot frame isn't confirmed — a normal Restart is ignored (#235). Send each candidate and watch BOTH the strap log and the strap itself. “no disconnect within 12s” means the strap ignored the frame. A “link dropped” line means the frame reached the strap — but a dropped link alone isn't a reboot: a real reboot also switches the strap's sensor light off for a few seconds, so if the light stayed on it was just a dropped connection, not a reboot. Non-destructive — your data is kept. Please share the log so we can pin the real frame.")
         }
+        // #592 extended-battery opcode probe: read-only, dumps the strap's full raw reply so a capture
+        // settles the disputed GET_EXTENDED_BATTERY_INFO number (98 vs an APK decompile's 87).
+        .confirmationDialog("Battery-info probe (#592 RE)",
+                            isPresented: Binding(get: { batteryProbeTarget != nil },
+                                                 set: { if !$0 { batteryProbeTarget = nil } }),
+                            titleVisibility: .visible,
+                            presenting: batteryProbeTarget) { _ in
+            Button("Send probe (read-only)") { model.probeExtendedBatteryInfo(); batteryProbeTarget = nil }
+            Button("Cancel", role: .cancel) { batteryProbeTarget = nil }
+        } message: { _ in
+            Text("Two independent protocol tables disagree on the extended-battery opcode (98 vs 87). This sends the curated read-only 98 and shows the strap's full raw reply. A battery-style payload confirms 98 on your firmware; a short stub means it stays ambiguous. Nothing is written to the strap.")
+        }
+        // #592 probe result: the strap's reply (or a "waiting…" state), readable + copyable in place.
+        .sheet(isPresented: Binding(get: { live.extendedBatteryProbe != nil },
+                                    set: { if !$0 { model.clearExtendedBatteryProbe() } })) {
+            ExtendedBatteryProbeResultView(
+                text: live.extendedBatteryProbe ?? "",
+                onClose: { model.clearExtendedBatteryProbe() })
+        }
+        // #690 body-location probe (confirm + result), isolated into a ViewModifier so its two heavy
+        // dialog modifiers type-check in their OWN scope — the DevicesView dialog chain is already near the
+        // iOS Swift type-checker's budget, and inlining a 6th/7th modifier here tips it over ("unable to
+        // type-check in reasonable time"). macOS tolerates the inline form; iOS's type-inference is stricter.
+        .modifier(BodyLocationProbeSheets(target: $bodyLocationProbeTarget))
+        // #761 feature-flag enumeration probe (confirm + result) — same ViewModifier isolation.
+        .modifier(FeatureFlagProbeSheets(target: $featureFlagProbeTarget))
         // Second, strongly-worded delete-data confirm (reached from the Remove card's secondary control)
         .alert("Delete all of this device's data?",
                isPresented: Binding(get: { deleteDataTarget != nil },
@@ -401,6 +485,8 @@ private struct DeviceCard: View {
     /// for WHOOP, a generic strap, or an FTMS machine. nil when not the active/connected device or
     /// the source hasn't reported a battery (e.g. a strap/machine without the 0x180F service).
     var liveBatteryPct: Int? = nil
+    /// #592: strap pack voltage (mV) for the active+connected strap; nil otherwise. Shown beside the percent.
+    var liveBatteryMv: Int? = nil
     /// The active+connected strap's firmware version (from the connect handshake). nil when not the
     /// active/connected device, or for a source that reports no firmware (e.g. a non-WHOOP strap).
     var liveFirmware: String? = nil
@@ -423,6 +509,13 @@ private struct DeviceCard: View {
     /// WHOOP 4.0 reboot probe (Test Centre → Connection, 4.0 only). Non-nil only when the parent has
     /// decided the probe applies (live-connected WHOOP 4.0 + Connection test mode on); nil otherwise. (#235)
     var onRebootProbe: (() -> Void)? = nil
+    /// #592 extended-battery opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
+    var onExtendedBatteryProbe: (() -> Void)? = nil
+    var onBodyLocationProbe: (() -> Void)? = nil
+    /// #761 feature-flag ENUMERATION probe (Test Centre → Connection, both WHOOP families). Read-only:
+    /// it reads the flag NAMES the strap's firmware knows and writes nothing.
+    var onFeatureFlagProbe: (() -> Void)? = nil
+    var onAbortSync: (() -> Void)? = nil
     /// Removed-section affordances (re-add as active / delete its data).
     var onReAdd: (() -> Void)? = nil
     var onDeleteData: (() -> Void)? = nil
@@ -522,6 +615,14 @@ private struct DeviceCard: View {
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textSecondary)
                             .accessibilityLabel("Firmware version \(fw)")
+                    }
+                    // #592: strap pack voltage beside the percent, when the battery event has reported it.
+                    if let mv = liveBatteryMv {
+                        Text("·").font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        Text("\(Double(mv) / 1000.0, specifier: "%.2f") V")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .accessibilityLabel("Battery voltage \(Double(mv) / 1000.0, specifier: "%.2f") volts")
                     }
                     if let layout = liveHistoryLayout {
                         Text("·").font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
@@ -653,10 +754,28 @@ private struct DeviceCard: View {
                 if isLiveConnected, SourceCoordinator.isWhoop(device), let onReboot {
                     Button { onReboot() } label: { Label("Restart strap…", systemImage: "arrow.clockwise") }
                 }
+                // Stop a sync that is part-way through. Present only while this strap is actually
+                // offloading; the parent owns that condition.
+                if let onAbortSync {
+                    Button { onAbortSync() } label: { Label("Stop sync", systemImage: "stop.circle") }
+                }
                 // 4.0 reboot probe (RE): only present when the parent passed a closure (Test Centre →
                 // Connection on + a live WHOOP 4.0). Finds the real reboot frame the 4.0 accepts (#235).
                 if let onRebootProbe {
                     Button { onRebootProbe() } label: { Label("Reboot probe (4.0 RE)…", systemImage: "ladybug") }
+                }
+                // #592 extended-battery opcode probe (RE): read-only, both families. Test Centre → Connection.
+                if let onExtendedBatteryProbe {
+                    Button { onExtendedBatteryProbe() } label: { Label("Battery-info probe (#592 RE)…", systemImage: "ladybug") }
+                }
+                // #690 body-location opcode probe (RE): read-only, both families. Test Centre → Connection.
+                if let onBodyLocationProbe {
+                    Button { onBodyLocationProbe() } label: { Label("Body-location probe (#690 RE)…", systemImage: "ladybug") }
+                }
+                // #761 feature-flag ENUMERATION probe (RE): read-only key-name listing, both families.
+                // Test Centre → Connection.
+                if let onFeatureFlagProbe {
+                    Button { onFeatureFlagProbe() } label: { Label("Feature-flag probe (#761 RE)…", systemImage: "ladybug") }
                 }
                 if let onRemove {
                     Divider()
@@ -883,6 +1002,188 @@ struct SignalBars: View {
         }
         .frame(width: 22, height: 18, alignment: .bottom)
         .accessibilityHidden(true)
+    }
+}
+
+// MARK: - #592 extended-battery probe result
+
+/// The #592 probe reply (raw hex + payload triage + capture diff), or a "waiting…" state while in flight.
+/// Read-only; the text is selectable and a Copy button puts it on the clipboard so a capture pastes into
+/// the issue without a full strap-log export. Twin of the Android BatteryInfoProbeResultDialog.
+private struct ExtendedBatteryProbeResultView: View {
+    let text: String
+    let onClose: () -> Void
+    private var waiting: Bool { text == BLEManager.extendedBatteryProbeWaiting }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Battery-info probe result (#592)")
+                .font(StrandFont.title2)
+                .foregroundStyle(StrandPalette.textPrimary)
+            if waiting {
+                Text("Waiting for the strap's reply…")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            } else {
+                ScrollView {
+                    Text(text)
+                        .font(StrandFont.mono)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                if !waiting {
+                    Button("Copy") { PlatformPasteboard.copy(text) }
+                }
+                Spacer()
+                Button("Close") { onClose() }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 340, minHeight: 260)
+        .background(StrandPalette.surfaceOverlay)
+    }
+}
+
+/// #690: the body-location probe's confirm + result dialogs as one ViewModifier, so they're type-checked
+/// in isolation instead of extending the DevicesView `.confirmationDialog`/`.sheet` chain (which is already
+/// near the iOS Swift type-checker's budget). `model`/`live` auto-inject from the parent's environment.
+private struct BodyLocationProbeSheets: ViewModifier {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var live: LiveState
+    @Binding var target: PairedDevice?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Body-location probe (#690 RE)",
+                                isPresented: Binding(get: { target != nil },
+                                                     set: { if !$0 { target = nil } }),
+                                titleVisibility: .visible,
+                                presenting: target) { _ in
+                Button("Send probe (read-only)") { model.probeBodyLocationAndStatus(); target = nil }
+                Button("Cancel", role: .cancel) { target = nil }
+            } message: { _ in
+                Text("Sends the read-only GET_BODY_LOCATION_AND_STATUS (0x54) and shows the strap's full raw reply, decoding the body-location record (revision / location / confidence / status) on WHOOP 4.0. Nothing is written to the strap, and it never changes wear detection or scoring.")
+            }
+            .sheet(isPresented: Binding(get: { live.bodyLocationProbe != nil },
+                                        set: { if !$0 { model.clearBodyLocationProbe() } })) {
+                BodyLocationProbeResultView(
+                    text: live.bodyLocationProbe ?? "",
+                    onClose: { model.clearBodyLocationProbe() })
+            }
+    }
+}
+
+/// The #690 body-location probe reply (raw hex + decoded record + capture diff), or a "waiting…" state
+/// while in flight. Read-only; selectable text + a Copy button. Twin of the Android BodyLocationProbe
+/// result dialog and structurally identical to ExtendedBatteryProbeResultView.
+private struct BodyLocationProbeResultView: View {
+    let text: String
+    let onClose: () -> Void
+    private var waiting: Bool { text == BLEManager.bodyLocationProbeWaiting }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Body-location probe result (#690)")
+                .font(StrandFont.title2)
+                .foregroundStyle(StrandPalette.textPrimary)
+            if waiting {
+                Text("Waiting for the strap's reply…")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            } else {
+                ScrollView {
+                    Text(text)
+                        .font(StrandFont.mono)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                if !waiting {
+                    Button("Copy") { PlatformPasteboard.copy(text) }
+                }
+                Spacer()
+                Button("Close") { onClose() }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 340, minHeight: 260)
+        .background(StrandPalette.surfaceOverlay)
+    }
+}
+
+/// #761: the READ-ONLY feature-flag enumeration probe's confirm + result dialogs, isolated into a
+/// ViewModifier for the same reason `BodyLocationProbeSheets` is — keeping the DevicesView
+/// `.confirmationDialog`/`.sheet` chain inside the iOS Swift type-checker's budget.
+private struct FeatureFlagProbeSheets: ViewModifier {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var live: LiveState
+    @Binding var target: PairedDevice?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Feature-flag probe (#761 RE)",
+                                isPresented: Binding(get: { target != nil },
+                                                     set: { if !$0 { target = nil } }),
+                                titleVisibility: .visible,
+                                presenting: target) { _ in
+                Button("Send probe (read-only)") { model.probeFeatureFlags(); target = nil }
+                Button("Cancel", role: .cancel) { target = nil }
+            } message: { _ in
+                Text("Asks the strap to list the feature-flag NAMES its own firmware knows: START_FF_KEY_EXCHANGE (0x75) then SEND_NEXT_FF (0x76) until the strap says it's done. Read-only — no flag value is written, and the SET commands are never sent from this probe. The list is shown here and written to the strap log.")
+            }
+            .sheet(isPresented: Binding(get: { live.featureFlagProbe != nil },
+                                        set: { if !$0 { model.clearFeatureFlagProbe() } })) {
+                FeatureFlagProbeResultView(
+                    text: live.featureFlagProbe ?? "",
+                    onClose: { model.clearFeatureFlagProbe() })
+            }
+    }
+}
+
+/// The #761 enumeration report (the strap's own flag-name list + the exchange trace), or a "waiting…"
+/// state while the walk runs. Selectable text + a Copy button, structurally identical to the #592/#690
+/// result views. Twin of the Android feature-flag probe result dialog.
+private struct FeatureFlagProbeResultView: View {
+    let text: String
+    let onClose: () -> Void
+    private var waiting: Bool { text == BLEManager.featureFlagProbeWaiting }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Feature-flag probe result (#761)")
+                .font(StrandFont.title2)
+                .foregroundStyle(StrandPalette.textPrimary)
+            if waiting {
+                // Reuses the #592/#690 waiting copy — the walk sends one 118 per reply, so at any moment
+                // it is waiting on exactly one strap reply, and the catalog keeps a single translation.
+                Text("Waiting for the strap's reply…")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            } else {
+                ScrollView {
+                    Text(text)
+                        .font(StrandFont.mono)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                if !waiting {
+                    Button("Copy") { PlatformPasteboard.copy(text) }
+                }
+                Spacer()
+                Button("Close") { onClose() }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 340, minHeight: 260)
+        .background(StrandPalette.surfaceOverlay)
     }
 }
 

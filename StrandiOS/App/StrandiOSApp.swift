@@ -87,6 +87,7 @@ struct StrandiOSApp: App {
         WindowGroup {
             iOSRootView()
                 .environmentObject(model)
+                .environmentObject(model.ble)   // #334: Today pull-to-sync reads BLEManager (no HR churn)
                 .environmentObject(model.live)
                 .environmentObject(model.repo)
                 .environmentObject(model.profile)
@@ -183,6 +184,21 @@ struct StrandiOSApp: App {
                 .onOpenURL { url in
                     if url.host == "import-health" {
                         model.handleHealthImportURL(url)
+                    }
+                }
+                .alert("Import Apple Health data?", isPresented: Binding(
+                    get: { model.pendingShortcutHealthImport != nil },
+                    set: { showing in
+                        if !showing { model.cancelPendingHealthImport() }
+                    }
+                )) {
+                    Button("Import") { model.confirmPendingHealthImport() }
+                    Button("Cancel", role: .cancel) { model.cancelPendingHealthImport() }
+                } message: {
+                    if let pending = model.pendingShortcutHealthImport {
+                        Text("A Shortcut wants to add \(pending.daysCount) days and \(pending.workoutsCount) workouts to the Apple Health import source.")
+                    } else {
+                        Text("A Shortcut wants to add data to the Apple Health import source.")
                     }
                 }
                 // Bring the watch link up once at launch (WCSession ignores a redundant activate), then

@@ -34,22 +34,33 @@ extension WhoopStore {
     @discardableResult
     public func upsertMetricSeries(_ rows: [MetricPoint], deviceId: String) async throws -> Int {
         try syncWrite { db in
-            let tombstoned = Set(try WhoopStore.metricPointTombstoneRows(db, deviceId: deviceId)
-                .map { MetricPointTombstoneKey(day: $0.day, key: $0.key) })
-            var n = 0
-            for r in rows {
-                if tombstoned.contains(MetricPointTombstoneKey(day: r.day, key: r.key)) { continue }
-                try db.execute(sql: """
-                    INSERT INTO metricSeries
-                        (deviceId, day, key, value)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(deviceId, day, key) DO UPDATE SET
-                        value = excluded.value
-                    """, arguments: [deviceId, r.day, r.key, r.value])
-                n += db.changesCount
-            }
-            return n
+            try Self.upsertMetricSeries(rows, deviceId: deviceId, in: db)
         }
+    }
+
+    /// Transaction-sharing primitive used by computed-score persistence.
+    ///
+    /// The resurrection guard lives HERE, not in the async wrapper, so the two writers cannot drift:
+    /// `ScoreInputProvenanceStore` persists computed headline scores through this same primitive, and a
+    /// guard that only covered the wrapper would let a score the user deleted in the cloud journal come
+    /// back the next time it was re-derived. `metricPointTombstoneRows` reads on the caller's `db`, so it
+    /// shares the enclosing transaction rather than opening a second connection.
+    static func upsertMetricSeries(_ rows: [MetricPoint], deviceId: String, in db: Database) throws -> Int {
+        let tombstoned = Set(try WhoopStore.metricPointTombstoneRows(db, deviceId: deviceId)
+            .map { MetricPointTombstoneKey(day: $0.day, key: $0.key) })
+        var n = 0
+        for r in rows {
+            if tombstoned.contains(MetricPointTombstoneKey(day: r.day, key: r.key)) { continue }
+            try db.execute(sql: """
+                INSERT INTO metricSeries
+                    (deviceId, day, key, value)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(deviceId, day, key) DO UPDATE SET
+                    value = excluded.value
+                """, arguments: [deviceId, r.day, r.key, r.value])
+            n += db.changesCount
+        }
+        return n
     }
 
     // MARK: - Reads

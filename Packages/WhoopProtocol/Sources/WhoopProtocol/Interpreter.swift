@@ -388,13 +388,28 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
         }
     }
     fb.parsed["rr_intervals"] = .intArray(rrs)
-    // Bytes adjacent to the HR/R-R fields, read off real frames. @36 / 256 tracks the integer hr@22 to
-    // sub-bpm (corr 0.989 over ~258k records) — a higher-precision heart rate; the others are raw.
+    // Bytes adjacent to the HR/R-R fields, read off real frames: @36 is a FLAG byte and @37 a duplicate
+    // heart rate — not the two halves of one fixed-point HR (see below); the others are raw.
     if let v = readDType(frame, 33, "u8") {
         fb.add(33, 1, "cardiac_flags", "cardiac", value: .int(v), note: "raw byte near the HR fields")
     }
-    if let v = readDType(frame, 36, "u16") {
-        fb.add(36, 2, "hr_fixed_8_8", "hr", value: .int(v), note: "higher-precision HR: bpm = value/256")
+    // @36 was read as the low half of a u16 `hr_fixed_8_8` with bpm = value/256. Over 18,650 real v18
+    // records that model is false. Bit 4 is NEVER set (0/18,650 — a genuine 8.8 fraction sets it ~50% of
+    // the time, and it is the ONLY bit never set); 95.02% of values land in 0x80–0x8F where uniform would
+    // be 6.25%, over just 40 distinct values, sd 26.5 vs 73.9 for a uniform byte. The "corr 0.989 with
+    // hr@22" that justified the old name was circular — the u16 is literally hr@22 (carried at @37) plus
+    // this flag byte over 256, so the residual is a flat +0.504 ± 0.189. Bit 7 reads as a VALIDITY bit:
+    // with it clear (n=748) rr_count == 0 in 70.32% of records vs 19.82% with it set, and the @108/@109
+    // sentinel fires in 69.65% vs 1.32%. The remaining bits are unpinned, so the byte ships raw.
+    if let v = readDType(frame, 36, "u8") {
+        fb.add(36, 1, "hr_quality_flags", "hr", value: .int(v),
+               note: "flag byte (raw); bit7 = HR/R-R valid, bit4 never set; NOT a fixed-point HR")
+    }
+    // @37 duplicates heart_rate@22 — equal in 99.575% of records (18,523/18,602), differing only by
+    // -6…+2, and it only tracks HR while @36 bit7 is set (99.74% exact vs 94.12% when clear).
+    if let v = readDType(frame, 37, "u8") {
+        fb.add(37, 1, "heart_rate_alt", "hr", value: .int(v),
+               note: "bpm; duplicate of heart_rate@22 (99.6% exact); trust only when hr_quality_flags bit7 is set")
     }
     if let v = readDType(frame, 38, "u16") {
         fb.add(38, 2, "rr_packed", "rr", value: .int(v), note: "raw u16 near the R-R fields; meaning not pinned")
@@ -481,36 +496,78 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
                note: "on-wrist/validity flag (b0-1)")
         fb.add(81, 1, "wake_quality", "sleep", value: .int((sb >> 2) & 3),
                note: "quality code (b2-3); observed nonzero only in wake")
+        // The WHOLE byte, unmasked. The three fields above are the nibbles this project has interpreted;
+        // this key is the strap's own byte VERBATIM so all 8 bits survive to storage — including b6-7,
+        // which read 0 across every capture held here and therefore have no interpretation at all yet.
+        // A per-nibble store would make those bits permanently unrecoverable, because the strap trims its
+        // banked history the moment an offload is acked. Instrumentation only: nothing scores this.
+        fb.add(81, 1, "sleep_state_byte", "sleep", value: .int(sb),
+               note: "the RAW @81 flag byte, all 8 bits (b0-1 onwrist, b2-3 wake_quality, b4-5 sleep_state, b6-7 reserved)")
     }
     if let v = readDType(frame, 82, "u8") {
         fb.add(82, 1, "aux_byte_82", "status", value: .int(v),
-               note: "raw; observed nonzero only while sleep_state = asleep (meaning not pinned)")
+               note: "raw; nonzero only while sleep_state = asleep; tri-mode, see spo2_candidate_82")
+        // #103 SpO2 candidate: a decompile-sourced decode (gen5.rs `spo2_pct`, reimplemented here as a
+        // protocol fact with attribution, like the other RE work) reads @82 (= inner 74) as a
+        // strap-computed SpO2 % scalar, tri-mode: 70–100 = a real %, bit-7 values (0x80/0xA0…) =
+        // saturation sentinels, other sub-70 nonzero = diagnostic codes, populated only during sleep.
+        // Evidence is SPLIT: an 8-night independent validation with real spread (corr +0.99, ~0.4 %/night,
+        // tracks a 92 % desat AND a 98 % high; offset-specific — only @82 tracks in a 74–92 scan) meets
+        // the cross-night bar, but the two capture nights checked on the original #103 device moved
+        // OPPOSITE to the app value (95.50→92.83 app vs 93.62→93.80 gated mean) — device/firmware
+        // variance or an extraction error on one side, unresolved. So this ships as an INSTRUMENTATION
+        // CANDIDATE only: the in-band value is decoded and surfaced raw for multi-device correlation
+        // against the app's own nightly SpO2. It must never back a shipped SpO2 metric, never write
+        // `spo2Pct`/`spo2_red`/`spo2_ir` (the testHistoricalV18OpticalFieldsAreNotNamedPhysiologically
+        // guard), and never
+        // feed a downstream gate (recovery/illness) until the cross-device contradiction is resolved.
+        if (70...100).contains(v) {
+            fb.add(82, 1, "spo2_candidate_82", "spo2", value: .int(v),
+                   note: "in-band (70–100) @82 reading; candidate strap-computed SpO2 % (#103) — instrumentation only, cross-device evidence still split, not a shipped metric")
+        }
     }
     // ── The @82–119 "optical/perfusion + tail" span, characterised over 18,602 real v18 records from a
     // third strap (overnight R22 live stream) + cross-checked on the two fixture devices above. The span
     // is ~85% ZERO PADDING: bytes 83–103, 110–112 and 117–119 are constant 0x00 on every record, and @104
-    // is a constant 0x01 marker (5/5 fixtures, both devices). Only four groups carry data — @106 (u16),
-    // @108/@109 (a paired channel) and the @113 float — and none is physiologically ground-truth-named
-    // (no SpO2/respiratory reference exists), so each is carried RAW with its observed behaviour, never
+    // is a constant 0x01 marker (5/5 fixtures, both devices). Only two byte PAIRS carry data — @106/@107
+    // and @108/@109 — plus the @113 float, and none is physiologically ground-truth-named (no
+    // SpO2/respiratory reference exists), so each is carried RAW with its observed behaviour, never
     // mapped to a named metric. This documents the region honestly instead of leaving 38 opaque bytes.
-    if let v = readDType(frame, 106, "u16") {
-        // An analog u16 that wanders across the night with no clean correlate to HR/motion/skin-temp, and
-        // reads 0 only when the strap is off-wrist (HR=0). Optical/ADC-baseline-like; raw, not pinned.
-        fb.add(106, 2, "optical_baseline_106", "optical", value: .int(v),
-               note: "u16 LE analog optical/ADC baseline; wanders overnight, 0 = off-wrist; raw, not pinned")
+    //
+    // @106/@107 were read as ONE u16 LE. They cannot be: across 18,599 consecutive-second pairs the HIGH
+    // byte changed while the LOW byte stayed frozen in 3,514 of them (18.89%), and the corpus holds ZERO
+    // low-byte wrap events — a real u16 cannot step its high byte without a carry. The apparent u16 deltas
+    // are exactly 256·Δ@107 + Δ@106 (they cluster at 0, ±1, ±255, ±256, ±257, ±513). These are two
+    // correlated but independent u8 channels (corr +0.73; they move in OPPOSITE directions in 5.8% of the
+    // pairs where both move), structurally parallel to the @108/@109 pair. 0 — not 128 — is the off-wrist
+    // marker: both bytes read 0 in exactly the 8 records that also carry HR == 0, while 128 occurs
+    // unremarkably while worn (@106 in 10 records, @107 in 103). Magnitudes are device-specific (102–255 /
+    // 119–247 on the R22 strap vs 20–66 / 34–81 on another), so no scale is asserted.
+    for (name, off) in [("optical_baseline_a", 106), ("optical_baseline_b", 107)] {
+        if let v = readDType(frame, off, "u8") {
+            fb.add(off, 1, name, "optical", value: .int(v),
+                   note: "u8 optical/ADC baseline channel; wanders overnight, 0 = off-wrist; raw, not pinned")
+        }
     }
-    // @108/@109 are a tightly-coupled PAIR (equal in 23.5% of records, within ±2 in ~80%). Both rise
-    // monotonically with heart rate (mean ~34 at HR 40–49 → ~58 at HR 80–89) and with motion, and both
-    // read 128 as a per-channel INVALID sentinel — observed off-wrist AND on some worn records that still
-    // carry a valid HR (the optical channel can be invalid while HR is derived elsewhere). Amplitude- or
+    // @108/@109 are a tightly-coupled PAIR (equal in 23.5% of records, within ±2 in ~80%). 128 is a
+    // RECORD-level sentinel, not a per-channel one: amp_a == 128 in 757 records and amp_b == 128 in 757 —
+    // the SAME 757, never one without the other. They do NOT rise with heart rate; that reading (mean ~34
+    // at HR 40–49 → ~58 at 80–89) was an averaging artifact of counting the 128 sentinel as a number, and
+    // with sentinels excluded the trend is flat-to-declining (32.45 → 29.52). The real monotone trend is
+    // with MOTION: ~32.7 while still (dyn_acc < 0.02 g) → 37.4 at 0.05–0.2 g. Amplitude- or
     // signal-quality-like; carried raw, NOT named SpO2/perfusion without on-device ground truth.
+    //
+    // The sentinel itself is a usable per-second SIGNAL-QUALITY flag: it fires on 4.02% of worn seconds
+    // and predicts the band's own beat-detection failure (rr_count == 0) at 79.44% vs 19.40% — a 4.09×
+    // lift that SURVIVES holding motion constant (4.11× within dyn_acc < 0.009 g), where shuffled and
+    // circular-shift nulls all sit at ~1.0×. It is the same quality condition @36 bit7 reports.
     if let a = readDType(frame, 108, "u8") {
         fb.add(108, 1, "optical_amp_a", "optical", value: .int(a),
-               note: "paired optical channel A (≈ optical_amp_b@109); rises with HR/motion; 128 = channel invalid; raw")
+               note: "paired optical channel A (≈ optical_amp_b@109); tracks motion, not HR; 128 = record-level signal-quality sentinel; raw")
     }
     if let b = readDType(frame, 109, "u8") {
         fb.add(109, 1, "optical_amp_b", "optical", value: .int(b),
-               note: "paired optical channel B (see optical_amp_a@108); 128 = channel invalid; raw")
+               note: "paired optical channel B (see optical_amp_a@108); 128 = record-level sentinel, always together with @108; raw")
     }
     if let d = readF32(frame, 113), d.isFinite {
         // A float32 at @113 (observed range ~ -5.3…0, 0 = unset); purpose unknown, carried raw.
@@ -525,7 +582,7 @@ private func decodeWhoop5Historical(_ frame: [UInt8], fb: FieldBuilder, payloadE
     // undecodable records, the raw-capture batch when that toggle is on), so a future re-decode is
     // lossless. Kept in lockstep with the Android decodeWhoop5Historical provenance note.
     if let payloadEnd = payloadEnd, 82 < payloadEnd, payloadEnd <= frame.count {
-        fb.region(82, payloadEnd, "optical/tail (mostly zero padding; see @106/@108/@109/@113)", "unknown")
+        fb.region(82, payloadEnd, "optical/tail (mostly zero padding; see @106/@107/@108/@109/@113)", "unknown")
     }
 }
 
@@ -590,16 +647,20 @@ private func decodeWhoop5HistoricalV26(_ frame: [UInt8], fb: FieldBuilder) {
 /// Both versions reuse the v18 record header — layout version @9, a marker byte @10 (0x81 on v20, 0x80 on
 /// v21), the monotonic u32 record index @11 (the same lifetime counter as v18), and the u32 unix second
 /// @15. Their bodies are blocks of fixed-length sample channels, established from captured frames:
-///   • v21 (1244 B): a (100, 100, 3) descriptor near @22, then three 100-sample i16 channels at @28 /
-///     @228 / @428 (200 B apart), each a bounded pulsatile waveform at its own DC baseline.
-///   • v20 (2140 B): five channel blocks, each preceded by a presence byte (0x19 = active, 0x00 =
-///     empty / zero-filled); an active block holds two 50-sample i32 channels. The presence bytes sit at
-///     @0x1a / @0x1c0 / @0x366 / @0x50c / @0x6b2; the ten channel slots start at
-///     @0x2f / 0xf7 / 0x1d5 / 0x29d / 0x37b / 0x443 / 0x521 / 0x5e9 / 0x6c7 / 0x78f.
+///   • v21 (1244 B): a (100, 100, 3) descriptor near @22, then SIX 100-sample i16 channels in two blocks —
+///     accelerometer at @28 / @228 / @428 and gyroscope at @640 / @840 / @1040 (200 B apart; countB @630 =
+///     100). This is 6-axis IMU, not optical: the accel channels sphere-fit to a ~1 g gravity shell on a
+///     stationary strap (validated by Whoop5RawImu over 1423 real buffers, #423/#493).
+///   • v20 (2140 B): five repeated 422-byte optical-measurement blocks. Each has a 21-byte header,
+///     two 200-byte channel slots, and one reserved byte. Header byte 0 is the shared sample count; an
+///     active block holds two 25-sample i32 channels (~25 Hz). The two channels share one measurement
+///     header and must not be interpreted as two wavelengths. See `Whoop5RawOptical` for the lossless
+///     structural model and the 25-vs-50 sample-count evidence.
 ///
-/// Channels are exposed as raw sample arrays with NO invented scale or unit (an optical waveform has no
-/// absolute unit). Which channel maps to which optical LED — and which carries motion — needs a labelled
-/// capture (e.g. a deliberate moving window), so no per-channel identity is asserted here.
+/// v21 channels are named accel_/gyro_ per the gravity-shell evidence above. The v20 record is optical,
+/// but its measurement wavelengths and channel geometry remain OPEN, so those channels stay neutrally
+/// named. This layer exposes raw i16 (v21) or sign-extended i32 (v20) arrays; `Whoop5RawImu.decode`
+/// applies the v21 physical scales.
 private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, version: Int, payloadEnd: Int?) {
     if frame.count > 10 {
         fb.add(10, 1, "layout_marker", "meta", value: .int(Int(frame[10])))
@@ -611,43 +672,67 @@ private func decodeWhoop5HistoricalV2021(_ frame: [UInt8], fb: FieldBuilder, ver
         fb.add(15, 4, "unix", "time", value: .int(unix), note: "real unix seconds")
     }
     if version == 21 {
-        // Three 100-sample i16 channels, 200 B apart.
-        for (ch, start) in [(0, 28), (1, 228), (2, 428)] {
+        // TWO blocks of three 100-sample i16 channels: accelerometer (@28/@228/@428) then gyroscope
+        // (@640/@840/@1040), matching the (100,100,3) header @22 and countB @630. NOT optical: on a
+        // stationary strap the three accel channels sphere-fit to a ~1 g gravity shell (median |a| =
+        // 1.006 g, 100/100 samples in-shell on the real fixture) — a gravity vector, which PPG cannot
+        // produce. Validated as 6-axis IMU by Whoop5RawImu over 1423 real buffers (#423/#493). Emitted as
+        // raw i16 arrays (this field layer applies no scale); the physical scales — 1/4096 g/LSB (accel),
+        // 2000/32768 (°/s)/LSB (gyro) — are applied by Whoop5RawImu.decode.
+        let channels: [(name: String, start: Int)] = [
+            ("accel_x", 28), ("accel_y", 228), ("accel_z", 428),
+            ("gyro_x", 640), ("gyro_y", 840), ("gyro_z", 1040),
+        ]
+        for (name, start) in channels {
             var samples: [Int] = []
             for i in 0..<100 {
                 guard let v = readI16(frame, start + i * 2) else { break }
                 samples.append(v)
             }
             if samples.count == 100 {
-                fb.add(start, 200, "optical_ch\(ch)", "ppg", value: .intArray(samples),
-                       note: "raw i16 channel samples (no absolute unit)")
+                fb.add(start, 200, name, "imu", value: .intArray(samples),
+                       note: "raw i16 samples (scale via Whoop5RawImu: 1/4096 g accel, 2000/32768 dps gyro)")
             }
         }
         fb.parsed["sensor_channel_samples"] = .int(100)
         return
     }
-    // version == 20: five blocks of two 50-sample i32 channels, each block gated by a presence byte.
-    let blocks: [(present: Int, ch0: Int, ch1: Int)] = [
-        (0x1a, 0x2f, 0xf7), (0x1c0, 0x1d5, 0x29d), (0x366, 0x37b, 0x443),
-        (0x50c, 0x521, 0x5e9), (0x6b2, 0x6c7, 0x78f),
-    ]
+    // version == 20: five repeated optical-measurement blocks. Each block carries one shared header and
+    // two channel slots. This matters semantically: the two channels within a block are a detector/readout
+    // pair for one measurement configuration, not evidence for two different LED wavelengths.
+    //
+    // EVIDENCE (why 25, not 50): across all 29,203 captured 2140-B buffers, exactly blocks 0/3/4 are active
+    // (channel slots @47/247/1313/1513/1735/1935) and, in every active channel, sample slots 25..49 are
+    // exactly 0.0 — only samples 0..24 carry data. Earlier builds read 50 and emitted arrays that were half
+    // zeros. The block-header byte itself reads 0x19 = 25 on every active block, consistent with a live
+    // per-block sample count. Each sample is a 4-byte LE container holding a 20-bit signed value (its upper
+    // 12 bits are only ever 0x000/0xFFF — pure sign extension — across all captures), so reading it as i32
+    // recovers the correct signed magnitude with no masking.
+    //
+    // Wavelength identity remains open. The six active channels in the current corpus are three pairs
+    // (blocks 0/3/4), not six independent colors. In particular, block 4's two channels cannot be named
+    // IR and red without independent evidence because they share the same block-level configuration.
+    guard let optical = Whoop5RawOptical.decode(frame) else { return }
+    fb.parsed["sensor_block_count"] = .int(optical.blocks.count)
     var present = 0
-    for (b, blk) in blocks.enumerated() {
-        guard frame.count > blk.present, frame[blk.present] != 0 else { continue }
-        for (half, start) in [(0, blk.ch0), (1, blk.ch1)] {
-            var samples: [Int] = []
-            for i in 0..<50 {
-                guard let v = readI32(frame, start + i * 4) else { break }
-                samples.append(v)
-            }
-            if samples.count == 50 {
-                fb.add(start, 200, "channel_b\(b)_\(half)", "sensor", value: .intArray(samples),
-                       note: "raw i32 channel samples (no absolute unit)")
-                present += 1
-            }
+    for block in optical.blocks {
+        let start = Whoop5RawOptical.blockStart + block.index * Whoop5RawOptical.blockLength
+        fb.add(start, Whoop5RawOptical.headerLength, "block_b\(block.index)_header", "optical_config",
+               value: .intArray(block.rawHeader.map(Int.init)),
+               note: "raw: sample count + shared metadata + two 7-byte channel descriptors")
+        fb.parsed["block_b\(block.index)_sample_count"] = .int(block.sampleCount)
+        guard block.sampleCount > 0 else { continue }
+        for (channelIndex, channel) in block.channels.enumerated() {
+            let sampleStart = start + Whoop5RawOptical.headerLength
+                + channelIndex * Whoop5RawOptical.channelSlotLength
+            fb.add(sampleStart, block.sampleCount * 4,
+                   "channel_b\(block.index)_\(channelIndex)", "sensor",
+                   value: .intArray(channel.samples.map(Int.init)),
+                   note: "raw signed i32 samples; paired under one block config; no wavelength or absolute unit asserted")
+            present += 1
         }
     }
-    fb.parsed["sensor_channel_samples"] = .int(50)
+    fb.parsed["sensor_channel_samples"] = .int(optical.blocks.map(\.sampleCount).max() ?? 0)
     fb.parsed["sensor_channels_present"] = .int(present)
 }
 

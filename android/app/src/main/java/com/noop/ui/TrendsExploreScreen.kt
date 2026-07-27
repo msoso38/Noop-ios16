@@ -39,6 +39,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -114,7 +115,7 @@ private data class MetricSpec(
      *  nutrition-csv import or the noop-mood check-in write under dedicated source ids (v2.2.0
      *  parity with the macOS MetricCatalog, whose descriptors carry key+source). */
     val seriesSource: String? = null,
-    /** A short, plain-English one-liner (the Explore header subtitle / catalog blurb). Only the
+    /** A short localized one-liner (the Explore header subtitle / catalog blurb). Only the
      *  three headline scores , Charge / Effort / Rest , carry one today; everything else is null.
      *  Mirrors macOS `MetricDescriptor.description`. */
     val description: String? = null,
@@ -140,47 +141,47 @@ private data class MetricSpec(
 /** The built-in DailyMetric-backed metrics, in the macOS ordering (Charge first). */
 private val builtInMetrics: List<MetricSpec> = listOf(
     MetricSpec(
-        key = "recovery", title = "Charge", unit = "%", category = "Charge",
+        key = "recovery", title = uiString(R.string.l10n_trends_explore_screen_charge_d4e1aee4), unit = "%", category = uiString(R.string.explore_category_charge),
         accent = Palette.accent, higherIsBetter = true, decimals = 0,
         dailyPick = { it.recovery },
-        description = "How recovered you are , led by HRV versus your personal baseline.",
+        description = uiString(R.string.explore_description_charge),
     ),
     MetricSpec(
-        key = "strain", title = "Effort", unit = "/100", category = "Effort",
+        key = "strain", title = uiString(R.string.l10n_trends_explore_screen_effort_8c974bc6), unit = "/100", category = uiString(R.string.explore_category_effort),
         accent = Palette.strain066, higherIsBetter = null, decimals = 1,
         dailyPick = { it.strain },
-        description = "Cardiovascular load for the day, on a 0-100 scale (was 0-21).",
+        description = uiString(R.string.explore_description_effort),
     ),
     MetricSpec(
-        key = "hrv", title = "HRV", unit = "ms", category = "Charge",
+        key = "hrv", title = "HRV", unit = "ms", category = uiString(R.string.explore_category_charge),
         accent = Palette.metricPurple, higherIsBetter = true, decimals = 0,
         dailyPick = { it.avgHrv },
     ),
     MetricSpec(
-        key = "rhr", title = "Resting HR", unit = "bpm", category = "Charge",
+        key = "rhr", title = uiString(R.string.l10n_trends_explore_screen_resting_hr_26677094), unit = "bpm", category = uiString(R.string.explore_category_charge),
         accent = Palette.metricRose, higherIsBetter = false, decimals = 0,
         dailyPick = { it.restingHr?.toDouble() },
     ),
     MetricSpec(
-        key = "sleep", title = "Sleep", unit = "h", category = "Rest",
+        key = "sleep", title = uiString(R.string.l10n_trends_explore_screen_sleep_3cac34e6), unit = "h", category = uiString(R.string.explore_category_rest),
         // Rest-score accent rides the reset accent token (iOS metricAccent maps every Rest metric ,
         // sleep_performance / sleep_total_min , to StrandPalette.accent), not a stray metric hue.
         accent = Palette.accent, higherIsBetter = true, decimals = 1,
         dailyPick = { it.totalSleepMin?.let { m -> m / 60.0 } },
-        description = "How restorative your sleep was , duration, efficiency, deep+REM, timing.",
+        description = uiString(R.string.explore_description_rest),
     ),
     MetricSpec(
-        key = "efficiency", title = "Sleep Efficiency", unit = "%", category = "Rest",
+        key = "efficiency", title = uiString(R.string.l10n_trends_explore_screen_sleep_efficiency_b4b5c293), unit = "%", category = uiString(R.string.explore_category_rest),
         accent = Palette.accent, higherIsBetter = true, decimals = 0,
         dailyPick = { it.efficiency },
     ),
     MetricSpec(
-        key = "spo2", title = "Blood Oxygen", unit = "%", category = "Health",
+        key = "spo2", title = uiString(R.string.l10n_trends_explore_screen_blood_oxygen_a8ad9ff5), unit = "%", category = uiString(R.string.explore_category_health),
         accent = Palette.metricCyan, higherIsBetter = true, decimals = 0,
         dailyPick = { it.spo2Pct },
     ),
     MetricSpec(
-        key = "resp", title = "Respiratory Rate", unit = "rpm", category = "Health",
+        key = "resp", title = uiString(R.string.l10n_trends_explore_screen_respiratory_rate_3fbb532f), unit = "rpm", category = uiString(R.string.explore_category_health),
         accent = Palette.accent, higherIsBetter = null, decimals = 1,
         dailyPick = { it.respRateBpm },
     ),
@@ -194,19 +195,19 @@ private val knownSeriesMetrics: Map<String, MetricSpec> = mapOf(
     // the Compare screen exposes it, but Explore's picker didn't , iOS MetricCatalog has had both. Series-
     // backed (no DailyMetric column), "Heart" category, parity. (Strap-only per-second HR lives in the
     // Deep Timeline; this surfaces the per-day avg/max for imported sources.)
-    "avg_hr" to MetricSpec("avg_hr", "Average Heart Rate", "bpm", "Heart",
+    "avg_hr" to MetricSpec("avg_hr", uiString(R.string.explore_metric_average_heart_rate), "bpm", uiString(R.string.explore_category_heart),
         Palette.metricRose, null, 0),
-    "max_hr" to MetricSpec("max_hr", "Max Heart Rate", "bpm", "Heart",
+    "max_hr" to MetricSpec("max_hr", uiString(R.string.explore_metric_max_heart_rate), "bpm", uiString(R.string.explore_category_heart),
         Palette.metricRose, null, 0),
-    "calories_in" to MetricSpec("calories_in", "Calories In", "kcal", "Nutrition",
+    "calories_in" to MetricSpec("calories_in", uiString(R.string.explore_metric_calories_in), "kcal", uiString(R.string.explore_category_nutrition),
         Palette.metricAmber, null, 0),
-    "protein_g" to MetricSpec("protein_g", "Protein", "g", "Nutrition",
+    "protein_g" to MetricSpec("protein_g", uiString(R.string.explore_metric_protein), "g", uiString(R.string.explore_category_nutrition),
         Palette.metricCyan, null, 0),
-    "carbs_g" to MetricSpec("carbs_g", "Carbs", "g", "Nutrition",
+    "carbs_g" to MetricSpec("carbs_g", uiString(R.string.explore_metric_carbs), "g", uiString(R.string.explore_category_nutrition),
         Palette.metricCyan, null, 0),
-    "fat_g" to MetricSpec("fat_g", "Fat", "g", "Nutrition",
+    "fat_g" to MetricSpec("fat_g", uiString(R.string.explore_metric_fat), "g", uiString(R.string.explore_category_nutrition),
         Palette.metricCyan, null, 0),
-    "mood" to MetricSpec("mood", "Mood", "/5", "Mind",
+    "mood" to MetricSpec("mood", uiString(R.string.explore_metric_mood), "/5", uiString(R.string.explore_category_mind),
         Palette.metricPurple, true, 0),
 )
 
@@ -665,6 +666,7 @@ private fun HeroChartCard(
                                 color = metric.accent,
                                 fill = true,
                                 selectionEnabled = true,
+                                selectionLabels = windowed.map { prettyExploreDate(it.day) },
                             )
                             ExploreGlowEndCap(values = values, tipColor = metric.accent)
                         }
@@ -673,10 +675,7 @@ private fun HeroChartCard(
                     Row(modifier = Modifier.fillMaxWidth()) {
                         listOf(days.first(), days.getOrNull(days.lastIndex / 2), days.last()).forEach { d ->
                             Text(
-                                d?.let {
-                                    runCatching { LocalDate.parse(it).format(DateTimeFormatter.ofPattern("d MMM", Locale.US)) }
-                                        .getOrDefault(it)
-                                }.orEmpty(),
+                                prettyExploreDate(d),
                                 style = NoopType.footnote,
                                 color = Palette.textTertiary,
                                 modifier = Modifier.weight(1f),
@@ -715,6 +714,13 @@ private fun HeroChartCard(
     }
 }
 
+/** ISO "yyyy-MM-dd" to the same compact date used by both the axis and selection label. */
+private fun prettyExploreDate(day: String?): String =
+    day?.let {
+        runCatching { LocalDate.parse(it).format(DateTimeFormatter.ofPattern("d MMM", Locale.US)) }
+            .getOrDefault(it)
+    }.orEmpty()
+
 @Composable
 private fun ChartFootItem(label: String, value: String) {
     Column {
@@ -725,9 +731,9 @@ private fun ChartFootItem(label: String, value: String) {
 
 /** The metric category's domain colour world for the card wash; brand green for neutral categories. */
 private fun domainTint(category: String): Color = when (category) {
-    "Charge" -> Palette.chargeColor
-    "Effort" -> Palette.effortColor
-    "Rest" -> Palette.restColor
+    uiString(R.string.explore_category_charge) -> Palette.chargeColor
+    uiString(R.string.explore_category_effort) -> Palette.effortColor
+    uiString(R.string.explore_category_rest) -> Palette.restColor
     else -> Palette.accent
 }
 
@@ -792,14 +798,15 @@ private fun StatRow(
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
         SectionHeader(stringResource(R.string.explore_summary), overline = stringResource(R.string.explore_over_visible_window), trailing = stringResource(R.string.explore_n_pts, s.n))
 
+        // Average summarizes the selected range, so it leads at the full two-column width.
+        StatTile(
+            modifier = Modifier.fillMaxWidth(),
+            label = stringResource(R.string.explore_average),
+            value = if (s.n > 0) metric.format(s.mean) else ",",
+            caption = pluralStringResource(R.plurals.explore_n_days, s.n, s.n),
+            accent = metric.accent,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(Metrics.gap)) {
-            StatTile(
-                modifier = Modifier.weight(1f),
-                label = stringResource(R.string.explore_average),
-                value = if (s.n > 0) metric.format(s.mean) else ",",
-                caption = stringResource(R.string.explore_n_days, s.n),
-                accent = metric.accent,
-            )
             StatTile(
                 modifier = Modifier.weight(1f),
                 label = stringResource(R.string.explore_min),
@@ -813,18 +820,8 @@ private fun StatRow(
                 accent = Palette.textPrimary,
             )
         }
-        // Two-up (not three-up + a pad cell): the prev-window comparison tile carries a value, a
-        // delta chip AND a "vs prev <window>" caption, which all clipped at a third of the width ,
-        // "vs prev 6 months" truncated to "vs prev 6 m…" and the delta chip ran off the tile (#443).
-        // Half-width gives every part room; mirrors the 2-up tile rows used on Sleep/Compare.
+        // Half-width gives the comparison tile room for its value, delta chip and window caption.
         Row(horizontalArrangement = Arrangement.spacedBy(Metrics.gap)) {
-            StatTile(
-                modifier = Modifier.weight(1f),
-                label = stringResource(R.string.explore_latest),
-                value = latest?.let { metric.format(it.value) } ?: ",",
-                caption = latest?.day,
-                accent = metric.accent,
-            )
             StatTile(
                 modifier = Modifier.weight(1f),
                 label = stringResource(R.string.explore_delta_vs_prev),
@@ -833,6 +830,13 @@ private fun StatRow(
                 accent = Palette.textPrimary,
                 delta = pctChange?.let { "${if (it >= 0) "+" else ""}${String.format(Locale.US, "%.1f", it)}%" },
                 deltaColor = deltaColor,
+            )
+            StatTile(
+                modifier = Modifier.weight(1f),
+                label = stringResource(R.string.explore_latest),
+                value = latest?.let { metric.format(it.value) } ?: ",",
+                caption = latest?.day,
+                accent = metric.accent,
             )
         }
     }

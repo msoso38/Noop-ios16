@@ -147,10 +147,6 @@ final class AppModel: ObservableObject {
     // via BiofeedbackPrefs so a relaunch can't re-fire), carried verbatim between evaluations.
     private var rrBuf: [Int] = []
     private var stressState = BiofeedbackPrefs.loadStressState()
-    // Legacy experimental stress-nudge state (the older `behavior.stressNudge` buzz path) , a slow HRV
-    // baseline + a rate limiter, kept so that toggle still works independently of the L3 check-in.
-    private var hrvBaseline: Double = 0
-    private var lastStressBuzzAt: Date = .distantPast
 
     /// Import source currently writing to the local store, if any.
     @Published private var activeImportSource: DataSourceImportKind?
@@ -166,6 +162,8 @@ final class AppModel: ObservableObject {
     @Published var whoopImportFailed = false
     @Published var appleHealthImportFailed = false
     @Published var xiaomiImportFailed = false
+    /// A decoded Health Shortcut import waiting for explicit user confirmation before it writes rows.
+    @Published var pendingShortcutHealthImport: ShortcutHealthImport.PendingImport?
 
     /// True while any data-source import is writing to the local store.
     var hasActiveImport: Bool { activeImportSource != nil }
@@ -264,11 +262,38 @@ final class AppModel: ObservableObject {
                                               charging: self.live.charging,
                                               enabled: self.behavior.batteryAlerts
                                                     && self.behavior.batteryPredictiveAlerts)
+            // ESCALATION (both independent of the two latching gates above). The 15% alert and the
+            // 24 h predictive alert each fire ONCE per discharge cycle and then latch, so a strap that
+            // keeps draining goes silent exactly when the news gets worse — measured: a user got both
+            // alerts, then nothing across the final ~3 h to the ~10% cutoff, and lost the night.
+            //
+            // 1. Critical SoC: a second, lower crossing with its own persisted gate.
+            BatteryNotifier.onCriticalBattery(pct: Int(pct.rounded()),
+                                              charging: self.live.charging,
+                                              enabled: self.behavior.batteryAlerts)
+            // 2. Bedtime night-guard: near the LEARNED habitual bedtime, does the strap actually clear
+            //    tonight? Uses the cutoff-aware runtime (the raw estimate is time-to-0%, and the strap
+            //    dies ~10% above that — ~6 h of phantom runway at this user's drain). Cold-start (no
+            //    learned midsleep / too few nights) → the policy returns silent, no fabricated bedtime.
+            //    Rides the predictive toggle: it IS a prediction.
+            BatteryNotifier.onBedtimeRunway(
+                nowSecOfDay: Self.localSecOfDayNow(),
+                habitualMidsleepSec: self.habitualMidsleepCache,
+                typicalSleepHours: BatteryEstimator.typicalSleepHours(
+                    nightlyHours: self.repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }),
+                usableRemainingHours: self.live.batteryEstimate.map(BatteryEstimator.usableRemainingHours),
+                charging: self.live.charging,
+                enabled: self.behavior.batteryAlerts && self.behavior.batteryPredictiveAlerts)
         }
         // HR-zone haptic coaching watches the smoothed bpm.
         $bpm.sink { [weak self] hr in self?.coachZone(hr) }.store(in: &hrCancellables)
         // Illness/strain early-warning recomputes when the daily history changes.
-        repo.$days.sink { [weak self] days in self?.evaluateIllness(days) }.store(in: &hrCancellables)
+        repo.$days.sink { [weak self] days in
+            self?.evaluateIllness(days)
+            self?.evaluateStrainTarget()
+            // Keep the battery night-guard's learned bedtime warm off the same signal (throttled inside).
+            self?.refreshHabitualMidsleep()
+        }.store(in: &hrCancellables)
         // Re-arm the strap's firmware alarm once the connection has SETTLED — not the instant it (re)bonds.
         // A smart-alarm time changed while the strap was away never reached it , the send is gated on bond
         // , so the strap kept the OLD time and fired at it (#59).
@@ -285,8 +310,14 @@ final class AppModel: ObservableObject {
         // `connectSettled` only bumps once that channel is confirmed live, so the readback (and the arm
         // itself) always goes out on a link that's actually ready. `dropFirst()` skips the initial
         // published value (0) at subscribe time, so this doesn't fire on app launch before any connection.
+        // #730: ALSO re-run when a DISARM was dropped. `applySmartAlarm()` branches internally (enabled →
+        // arm, disabled → disarm), but gating purely on `smartAlarmEnabled` meant a user who turned the
+        // alarm OFF while disconnected had the disarm swallowed by `send` and never retried — the strap
+        // kept the old firmware alarm and still buzzed, while the app logged "Alarm: disarmed".
+        // `disarmPending` latches exactly that dropped write, so this stays a no-op for the many users who
+        // never armed one (re-running unconditionally would put a DISABLE_ALARM on every connect).
         live.$connectSettled.dropFirst().sink { [weak self] _ in
-            guard let self, self.behavior.smartAlarmEnabled else { return }
+            guard let self, self.behavior.smartAlarmEnabled || self.ble.disarmPending else { return }
             self.applySmartAlarm()
         }.store(in: &hrCancellables)
         // The firmware alarm is a single absolute instant with no recurrence, and was re-armed ONLY on
@@ -750,39 +781,19 @@ final class AppModel: ObservableObject {
         bpm = nil
     }
 
-    /// Stress evaluation, two independent layers (each opt-in, each off by default):
-    ///   • the legacy experimental `behavior.stressNudge` buzz (a fresh HRV dip → one confirming buzz);
-    ///   • the v5 L3 closed-loop check-in , the unit-tested `StressOnsetDetector` decides, at the moment
-    ///     it matters, whether to offer a 60-s guided breath. On a fresh, non-metabolic HRV dip while the
-    ///     user is still it fires a single confirming buzz AND posts a passive nudge to `stressNudgeCenter`
-    ///     (the dismissible Stress check-in card surfaces it). The detector carries its own replay-safe
-    ///     state (de-dup + slow baseline + rate limit), persisted via `BiofeedbackPrefs` so a relaunch
-    ///     can't re-fire. Honest / non-clinical: "stress" is an autonomic proxy vs the user's own
-    ///     baseline, never a diagnosis.
+    /// The unit-tested `StressOnsetDetector` decides whether to offer a 60-s guided breath. On a fresh,
+    /// non-metabolic HRV dip while the user is still, it fires a single confirming buzz and posts a
+    /// passive nudge to `stressNudgeCenter`. The detector carries replay-safe state (de-dup + slow
+    /// baseline + rate limit), persisted via `BiofeedbackPrefs` so a relaunch can't re-fire. Honest /
+    /// non-clinical: "stress" is an autonomic proxy vs the user's own baseline, never a diagnosis.
     private func evaluateStress() {
         let fresh = live.rr.filter { $0 > 300 && $0 < 2000 }   // plausible R-R (30–200 bpm)
         guard !fresh.isEmpty else { return }
         rrBuf.append(contentsOf: fresh)
         if rrBuf.count > 120 { rrBuf.removeFirst(rrBuf.count - 120) }
 
-        // ── Legacy experimental nudge (behavior.stressNudge) , unchanged behaviour, kept separate.
-        if behavior.stressNudge, live.bonded, live.worn, rrBuf.count >= 20 {
-            let rmssd = AppModel.rmssd(Array(rrBuf.suffix(60)))
-            if rmssd > 0 {
-                hrvBaseline = hrvBaseline == 0 ? rmssd : hrvBaseline * 0.98 + rmssd * 0.02   // slow EMA
-                if let hr = bpm, hr >= 55, hr <= 100 {            // resting band , not a workout
-                    let now = Date()
-                    if rmssd < hrvBaseline * 0.6, now.timeIntervalSince(lastStressBuzzAt) > 900 {
-                        lastStressBuzzAt = now
-                        buzz(loops: 1)
-                        live.append(log: "Stress nudge , take a paced breath")
-                    }
-                }
-            }
-        }
-
-        // ── v5 L3 closed-loop check-in (StressOnsetDetector). Inert unless the master toggle is on; the
-        // engine itself owns every gate (auto-nudge, exercise gate, quiet hours, rate limit, edge).
+        // Inert unless the master toggle is on; the engine owns every gate (auto-nudge, exercise gate,
+        // quiet hours, rate limit, edge).
         let cfg = BiofeedbackPrefs.stressConfig()
         guard cfg.enabled, live.bonded, live.worn else { return }
         let decision = StressOnsetDetector.evaluate(
@@ -806,13 +817,6 @@ final class AppModel: ObservableObject {
     /// characteristic is gated on bond; an un-encrypted live-HR-only link can't buzz).
     private var canBuzz: Bool { live.bonded && live.encryptedBond }
 
-    static func rmssd(_ rr: [Int]) -> Double {
-        guard rr.count >= 2 else { return 0 }
-        var sum = 0.0, n = 0
-        for i in 1..<rr.count { let d = Double(rr[i] - rr[i - 1]); sum += d * d; n += 1 }
-        return n > 0 ? (sum / Double(n)).squareRoot() : 0
-    }
-
     /// Start scanning for the strap. When no model is given, use the one the user
     /// picked (persisted under "selectedWhoopModel"), so every scan entry point ,
     /// Live, onboarding, the menu bar, Settings , honours the same choice.
@@ -829,6 +833,19 @@ final class AppModel: ObservableObject {
     /// Send one WHOOP 4.0 reboot-probe candidate (Test Centre → Connection, 4.0 only). Confirmation-gated
     /// in DevicesView; finds the real 4.0 reboot frame when the production one is ignored (#235).
     func rebootProbe(_ variant: RebootProbeVariant) { ble.rebootProbe(variant) }
+
+    /// #592 read-only extended-battery opcode probe (Devices → strap menu, Test Centre → Connection gated).
+    func probeExtendedBatteryInfo() { ble.probeExtendedBatteryInfo() }
+    func clearExtendedBatteryProbe() { ble.clearExtendedBatteryProbe() }
+
+    // #690: read-only body-location/status probe (0x54). User-initiated, Test-Centre-gated in DevicesView.
+    func probeBodyLocationAndStatus() { ble.probeBodyLocationAndStatus() }
+    func clearBodyLocationProbe() { ble.clearBodyLocationProbe() }
+
+    // #761: READ-ONLY feature-flag ENUMERATION probe (117/118) — reads the flag NAMES the strap's firmware
+    // knows and writes nothing. User-initiated, Test-Centre-gated in DevicesView.
+    func probeFeatureFlags() { ble.probeFeatureFlags() }
+    func clearFeatureFlagProbe() { ble.clearFeatureFlagProbe() }
 
     /// Drop the current strap and clear bond state so a newly-picked strap model connects fresh
     /// (lets a user with both a WHOOP 4 and a 5/MG switch between them).
@@ -1363,6 +1380,35 @@ final class AppModel: ObservableObject {
     /// (alcohol / a hard-or-late workout / etc.) so a night out doesn't cry wolf. The journal context is
     /// read asynchronously, so this kicks a Task; the published `illnessSignal` + the `healthAlert`
     /// banner both come from the engine's single decision. On-device only, APPROXIMATE , not a diagnosis.
+    // MARK: - Battery night-guard: learned bedtime cache
+
+    /// The learned habitual midsleep (local seconds-of-day), cached for the battery night-guard.
+    /// `repo.habitualMidsleepSec()` is an async whole-history store read, but the battery hook runs
+    /// synchronously on the BLE callback, so the value is kept warm here instead. nil = cold-start
+    /// (< `SleepStageTotals.habitualMinDays` nights) → `BatteryEstimator.bedtimeAlert` stays silent.
+    private var habitualMidsleepCache: Int? = nil
+    private var habitualMidsleepCachedAt: Date? = nil
+
+    /// Refresh the cached habitual midsleep, at most hourly. The learner reads the full sleep history
+    /// and the value moves on a timescale of WEEKS, so recomputing it on every `repo.$days` republish
+    /// (several per rollup) would be pure cost for a number that cannot have changed.
+    private func refreshHabitualMidsleep() {
+        if let at = habitualMidsleepCachedAt, Date().timeIntervalSince(at) < 3600 { return }
+        habitualMidsleepCachedAt = Date()
+        Task { [weak self] in
+            guard let self else { return }
+            self.habitualMidsleepCache = await self.repo.habitualMidsleepSec()
+        }
+    }
+
+    /// Local time-of-day in seconds [0, 86400) — the clock the night-guard's bedtime window is in.
+    /// Uses the CURRENT zone, so a traveller's window follows them rather than sticking to home time.
+    static func localSecOfDayNow(_ now: Date = Date()) -> Int {
+        let cal = Calendar.current
+        let c = cal.dateComponents([.hour, .minute, .second], from: now)
+        return (c.hour ?? 0) * 3600 + (c.minute ?? 0) * 60 + (c.second ?? 0)
+    }
+
     private func evaluateIllness(_ days: [DailyMetric]) {
         guard behavior.illnessWatch, days.count >= 14 else {
             healthAlert = nil; illnessSignal = nil; illnessDistance = nil; return
@@ -1467,6 +1513,21 @@ final class AppModel: ObservableObject {
         if let alert = healthAlert, previous == nil {
             IllnessNotifier.post(alert)
         }
+    }
+
+    /// #593: once-a-day "optimal strain reached" nudge. Reads the resolved today-row (the same
+    /// logical-day resolution every dashboard surface uses), converts the stored 0-100 Effort to the
+    /// 0-21 coupled axis with the SHIPPED formatter (so it matches every Effort read-out), and gates
+    /// against the LOW end of today's recovery-derived optimal band (#43). The notifier's persisted
+    /// day gate makes this safe to fire on every days republish; nil recovery (calibrating) yields a
+    /// nil band → no target → no notification. Android twin: AppViewModel's days-collector call.
+    func evaluateStrainTarget() {
+        guard let row = repo.today else { return }
+        StrainTargetNotifier.onDayUpdate(
+            day: row.day,
+            dayStrain21: row.strain.map { UnitFormatter.effortValue($0, scale: .whoop) },
+            target21: CoupledView.optimalStrainRange(recovery: row.recovery)?.lowerBound,
+            enabled: behavior.strainTargetNudge)
     }
 
     /// Re-run the illness watch over the cached history. Called when the Automations toggle
@@ -1930,35 +1991,54 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Handle a `noop://import-health` deep link (PR #581) , the HealthKit-free Shortcuts import for
-    /// sideloaded installs. Ingests the Shortcut-built payload into the `apple-health` source (NEVER the
-    /// strap , `ShortcutHealthImport` enforces the loop guard), then refreshes the dashboard. Surfaces
-    /// the result on the Apple Health card like the file import does. The iOS `.onOpenURL` in StrandiOS/
-    /// calls this; macOS never registers the scheme.
+    /// Handle a `noop://import-health` deep link (PR #581), the HealthKit-free Shortcuts import for
+    /// sideloaded installs. Custom URL schemes are forgeable by other apps/sites, so this only decodes
+    /// and stages the payload. The iOS shell shows a confirmation alert before `confirmHealthImport()`
+    /// writes anything into the `apple-health` source.
     func handleHealthImportURL(_ url: URL) {
+        switch ShortcutHealthImport.prepare(url: url) {
+        case .success(let pending):
+            pendingShortcutHealthImport = pending
+        case .failure(let outcome):
+            beginImport(.appleHealth)
+            Task { await finishShortcutHealthImport(outcome) }
+        }
+    }
+
+    func cancelPendingHealthImport() {
+        pendingShortcutHealthImport = nil
+    }
+
+    func confirmPendingHealthImport() {
+        guard let pending = pendingShortcutHealthImport else { return }
+        pendingShortcutHealthImport = nil
         beginImport(.appleHealth)
         Task {
             guard let store = await repo.storeHandle() else {
                 finishImport(.appleHealth, summary: "Couldn't open the local store.", failed: true)
                 return
             }
-            let outcome = await ShortcutHealthImport.ingest(url: url, into: store)
-            switch outcome {
-            case .imported(let days, let workouts):
-                await repo.refresh()
-                // #833/v7.7.2: the Shortcuts import writes body-composition series (e.g. weight) into
-                // metricSeries, which sits OUTSIDE refresh()'s diff, so refresh() may leave `refreshSeq`
-                // unchanged and AppleHealthView's re-mount cache would serve stale data. Drop the cache so the
-                // next visit re-reads. (Same reasoning as the file-import path above.)
-                repo.appleHealthCache = nil
-                repo.appleHealthLoadedSeq = -1
-                let w = workouts > 0 ? " · \(workouts) workouts" : ""
-                finishImport(.appleHealth, summary: "Imported \(days) days\(w)")
-            case .nothingToImport:
-                finishImport(.appleHealth, summary: "Nothing new to import.")
-            case .rejected(let reason):
-                finishImport(.appleHealth, summary: reason, failed: true)
-            }
+            let outcome = await ShortcutHealthImport.ingest(prepared: pending, into: store)
+            await finishShortcutHealthImport(outcome)
+        }
+    }
+
+    private func finishShortcutHealthImport(_ outcome: ShortcutHealthImport.Outcome) async {
+        switch outcome {
+        case .imported(let days, let workouts):
+            await repo.refresh()
+            // #833/v7.7.2: the Shortcuts import writes body-composition series (e.g. weight) into
+            // metricSeries, which sits OUTSIDE refresh()'s diff, so refresh() may leave `refreshSeq`
+            // unchanged and AppleHealthView's re-mount cache would serve stale data. Drop the cache so the
+            // next visit re-reads. (Same reasoning as the file-import path above.)
+            repo.appleHealthCache = nil
+            repo.appleHealthLoadedSeq = -1
+            let w = workouts > 0 ? " · \(workouts) workouts" : ""
+            finishImport(.appleHealth, summary: "Imported \(days) days\(w)")
+        case .nothingToImport:
+            finishImport(.appleHealth, summary: "Nothing new to import.")
+        case .rejected(let reason):
+            finishImport(.appleHealth, summary: reason, failed: true)
         }
     }
 

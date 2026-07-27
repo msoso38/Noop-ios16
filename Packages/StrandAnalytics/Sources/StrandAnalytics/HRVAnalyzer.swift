@@ -343,7 +343,8 @@ public enum HRVAnalyzer {
                                     stepSec: Int = 0,
                                     minBeatsPerWindow: Int = 8) -> [RollingRmssdPoint] {
         guard windowSec > 0, rr.count >= minBeatsPerWindow else { return [] }
-        let sorted = rr.sorted { $0.ts < $1.ts }
+        // Stable: preserves the store's #823 emission order for same-second beats, which RMSSD needs.
+        let sorted = rr.sortedByTsStable()
         var out: [RollingRmssdPoint] = []
         var lastEmitTs: Int? = nil
         var left = 0   // index of the oldest interval still inside the trailing window
@@ -365,6 +366,43 @@ public enum HRVAnalyzer {
     }
 
     // MARK: - R-R integrity diagnostics (#257)
+
+    /// What a night's R-R coverage pair says about the capture (#550).
+    ///
+    /// `rrCoverage` above 1.0 is physically impossible, and `collapsedCoverage` previews what a
+    /// same-second de-dup would leave. Reading the two together is what tells you WHICH over-count you
+    /// have — a rule that until now lived only in a comment, so anyone triaging an "HRV reads ~2× high"
+    /// report had to know it. Encoding it means the log states the conclusion instead of the evidence.
+    public enum RrCoverageVerdict: String, Equatable, Sendable {
+        /// At or near 1.0 — the beat-time fits the wall clock. Nothing to explain.
+        case plausible
+        /// Over-covered, but collapsing same-second duplicates brings it back in range: the extra beats
+        /// share a timestamp, so a de-dup at that granularity would fix it.
+        case sameSecondOverCount
+        /// Over-covered AND still over-covered after the same-second collapse: the duplicates straddle
+        /// second boundaries, so a same-second de-dup would NOT be enough.
+        case crossSecondOverCount
+        /// No usable coverage figure — `rrCoverage` returns 0 for < 2 beats or a zero span. Absence of
+        /// evidence, NOT a clean night: reporting those as `plausible` would claim the capture was fine
+        /// when nothing was measurable, which is the opposite of what this verdict exists to do.
+        case unmeasurable
+    }
+
+    /// Tolerance above 1.0 treated as "fits". R-R timestamps are whole seconds while beats are not, so a
+    /// clean night can round fractionally over. This is a ROUNDING allowance, deliberately not a tuned
+    /// threshold — where the real boundary sits needs coverage figures from several wearers, which is the
+    /// point of logging the verdict in the first place.
+    public static let coveragePlausibleCeiling: Double = 1.10
+
+    /// Classify a night from its coverage pair. Pure. Byte-parity twin of Kotlin `classifyCoverage`.
+    /// Both platforms use the NEGATED `>` form rather than `<=` so a non-finite input lands identically:
+    /// every IEEE-754 comparison with NaN is false, so `<=` and `>` are not each other's inverse there and
+    /// the twins would otherwise disagree. NaN falls to `.unmeasurable` on both.
+    public static func classifyCoverage(coverage: Double, collapsed: Double) -> RrCoverageVerdict {
+        guard coverage > 0 else { return .unmeasurable }
+        guard coverage > coveragePlausibleCeiling else { return .plausible }
+        return collapsed > coveragePlausibleCeiling ? .crossSecondOverCount : .sameSecondOverCount
+    }
 
     /// Total heartbeat-time (sum of NN intervals, ms) ÷ wall-clock span of the R-R window (ms). A value
     /// > ~1.0 is physically impossible — you can't record more beat-time than elapsed time — so it
@@ -388,6 +426,38 @@ public enum HRVAnalyzer {
         var dups = 0
         for i in 0..<n where !seen.insert(Key(ts: tsSec[i], rr: rrMs[i])).inserted { dups += 1 }
         return dups
+    }
+
+    /// #550: coverage AFTER collapsing SAME-SECOND near-duplicate beats (equal ts AND |Δrr| ≤ `rrTolMs`)
+    /// to a single representative — a PREVIEW of what an R-R de-duplication fix would achieve, for the
+    /// always-on #257 diag ONLY. It does NOT feed the shipped nightly HRV. On clean data (no same-second
+    /// duplicates) it equals `rrCoverage`; when a live+historical merge double-stamps the same beat WITHIN
+    /// one second, it falls toward ~1. If it stays well above 1, the duplication is CROSS-second (the two
+    /// copies land in adjacent seconds), which a same-second collapse cannot catch — telling us the real
+    /// fix must reconcile the two ingest paths rather than dedup within a second. The collapse is
+    /// deliberately same-second-ONLY: R-R ts are stored at second resolution, and at rest genuine
+    /// consecutive beats are ~1 s apart, so collapsing ACROSS a second would drop real beats. Deterministic
+    /// (ts, rr, index) ordering. Byte-parity twin of Kotlin `HrvAnalyzer.collapsedCoverage`.
+    public static func collapsedCoverage(tsSec: [Int], rrMs: [Double], rrTolMs: Double = 30) -> Double {
+        let n = min(tsSec.count, rrMs.count)
+        guard n >= 2 else { return 0 }
+        let order = (0..<n).sorted { a, b in
+            (tsSec[a], rrMs[a], a) < (tsSec[b], rrMs[b], b)
+        }
+        var keptTs: [Int] = []
+        var keptRr: [Double] = []
+        for idx in order {
+            let t = tsSec[idx]
+            let r = rrMs[idx]
+            var dup = false
+            var j = keptTs.count - 1
+            while j >= 0 && keptTs[j] == t {      // inspect only beats already kept in the SAME second
+                if abs(keptRr[j] - r) <= rrTolMs { dup = true; break }
+                j -= 1
+            }
+            if !dup { keptTs.append(t); keptRr.append(r) }
+        }
+        return rrCoverage(tsSec: keptTs, rrMs: keptRr)
     }
 
     // MARK: - Helpers

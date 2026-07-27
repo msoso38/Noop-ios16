@@ -271,13 +271,11 @@ struct TodayView: View {
     // tile previously showed hours where the score belonged (#248). nil until loaded / no night yet.
     @State private var restScore: Double?
 
-    // Component 4, the REAL per-day merge winner (provenance) for the selected day's derived scores,
-    // keyed by metric key ("recovery" / "sleep_performance"); the value is the raw source id the resolver
-    // returned (e.g. "my-whoop", "my-whoop-noop", "apple-health"). Resolved once per load via
-    // `resolvedSeries` (the same imported-WHOOP > NOOP-computed > Apple-Health precedence the dashboard
-    // merge uses), so a provenance badge reflects which source actually supplied that day's number rather
-    // than a blanket "on-device" claim. Absent until loaded / when a day has no value. (spec 2026-06-20)
+    // The raw per-day merge winners remain available for watch-specific confidence behavior.
     @State private var provenanceByMetric: [String: String] = [:]
+    /// The sensor/import provider behind each score cell. Computed rows without durable provenance are
+    /// omitted rather than guessed; direct imported rows always resolve.
+    @State private var providerByMetric: [String: ScoreInputProvider] = [:]
 
     // On-device steps ESTIMATE per day (key "steps_est", computed "-noop" source). The Steps tile
     // prefers a REAL step count (strap @57 counter / Apple Health); only when a day has neither does it
@@ -748,13 +746,10 @@ struct TodayView: View {
 
     // MARK: Component 4, provenance badge (the real per-day merge winner)
 
-    /// The display name for a derived score's per-day merge winner ("On-device" / "Whoop" / "Apple
-    /// Health"), or nil when no source supplied that metric for the selected day (the badge is then
-    /// hidden rather than guessing). Delegates to the PURE `provenanceDisplayLabel` mapper so the
-    /// raw-source-id → spec-label mapping unit-tests without the live view.
+    /// The provider name behind a derived score, or nil when the attribution is unavailable.
     private func provenanceLabel(_ metricKey: String) -> String? {
-        guard let raw = provenanceByMetric[metricKey] else { return nil }
-        return Self.provenanceDisplayLabel(rawSource: raw, deviceId: repo.deviceId)
+        guard let provider = providerByMetric[metricKey] else { return nil }
+        return Self.todayScoreProviderLabel(sourceId: provider.sourceId, brand: provider.brand)
     }
 
     /// PURE mapper (unit-testable), a raw resolver source id onto the spec's provenance labels, given
@@ -806,6 +801,29 @@ struct TodayView: View {
     static func todayProvenanceChipLabel(rawSource: String, deviceId: String, appleHealthSource: String) -> String {
         if rawSource == appleHealthSource { return "Apple Watch" }
         return provenanceDisplayLabel(rawSource: rawSource, deviceId: deviceId)
+    }
+
+    /// Today hero wording names the provider that supplied the score inputs, not where NOOP ran the math.
+    /// Registered device brands cover every live source; stable import ids cover providers without a paired
+    /// registry row. Unknown ids remain visible rather than being falsely labelled as Whoop.
+    static func todayScoreProviderLabel(sourceId: String, brand: String?) -> String {
+        let source = sourceId.lowercased()
+        switch source {
+        case Repository.appleHealthSource: return "Apple Watch"
+        case Repository.healthConnectSource: return "Health Connect"
+        case "oura-import", "oura-api": return "Oura"
+        case "fitbit-import": return "Fitbit"
+        case "garmin-import": return "Garmin"
+        case "xiaomi-band": return "Mi Band"
+        case Repository.activityFileSource: return "Workout files"
+        default: break
+        }
+
+        if let brand = brand?.trimmingCharacters(in: .whitespacesAndNewlines), !brand.isEmpty {
+            return brand.caseInsensitiveCompare("WHOOP") == .orderedSame ? "Whoop" : brand
+        }
+        if source == Repository.whoopSource { return "Whoop" }
+        return FusionSource(rawValue: sourceId)?.displayName ?? sourceId
     }
 
     /// True for a watch-context user with no strap supplying scores (Apple-Health days present and no WHOOP
@@ -939,6 +957,15 @@ struct TodayView: View {
     }
     private var calibrationDetail: LocalizedStringKey? {
         guard let n = recoveryCalibration else { return nil }
+        // #612: if the baseline aged out silently — connected, but no new night for > staleDays — say WHY
+        // it's calibrating instead of only "learning your baseline". The honest calibrating state is correct;
+        // this attaches its reason. `stale` is always > staleDays (14) here, so the copy is always plural.
+        if let stale = Baselines.nightsSinceNewestValidNight(dayKeys: repo.days.map(\.day),
+                                                             nightlyHrv: repo.days.map(\.avgHrv),
+                                                             today: Repository.logicalDayKey(Date())),
+           stale > Baselines.staleDays {
+            return "No new nights from your strap for \(stale) days. Check it's connected and saving data."
+        }
         return "Learning your baseline, \(n) of \(Baselines.minNightsSeed) nights."
     }
 
@@ -1323,6 +1350,9 @@ struct TodayView: View {
                 // Opt-in "looks like a workout?" suggestion (default OFF). Renders only when the
                 // Settings toggle is on AND the detector finds a recent unsaved, un-dismissed window.
                 AutoWorkoutCard()
+                // #627: the persistent journal widget (last-7-days strip + tap-through to the journal).
+                // Today only; self-hides when the reminder toggle is off. Twin of Android JournalReminderCard.
+                if selectedDayOffset == 0 { JournalReminderCard() }
                 sourcesSection
             }
             #if os(iOS)
@@ -1766,6 +1796,15 @@ struct TodayView: View {
                     Text(progress)
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
+                    // #731: when the countdown restarted because the user tapped "Recalibrate baseline",
+                    // say so — otherwise the natural response to a fresh countdown is to tap it again,
+                    // which resets it once more. nil (and no line) for anyone who never recalibrated.
+                    if let restarted = ChargeBreakdownFormat.currentCalibrationRestartCause() {
+                        Text(restarted)
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }
@@ -2054,7 +2093,7 @@ struct TodayView: View {
                     Button {
                         showingDashboardEditor = true
                     } label: {
-                        Label("CUSTOMISE", systemImage: "slider.horizontal.3")
+                        Label(String(localized: "Edit").uppercased(), systemImage: "slider.horizontal.3")   // #492/#563: unified "EDIT"
                             .font(StrandFont.overline)
                             .tracking(StrandFont.overlineTracking)
                     }
@@ -3067,7 +3106,7 @@ struct TodayView: View {
                 Button {
                     showingMetricsEditor = true
                 } label: {
-                    Label("Edit", systemImage: "slider.horizontal.3")
+                    Label(String(localized: "Edit").uppercased(), systemImage: "slider.horizontal.3")   // #492/#563: uppercase to match
                         .font(StrandFont.footnote)
                 }
                 .buttonStyle(.plain)
@@ -3821,6 +3860,7 @@ struct TodayView: View {
         sparks["sleep_performance"] = c.restSpark
         restScore = c.restScore
         provenanceByMetric = c.provenanceByMetric
+        providerByMetric = c.providerByMetric
         hrPoints = c.hrPoints
         stepActivityClassToday = c.stepActivityClassToday
         liveTodayStrain = c.liveTodayStrain
@@ -3918,21 +3958,30 @@ struct TodayView: View {
             todayKey: selectedDayKey)
         restScore = restScoreLocal
 
-        // Component 4, resolve the REAL per-day merge winner for the selected day's derived scores. The
-        // cross-source resolver applies the SAME imported-WHOOP > NOOP-computed > Apple-Health precedence
-        // the dashboard merge uses, returning the source that actually supplied each day's value, so the
-        // provenance badge reflects the truth (computed vs imported), never a blanket "on-device". Keyed by
-        // metric so the Charge ring and Rest tile each badge their own winner.
+        // Resolve the displayed score row, then map computed rows through durable input provenance so the
+        // badge names the sensor/import provider rather than the device that ran NOOP's math.
         var provenance: [String: String] = [:]
+        var providers: [String: ScoreInputProvider] = [:]
         let recoveryResolved = await recoveryResolvedA
-        if let win = recoveryResolved.points.last(where: { $0.day == selectedDayKey })?.source {
-            provenance["recovery"] = win
+        if let win = recoveryResolved.points.last(where: { $0.day == selectedDayKey }) {
+            provenance["recovery"] = win.source
+            providers["recovery"] = await repo.scoreInputProvider(
+                resolvedSource: win.source,
+                day: win.day,
+                metricKey: "recovery"
+            )
         }
         let restResolved = await restResolvedA
-        if let win = restResolved.points.last(where: { $0.day == selectedDayKey })?.source {
-            provenance["sleep_performance"] = win
+        if let win = restResolved.points.last(where: { $0.day == selectedDayKey }) {
+            provenance["sleep_performance"] = win.source
+            providers["sleep_performance"] = await repo.scoreInputProvider(
+                resolvedSource: win.source,
+                day: win.day,
+                metricKey: "sleep_performance"
+            )
         }
         provenanceByMetric = provenance
+        providerByMetric = providers
 
         // HR trend for the SELECTED day, 5-minute bucket means from that logical day's local midnight.
         // For today the window runs to now (an in-progress curve); for a navigated past day it runs the
@@ -4023,6 +4072,7 @@ struct TodayView: View {
             restSpark: restSparkLocal,
             restScore: restScoreLocal,
             provenanceByMetric: provenance,
+            providerByMetric: providers,
             hrPoints: hrPointsLocal,
             stepActivityClassToday: stepClassLocal,
             liveTodayStrain: liveStrainLocal,
@@ -4391,6 +4441,7 @@ struct TodayDayScopedCache {
     let restSpark: [Double]
     let restScore: Double?
     let provenanceByMetric: [String: String]
+    let providerByMetric: [String: ScoreInputProvider]
     let hrPoints: [TrendPoint]
     let stepActivityClassToday: Int?
     let liveTodayStrain: Double?
@@ -4408,31 +4459,64 @@ struct TodayDayScopedCache {
 // ~1 Hz publish re-renders only the affected dot / note / row, never the rings, scene, sparklines,
 // HR chart or cards. They render byte-for-byte what the inline code did before the extraction.
 
+/// #245: the sync-status state that both header styles render — the classic top bar's `SyncStatusChip`
+/// and the Liquid header's `LiquidSyncChip` — resolved once from `LiveState` so the two chromes can't
+/// drift on WHEN to show what. THREE states so the ABSENCE of active syncing reads as "caught up", not
+/// "missing indicator" (the real #245 confusion): actively offloading → `⟳ N`; idle with a known
+/// last-sync → `✓ Xm`; a 5/MG whose history sync is experimental (live-connected, no completed offload
+/// yet) → `✓ live`. `.hidden` only on a true cold start (the building-scores note owns that case). Twin
+/// of Android `SyncStatusChip`.
+enum SyncChipState: Equatable {
+    case syncing(chunks: Int)
+    case synced(agoText: String)
+    case experimentalLive
+    case hidden
+
+    @MainActor
+    static func resolve(live: LiveState) -> SyncChipState {
+        if live.backfilling { return .syncing(chunks: live.syncChunksThisSession) }
+        if let ts = live.lastSyncedAt { return .synced(agoText: shortAgo(ts)) }
+        if live.historySyncExperimental { return .experimentalLive }
+        return .hidden
+    }
+
+    /// Compact relative age for the header chip ("now" / "Nm" / "Nh" / "Nd") — deliberately terse.
+    /// "now" is the only word in here (the rest is digits + a unit letter), so it's the only piece that
+    /// needs a catalog entry to translate; localized here rather than at each of the two call sites.
+    private static func shortAgo(_ ts: TimeInterval) -> String {
+        let secs = max(0, Int(Date().timeIntervalSince1970 - ts))
+        if secs < 60 { return String(localized: "now") }
+        let mins = secs / 60
+        if mins < 60 { return "\(mins)m" }
+        let hrs = mins / 60
+        if hrs < 24 { return "\(hrs)h" }
+        return "\(hrs / 24)d"
+    }
+}
+
 /// #245: a compact sync-status chip for the Today top bar, shown to EVERY user. The full-width
 /// `SyncingHistoryNote` only renders while scores are still building (`recovery == nil`), so an
 /// established user — and especially a WHOOP 5/MG owner, whose history offloads are rare — saw no sync
-/// feedback on Today, only on the Live screen. THREE states so the ABSENCE of active syncing reads as
-/// "caught up", not "missing indicator" (the real #245 confusion): actively offloading → `⟳ N`; idle
-/// with a known last-sync → `✓ Xm`; a 5/MG whose history sync is experimental (live-connected, no
-/// completed offload yet) → `✓ live`. Nothing shows only on a true cold start (the building-scores note
-/// owns that). Owns its `LiveState` observation so a live tick refreshes only this chip. Twin of Android
-/// `SyncStatusChip`. DRAFT (#245): final styling/wording still to be finalised.
-private struct SyncStatusChip: View {
+/// feedback on Today, only on the Live screen. Owns its `LiveState` observation so a live tick refreshes
+/// only this chip. DRAFT (#245): final styling/wording still to be finalised.
+struct SyncStatusChip: View {
     @EnvironmentObject private var live: LiveState
 
     var body: some View {
-        if live.backfilling {
-            chip(system: "arrow.triangle.2.circlepath", text: "\(live.syncChunksThisSession)",
-                 tint: StrandPalette.accent,
-                 a11y: "Syncing strap history, \(live.syncChunksThisSession) chunks")
-        } else if let ts = live.lastSyncedAt {
-            chip(system: "checkmark", text: Self.shortAgo(ts), tint: StrandPalette.textSecondary,
-                 a11y: "Strap history synced \(Self.shortAgo(ts)) ago")
-        } else if live.historySyncExperimental {
-            chip(system: "checkmark", text: "live", tint: StrandPalette.textSecondary,
-                 a11y: "Connected; strap history sync is experimental on this strap")
+        switch SyncChipState.resolve(live: live) {
+        case .syncing(let chunks):
+            chip(system: "arrow.triangle.2.circlepath", text: "\(chunks)", tint: StrandPalette.accent,
+                 a11y: String(localized: "Syncing strap history, \(chunks) chunks"))
+        case .synced(let agoText):
+            chip(system: "checkmark", text: agoText, tint: StrandPalette.textSecondary,
+                 a11y: String(localized: "Strap history synced \(agoText) ago"))
+        case .experimentalLive:
+            chip(system: "checkmark", text: String(localized: "live"), tint: StrandPalette.textSecondary,
+                 a11y: String(localized: "Connected; strap history sync is experimental on this strap"))
+        case .hidden:
+            EmptyView()
+            // cold start — render nothing; the building-scores SyncingHistoryNote covers it.
         }
-        // else: cold start — render nothing; the building-scores SyncingHistoryNote covers it.
     }
 
     private func chip(system: String, text: String, tint: Color, a11y: String) -> some View {
@@ -4446,17 +4530,6 @@ private struct SyncStatusChip: View {
         .background(Capsule().fill(StrandPalette.surfaceInset))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(a11y))
-    }
-
-    /// Compact relative age for the header chip ("now" / "Nm" / "Nh" / "Nd") — deliberately terse.
-    private static func shortAgo(_ ts: TimeInterval) -> String {
-        let secs = max(0, Int(Date().timeIntervalSince1970 - ts))
-        if secs < 60 { return "now" }
-        let mins = secs / 60
-        if mins < 60 { return "\(mins)m" }
-        let hrs = mins / 60
-        if hrs < 24 { return "\(hrs)h" }
-        return "\(hrs / 24)d"
     }
 }
 

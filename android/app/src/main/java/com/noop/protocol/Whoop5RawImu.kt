@@ -61,7 +61,7 @@ object Whoop5RawImu {
     /** Decode a raw-IMU buffer, or null if it isn't one. Gates on the exact length + the two in-packet
      *  sample counts (=100) rather than the type byte, so it can't misfire on a same-type non-IMU frame. */
     fun decode(f: ByteArray): Whoop5ImuFrame? {
-        if (f.size < bufferLength) return null
+        if (f.size != bufferLength) return null   // exact length, matching Swift's `f.count == bufferLength` (#546)
         if (u16(f, countAOff) != sampleCount || u16(f, countBOff) != sampleCount) return null
         if (gzOff + 2 * sampleCount > f.size) return null
         val baseTs = u32(f, tsOff)   // full u32 (matches Swift `Int(u32(...))` on 64-bit — no truncation)
@@ -80,6 +80,22 @@ object Whoop5RawImu {
             )
         }
         return Whoop5ImuFrame(baseTs = baseTs, sampleRateHz = sampleCount, samples = samples)
+    }
+
+    /** The raw i16 columns exactly as they sit on the wire — [ax×100, ay×100, az×100, gx×100, gy×100,
+     *  gz×100] — for faithful, compact storage (#423). Same length + sample-count gate and same offsets as
+     *  [decode]; null if [f] isn't a valid IMU buffer. The scales ([accelScale]/[gyroScale]) stay documented
+     *  constants applied at read time, so nothing lossy is baked into the stored bytes. */
+    fun rawColumns(f: ByteArray): ShortArray? {
+        if (f.size != bufferLength) return null
+        if (u16(f, countAOff) != sampleCount || u16(f, countBOff) != sampleCount) return null
+        if (gzOff + 2 * sampleCount > f.size) return null
+        val cols = intArrayOf(axOff, ayOff, azOff, gxOff, gyOff, gzOff)
+        val out = ShortArray(6 * sampleCount)
+        for (c in 0 until 6) {
+            for (i in 0 until sampleCount) out[c * sampleCount + i] = i16(f, cols[c] + 2 * i).toShort()
+        }
+        return out
     }
 
     // Little-endian readers (frame-absolute).
