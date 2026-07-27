@@ -1651,11 +1651,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  HR-curve. A short session wants a finer bucket than the Today 24h chart (300 s would flatten a
      *  30-min run to ~6 points), so the bucket scales with duration: ~120 buckets across the window,
      *  floored at 15 s and capped at 300 s. Mirrors macOS Repository.workoutHrBuckets. */
-    suspend fun workoutHrBuckets(from: Long, to: Long): List<com.noop.data.HrBucket> {
+    suspend fun workoutHrBuckets(
+        from: Long,
+        to: Long,
+        source: String = "",
+        rowDeviceId: String = deviceId,
+    ): List<com.noop.data.HrBucket> {
         if (to <= from) return emptyList()
         val span = to - from
         val bucket = (span / 120).coerceIn(15L, 300L)
-        return runCatching { repository.hrBuckets(deviceId, from, to, bucket) }.getOrDefault(emptyList())
+        // #856: read the ids this row actually belongs to. A bout detected on a SECOND WHOOP charts
+        // from the strap that recorded it; an imported row gets the active ∪ canonical union, since it
+        // has no strap of its own and the worn strap may bank under either after a re-add. Previously
+        // this read the single active id, so both cases could chart the wrong data — and disagree with
+        // the Avg HR on the same card. Defaults keep any caller without a row on today's behaviour.
+        val ids = WhoopRepository.workoutHrDeviceIds(source, rowDeviceId, deviceId)
+        return runCatching { repository.hrBucketsFor(ids, from, to, bucket) }.getOrDefault(emptyList())
     }
 
     /** Per-zone MINUTES for a workout window, binning the strap's raw HR samples into the age-derived
@@ -1663,9 +1674,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  percentages, but from the strap's own samples so a session WITHOUT imported zones still gets a
      *  real time-in-zone split. null when the window carries no HR. age <= 0 falls back to 30 y.
      *  Mirrors macOS Repository.workoutZoneMinutes. */
-    suspend fun workoutZoneMinutes(from: Long, to: Long): List<Double>? {
+    suspend fun workoutZoneMinutes(
+        from: Long,
+        to: Long,
+        source: String = "",
+        rowDeviceId: String = deviceId,
+    ): List<Double>? {
         if (to <= from) return null
-        val samples = runCatching { repository.hrSamples(deviceId, from, to) }.getOrDefault(emptyList())
+        // #856: the same resolved ids the chart and Avg HR use. Binning a different strap's samples
+        // than the curve plots would put three different answers on one card.
+        val ids = WhoopRepository.workoutHrDeviceIds(source, rowDeviceId, deviceId)
+        val samples = runCatching { repository.hrSamplesFor(ids, from, to) }.getOrDefault(emptyList())
         if (samples.isEmpty()) return null
         val age = profileStore.age.toDouble().takeIf { it > 0 } ?: 30.0
         val zoneSet = com.noop.analytics.HrZones.zones(age = age)
@@ -1677,12 +1696,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** HRR for one workout (#516), derived from a narrow workout-end + post-workout HR read. The pure
      *  engine owns the intensity and coverage gates, so a disconnect after exercise returns null rather
      *  than an interpolated value. Mirrors macOS Repository.workoutHeartRateRecovery. */
-    suspend fun workoutHeartRateRecovery(from: Long, to: Long): com.noop.analytics.HeartRateRecovery.Result? {
+    suspend fun workoutHeartRateRecovery(
+        from: Long,
+        to: Long,
+        source: String = "",
+        rowDeviceId: String = deviceId,
+    ): com.noop.analytics.HeartRateRecovery.Result? {
         if (to <= from) return null
         val readFrom = maxOf(from, to - com.noop.analytics.HeartRateRecovery.eligibilityLookbackSeconds)
         val readTo = to + 5 * 60 + com.noop.analytics.HeartRateRecovery.measurementToleranceSeconds
+        // #856: the same resolved ids as the chart, zones and Avg HR — the fourth surface on this card.
+        // The recovery window extends PAST the bout, but the strap that recorded it is still the one on
+        // the wrist a few minutes later, so a detected bout reads its own strap here too.
+        val ids = WhoopRepository.workoutHrDeviceIds(source, rowDeviceId, deviceId)
         val samples = runCatching {
-            repository.hrSamplesUnion(activeStrapId, readFrom, readTo, limit = 2_000)
+            repository.hrSamplesFor(ids, readFrom, readTo, limit = 2_000)
         }.getOrDefault(emptyList())
         return com.noop.analytics.HeartRateRecovery.calculate(
             samples = samples,

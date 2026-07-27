@@ -689,6 +689,14 @@ class WhoopRepository(private val dao: WhoopDao) {
     suspend fun hrSamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT) =
         dao.hrSamples(deviceId, from, to, limit)
 
+    /** #856: HR samples over an EXPLICIT id list, deduped by ts with earlier ids winning — the sample
+     *  twin of [hrBucketsFor], so a workout's ZONE MINUTES bin the same rows its chart plots and its
+     *  Avg HR aggregates. One id ⇒ a plain single-id read. */
+    suspend fun hrSamplesFor(deviceIds: List<String>, from: Long, to: Long, limit: Int = DEFAULT_LIMIT):
+        List<HrSample> =
+        if (deviceIds.isEmpty()) emptyList()
+        else mergeHrByTs(deviceIds.map { dao.hrSamples(it, from, to, limit) })
+
     /**
      * HR samples over the read-side UNION of the active strap id AND the canonical "my-whoop" (SPINE /
      * #814 + HIGH-2), deduped by ts with the active strap winning. This is the Kotlin twin of the Swift
@@ -742,6 +750,14 @@ class WhoopRepository(private val dao: WhoopDao) {
     suspend fun hrBuckets(deviceId: String, from: Long, to: Long, bucketSeconds: Long = 300L) =
         dao.hrBuckets(deviceId, from, to, bucketSeconds)
 
+    /** #856: the same dedup over an EXPLICIT id list, so a workout can read its OWN recording strap
+     *  rather than the day-level active ∪ canonical. Order is precedence — earlier ids win per bucket
+     *  start, exactly as [hrBucketsUnion] does. One id ⇒ a plain single-id read. */
+    suspend fun hrBucketsFor(deviceIds: List<String>, from: Long, to: Long, bucketSeconds: Long = 300L):
+        List<HrBucket> =
+        if (deviceIds.isEmpty()) emptyList()
+        else mergeHrBucketsByStart(deviceIds.map { dao.hrBuckets(it, from, to, bucketSeconds) })
+
     /**
      * Downsampled HR buckets over the read-side UNION of the active strap id AND the canonical "my-whoop"
      * (SPINE / #814 + HIGH-2), deduped by bucket start with the active strap winning. Kotlin twin of the
@@ -778,7 +794,7 @@ class WhoopRepository(private val dao: WhoopDao) {
         rows: List<WorkoutRow>,
         // HR read key for IMPORTED rows ONLY (Apple/HC/CSV/activity file): they carry no strap HR of their
         // own, so #77 derives it from the worn strap. STRAP-NATIVE rows ignore this and key on their OWN
-        // recording strap (see [workoutHrDeviceId]). The canonical "my-whoop" default is the worn strap on a
+        // recording strap (see [workoutHrDeviceIds]). The canonical "my-whoop" default is the worn strap on a
         // single-WHOOP install (and every current caller uses it); which strap was worn during an imported
         // session on a MULTI-strap install is undetermined, so that case is left as-is (not the active strap).
         strapDeviceId: String = "my-whoop",
@@ -807,14 +823,19 @@ class WhoopRepository(private val dao: WhoopDao) {
             // for a strap-native row (never a hardcoded id), the [strapDeviceId] worn-strap default for an
             // imported one. A 2nd WHOOP (id "whoop-<mac>") used to read the empty "my-whoop" window, so its
             // strap-native workouts' Avg HR wasn't reconciled from the trace and a null Effort wasn't recomputed.
-            val hrDeviceId = workoutHrDeviceId(row.source, row.deviceId, strapDeviceId)
-            val stats = dao.hrWindowStats(hrDeviceId, row.startTs, row.endTs)
+            // #856: up to two ids, the first winning per second. A detected bout reads only the strap
+            // that recorded it; an imported row reads the active ∪ canonical union, because it has no
+            // strap of its own and the worn strap may bank under either after a re-add.
+            val hrIds = workoutHrDeviceIds(row.source, row.deviceId, strapDeviceId)
+            val stats = dao.hrWindowStats(
+                hrIds[0], hrIds.getOrElse(1) { hrIds[0] }, row.startTs, row.endTs,
+            )
             if (stats.n < minSamples || stats.avg == null || stats.max == null) return@map row
             // #961: recompute Effort from the SAME samples the graph/zones use. Read the raw window ONLY when
             // this row actually needs a strain (keeps the common no-fill path a single aggregate query), and
             // let StrainScorer return null on a still-too-thin window (never a fabricated number).
             val filledStrain = if (needsStrainFill && strainMaxHR != null) {
-                val samples = dao.hrSamples(hrDeviceId, row.startTs, row.endTs, 8000)
+                val samples = dao.hrSamples(hrIds[0], row.startTs, row.endTs, 8000)
                 com.noop.analytics.StrainScorer.strain(samples, maxHR = strainMaxHR, sex = strainSex)
             } else null
             if (strapNative) {
@@ -1575,7 +1596,7 @@ class WhoopRepository(private val dao: WhoopDao) {
         /** A workout row is STRAP-NATIVE when NOOP recorded/scored it from a strap trace: a "manual"
          *  session or a detected bout (source "<id>-noop"). Everything else (Apple Health / Health Connect /
          *  WHOOP CSV / activity file) is IMPORTED and carries its own avg/max. Single source of truth for the
-         *  classification shared by [fillWorkoutHrFromStrap] and [workoutHrDeviceId]. */
+         *  classification shared by [fillWorkoutHrFromStrap] and [workoutHrDeviceIds]. */
         fun isStrapNativeWorkout(source: String): Boolean {
             val s = source.lowercase()
             return s == "manual" || s.endsWith("-noop")
@@ -1588,8 +1609,9 @@ class WhoopRepository(private val dao: WhoopDao) {
          *  the active strap [activeStrapId]. Before this both keyed on a hardcoded "my-whoop", so a strap-native
          *  workout on a SECOND WHOOP ("whoop-<mac>") read an empty window — its Avg HR went un-reconciled and a
          *  null Effort un-recomputed. (This fill only sets avgHr/maxHr/strain; calories come from the detector.) */
-        fun workoutHrDeviceId(source: String, rowDeviceId: String, activeStrapId: String): String =
-            if (isStrapNativeWorkout(source)) rowDeviceId.removeSuffix("-noop") else activeStrapId
+        fun workoutHrDeviceIds(source: String, rowDeviceId: String, activeStrapId: String): List<String> =
+            if (isStrapNativeWorkout(source)) listOf(rowDeviceId.removeSuffix("-noop"))
+            else importedSourceIdsFor(activeStrapId)
 
         /** Default row cap on range reads. Matches the Swift call sites' bounded scans. */
         const val DEFAULT_LIMIT = 100_000

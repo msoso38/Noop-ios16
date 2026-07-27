@@ -91,20 +91,41 @@ extension WhoopStore {
     ///
     /// Same anti-join as [hrSamples]: a measured second is never double-counted by its PPG estimate.
     /// `avg`/`max` are nil when `n == 0`. Kotlin twin: `WhoopDao.hrWindowStats`.
-    public func hrWindowStats(deviceId: String, from: Int, to: Int) async throws -> HRWindowStats {
+    ///
+    /// #856: aggregates across up to TWO device ids, `primaryId` winning per second. A naive
+    /// `deviceId IN (…)` is wrong here — a second banked under both ids after a strap re-add would be
+    /// counted twice, inflating `n` and skewing `avg`, and both numbers would stay plausible so nothing
+    /// would look wrong. `GROUP BY ts` with `MIN(pri)` keeps one row per second and takes the primary's,
+    /// matching the dedup `hrBuckets` already does for the chart; SQLite's bare-column rule makes `bpm`
+    /// come from the row that supplied the `MIN`.
+    ///
+    /// Passing the same id for both is byte-identical to the old single-id read, so a single-WHOOP
+    /// install needs no special case and every existing number is unchanged.
+    public func hrWindowStats(primaryId: String, secondaryId: String,
+                              from: Int, to: Int) async throws -> HRWindowStats {
         try syncRead { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) AS n, AVG(bpm) AS avg, MAX(bpm) AS max FROM (
-                    SELECT bpm FROM hrSample
-                    WHERE deviceId = ? AND ts >= ? AND ts <= ?
-                    UNION ALL
-                    SELECT CAST(ROUND(p.bpm) AS INTEGER) AS bpm FROM ppgHrSample p
-                    WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
-                      AND NOT EXISTS (
-                        SELECT 1 FROM hrSample h
-                        WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
+                    SELECT ts, MIN(pri), bpm FROM (
+                        SELECT ts, bpm, 0 AS pri FROM hrSample
+                        WHERE deviceId = ? AND ts >= ? AND ts <= ?
+                        UNION ALL
+                        SELECT p.ts, CAST(ROUND(p.bpm) AS INTEGER), 0 FROM ppgHrSample p
+                        WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
+                          AND NOT EXISTS (SELECT 1 FROM hrSample h
+                                          WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
+                        UNION ALL
+                        SELECT ts, bpm, 1 FROM hrSample
+                        WHERE deviceId = ? AND ts >= ? AND ts <= ?
+                        UNION ALL
+                        SELECT p.ts, CAST(ROUND(p.bpm) AS INTEGER), 1 FROM ppgHrSample p
+                        WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
+                          AND NOT EXISTS (SELECT 1 FROM hrSample h
+                                          WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
+                    ) GROUP BY ts
                 )
-                """, arguments: [deviceId, from, to, deviceId, from, to])
+                """, arguments: [primaryId, from, to, primaryId, from, to,
+                                 secondaryId, from, to, secondaryId, from, to])
             else { return HRWindowStats(n: 0, avg: nil, max: nil) }
             return HRWindowStats(n: row["n"], avg: row["avg"], max: row["max"])
         }
