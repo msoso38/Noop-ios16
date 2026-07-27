@@ -544,6 +544,21 @@ extension WhoopStore {
         // re-sync); it is untouched by and unrelated to this table. Growth here is bounded by how much
         // v26 data a strap actually emits (firmware chooses v26 vs v18 per second, not every night is
         // v26-heavy), not by an artificial cap.
+        //
+        // CONSUMER STATUS — deliberately none, and stated here so nobody has to re-derive it. The writer is
+        // live on both platforms (offload + archive replay + the Android capture importer), but the reader
+        // `ppgWaveformSamples` has ZERO production callers on either platform: five test call sites on the
+        // Swift side, none at all on Android. No analytic, no UI, no export, no diagnostic reads a waveform
+        // row. That is the intended shape — the project's rule is to land unvalidated sensor work as
+        // instrumentation (decode + store, never a score; see CLAUDE.md and the withdrawn #194 PPG->HR
+        // estimate), and this table exists so a BETTER estimator, HRV-from-PPG, or a waveform viewer can
+        // later run over the ORIGINAL samples rather than the derived bpm. Do NOT "clean up" the reader as
+        // dead code: the rows are the point, and the reader is how they are reachable.
+        //
+        // Note the sharp distinction from `ppgHrSample` (v12), which is the DERIVED per-second HR estimate
+        // and IS fully consumed in production (COALESCEd with measured HR in the primary series). The
+        // derivation happens in memory inside `extractHistoricalStreams` and never reads back from this
+        // table, so these rows are not on any scoring path at all.
         migrator.registerMigration("v27-ppg-waveform") { db in
             try db.create(table: "ppgWaveformSample") { t in
                 t.column("deviceId", .text).notNull()
