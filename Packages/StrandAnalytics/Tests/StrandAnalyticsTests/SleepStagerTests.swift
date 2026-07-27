@@ -1054,7 +1054,7 @@ final class SleepStagerTests: XCTestCase {
             "the persisted+re-expanded band grid drives the H7 confirm end to end")
     }
 
-    // MARK: - H9 band-state WAKE-veto (recover strap-disputed false wakes)
+    // MARK: - Band sleep_state WAKE-veto (recover strap-disputed false wakes)
 
     /// A hypnogram tiling [0, 960] (32 epochs of 30 s): a leading onset-latency wake block, an INTERIOR
     /// WASO wake block (epochs 10–15 = [300, 480)), and a trailing final-morning wake block — the exact
@@ -1129,7 +1129,7 @@ final class SleepStagerTests: XCTestCase {
     }
 
     func testBandStateWakeVetoPreservesTilingAndOnlyRemovesWake() {
-        XCTAssertTrue(SleepStager.bandStateWakeVetoEnabled, "H9 veto ships default-ON")
+        XCTAssertTrue(SleepStager.bandStateWakeVetoEnabled, "band sleep_state veto ships default-ON")
         let stages = vetoHypnoFixture()
         let out = SleepStager.applyBandStateWakeVeto(stages, start: 0, end: 960,
                                                      bandSleepState: bandAllAsleep(start: 0, end: 960))

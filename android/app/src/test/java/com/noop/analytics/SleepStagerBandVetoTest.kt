@@ -8,16 +8,17 @@ import org.junit.Test
 import kotlin.math.ceil
 
 /**
- * Pins the H9 band-state WAKE-veto ([SleepStager.applyBandStateWakeVeto]).
+ * Pins the band sleep_state WAKE-veto ([SleepStager.applyBandStateWakeVeto]).
  *
- * NOOP's EEG-free cardiorespiratory stager over-calls WAKE. WHOOP's OWN per-second sleep-state band (#175)
- * is an independent scored signal; letting its explicit "asleep" ([SleepStager.bandStateAsleep]) verdict
- * VETO an INTERIOR wake epoch recovers most of that spurious wake with near-zero downside. These tests pin
+ * NOOP's EEG-free cardiorespiratory stager over-calls WAKE. WHOOP's OWN per-second sleep-state band
+ * (banked as `sleepStateJSON`) is an independent scored signal; letting its explicit "asleep"
+ * ([SleepStager.bandStateAsleep]) verdict VETO an INTERIOR wake epoch recovers most of that spurious
+ * wake with near-zero downside. These tests pin
  * the contract: only asleep(2) vetoes (still/up/wake never do), the leading onset-latency and trailing
  * final-wake blocks are never touched, recovery is per-EPOCH, an absent band is a no-op, the output keeps
  * tiling [start,end], and the veto only ever turns wake into sleep. [raisesEfficiencyEndToEnd] additionally
  * drives the whole [SleepStager.detectSleep] path so the Android WIRING (rawStages -> veto -> efficiency),
- * not just the pure function, is covered. Android twin of the Swift H9 band-state wake-veto tests in
+ * not just the pure function, is covered. Android twin of the Swift band sleep_state wake-veto tests in
  * `SleepStagerTests`.
  */
 class SleepStagerBandVetoTest {
@@ -140,7 +141,7 @@ class SleepStagerBandVetoTest {
 
     @Test
     fun preservesTilingAndOnlyRemovesWake() {
-        assertTrue("H9 veto ships default-ON", SleepStager.bandStateWakeVetoEnabled)
+        assertTrue("band sleep_state veto ships default-ON", SleepStager.bandStateWakeVetoEnabled)
         val stages = vetoHypnoFixture()
         val out = SleepStager.applyBandStateWakeVeto(
             stages, start = 0, end = 960, bandSleepState = bandAllAsleep(start = 0, end = 960),
