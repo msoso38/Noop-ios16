@@ -123,7 +123,8 @@ struct WorkoutDetailView: View {
             }
         }
         if minutes == nil {
-            minutes = await repo.workoutZoneMinutes(from: row.startTs, to: row.endTs, age: profile.age)
+            minutes = await repo.workoutZoneMinutes(from: row.startTs, to: row.endTs, age: profile.age,
+                                                    source: row.source)
         }
 
         let hrr = await repo.workoutHeartRateRecovery(

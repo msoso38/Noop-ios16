@@ -1674,9 +1674,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  percentages, but from the strap's own samples so a session WITHOUT imported zones still gets a
      *  real time-in-zone split. null when the window carries no HR. age <= 0 falls back to 30 y.
      *  Mirrors macOS Repository.workoutZoneMinutes. */
-    suspend fun workoutZoneMinutes(from: Long, to: Long): List<Double>? {
+    suspend fun workoutZoneMinutes(
+        from: Long,
+        to: Long,
+        source: String = "",
+        rowDeviceId: String = deviceId,
+    ): List<Double>? {
         if (to <= from) return null
-        val samples = runCatching { repository.hrSamples(deviceId, from, to) }.getOrDefault(emptyList())
+        // #856: the same resolved ids the chart and Avg HR use. Binning a different strap's samples
+        // than the curve plots would put three different answers on one card.
+        val ids = WhoopRepository.workoutHrDeviceIds(source, rowDeviceId, deviceId)
+        val samples = runCatching { repository.hrSamplesFor(ids, from, to) }.getOrDefault(emptyList())
         if (samples.isEmpty()) return null
         val age = profileStore.age.toDouble().takeIf { it > 0 } ?: 30.0
         val zoneSet = com.noop.analytics.HrZones.zones(age = age)

@@ -1306,7 +1306,7 @@ private fun WorkoutDetailSheet(vm: AppViewModel, row: WorkoutRow, onDismiss: () 
             }
         }
         if (zoneMinutes == null) {
-            zoneMinutes = vm.workoutZoneMinutes(row.startTs, row.endTs)
+            zoneMinutes = vm.workoutZoneMinutes(row.startTs, row.endTs, row.source, row.deviceId)
             zonesFromImport = false
         }
         heartRateRecovery = vm.workoutHeartRateRecovery(row.startTs, row.endTs)

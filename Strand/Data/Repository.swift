@@ -911,6 +911,24 @@ final class Repository: ObservableObject {
         return await unionDailyMetrics(store: store, from: fromDay, to: toDay)
     }
 
+    /// #856: the same dedup over an EXPLICIT id list, so a workout's zone minutes bin the rows its own
+    /// recording strap banked rather than the day-level active ∪ canonical. Order is precedence.
+    func hrSamples(deviceIds: [String], from: Int, to: Int, limit: Int = 8000) async -> [HRSample] {
+        guard let store = await ensureStore(), !deviceIds.isEmpty else { return [] }
+        guard deviceIds.count > 1 else {
+            return (try? await store.hrSamples(deviceId: deviceIds[0], from: from, to: to,
+                                               limit: limit)) ?? []
+        }
+        var byTs: [Int: HRSample] = [:]
+        for id in deviceIds {
+            for s in (try? await store.hrSamples(deviceId: id, from: from, to: to,
+                                                 limit: limit)) ?? [] where byTs[s.ts] == nil {
+                byTs[s.ts] = s
+            }
+        }
+        return byTs.values.sorted { $0.ts < $1.ts }
+    }
+
     func hrSamples(from: Int, to: Int, limit: Int = 8000) async -> [HRSample] {
         guard let store = await ensureStore() else { return [] }
         // UNION the active strap + canonical so the HR trend renders whether the landed day's raw sits under
@@ -2622,9 +2640,15 @@ final class Repository: ObservableObject {
     /// `zonesJSON` still gets a real time-in-zone split. Returns nil when the window carries no HR (so
     /// the view shows nothing rather than five empty bars). `age <= 0` falls back to a 30 y default ,
     /// the zones are approximate either way and clearly labelled as such in the UI.
-    func workoutZoneMinutes(from: Int, to: Int, age: Int) async -> [Double]? {
+    /// #856: bins the same rows the chart plots and the Avg HR aggregates. Previously this read the
+    /// day-level union, so a bout detected on a second WHOOP had its zones computed from a strap that
+    /// never recorded it. `source` defaults to "" (⇒ the imported branch, the union) so a caller
+    /// without a row keeps today's behaviour.
+    func workoutZoneMinutes(from: Int, to: Int, age: Int, source: String = "") async -> [Double]? {
         guard to > from else { return nil }
-        let samples = await hrSamples(from: from, to: to)
+        let ids = Self.workoutHrDeviceIds(source: source, activeStrapId: deviceId,
+                                          importedIds: importedReadIds)
+        let samples = await hrSamples(deviceIds: ids, from: from, to: to)
         guard !samples.isEmpty else { return nil }
         let zoneSet = HRZones.zones(age: age > 0 ? Double(age) : 30)
         let tiz = HRZones.timeInZone(samples, zoneSet: zoneSet)

@@ -689,6 +689,14 @@ class WhoopRepository(private val dao: WhoopDao) {
     suspend fun hrSamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT) =
         dao.hrSamples(deviceId, from, to, limit)
 
+    /** #856: HR samples over an EXPLICIT id list, deduped by ts with earlier ids winning — the sample
+     *  twin of [hrBucketsFor], so a workout's ZONE MINUTES bin the same rows its chart plots and its
+     *  Avg HR aggregates. One id ⇒ a plain single-id read. */
+    suspend fun hrSamplesFor(deviceIds: List<String>, from: Long, to: Long, limit: Int = DEFAULT_LIMIT):
+        List<HrSample> =
+        if (deviceIds.isEmpty()) emptyList()
+        else mergeHrByTs(deviceIds.map { dao.hrSamples(it, from, to, limit) })
+
     /**
      * HR samples over the read-side UNION of the active strap id AND the canonical "my-whoop" (SPINE /
      * #814 + HIGH-2), deduped by ts with the active strap winning. This is the Kotlin twin of the Swift
