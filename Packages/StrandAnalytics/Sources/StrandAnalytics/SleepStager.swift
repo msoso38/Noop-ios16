@@ -1692,7 +1692,7 @@ public enum SleepStager {
         return Double(sparse) >= cardiacSparseEpochFrac * Double(sleepFeats.count)
     }
 
-    /// What this epoch's respiration says about depth — THREE states, because "we did not measure it" is
+    /// What this epoch's respiration says about depth — FIVE states, because "we did not measure it" is
     /// not an observation and must not be spendable as one.
     ///
     /// This used to be two booleans over a NaN RRV, and the `regular` one read
@@ -1704,8 +1704,17 @@ public enum SleepStager {
     /// its epochs clear the `regular` bar (it is the MEDIAN — `stageRRVLowPct` = 50), a 5/MG night has
     /// 100% clear it, on no measurement whatsoever.
     ///
-    /// `unknown` is now its own case and every branch below states what it does with it, rather than the
-    /// answer falling out of a `!isFinite` short-circuit nobody could see.
+    /// The five cases are the exact CROSS-PRODUCT of the two predicates this replaced, so the mapping is
+    /// total and no case is decided by which bar `of` happens to test first:
+    ///
+    /// | pre-fix `rrvIrregular` | pre-fix `rrvRegular` | case |
+    /// |---|---|---|
+    /// | false | true (via `!isFinite`) | `unmeasured` |
+    /// | false | true (via the low bar) | `regular` |
+    /// | true | false | `irregular` |
+    /// | false | false | `measuredMidBand` |
+    /// | true | true | `barsDegenerate` |
+    ///
     /// `unmeasured` and `measuredMidBand` are deliberately DISTINCT. Both fail the regular and irregular
     /// bars, but they mean opposite things — one is "no reading", the other is a real reading that simply
     /// sits between the bars — and the classifier already treats them differently (the REM fallback fires
@@ -1721,12 +1730,46 @@ public enum SleepStager {
         /// or this epoch's window had too few / too flat samples to derive one (`respRateAndRRV` returns
         /// NaN below 8 samples, on a flat signal, under 3 peaks, or under 2 in-band breath intervals).
         case unmeasured
+        /// A finite RRV that clears BOTH bars at once — at or above the high bar AND at or below the low
+        /// bar. The session's two percentile bars have collapsed onto this reading, so it satisfies each
+        /// of them and the pair carries no information at this value.
+        ///
+        /// Reachable, not hypothetical, and for a structural reason: RRV is the population std of breath
+        /// intervals measured in WHOLE SECONDS (`respRateAndRRV`, `dtS` = 1), so it is quantised onto a
+        /// small discrete lattice and exact ties between epochs are ordinary. `percentile` interpolates
+        /// between order statistics, so p50 and p65 coincide whenever the tie run spans them — and when
+        /// only ONE sleep epoch has a finite RRV (the rest NaN, which that same function returns freely on
+        /// short, flat or low-peak windows) `percentile` returns that single value for both, so the epoch
+        /// that SET the bars necessarily sits on both of them.
+        ///
+        /// Kept as its own case because a four-state enum cannot represent it: both pre-fix booleans were
+        /// true here, so whichever bar the factory tested first would silently decide the label. Behaviour
+        /// is pinned to the pre-fix outcome — waived for depth (`rrvRegular` was true, see
+        /// `contradictsDepth`) and clearing the REM irregular bar (`rrvIrregular` was true, see
+        /// `meetsIrregularBar`) — which keeps this change a representation fix.
+        ///
+        /// That pre-fix outcome resolves to DEEP only because the deep rule is written before the REM rule
+        /// in `classifyOne`; statement order is not a reason, and re-deciding it is a live question. It is
+        /// deliberately NOT re-decided here: doing so is a scoring change on the degenerate-distribution
+        /// nights, and this repo has no staged nights of that shape to validate it against (CLAUDE.md,
+        /// "validate against the artifact, not one match"). The point of naming the case is that the
+        /// decision is now a one-line edit in `contradictsDepth` / `meetsIrregularBar` with a test that
+        /// fails loudly, instead of an invisible consequence of statement order.
+        case barsDegenerate
 
+        /// Total mapping of the two pre-fix predicates. Written as an exhaustive switch on the pair
+        /// rather than an ordered `if` chain, because an ordered chain is exactly how the `barsDegenerate`
+        /// case used to be decided by accident.
         static func of(_ rrv: Double, lowBar: Double?, highBar: Double?) -> RespEvidence {
             guard rrv.isFinite else { return .unmeasured }
-            if let hi = highBar, rrv >= hi { return .irregular }
-            if let lo = lowBar, rrv <= lo { return .regular }
-            return .measuredMidBand
+            let atOrAboveHigh = highBar.map { rrv >= $0 } ?? false
+            let atOrBelowLow = lowBar.map { rrv <= $0 } ?? false
+            switch (atOrAboveHigh, atOrBelowLow) {
+            case (true, true): return .barsDegenerate
+            case (true, false): return .irregular
+            case (false, true): return .regular
+            case (false, false): return .measuredMidBand
+            }
         }
 
         /// Whether respiration CONTRADICTS depth. The deep rule reads this rather than a "regular" flag,
@@ -1739,6 +1782,9 @@ public enum SleepStager {
         /// qualifier ("with high parasympathetic tone WHEN MEASURABLE"). This makes the respiration
         /// waiver explicit and equally qualified instead of leaving it implied by a NaN short-circuit.
         ///
+        /// `barsDegenerate` is waived too, matching the pre-fix `rrvRegular`; see its doc for why that is
+        /// preserved rather than re-decided.
+        ///
         /// KNOWN LIMITATION, deliberately not changed here: on a 5/MG BOTH waivers can fire at once
         /// (sparse R-R leaves RMSSD NaN too), and the deep rule then reduces to stillness + a low HR with
         /// no physiological corroboration at all. That is a real weakness, but it is bounded — `hrLow` is
@@ -1750,8 +1796,19 @@ public enum SleepStager {
         /// quantifies the bias so that decision can be made on numbers.
         var contradictsDepth: Bool {
             switch self {
-            case .regular, .unmeasured: return false
+            case .regular, .unmeasured, .barsDegenerate: return false
             case .irregular, .measuredMidBand: return true
+            }
+        }
+
+        /// Whether this epoch clears the session's IRREGULAR bar — the pre-fix `rrvIrregular` predicate,
+        /// which the main REM rule reads. `barsDegenerate` clears it (it IS at or above the high bar) even
+        /// though `contradictsDepth` also waives it; that pair of answers is precisely the pre-fix state
+        /// where both booleans were true, and it is preserved deliberately.
+        var meetsIrregularBar: Bool {
+            switch self {
+            case .irregular, .barsDegenerate: return true
+            case .regular, .measuredMidBand, .unmeasured: return false
             }
         }
     }
@@ -1794,8 +1851,8 @@ public enum SleepStager {
         // when measurable. `contradictsDepth` is where an unmeasured respiration is waived — see its doc
         // for why the waiver stays and what it costs.
         if still && parasympOK && hrLow && !resp.contradictsDepth { return "deep" }
-        // REM: still body + activated cardiac + respiration measured as irregular.
-        if still && cardiacActivated && resp == .irregular { return "rem" }
+        // REM: still body + activated cardiac + respiration clearing the irregular bar.
+        if still && cardiacActivated && resp.meetsIrregularBar { return "rem" }
         // REM fallback when respiration was never MEASURED (not merely mid-band): require BOTH cardiac
         // signals. A mid-band reading is real evidence and does not earn the fallback.
         if still && hrHigh && hrvarHigh && resp == .unmeasured { return "rem" }
@@ -1930,8 +1987,8 @@ public enum SleepStager {
         let hrvarHigh = f.hrVar.isFinite && hrvarHi != nil && f.hrVar >= hrvarHi!
         let cardiacActivated = hrHigh || hrvarHigh
         let cardiacActivatedForWake = cardiacSparse ? hrHigh : cardiacActivated
-        // Same three-state respiration evidence the classifier uses, from the same factory — so the
-        // diagnostic cannot drift from the rule it explains (these predicates were duplicated by hand).
+        // Same respiration evidence the classifier uses, from the same factory — so the diagnostic cannot
+        // drift from the rule it explains (these predicates were duplicated by hand).
         let resp = RespEvidence.of(f.rrv, lowBar: rrvLo, highBar: rrvHi)
         let still = f.moveFrac <= stageStillMoveFrac
         let moving = f.moveFrac >= stageWakeMoveFrac
@@ -1941,7 +1998,7 @@ public enum SleepStager {
         if moving && (cardiacActivatedForWake || !hasHR) { return .wonOtherStage }     // → wake
         if still && parasympOK && hrLow && !resp.contradictsDepth { return .wonOtherStage } // → deep
         // From here the epoch did NOT win wake/deep; it is either REM or falls through to LIGHT.
-        if still && cardiacActivated && resp == .irregular { return .remEligible }
+        if still && cardiacActivated && resp.meetsIrregularBar { return .remEligible }
         if still && hrHigh && hrvarHigh && resp == .unmeasured { return .remEligible }
         // Not REM → attribute to the FIRST unmet REM precondition (in REM-rule order).
         if !still { return .notStill }

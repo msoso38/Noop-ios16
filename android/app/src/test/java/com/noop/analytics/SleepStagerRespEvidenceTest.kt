@@ -63,6 +63,89 @@ class SleepStagerRespEvidenceTest {
         assertEquals(RespEvidence.IRREGULAR, RespEvidence.of(1.0, 0.5, 1.0))          // inclusive
         assertEquals(RespEvidence.IRREGULAR, RespEvidence.of(2.0, 0.5, 1.0))
         assertEquals(RespEvidence.MEASURED_MID_BAND, RespEvidence.of(0.75, 0.5, 1.0))
+        // Both bars on the same value: the reading clears each of them.
+        assertEquals(RespEvidence.BARS_DEGENERATE, RespEvidence.of(0.75, 0.75, 0.75))
+        // …and only ON that value. Either side of it the pair still separates normally.
+        assertEquals(RespEvidence.REGULAR, RespEvidence.of(0.74, 0.75, 0.75))
+        assertEquals(RespEvidence.IRREGULAR, RespEvidence.of(0.76, 0.75, 0.75))
+    }
+
+    /**
+     * The five cases are the CROSS-PRODUCT of the two predicates this replaced, so every combination
+     * including "both true" has a home and none is decided by which bar `of` tests first.
+     */
+    @Test
+    fun everyCaseIsOneCellOfThePreFixBooleanPair() {
+        // (rrvIrregular, rrvRegular) → case
+        assertEquals(RespEvidence.UNMEASURED, RespEvidence.of(Double.NaN, 0.5, 1.0))       // (false, true)
+        assertEquals(RespEvidence.REGULAR, RespEvidence.of(0.2, 0.5, 1.0))                 // (false, true)
+        assertEquals(RespEvidence.IRREGULAR, RespEvidence.of(2.0, 0.5, 1.0))               // (true,  false)
+        assertEquals(RespEvidence.MEASURED_MID_BAND, RespEvidence.of(0.75, 0.5, 1.0))      // (false, false)
+        assertEquals(RespEvidence.BARS_DEGENERATE, RespEvidence.of(0.75, 0.75, 0.75))      // (true,  true)
+        // The two readouts the classifier consumes, for the cell a four-state enum could not hold.
+        assertFalse("pre-fix `rrvRegular` was true here", RespEvidence.BARS_DEGENERATE.contradictsDepth)
+        assertTrue("pre-fix `rrvIrregular` was true here", RespEvidence.BARS_DEGENERATE.meetsIrregularBar)
+    }
+
+    /**
+     * Coincident bars are REACHABLE, not a theoretical corner — which is why the case is preserved rather
+     * than waved away.
+     *
+     * Two independent routes. (1) RRV is the population std of breath intervals measured in WHOLE SECONDS
+     * (`respRateAndRRV`, `dtS` = 1), so it is quantised onto a small discrete lattice and exact ties
+     * between epochs are ordinary; `percentile` interpolates between order statistics, so p50 and p65
+     * coincide whenever a tie run spans them. (2) With exactly ONE finite RRV in the sleep period —
+     * `respRateAndRRV` returns NaN freely, on short, flat or low-peak windows — `percentile` returns that
+     * single value for EVERY percentile, so the bars coincide by construction and the epoch that set them
+     * necessarily sits on both.
+     *
+     * Both labels below are the pre-fix answers. Testing the high bar before the low bar would have
+     * classified the first as IRREGULAR and flipped it deep → light.
+     */
+    @Test
+    fun coincidentBarsAreReachableAndPreserveThePreFixLabels() {
+        // Route (2), through the same `percentile` the stager uses.
+        val sessionRrvs = listOf(Double.NaN, Double.NaN, 0.75, Double.NaN, Double.NaN)
+        val lo = SleepStager.percentile(sessionRrvs, SleepStager.stageRRVLowPct)
+        val hi = SleepStager.percentile(sessionRrvs, SleepStager.stageRRVHighPct)
+        assertEquals(0.75, lo!!, 1e-12)
+        assertEquals("one finite RRV in the session puts both bars on the same value", 0.75, hi!!, 1e-12)
+        assertEquals(RespEvidence.BARS_DEGENERATE, RespEvidence.of(0.75, lo, hi))
+
+        // Route (1): a tie run spanning p50…p65 does it too, with several finite values present.
+        val tied = listOf(0.0, 0.25, 0.5, 0.5, 0.5, 0.5, 0.5, 1.0, 1.5, 2.0)
+        assertEquals(
+            SleepStager.percentile(tied, SleepStager.stageRRVLowPct)!!,
+            SleepStager.percentile(tied, SleepStager.stageRRVHighPct)!!,
+            1e-12,
+        )
+
+        // Depth-shaped, no cardiac activation → pre-fix "deep" (the deep rule is stated first).
+        assertEquals(
+            "deep",
+            SleepStager.classifyOne(
+                feature(0.0, hr = 50.0, hrVar = 0.0, rmssd = 60.0, rrv = 0.75),
+                hrLo = 55.0, hrHi = 90.0, rmssdHi = 50.0, hrvarHi = 10.0, rrvHi = 0.75, rrvLo = 0.75,
+            ),
+        )
+        // Cardiac-activated, not depth-shaped → the REM rule still sees the irregular bar cleared.
+        assertEquals(
+            "rem",
+            SleepStager.classifyOne(
+                feature(0.0, hr = 95.0, hrVar = 20.0, rmssd = 10.0, rrv = 0.75),
+                hrLo = 55.0, hrHi = 90.0, rmssdHi = 50.0, hrvarHi = 10.0, rrvHi = 0.75, rrvLo = 0.75,
+            ),
+        )
+
+        // End to end, letting `classifyEpochs` compute the bars itself from the session above.
+        val feats = sessionRrvs.mapIndexed { i, rrv ->
+            SleepStager.EpochFeatures(
+                index = i, midTs = i * 30.0, count = 0.0, moveFrac = 0.0, ckSleep = true,
+                hr = 50.0, hrVar = Double.NaN, rmssd = 60.0, sdnn = 0.0, respRate = 14.0,
+                rrv = rrv, clock = 0.5,
+            )
+        }
+        assertEquals(List(5) { "deep" }, SleepStager.classifyEpochs(feats))
     }
 
     /**
@@ -97,6 +180,11 @@ class SleepStagerRespEvidenceTest {
      * Exhaustive grid: the new RespEvidence classifier must agree with the OLD boolean predicates on every
      * combination. The old formulas are reproduced verbatim so the equivalence is checkable rather than
      * asserted — this is what makes the change a representation fix and not a scoring change.
+     *
+     * The BAR PAIR is an axis, not a constant. Holding it at a well-separated (0.5, 1.0) hides the one
+     * combination where the two pre-fix booleans were BOTH true — `rrvHi <= rrv <= rrvLo`, which the
+     * coincident-bar pairs below reach — and hides the null bars entirely. Those cells are where a
+     * four-state enum would have silently changed a label.
      */
     @Test
     fun classificationIsIdenticalToThePreFixPredicates() {
@@ -123,33 +211,55 @@ class SleepStagerRespEvidenceTest {
             return "light"
         }
 
+        // (low, high). Separated; coincident on a value the RRV axis hits; coincident elsewhere;
+        // inverted (defensive — `of` reads the pair, it does not assume low <= high); and each way of
+        // having no bar at all, up to the 5/MG session where neither exists.
+        val barPairs: List<Pair<Double?, Double?>> = listOf(
+            0.5 to 1.0, 0.75 to 0.75, 0.5 to 0.5, 1.0 to 0.5, null to 1.0, 0.5 to null, null to null,
+        )
+
         var checked = 0
-        for (moveFrac in listOf(0.0, 0.05, 0.12, 0.2)) {
-            for (hr in listOf(Double.NaN, 45.0, 60.0, 95.0)) {
-                for (hrVar in listOf(Double.NaN, 1.0, 20.0)) {
-                    for (rmssd in listOf(Double.NaN, 10.0, 80.0)) {
-                        // NaN (never measured), below/at/between/at/above the bars.
-                        for (rrv in listOf(Double.NaN, 0.2, 0.5, 0.75, 1.0, 2.0)) {
-                            for (sparse in listOf(false, true)) {
-                                val f = feature(moveFrac, hr, hrVar, rmssd, rrv)
-                                val new = SleepStager.classifyOne(
-                                    f, hrLo = 55.0, hrHi = 90.0, rmssdHi = 50.0, hrvarHi = 10.0,
-                                    rrvHi = 1.0, rrvLo = 0.5, cardiacSparse = sparse,
-                                )
-                                val old = legacy(f, 55.0, 90.0, 50.0, 10.0, 1.0, 0.5, sparse)
-                                assertEquals(
-                                    "label changed for move=$moveFrac hr=$hr hrVar=$hrVar " +
-                                        "rmssd=$rmssd rrv=$rrv sparse=$sparse",
-                                    old, new,
-                                )
-                                checked++
+        var sawBothPreFixBooleansTrue = false
+        for ((barLo, barHi) in barPairs) {
+            for (moveFrac in listOf(0.0, 0.05, 0.12, 0.2)) {
+                for (hr in listOf(Double.NaN, 45.0, 60.0, 95.0)) {
+                    for (hrVar in listOf(Double.NaN, 1.0, 20.0)) {
+                        for (rmssd in listOf(Double.NaN, 10.0, 80.0)) {
+                            // NaN (never measured), below/at/between/at/above the bars.
+                            for (rrv in listOf(Double.NaN, 0.2, 0.5, 0.75, 1.0, 2.0)) {
+                                for (sparse in listOf(false, true)) {
+                                    val f = feature(moveFrac, hr, hrVar, rmssd, rrv)
+                                    val new = SleepStager.classifyOne(
+                                        f, hrLo = 55.0, hrHi = 90.0, rmssdHi = 50.0, hrvarHi = 10.0,
+                                        rrvHi = barHi, rrvLo = barLo, cardiacSparse = sparse,
+                                    )
+                                    val old = legacy(f, 55.0, 90.0, 50.0, 10.0, barHi, barLo, sparse)
+                                    assertEquals(
+                                        "label changed for move=$moveFrac hr=$hr hrVar=$hrVar " +
+                                            "rmssd=$rmssd rrv=$rrv sparse=$sparse " +
+                                            "bars=($barLo, $barHi)",
+                                        old, new,
+                                    )
+                                    if (rrv.isFinite() && barLo != null && barHi != null &&
+                                        rrv >= barHi && rrv <= barLo
+                                    ) {
+                                        sawBothPreFixBooleansTrue = true
+                                    }
+                                    checked++
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        assertEquals(4 * 4 * 3 * 3 * 6 * 2, checked)
+        assertEquals(7 * 4 * 4 * 3 * 3 * 6 * 2, checked)
+        // The grid is only worth more than the old one if it actually visits the cell that motivated it.
+        assertTrue(
+            "the grid must reach `rrvIrregular && rrvRegular` — otherwise the coincident-bar case is " +
+                "still untested and a bar-pair axis was added for nothing",
+            sawBothPreFixBooleansTrue,
+        )
     }
 
     /**
@@ -190,24 +300,32 @@ class SleepStagerRespEvidenceTest {
 
     /**
      * `remRejectReason` must stay in lockstep with `classifyOne` — they were hand-duplicated predicates
-     * and now share one factory, so this guards the seam.
+     * and now share one factory, so this guards the seam. The bar pair is an axis here too: the diagnostic
+     * reads `meetsIrregularBar`, so the coincident-bar case has to be exercised on both sides of the seam
+     * or only one of them is pinned.
      */
     @Test
     fun remRejectReasonAgreesWithTheClassifier() {
-        for (rrv in listOf(Double.NaN, 0.2, 0.75, 2.0)) {
-            for (hr in listOf(Double.NaN, 45.0, 95.0)) {
-                for (hrVar in listOf(Double.NaN, 1.0, 20.0)) {
-                    for (moveFrac in listOf(0.0, 0.2)) {
-                        val f = feature(moveFrac, hr, hrVar, Double.NaN, rrv)
-                        val label = classify(f)
-                        val reason = SleepStager.remRejectReason(
-                            f, hrLo = 55.0, hrHi = 90.0, rmssdHi = 50.0, hrvarHi = 10.0,
-                            rrvHi = 1.0, rrvLo = 0.5,
-                        )
-                        assertEquals(
-                            "rem-eligibility disagreed for rrv=$rrv hr=$hr",
-                            label == "rem", reason == SleepStager.REMRejectReason.REM_ELIGIBLE,
-                        )
+        val barPairs: List<Pair<Double?, Double?>> = listOf(0.5 to 1.0, 0.75 to 0.75, null to null)
+        for ((barLo, barHi) in barPairs) {
+            for (rrv in listOf(Double.NaN, 0.2, 0.75, 2.0)) {
+                for (hr in listOf(Double.NaN, 45.0, 95.0)) {
+                    for (hrVar in listOf(Double.NaN, 1.0, 20.0)) {
+                        for (moveFrac in listOf(0.0, 0.2)) {
+                            val f = feature(moveFrac, hr, hrVar, Double.NaN, rrv)
+                            val label = SleepStager.classifyOne(
+                                f, hrLo = 55.0, hrHi = 90.0, rmssdHi = 50.0, hrvarHi = 10.0,
+                                rrvHi = barHi, rrvLo = barLo,
+                            )
+                            val reason = SleepStager.remRejectReason(
+                                f, hrLo = 55.0, hrHi = 90.0, rmssdHi = 50.0, hrvarHi = 10.0,
+                                rrvHi = barHi, rrvLo = barLo,
+                            )
+                            assertEquals(
+                                "rem-eligibility disagreed for rrv=$rrv hr=$hr bars=($barLo, $barHi)",
+                                label == "rem", reason == SleepStager.REMRejectReason.REM_ELIGIBLE,
+                            )
+                        }
                     }
                 }
             }

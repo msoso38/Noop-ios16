@@ -35,6 +35,70 @@ final class SleepStagerRespEvidenceTests: XCTestCase {
         XCTAssertEqual(Resp.of(1.0, lowBar: 0.5, highBar: 1.0), .irregular)        // inclusive
         XCTAssertEqual(Resp.of(2.0, lowBar: 0.5, highBar: 1.0), .irregular)
         XCTAssertEqual(Resp.of(0.75, lowBar: 0.5, highBar: 1.0), .measuredMidBand)
+        // Both bars on the same value: the reading clears each of them.
+        XCTAssertEqual(Resp.of(0.75, lowBar: 0.75, highBar: 0.75), .barsDegenerate)
+        // …and only ON that value. Either side of it the pair still separates normally.
+        XCTAssertEqual(Resp.of(0.74, lowBar: 0.75, highBar: 0.75), .regular)
+        XCTAssertEqual(Resp.of(0.76, lowBar: 0.75, highBar: 0.75), .irregular)
+    }
+
+    /// The five cases are the CROSS-PRODUCT of the two predicates this replaced, so every combination
+    /// including "both true" has a home and none is decided by which bar `of` tests first.
+    func testEveryCaseIsOneCellOfThePreFixBooleanPair() {
+        // (rrvIrregular, rrvRegular) → case
+        XCTAssertEqual(Resp.of(.nan, lowBar: 0.5, highBar: 1.0), .unmeasured)        // (false, true)
+        XCTAssertEqual(Resp.of(0.2, lowBar: 0.5, highBar: 1.0), .regular)            // (false, true)
+        XCTAssertEqual(Resp.of(2.0, lowBar: 0.5, highBar: 1.0), .irregular)          // (true,  false)
+        XCTAssertEqual(Resp.of(0.75, lowBar: 0.5, highBar: 1.0), .measuredMidBand)   // (false, false)
+        XCTAssertEqual(Resp.of(0.75, lowBar: 0.75, highBar: 0.75), .barsDegenerate)  // (true,  true)
+        // The two readouts the classifier consumes, for the cell a four-state enum could not hold.
+        XCTAssertFalse(Resp.barsDegenerate.contradictsDepth, "pre-fix `rrvRegular` was true here")
+        XCTAssertTrue(Resp.barsDegenerate.meetsIrregularBar, "pre-fix `rrvIrregular` was true here")
+    }
+
+    /// Coincident bars are REACHABLE, not a theoretical corner — which is why the case is preserved
+    /// rather than waved away.
+    ///
+    /// Two independent routes. (1) RRV is the population std of breath intervals measured in WHOLE
+    /// SECONDS (`respRateAndRRV`, `dtS` = 1), so it is quantised onto a small discrete lattice and exact
+    /// ties between epochs are ordinary; `percentile` interpolates between order statistics, so p50 and
+    /// p65 coincide whenever a tie run spans them. (2) With exactly ONE finite RRV in the sleep period —
+    /// `respRateAndRRV` returns NaN freely, on short, flat or low-peak windows — `percentile` returns
+    /// that single value for EVERY percentile, so the bars coincide by construction and the epoch that
+    /// set them necessarily sits on both.
+    ///
+    /// Both labels below are the pre-fix answers. Testing the high bar before the low bar would have
+    /// classified the first as `irregular` and flipped it deep → light.
+    func testCoincidentBarsAreReachableAndPreserveThePreFixLabels() {
+        // Route (2), through the same `percentile` the stager uses.
+        let sessionRrvs: [Double] = [.nan, .nan, 0.75, .nan, .nan]
+        let lo = SleepStager.percentile(sessionRrvs, SleepStager.stageRRVLowPct)
+        let hi = SleepStager.percentile(sessionRrvs, SleepStager.stageRRVHighPct)
+        XCTAssertEqual(lo, 0.75)
+        XCTAssertEqual(hi, 0.75, "one finite RRV in the session puts both bars on the same value")
+        XCTAssertEqual(Resp.of(0.75, lowBar: lo, highBar: hi), .barsDegenerate)
+
+        // Route (1): a tie run spanning p50…p65 does it too, with several finite values present.
+        let tied: [Double] = [0.0, 0.25, 0.5, 0.5, 0.5, 0.5, 0.5, 1.0, 1.5, 2.0]
+        XCTAssertEqual(SleepStager.percentile(tied, SleepStager.stageRRVLowPct),
+                       SleepStager.percentile(tied, SleepStager.stageRRVHighPct))
+
+        // Depth-shaped, no cardiac activation → pre-fix "deep" (the deep rule is stated first).
+        let depthShaped = feature(moveFrac: 0, hr: 50, hrVar: 0, rmssd: 60, rrv: 0.75)
+        XCTAssertEqual(SleepStager.classifyOne(depthShaped, hrLo: 55, hrHi: 90, rmssdHi: 50,
+                                               hrvarHi: 10, rrvHi: 0.75, rrvLo: 0.75), "deep")
+        // Cardiac-activated, not depth-shaped → the REM rule still sees the irregular bar cleared.
+        let remShaped = feature(moveFrac: 0, hr: 95, hrVar: 20, rmssd: 10, rrv: 0.75)
+        XCTAssertEqual(SleepStager.classifyOne(remShaped, hrLo: 55, hrHi: 90, rmssdHi: 50,
+                                               hrvarHi: 10, rrvHi: 0.75, rrvLo: 0.75), "rem")
+
+        // End to end, letting `classifyEpochs` compute the bars itself from the session above.
+        let feats = sessionRrvs.enumerated().map { i, rrv in
+            SleepStager.EpochFeatures(index: i, midTs: Double(i) * 30, count: 0, moveFrac: 0,
+                                      ckSleep: true, hr: 50, hrVar: .nan, rmssd: 60, sdnn: 0,
+                                      respRate: 14, rrv: rrv, clock: 0.5)
+        }
+        XCTAssertEqual(SleepStager.classifyEpochs(feats), Array(repeating: "deep", count: 5))
     }
 
     /// `measuredMidBand` and `unmeasured` both fail both bars but mean opposite things, and the classifier
@@ -67,6 +131,11 @@ final class SleepStagerRespEvidenceTests: XCTestCase {
     /// Exhaustive grid: the new `RespEvidence` classifier must agree with the OLD boolean predicates on
     /// every combination. The old formulas are reproduced verbatim here so the equivalence is checkable
     /// rather than asserted — this is what makes the change a representation fix and not a scoring change.
+    ///
+    /// The BAR PAIR is an axis, not a constant. Holding it at a well-separated `(0.5, 1.0)` hides the one
+    /// combination where the two pre-fix booleans were BOTH true — `rrvHi <= rrv <= rrvLo`, which the
+    /// coincident-bar pairs below reach — and hides the nil bars entirely. Those cells are where a
+    /// four-state enum would have silently changed a label.
     func testClassificationIsIdenticalToThePreFixPredicates() {
         func legacy(_ f: SleepStager.EpochFeatures,
                     hrLo: Double?, hrHi: Double?, rmssdHi: Double?, hrvarHi: Double?,
@@ -90,32 +159,53 @@ final class SleepStagerRespEvidenceTests: XCTestCase {
             return "light"
         }
 
+        // (low, high). Separated; coincident on a value the RRV axis hits; coincident elsewhere;
+        // inverted (defensive — `of` reads the pair, it does not assume low <= high); and each way of
+        // having no bar at all, up to the 5/MG session where neither exists.
+        let barPairs: [(lo: Double?, hi: Double?)] = [
+            (0.5, 1.0), (0.75, 0.75), (0.5, 0.5), (1.0, 0.5), (nil, 1.0), (0.5, nil), (nil, nil),
+        ]
+
         var checked = 0
-        for moveFrac in [0.0, 0.05, 0.12, 0.2] {
-            for hr in [Double.nan, 45, 60, 95] {
-                for hrVar in [Double.nan, 1, 20] {
-                    for rmssd in [Double.nan, 10, 80] {
-                        // NaN (never measured), below/at/between/at/above the bars.
-                        for rrv in [Double.nan, 0.2, 0.5, 0.75, 1.0, 2.0] {
-                            for sparse in [false, true] {
-                                let f = feature(moveFrac: moveFrac, hr: hr, hrVar: hrVar,
-                                                rmssd: rmssd, rrv: rrv)
-                                let new = SleepStager.classifyOne(
-                                    f, hrLo: 55, hrHi: 90, rmssdHi: 50, hrvarHi: 10,
-                                    rrvHi: 1.0, rrvLo: 0.5, cardiacSparse: sparse)
-                                let old = legacy(f, hrLo: 55, hrHi: 90, rmssdHi: 50, hrvarHi: 10,
-                                                 rrvHi: 1.0, rrvLo: 0.5, cardiacSparse: sparse)
-                                XCTAssertEqual(new, old,
-                                    "label changed for move=\(moveFrac) hr=\(hr) hrVar=\(hrVar) " +
-                                    "rmssd=\(rmssd) rrv=\(rrv) sparse=\(sparse)")
-                                checked += 1
+        var sawBothPreFixBooleansTrue = false
+        for bars in barPairs {
+            for moveFrac in [0.0, 0.05, 0.12, 0.2] {
+                for hr in [Double.nan, 45, 60, 95] {
+                    for hrVar in [Double.nan, 1, 20] {
+                        for rmssd in [Double.nan, 10, 80] {
+                            // NaN (never measured), below/at/between/at/above the bars.
+                            for rrv in [Double.nan, 0.2, 0.5, 0.75, 1.0, 2.0] {
+                                for sparse in [false, true] {
+                                    let f = feature(moveFrac: moveFrac, hr: hr, hrVar: hrVar,
+                                                    rmssd: rmssd, rrv: rrv)
+                                    let new = SleepStager.classifyOne(
+                                        f, hrLo: 55, hrHi: 90, rmssdHi: 50, hrvarHi: 10,
+                                        rrvHi: bars.hi, rrvLo: bars.lo, cardiacSparse: sparse)
+                                    let old = legacy(f, hrLo: 55, hrHi: 90, rmssdHi: 50, hrvarHi: 10,
+                                                     rrvHi: bars.hi, rrvLo: bars.lo,
+                                                     cardiacSparse: sparse)
+                                    XCTAssertEqual(new, old,
+                                        "label changed for move=\(moveFrac) hr=\(hr) hrVar=\(hrVar) " +
+                                        "rmssd=\(rmssd) rrv=\(rrv) sparse=\(sparse) " +
+                                        "bars=(\(String(describing: bars.lo)), " +
+                                        "\(String(describing: bars.hi)))")
+                                    if rrv.isFinite,
+                                       let lo = bars.lo, let hi = bars.hi, rrv >= hi, rrv <= lo {
+                                        sawBothPreFixBooleansTrue = true
+                                    }
+                                    checked += 1
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        XCTAssertEqual(checked, 4 * 4 * 3 * 3 * 6 * 2)
+        XCTAssertEqual(checked, 7 * 4 * 4 * 3 * 3 * 6 * 2)
+        // The grid is only worth more than the old one if it actually visits the cell that motivated it.
+        XCTAssertTrue(sawBothPreFixBooleansTrue,
+                      "the grid must reach `rrvIrregular && rrvRegular` — otherwise the coincident-bar "
+                      + "case is still untested and a bar-pair axis was added for nothing")
     }
 
     /// The same equivalence for the session with NO respiration channel at all (both bars nil) — the
@@ -149,19 +239,29 @@ final class SleepStagerRespEvidenceTests: XCTestCase {
     }
 
     /// `remRejectReason` must stay in lockstep with `classifyOne` — they were hand-duplicated predicates
-    /// and now share one factory, so this guards the seam.
+    /// and now share one factory, so this guards the seam. The bar pair is an axis here too: the
+    /// diagnostic reads `meetsIrregularBar`, so the coincident-bar case has to be exercised on both
+    /// sides of the seam or only one of them is pinned.
     func testRemRejectReasonAgreesWithTheClassifier() {
-        for rrv in [Double.nan, 0.2, 0.75, 2.0] {
-            for hr in [Double.nan, 45, 95] {
-                for hrVar in [Double.nan, 1, 20] {
-                    for moveFrac in [0.0, 0.2] {
-                        let f = feature(moveFrac: moveFrac, hr: hr, hrVar: hrVar, rmssd: .nan, rrv: rrv)
-                        let label = SleepStager.classifyOne(f, hrLo: 55, hrHi: 90, rmssdHi: 50,
-                                                            hrvarHi: 10, rrvHi: 1.0, rrvLo: 0.5)
-                        let reason = SleepStager.remRejectReason(f, hrLo: 55, hrHi: 90, rmssdHi: 50,
-                                                                 hrvarHi: 10, rrvHi: 1.0, rrvLo: 0.5)
-                        XCTAssertEqual(label == "rem", reason == .remEligible,
-                                       "rem-eligibility disagreed for rrv=\(rrv) hr=\(hr)")
+        let barPairs: [(lo: Double?, hi: Double?)] = [(0.5, 1.0), (0.75, 0.75), (nil, nil)]
+        for bars in barPairs {
+            for rrv in [Double.nan, 0.2, 0.75, 2.0] {
+                for hr in [Double.nan, 45, 95] {
+                    for hrVar in [Double.nan, 1, 20] {
+                        for moveFrac in [0.0, 0.2] {
+                            let f = feature(moveFrac: moveFrac, hr: hr, hrVar: hrVar,
+                                            rmssd: .nan, rrv: rrv)
+                            let label = SleepStager.classifyOne(f, hrLo: 55, hrHi: 90, rmssdHi: 50,
+                                                                hrvarHi: 10,
+                                                                rrvHi: bars.hi, rrvLo: bars.lo)
+                            let reason = SleepStager.remRejectReason(f, hrLo: 55, hrHi: 90,
+                                                                     rmssdHi: 50, hrvarHi: 10,
+                                                                     rrvHi: bars.hi, rrvLo: bars.lo)
+                            XCTAssertEqual(label == "rem", reason == .remEligible,
+                                           "rem-eligibility disagreed for rrv=\(rrv) hr=\(hr) "
+                                           + "bars=(\(String(describing: bars.lo)), "
+                                           + "\(String(describing: bars.hi)))")
+                        }
                     }
                 }
             }
