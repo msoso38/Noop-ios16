@@ -6092,6 +6092,11 @@ class WhoopBleClient(
         } else {
             log("Abort sync: not connected — tearing down the local session only")
         }
+        // The reason string is deliberately NOT one [exitBackfilling] classifies. Only "HISTORY_COMPLETE"
+        // stamps lastSyncAt and only "timeout" raises a sync error; everything else hits the `else` branch
+        // and leaves both untouched — exactly right for an abort. A cancelled sync is neither a success
+        // nor a failure: nothing was lost, and the next sync re-offloads what was left. If a future edit
+        // starts classifying more reasons, this one must stay in the fall-through. Twin of the Swift note.
         exitBackfilling("aborted by user")
     }
 
