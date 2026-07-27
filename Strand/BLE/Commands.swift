@@ -22,6 +22,19 @@ public enum WhoopCommand: UInt8, CaseIterable {
     case reportVersionInfo     = 7
     case setClock              = 10
     case getClock              = 11
+    /// ABORT_HISTORICAL_TRANSMITS (20) — ask the strap to stop streaming the offload it is part-way
+    /// through. NON-DESTRUCTIVE, and specifically not a trim: the strap only frees banked records when
+    /// NOOP acks a HISTORY_END, so anything unacked when the abort lands stays in flash and re-offloads
+    /// on the next sync. Nothing is deleted and no cursor moves.
+    ///
+    /// The counterpart to `sendHistoricalData` (22), which NOOP has always had with no way to stop it:
+    /// until now a drain ran to completion, the 15-minute timeout, or a dropped link.
+    ///
+    /// `BLEManager.abortBackfill()` tears the session down LOCALLY whether or not the strap honours the
+    /// opcode, so a firmware that ignores 20 degrades to exactly today's behaviour rather than leaving
+    /// the UI stuck. Confirmed in use on WHOOP 4.0 by OpenStrap Edge (`Cmd.abortHistoricalTransmits`);
+    /// the 5/MG form is the same opcode over puffin framing and is NOT hardware-confirmed here.
+    case abortHistoricalTransmits = 20
     case sendHistoricalData    = 22
     case historicalDataResult  = 23
     case getBatteryLevel       = 26
@@ -146,6 +159,7 @@ public enum WhoopCommand: UInt8, CaseIterable {
         case .reportVersionInfo:     return "Report Version Info"
         case .setClock:              return "Set Clock"
         case .getClock:              return "Get Clock"
+        case .abortHistoricalTransmits: return "Abort Historical Transmits"
         case .sendHistoricalData:    return "Send Historical Data"
         case .historicalDataResult:  return "Historical Data Result"
         case .getBatteryLevel:       return "Get Battery Level"

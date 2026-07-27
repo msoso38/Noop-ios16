@@ -140,6 +140,12 @@ enum class CommandNumber(val rawValue: Int) {
     REPORT_VERSION_INFO(7),
     SET_CLOCK(10),
     GET_CLOCK(11),
+    // ABORT_HISTORICAL_TRANSMITS (20) — stop an offload part-way through. NON-DESTRUCTIVE and NOT a
+    // trim: the strap frees banked records when we ack a HISTORY_END, so anything unacked when the
+    // abort lands stays in flash and re-offloads next sync. Body [0x00], matching the only hands-on
+    // use of the opcode (OpenStrap Edge on a WHOOP 4.0). Mirrors Swift
+    // `WhoopCommand.abortHistoricalTransmits`.
+    ABORT_HISTORICAL_TRANSMITS(20),
     SEND_HISTORICAL_DATA(22),
     // The historical-offload trim/ack command. Sent (with response) to confirm one HISTORY_END
     // chunk so the strap may trim it; payload = [0x01] + the verbatim 8-byte HISTORY_END end_data.

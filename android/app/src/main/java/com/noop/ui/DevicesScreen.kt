@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RemoveCircleOutline
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -275,6 +276,13 @@ fun DevicesScreen(
                     SourceCoordinator.isWhoop(device) &&
                     TestCentre.from(context).active(TestDomain.CONNECTION)
                 ) { { featureFlagProbeTarget = device } } else null,
+                // Stop an offload already in flight. Offered ONLY while one is running on this strap —
+                // not a Test Centre probe but an ordinary escape hatch, because until now a long drain
+                // could only be ended by the timeout or walking out of range. Nothing is lost: unacked
+                // records stay on the strap.
+                onAbortSync = if (device.status == DeviceStatus.active.name && live.connected &&
+                    live.backfilling && SourceCoordinator.isWhoop(device)
+                ) { { viewModel.abortBackfill() } } else null,
             )
         }
 
@@ -508,6 +516,7 @@ private fun DeviceCard(
     /** #761 feature-flag ENUMERATION probe (Test Centre → Connection, both WHOOP families). Read-only:
      *  it reads the flag NAMES the strap's firmware knows and writes nothing. */
     onFeatureFlagProbe: (() -> Unit)? = null,
+    onAbortSync: (() -> Unit)? = null,
 ) {
     val profile = deviceProfile(device)
     // The per-device actions menu's open state is hoisted here so the WHOLE card is a tap target that opens
@@ -625,6 +634,7 @@ private fun DeviceCard(
                     onBatteryProbe = onBatteryProbe,
                     onBodyLocationProbe = onBodyLocationProbe,
                     onFeatureFlagProbe = onFeatureFlagProbe,
+                onAbortSync = onAbortSync,
                 )
             }
         }
@@ -748,6 +758,7 @@ private fun DeviceActionsMenu(
     /** #761 feature-flag ENUMERATION probe (Test Centre → Connection, both WHOOP families). Read-only:
      *  it reads the flag NAMES the strap's firmware knows and writes nothing. */
     onFeatureFlagProbe: (() -> Unit)? = null,
+    onAbortSync: (() -> Unit)? = null,
 ) {
     Box {
         IconButton(
@@ -806,6 +817,9 @@ private fun DeviceActionsMenu(
                     MenuItem(uiString(R.string.l10n_devices_screen_body_location_probe_690_re_7def8c39), Icons.Filled.BugReport) { onOpenChange(false); onBodyLocationProbe() }
                 }
                 // #761 feature-flag ENUMERATION probe (RE): read-only key-name listing, both families.
+                if (onAbortSync != null) {
+                    MenuItem(uiString(R.string.l10n_devices_screen_stop_sync_4a1f2b6e), Icons.Filled.StopCircle) { onOpenChange(false); onAbortSync() }
+                }
                 if (onFeatureFlagProbe != null) {
                     MenuItem(uiString(R.string.l10n_devices_screen_feature_flag_probe_761_re_21241d68), Icons.Filled.BugReport) { onOpenChange(false); onFeatureFlagProbe() }
                 }

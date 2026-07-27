@@ -866,6 +866,16 @@ class WhoopBleClient(
             connected && bonded && !backfilling
 
         /**
+         * The mirror gate for stopping one: an abort is only meaningful while an offload is actually
+         * running. Pure for the same reason as [canRequestSync] — the menu's visibility and the
+         * client's own guard must not drift apart, and neither needs a live GATT stack to test.
+         *
+         * Note it does NOT require [connected]. A user can abort a session whose link has already
+         * dropped; there is simply no opcode to send, and the local teardown is the whole point.
+         */
+        fun canAbortSync(backfilling: Boolean): Boolean = backfilling
+
+        /**
          * #314: should a Throwable that escaped a raw GATT call trigger a full link teardown?
          *
          * Once the OS Bluetooth radio is turned off mid-link the binder dies, and `BluetoothGatt`'s
@@ -2764,6 +2774,11 @@ class WhoopBleClient(
             // (whoop5HistoricalAckFrame = puffinCommandFrame(23, [0x01]+endData)). (#78)
             if (cmd != CommandNumber.TOGGLE_REALTIME_HR && cmd != CommandNumber.RUN_HAPTICS_PATTERN &&
                 cmd != CommandNumber.SEND_HISTORICAL_DATA && cmd != CommandNumber.HISTORICAL_DATA_RESULT &&
+                // ABORT_HISTORICAL_TRANSMITS (20) over puffin: stop an offload already in flight. Allowed
+                // ONLY while one actually is, so a default install can never form these bytes on a 5/MG —
+                // and the gate is the same state the command is about. Non-destructive: the strap frees
+                // records on our HISTORY_END ack, not on this, so an aborted drain re-offloads intact.
+                !(cmd == CommandNumber.ABORT_HISTORICAL_TRANSMITS && backfilling) &&
                 cmd != CommandNumber.SET_CLOCK && cmd != CommandNumber.GET_CLOCK &&
                 cmd != CommandNumber.GET_DATA_RANGE &&
                 cmd != CommandNumber.SET_ALARM_TIME && cmd != CommandNumber.DISABLE_ALARM &&
@@ -6047,6 +6062,37 @@ class WhoopBleClient(
         }
         backfiller.timeoutFired()
         exitBackfilling("timeout")
+    }
+
+    /**
+     * Stop an offload that is part-way through, at the user's request.
+     *
+     * NOOP has been able to START a drain since day one (SEND_HISTORICAL_DATA) with no way to stop it:
+     * a session ran to HISTORY_COMPLETE, the backfill timeout, or a dropped link.
+     *
+     * NOTHING IS LOST. The strap frees banked records when we ack a HISTORY_END, so acked records are
+     * persisted and unacked ones stay in flash and re-offload next sync. A stop, not a trim.
+     *
+     * The local teardown does NOT depend on the strap honouring opcode 20 — [exitBackfilling] runs
+     * either way, the same path the timeout and disconnect already use — so a firmware that ignores
+     * the abort degrades to today's behaviour rather than wedging the UI in "Syncing". Deliberate: the
+     * opcode is confirmed in use on WHOOP 4.0 by OpenStrap Edge, and is NOT hardware-confirmed here on
+     * either family. Twin of Swift `BLEManager.abortBackfill()`.
+     */
+    fun abortBackfill() {
+        if (!canAbortSync(backfilling)) {
+            log("Abort sync ignored — no offload in flight")
+            return
+        }
+        // Send BEFORE tearing down: the 5/MG allow-list admits opcode 20 only while `backfilling` is
+        // still true, so the ordering here is load-bearing, not stylistic.
+        if (_state.value.connected) {
+            send(CommandNumber.ABORT_HISTORICAL_TRANSMITS, byteArrayOf(0), withResponse = true)
+            log("Abort sync: ABORT_HISTORICAL_TRANSMITS (20) sent; unacked records stay on the strap")
+        } else {
+            log("Abort sync: not connected — tearing down the local session only")
+        }
+        exitBackfilling("aborted by user")
     }
 
     /** Tear down the backfill session. Port of `exitBackfilling`. Does NOT auto-start live HR. */

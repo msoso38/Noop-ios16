@@ -1878,6 +1878,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  User-initiated, Test-Centre-gated in DevicesScreen; the report goes to the dialog + strap log. */
     fun probeFeatureFlags() = ble.probeFeatureFlags()
 
+    /** Stop an offload part-way through (#ABORT). Twin of Swift `AppModel`/`BLEManager.abortBackfill()`. */
+    fun abortBackfill() = ble.abortBackfill()
+
     /** #761 probe report text (null until the walk finishes; waiting sentinel while it runs). */
     val featureFlagProbe = ble.featureFlagProbe
 
