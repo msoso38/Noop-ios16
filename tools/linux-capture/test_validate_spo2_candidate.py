@@ -22,6 +22,11 @@ def _utc(y, m, d, hh=0, mm=0, ss=0) -> int:
     return int(datetime(y, m, d, hh, mm, ss, tzinfo=timezone.utc).timestamp())
 
 
+def _unix_of(rec: dict) -> int:
+    """The u32 unix at frame offset 15, straight off a planted capture record."""
+    return int.from_bytes(bytes.fromhex(rec["hex"])[15:19], "little")
+
+
 def _plant_night(
     t0: int,
     t1: int,
@@ -41,6 +46,43 @@ def _plant_night(
                 unix=u,
                 sleep_state=sleep_state,
                 aux_byte_82=spo2 if asleep else 0,
+                length=124,
+            )
+        )
+        if neighbor_offset is not None and asleep:
+            f[neighbor_offset] = neighbor_value & 0xFF
+        out.append({"hex": bytes(f).hex(), "dir": "rx"})
+    return out
+
+
+def _plant_duty_night(
+    t0: int,
+    t1: int,
+    spo2: int,
+    *,
+    period: int,
+    phase: int,
+    window: int,
+    step_s: int = 1,
+    asleep: bool = True,
+    neighbor_offset: int | None = None,
+    neighbor_value: int = 0,
+) -> list[dict]:
+    """Plant v18 records where @82 is nonzero ONLY inside a duty window, as the real strap does.
+
+    `phase` is the residue `unix % period` at which the window opens. Tests deliberately use periods
+    and phases that are *not* the ones measured on the reference corpus — the tool must recover them
+    from the capture, never assume them.
+    """
+    out = []
+    sleep_state = 2 if asleep else 0
+    for u in range(t0, t1, step_s):
+        in_window = (u - phase) % period < window
+        f = bytearray(
+            make_v18(
+                unix=u,
+                sleep_state=sleep_state,
+                aux_byte_82=spo2 if (in_window and asleep) else 0,
                 length=124,
             )
         )
@@ -330,3 +372,302 @@ class SqliteV18FilterTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:
             vs.load_frame_records(self._mixed_store(n_v18=5), device_id=99)
         self.assertIn("device-id", str(cm.exception))
+
+
+class DutyCycleDetectionTests(unittest.TestCase):
+    """@82 is duty-cycled: on the reference corpus (18,650 v18 records, 18,602 of them from
+    @digitalerdude's public PacketLogger capture) it is nonzero in 450 records — 15 runs, every one
+    exactly 30 records long, every one starting at the same `unix % 1200`.
+
+    The *existence* of a periodic window is the robust fact. The period and especially the phase are
+    not: these tests plant schedules that are nothing like 1200/337 and require the tool to measure
+    them, so a hard-coded constant would fail here rather than silently mis-score someone's strap."""
+
+    def _records(self, frames):
+        return list(vs.iter_v18_records(frames))
+
+    def test_recovers_period_phase_and_window_without_being_told(self):
+        t0 = _utc(2026, 3, 2, 0, 0, 0)
+        frames = _plant_duty_night(t0, t0 + 6 * 900, 96, period=900, phase=111, window=20)
+        duty = vs.detect_duty_cycle(self._records(frames))
+        self.assertEqual(duty["mode"], "duty_cycled")
+        self.assertEqual(duty["period_s"], 900)
+        self.assertEqual(duty["window_len_s"], 20)
+        self.assertEqual(duty["phase_s"], 111 % 900)
+        self.assertEqual(duty["windows_observed"], 6)
+        self.assertEqual(duty["phase_jitter_s"], 0)
+        self.assertTrue(duty["window_len_stable"])
+
+    def test_a_second_unrelated_schedule_is_recovered_too(self):
+        """Two different plants must give two different answers — the guard against a constant."""
+        t0 = _utc(2026, 3, 3, 0, 0, 0)
+        frames = _plant_duty_night(t0, t0 + 8 * 600, 95, period=600, phase=42, window=10)
+        duty = vs.detect_duty_cycle(self._records(frames))
+        self.assertEqual(
+            (duty["period_s"], duty["phase_s"], duty["window_len_s"]), (600, 42, 10)
+        )
+
+    def test_a_capture_where_82_is_always_on_is_not_reweighted(self):
+        """No duty cycle to correct for ⇒ 'continuous', and the per-second path is left alone."""
+        t0 = _utc(2026, 3, 4, 0, 0, 0)
+        duty = vs.detect_duty_cycle(self._records(_plant_night(t0, t0 + 3600, 97)))
+        self.assertEqual(duty["mode"], "continuous")
+        self.assertIsNone(duty["period_s"])
+
+    def test_a_flat_zero_capture_reports_absent(self):
+        t0 = _utc(2026, 3, 5, 0, 0, 0)
+        duty = vs.detect_duty_cycle(self._records(_plant_night(t0, t0 + 3600, 0)))
+        self.assertEqual(duty["mode"], "absent")
+        self.assertEqual(duty["n_nonzero"], 0)
+
+    def test_scattered_firings_with_no_period_are_called_irregular_not_duty_cycled(self):
+        """Claiming a period the data does not support would reweight nights on an invented schedule."""
+        t0 = _utc(2026, 3, 6, 0, 0, 0)
+        frames = []
+        for i, gap in enumerate([0, 137, 490, 601, 1900, 2050]):
+            f = bytearray(make_v18(unix=t0 + gap, sleep_state=2, aux_byte_82=95, length=124))
+            frames.append({"hex": bytes(f).hex()})
+        for u in range(t0, t0 + 3000):          # bulk of zero records around them
+            frames.append({"hex": make_v18(unix=u, sleep_state=2, aux_byte_82=0).hex()})
+        duty = vs.detect_duty_cycle(self._records(frames))
+        self.assertIn(duty["mode"], ("irregular", "duty_cycled"))
+        if duty["mode"] == "duty_cycled":
+            self.fail(f"scattered firings should not be claimed as a schedule: {duty}")
+
+
+class WindowCoverageTests(unittest.TestCase):
+    """The failure mode this closes: a capture not aligned to the duty phase reads all zeros and is
+    indistinguishable from a strap with the feature off. Measured, not assumed — a plausible
+    contributor to the contradictory cross-device evidence on #103."""
+
+    def setUp(self):
+        self.t0 = _utc(2026, 4, 1, 23, 0, 0)
+        self.t1 = self.t0 + 4 * 3600
+        self.period, self.phase, self.window = 1200, 337, 30
+        self.frames = _plant_duty_night(
+            self.t0, self.t1, 96,
+            period=self.period, phase=self.phase, window=self.window,
+        )
+        self.records = list(vs.iter_v18_records(self.frames))
+        self.duty = vs.detect_duty_cycle(self.records)
+
+    def test_an_aligned_capture_covers_every_window(self):
+        covered, expected = vs.night_window_coverage(self.records, self.t0, self.t1, self.duty)
+        self.assertEqual(expected, 12)          # 4 h / 20 min
+        self.assertEqual(covered, expected)
+
+    def test_a_phase_misaligned_sample_reads_as_no_feature_at_all(self):
+        """One record per minute, landing outside the window every time: zero nonzero @82, zero
+        coverage. Reported as such instead of as a device whose candidate does not track."""
+        stride = [f for f in self.frames if _unix_of(f) % 60 == 30]
+        recs = list(vs.iter_v18_records(stride))
+        self.assertEqual(vs.detect_duty_cycle(recs)["n_nonzero"], 0)
+        covered, expected = vs.night_window_coverage(recs, self.t0, self.t1, self.duty)
+        self.assertEqual(covered, 0)
+        self.assertEqual(expected, 12)
+
+    def test_coverage_is_reported_per_night_and_low_nights_are_flagged(self):
+        # Capture only the first hour, then claim the whole 4-hour night in the export.
+        frames = [f for f in self.frames if _unix_of(f) < self.t0 + 3600]
+        with tempfile.TemporaryDirectory() as td:
+            cap = os.path.join(td, "capture.json")
+            with open(cap, "w") as fh:
+                json.dump(frames, fh)
+            start = datetime.fromtimestamp(self.t0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            exp = _write_export(td, [(start, 96.0, self.t0, self.t1)])
+            res = vs.validate_device(cap, exp, device="partial")
+        night = res["nights"][0]
+        self.assertEqual(night["windows_expected"], 12)
+        self.assertEqual(night["windows_sampled"], 3)       # 1 h of a 4 h night
+        self.assertAlmostEqual(night["coverage"], 0.25)
+        self.assertTrue(night["low_coverage"])
+        self.assertFalse(res["checklist"]["window_coverage"])
+        self.assertTrue(any("duty" in w or "window" in w for w in vs.coverage_warnings(res)))
+
+    def test_the_nightly_aggregate_is_per_window_not_per_second(self):
+        """A 30-second burst is one measurement the strap took, not 30 independent ones.
+
+        Windows contribute unequal numbers of *in-band* samples for a reason visible on the reference
+        corpus: only 148 of the 450 in-window values there are in 70–100 — the rest are out-of-band
+        sentinels (0x80, 0xA0, 0x20). Here window A yields 30 in-band samples and windows B and C
+        yield 3 each. Per-second averaging hands the night to A; per-window averaging does not."""
+        frames = []
+        for u in range(0, 3600):
+            in_window = (u - 337) % 1200 < 30
+            if not in_window:
+                v = 0
+            elif u < 1200:
+                v = 90                                     # window A: every second in-band
+            else:
+                v = 100 if (u % 1200) in (337, 347, 357) else 128   # B/C: 3 in-band, rest sentinel
+            frames.append({"hex": make_v18(unix=u, sleep_state=2, aux_byte_82=v).hex()})
+        recs = list(vs.iter_v18_records(frames))
+        duty = vs.detect_duty_cycle(recs)
+        self.assertEqual(duty["mode"], "duty_cycled")
+        self.assertEqual((duty["period_s"], duty["phase_s"], duty["window_len_s"]), (1200, 337, 30))
+        per_second = vs.night_mean_at_offset(recs, 0, 3600, 82)
+        per_window = vs.night_mean_at_offset(recs, 0, 3600, 82, duty=duty)
+        self.assertAlmostEqual(per_second[0], (30 * 90 + 6 * 100) / 36)   # 91.67, burst-weighted
+        self.assertAlmostEqual(per_window[0], (90 + 100 + 100) / 3)       # 96.67, window-weighted
+        self.assertEqual(per_window[1], 36)      # sample count still reported honestly
+
+
+class VarianceFloorTests(unittest.TestCase):
+    """`value in 70..100` is not a specific screen. On a real subscription-free strap six offsets pass
+    an in-band-only screen on a majority of records — @17, @33, @59, @69, @71, @107 — and each is
+    either an already-decoded non-SpO₂ field (@33 cardiac_flags, @59 step_cadence, @69/@71 the aux
+    thermal channels) or near-constant (@17 is byte 2 of the u32 unix timestamp). A nightly SpO₂
+    cannot have 2 distinct values."""
+
+    def _device(self, td, *, spo2s, neighbor_offset, neighbor_values, jitter):
+        base = _utc(2026, 2, 1, 0, 0, 0)
+        frames, exports = [], []
+        for i, spo2 in enumerate(spo2s):
+            t0 = base + i * 86400 + 23 * 3600
+            t1 = t0 + 6 * 3600
+            night = _plant_night(t0, t1, spo2 + jitter[i])
+            for rec in night:                    # a 2-valued byte that tracks export perfectly
+                f = bytearray(bytes.fromhex(rec["hex"]))
+                f[neighbor_offset] = neighbor_values[i]
+                rec["hex"] = bytes(f).hex()
+            frames.extend(night)
+            start = datetime.fromtimestamp(t0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            exports.append((start, float(spo2), t0, t1))
+        cap = os.path.join(td, "capture.json")
+        with open(cap, "w") as f:
+            json.dump(frames, f)
+        return cap, _write_export(td, exports)
+
+    def test_a_near_constant_in_band_byte_cannot_win_the_specificity_scan(self):
+        """@84 holds two values that correlate perfectly with the export; @82 tracks it imperfectly.
+        Without a variance floor the flag wins and the tool reports 'not specific to @82'."""
+        spo2s = [94, 95, 96, 97, 98, 99]
+        with tempfile.TemporaryDirectory() as td:
+            cap, exp = self._device(
+                td,
+                spo2s=spo2s,
+                neighbor_offset=84,
+                neighbor_values=[80, 80, 80, 81, 81, 81],   # 2 distinct values, monotone with export
+                jitter=[1, -1, 1, -1, 1, 0],                # @82 deliberately noisier
+            )
+            res = vs.validate_device(cap, exp, device="floor")
+        self.assertEqual(res["best_specificity_offset"], 82)
+        rejected = {s["offset"]: s for s in res["specificity_rejected_low_variance"]}
+        self.assertIn(84, rejected)
+        self.assertEqual(rejected[84]["distinct"], 2)
+
+    def test_the_floor_also_gates_82_itself(self):
+        """If @82 is the near-constant one, the checklist says so instead of trusting its r."""
+        base = _utc(2026, 2, 10, 0, 0, 0)
+        frames, exports = [], []
+        for i, spo2 in enumerate([94, 95, 96, 97, 98, 99]):
+            t0 = base + i * 86400 + 23 * 3600
+            t1 = t0 + 6 * 3600
+            frames.extend(_plant_night(t0, t1, 97 if i < 3 else 98))   # only 2 distinct values
+            start = datetime.fromtimestamp(t0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            exports.append((start, float(spo2), t0, t1))
+        with tempfile.TemporaryDirectory() as td:
+            cap = os.path.join(td, "capture.json")
+            with open(cap, "w") as f:
+                json.dump(frames, f)
+            res = vs.validate_device(cap, _write_export(td, exports), device="flat82")
+        self.assertEqual(res["inband_distinct_82"], 2)
+        self.assertFalse(res["checklist"]["value_variance"])
+        self.assertFalse(res["checklist"]["pass"])
+
+    def test_a_real_spread_clears_the_floor(self):
+        with tempfile.TemporaryDirectory() as td:
+            cap, exp = self._device(
+                td,
+                spo2s=[93, 95, 96, 97, 98, 100],
+                neighbor_offset=90,
+                neighbor_values=[0] * 6,
+                jitter=[0] * 6,
+            )
+            res = vs.validate_device(cap, exp, device="spread")
+        self.assertGreaterEqual(res["inband_distinct_82"], vs.MIN_DISTINCT_INBAND)
+        self.assertTrue(res["checklist"]["value_variance"])
+
+
+class FeatureAbsentClassificationTests(unittest.TestCase):
+    """A subscription-free strap reads @82 = 0x00 on 100 % of records, including genuine deep sleep.
+    That device has not failed a correlation — it has no data to correlate. It must be classified,
+    and must count as neither a PASS nor a FAIL in the multi-device promote gate for #103."""
+
+    def _flat_zero_device(self, td, label, *, n_records=851, step_s=5):
+        t0 = _utc(2026, 1, 5, 23, 0, 0)
+        frames = [
+            {"hex": make_v18(unix=t0 + i * step_s, sleep_state=2, hr=52, aux_byte_82=0).hex()}
+            for i in range(n_records)
+        ]
+        cap = os.path.join(td, f"{label}.json")
+        with open(cap, "w") as f:
+            json.dump(frames, f)
+        exp_dir = os.path.join(td, label)
+        os.makedirs(exp_dir)
+        start = datetime.fromtimestamp(t0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        _write_export(exp_dir, [(start, 96.0, t0, t0 + n_records * step_s)])
+        return {"device": label, "capture": cap, "export": exp_dir}
+
+    def test_a_flat_zero_strap_is_classified_not_failed(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = self._flat_zero_device(td, "no-feature")
+            res = vs.validate_device(d["capture"], d["export"], device="no-feature")
+        self.assertEqual(res["duty"]["mode"], "absent")
+        self.assertEqual(res["classification"], "feature_absent")
+        self.assertFalse(res["checklist"]["pass"])
+        self.assertIn("FEATURE ABSENT", vs.format_summary(res))
+        self.assertTrue(any("feature absent" in w for w in vs.coverage_warnings(res)))
+
+    def test_a_short_all_zero_capture_is_not_enough_to_claim_absence(self):
+        """Below the evidence bar this is 'we did not see it', which is the very confusion the duty
+        cycle creates — so it stays a plain FAIL rather than an absence claim."""
+        with tempfile.TemporaryDirectory() as td:
+            d = self._flat_zero_device(td, "short", n_records=40, step_s=5)
+            res = vs.validate_device(d["capture"], d["export"], device="short")
+        self.assertEqual(res["duty"]["mode"], "absent")
+        self.assertEqual(res["classification"], "fail")
+
+    def test_an_absent_device_is_neither_a_pass_nor_a_fail_in_the_promote_gate(self):
+        def passing(td, label, spo2s):
+            base = _utc(2026, 1, 20, 0, 0, 0)
+            frames, exports = [], []
+            for i, spo2 in enumerate(spo2s):
+                t0 = base + i * 86400 + 23 * 3600
+                t1 = t0 + 7 * 3600
+                frames.extend(_plant_night(t0, t1, spo2))
+                start = datetime.fromtimestamp(t0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                exports.append((start, float(spo2), t0, t1))
+            cap = os.path.join(td, f"{label}.json")
+            with open(cap, "w") as f:
+                json.dump(frames, f)
+            exp_dir = os.path.join(td, label)
+            os.makedirs(exp_dir)
+            _write_export(exp_dir, exports)
+            return {"device": label, "capture": cap, "export": exp_dir}
+
+        with tempfile.TemporaryDirectory() as td:
+            entries = [
+                passing(td, "strap-a", [95, 96, 97, 98, 94, 99]),
+                passing(td, "strap-b", [93, 94, 95, 96, 97, 98]),
+                self._flat_zero_device(td, "strap-c"),
+            ]
+            results = [
+                vs.validate_device(e["capture"], e["export"], device=e["device"]) for e in entries
+            ]
+        blob = vs.format_postable(results)
+        self.assertIn("multi_device_eligible=2", blob)   # the absent strap is not eligible…
+        self.assertIn("all_pass=True", blob)             # …and does not drag all_pass down
+        self.assertIn("feature_absent=1", blob)
+        self.assertIn("strap-c,feature_absent,", blob)
+
+    def test_postable_still_carries_no_raw_spo2_values(self):
+        """The duty/coverage columns are device timing, not health data — the privacy property of
+        --postable has to survive everything added here."""
+        with tempfile.TemporaryDirectory() as td:
+            d = self._flat_zero_device(td, "priv")
+            res = vs.validate_device(d["capture"], d["export"], device="priv")
+        blob = vs.format_postable([res])
+        self.assertNotIn("96.00", blob)
+        self.assertNotIn("cycle_start", blob.lower())
+        self.assertIn("duty_mode", blob)

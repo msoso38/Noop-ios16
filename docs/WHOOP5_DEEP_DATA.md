@@ -147,10 +147,23 @@ python3 validate_spo2_candidate.py capture.json my_whoop_data/ --device strap-a 
 python3 validate_spo2_candidate.py --batch devices.json --postable
 ```
 
-Per device it computes the **nightly mean** of in-band `@82` samples (70–100) while
+Per device it computes the **nightly aggregate** of in-band `@82` samples (70–100) while
 `sleep_state = asleep`, pairs each night with CSV `blood_oxygen_pct`, then reports Pearson **r**,
 MAE, bias, and an **offset-specificity** scan over bytes 74–92 (only `@82` should win). Default
-gates: ≥5 paired nights, export range ≥1 %, r ≥ 0.7, MAE ≤ 1.0, best offset = 82.
+gates: ≥5 paired nights, export range ≥1 %, r ≥ 0.7, MAE ≤ 1.0, best offset = 82, ≥5 distinct
+in-band values at `@82`, and ≥50 % duty-window coverage.
+
+**`@82` is duty-cycled**, which the harness has to account for or its numbers are meaningless.
+Across 18,650 v18 records — 18,602 from [@digitalerdude](https://github.com/digitalerdude)'s public
+PacketLogger capture of an official-app overnight sync, plus 48 from a NOOP sync — the byte is
+nonzero in 450 records (2.4 %), in 15 runs of *exactly* 30 records each, every run starting at the
+same `unix % 1200` with zero phase variance; outside the window it is identically `0x00`. A capture
+not aligned to that phase reads all zeros and is indistinguishable from a strap with the feature off
+— a plausible contributor to the split evidence above. The tool therefore **detects** the period,
+phase and window length per capture (never assuming the phase generalises across firmware),
+aggregates one value **per window** rather than per second, and reports per-night window coverage
+with a loud warning below the floor. A strap whose `@82` is flat `0x00` across a long enough capture
+is classified **`feature_absent`** — neither a PASS nor a FAIL in the multi-device gate.
 
 `--postable` prints a CSV-ish block with **no raw SpO₂ values** — safe to paste on
 [#103](https://github.com/ryanbr/noop/issues/103). Promote `spo2_candidate_82` → `spo2Pct` only when

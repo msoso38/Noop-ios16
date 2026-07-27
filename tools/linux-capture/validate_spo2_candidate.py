@@ -9,12 +9,24 @@ Context (see docs/WHOOP5_DEEP_DATA.md and issue #103):
 
 This tool answers the promote-or-not question as *known plaintext*:
 
-    capture.json OR a whoop_sync.py .db  +  whoop_export  ──►  mean(@82 | asleep, 70–100)
+    capture.json OR a whoop_sync.py .db  +  whoop_export  ──►  mean(@82 | asleep, 70–100, in-window)
                                        vs CSV blood_oxygen_pct
-                                       ──►  r, MAE, bias, offset-specificity
+                                       ──►  r, MAE, bias, offset-specificity, window coverage
 
 Owners can validate one strap, or batch several devices, and post **only aggregate
 stats** on #103 (never raw SpO₂ values). Stdlib only.
+
+Three things the harness has to get right before a number from it means anything:
+
+  • **@82 is duty-cycled.** It is nonzero only inside a short, phase-locked window that repeats on a
+    fixed period; outside it the byte is identically 0x00. A capture that is not aligned to that
+    phase reads all zeros and looks exactly like a strap with the feature off. The harness therefore
+    DETECTS the period/phase/window length per capture (never assumes them), aggregates per window
+    rather than per second, and reports how much of each night's window schedule it actually sampled.
+  • **"value is in 70–100" is not a specific screen.** Timestamp bytes and thermal channels pass it.
+    An offset must also show real variation before its correlation is worth ranking.
+  • **A strap that never emits @82 is not a failed correlation.** It is classified `feature_absent`
+    and counts as neither a PASS nor a FAIL in the multi-device promote gate.
 
 Usage:
 
@@ -66,6 +78,44 @@ SLEEP_ASLEEP = 2
 
 # Scan window for offset-specificity (docs checklist: only @82 should win).
 SPECIFICITY_SCAN = range(74, 93)
+
+# --- Duty cycle ------------------------------------------------------------------------------------
+# @82 is NOT sampled every second. Measured on a corpus of 18,650 v18 records — 18,602 of them from
+# @digitalerdude's public PacketLogger capture of an official-app overnight sync, plus 48 from a NOOP
+# sync — the byte is nonzero in only 450 records (2.41 %), and every one of those falls inside a short
+# window that repeats on a fixed period: 15 windows, each exactly 30 records long, each starting at
+# the same `unix % 1200`, zero phase variance. Outside the window @82 is identically 0x00.
+#
+# Why this matters here more than anywhere else: a capture (or a sampling scheme) not aligned to that
+# phase reads all zeros and is indistinguishable from a strap with the feature switched off — a
+# plausible contributor to the contradictory cross-device evidence on #103, where one device
+# correlated +0.99 and another moved opposite. So this harness measures coverage instead of assuming
+# it, and a night whose windows were barely sampled is flagged rather than quietly averaged.
+#
+# What is treated as robust: that a periodic window EXISTS and has a stable length. What is NOT
+# assumed: the period, and above all the phase offset — neither is guaranteed to hold across straps
+# or firmware, so detect_duty_cycle() measures both per capture and reports what it found. The 1200 s
+# figure below is used only as a minimum-evidence bar, never as a detector input.
+NOMINAL_DUTY_PERIOD_S = 1200
+CONTINUOUS_NONZERO_FRACTION = 0.5   # ≥ this share nonzero ⇒ not duty-cycled; every second is a sample
+MIN_DUTY_WINDOWS = 3                # fewer observed windows than this ⇒ no period worth claiming
+DEFAULT_MIN_WINDOW_COVERAGE = 0.5   # below this share of a night's windows, its mean means little
+
+# "Feature absent" evidence bar. To call @82 absent rather than merely un-sampled, the capture must
+# be long enough that a duty-cycled feature would have fired several times while the wearer slept.
+ABSENT_MIN_RECORDS = 100
+ABSENT_MIN_ASLEEP_SPAN_S = 3 * NOMINAL_DUTY_PERIOD_S
+
+# --- Variance floor --------------------------------------------------------------------------------
+# "The value lands in 70–100" is not a specific screen. On a real subscription-free 5.0 strap SIX
+# offsets pass an in-band-only screen on a majority of records — @17, @33, @59, @69, @71, @107 — and
+# every one is either an already-decoded non-SpO₂ field (@33 cardiac_flags, @59 step_cadence, @69/@71
+# the two aux thermal channels) or near-constant: @17 is byte 2 of the u32 unix timestamp at @15 and
+# reads 99–100 for a day and a half of wall clock, and @107 has 4 distinct values. A nightly SpO₂
+# cannot have 2 distinct values, so an offset must clear a variation floor before its correlation is
+# worth ranking — otherwise a 2-valued byte can win a 5-night |r| race by coincidence alone.
+MIN_DISTINCT_INBAND = 5
+MIN_INBAND_STDEV = 0.5
 
 # English + localized cycle headers → canonical keys (mirrors StrandImport HeaderNorm subset).
 HEADER_ALIASES = {
@@ -293,6 +343,137 @@ def iter_v18_records(capture_records: Sequence[dict]) -> Iterable[dict]:
         yield d
 
 
+# --- Duty-cycle detection --------------------------------------------------------------------------
+
+def _median_record_interval(records: Sequence[dict]) -> float:
+    """Median seconds between consecutive records. Sets the run-gap tolerance so detection works on a
+    1 Hz capture and on a sparser one without a hard-coded cadence."""
+    stamps = sorted({r["unix"] for r in records})
+    deltas = [b - a for a, b in zip(stamps, stamps[1:]) if b > a]
+    return float(statistics.median(deltas)) if deltas else 1.0
+
+
+def _circ_dist(a: int, b: int, period: int) -> int:
+    d = abs(a - b) % period
+    return min(d, period - d)
+
+
+def detect_duty_cycle(records: Sequence[dict], *, gap_tolerance_s: Optional[float] = None) -> dict:
+    """Measure @82's on/off schedule from the capture itself. Nothing about it is hard-coded.
+
+    Returns a dict whose `mode` is one of:
+      absent       — @82 is 0x00 on every record (the feature never fired, or is not present)
+      continuous   — @82 is nonzero on most records (no duty cycle to correct for)
+      duty_cycled  — nonzero only in a repeating, phase-locked window; period/phase/length measured
+      irregular    — nonzero sometimes, but with no period the harness is willing to claim
+
+    Only `duty_cycled` changes how nights are aggregated; the other modes fall through to the
+    per-sample behaviour, so a capture this cannot characterise is never silently reweighted.
+    """
+    n = len(records)
+    nonzero = [r for r in records if r.get("aux_byte_82")]
+    interval = _median_record_interval(records)
+    tol = gap_tolerance_s if gap_tolerance_s is not None else max(2.0 * interval, 2.0)
+
+    info = {
+        "mode": "absent",
+        "n_records": n,
+        "n_nonzero": len(nonzero),
+        "nonzero_fraction": (len(nonzero) / n) if n else 0.0,
+        "distinct_values": len({r["aux_byte_82"] for r in nonzero}),
+        "record_interval_s": interval,
+        "period_s": None,
+        "phase_s": None,
+        "window_len_s": None,
+        "windows_observed": 0,
+        "window_len_stable": None,
+        "phase_jitter_s": None,
+    }
+    if not nonzero:
+        return info
+    if info["nonzero_fraction"] >= CONTINUOUS_NONZERO_FRACTION:
+        info["mode"] = "continuous"
+        return info
+
+    # Group the nonzero seconds into runs; a run is one firing of the window.
+    stamps = sorted({r["unix"] for r in nonzero})
+    runs: List[List[int]] = [[stamps[0]]]
+    for prev, cur in zip(stamps, stamps[1:]):
+        if cur - prev <= tol:
+            runs[-1].append(cur)
+        else:
+            runs.append([cur])
+    spans = [run[-1] - run[0] + 1 for run in runs]
+    starts = [run[0] for run in runs]
+    info["windows_observed"] = len(runs)
+    info["window_len_s"] = int(statistics.median(spans))
+    info["window_len_stable"] = len(set(spans)) == 1
+
+    if len(starts) < MIN_DUTY_WINDOWS:
+        info["mode"] = "irregular"
+        return info
+    period = int(statistics.median(b - a for a, b in zip(starts, starts[1:])))
+    if period <= info["window_len_s"]:
+        info["mode"] = "irregular"
+        return info
+
+    # Circular medoid: the candidate phase closest to all the others, wrap-safe.
+    phases = [s % period for s in starts]
+    phase = min(phases, key=lambda p: sum(_circ_dist(p, q, period) for q in phases))
+    jitter = max(_circ_dist(p, phase, period) for p in phases)
+    info.update(period_s=period, phase_s=phase, phase_jitter_s=jitter)
+    info["mode"] = "duty_cycled" if jitter <= max(tol, 1) else "irregular"
+    return info
+
+
+def is_duty_cycled(duty: Optional[dict]) -> bool:
+    return bool(duty) and duty.get("mode") == "duty_cycled"
+
+
+def window_index(u: int, duty: dict) -> int:
+    return (u - duty["phase_s"]) // duty["period_s"]
+
+
+def in_duty_window(u: int, duty: dict) -> bool:
+    return (u - duty["phase_s"]) % duty["period_s"] < duty["window_len_s"]
+
+
+def duty_windows_in(t0: int, t1: int, duty: Optional[dict]) -> List[Tuple[int, int]]:
+    """The duty windows whose start falls in [t0, t1), from the DETECTED schedule."""
+    if not is_duty_cycled(duty):
+        return []
+    period, phase, wlen = duty["period_s"], duty["phase_s"], duty["window_len_s"]
+    if t1 <= t0 or (t1 - t0) // period > 100_000:
+        return []
+    out = []
+    s = t0 + ((phase - t0) % period)
+    while s < t1:
+        out.append((s, s + wlen))
+        s += period
+    return out
+
+
+def night_window_coverage(
+    records: Sequence[dict], t0: int, t1: int, duty: Optional[dict]
+) -> Tuple[Optional[int], Optional[int]]:
+    """(windows sampled, windows expected) for one night, or (None, None) if not duty-cycled.
+
+    Deliberately ignores sleep_state: this measures the CAPTURE, answering "did it sample the window
+    at all" — the failure mode a phase-unaligned capture hits — and keeps that separable from "the
+    wearer was awake", which is what the asleep filter on the aggregate already handles.
+    """
+    windows = duty_windows_in(t0, t1, duty)
+    if not windows:
+        return (None, None)
+    expected = {window_index(s, duty) for s, _ in windows}
+    sampled = {
+        window_index(r["unix"], duty)
+        for r in records
+        if t0 <= r["unix"] < t1 and in_duty_window(r["unix"], duty)
+    }
+    return (len(sampled & expected), len(expected))
+
+
 def night_mean_at_offset(
     records: Sequence[dict],
     t0: int,
@@ -300,9 +481,18 @@ def night_mean_at_offset(
     offset: int,
     *,
     require_asleep: bool = True,
+    duty: Optional[dict] = None,
 ) -> Optional[Tuple[float, int]]:
-    """Mean of in-band u8 samples at `offset` inside [t0, t1). Returns (mean, n) or None."""
-    vals = []
+    """Nightly aggregate of in-band u8 samples at `offset` inside [t0, t1). Returns (mean, n) or None.
+
+    On a duty-cycled capture only in-window samples count, and the aggregate is the mean of the
+    per-window means — one number per firing of the window, not one per second. A 30-second burst is
+    one measurement the strap took, not 30 independent ones; averaging per second silently weights
+    the night towards whichever windows the capture happened to sample most densely.
+    """
+    duty_cycled = is_duty_cycled(duty)
+    per_window: Dict[int, List[int]] = {}
+    vals: List[int] = []
     for r in records:
         u = r["unix"]
         if u < t0 or u >= t1:
@@ -313,11 +503,48 @@ def night_mean_at_offset(
         if frame is None or len(frame) <= offset:
             continue
         v = frame[offset]
+        if v not in INBAND:
+            continue
+        if duty_cycled:
+            if not in_duty_window(u, duty):
+                continue
+            per_window.setdefault(window_index(u, duty), []).append(v)
+        vals.append(v)
+    if not vals:
+        return None
+    if duty_cycled:
+        return (statistics.fmean(statistics.fmean(w) for w in per_window.values()), len(vals))
+    return (statistics.fmean(vals), len(vals))
+
+
+def offset_variability(
+    records: Sequence[dict],
+    offset: int,
+    *,
+    require_asleep: bool = True,
+    duty: Optional[dict] = None,
+) -> Tuple[int, float]:
+    """(distinct values, stdev) of the in-band samples at `offset`, pooled over the whole capture.
+
+    The specificity scan's floor: a byte with 2–4 distinct values across every record is a flag or an
+    enum that happens to land in 70–100, not a nightly measurement, however well it correlates.
+    """
+    duty_cycled = is_duty_cycled(duty)
+    vals = []
+    for r in records:
+        if require_asleep and r.get("sleep_state") != SLEEP_ASLEEP:
+            continue
+        if duty_cycled and not in_duty_window(r["unix"], duty):
+            continue
+        frame = r.get("_frame")
+        if frame is None or len(frame) <= offset:
+            continue
+        v = frame[offset]
         if v in INBAND:
             vals.append(v)
     if not vals:
-        return None
-    return (statistics.fmean(vals), len(vals))
+        return (0, 0.0)
+    return (len(set(vals)), statistics.pstdev(vals) if len(vals) > 1 else 0.0)
 
 
 def pearson_r(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
@@ -349,35 +576,44 @@ def validate_device(
     device: str = "device",
     require_asleep: bool = True,
     device_id: int = 2,
+    min_window_coverage: float = DEFAULT_MIN_WINDOW_COVERAGE,
+    min_distinct: int = MIN_DISTINCT_INBAND,
 ) -> dict:
     capture = load_frame_records(capture_path, device_id=device_id)
 
     cycles = load_cycles(export_path)
     records = list(iter_v18_records(capture))
 
+    # Measure the on/off schedule before averaging anything against it.
+    duty = detect_duty_cycle(records)
+
     nights = []
     for c in cycles:
-        hit = night_mean_at_offset(
-            records, c["t0"], c["t1"], OFF_SPO2_CANDIDATE, require_asleep=require_asleep
-        )
-        if hit is None:
-            nights.append({
-                "cycle_start_time": c["cycle_start_time"],
-                "export": c["spo2_export"],
-                "candidate_mean": None,
-                "n_samples": 0,
-                "matched": False,
-            })
-            continue
-        mean_v, n = hit
-        nights.append({
+        covered, expected = night_window_coverage(records, c["t0"], c["t1"], duty)
+        coverage = (covered / expected) if expected else None
+        night = {
             "cycle_start_time": c["cycle_start_time"],
             "export": c["spo2_export"],
-            "candidate_mean": mean_v,
-            "n_samples": n,
-            "matched": True,
-            "abs_err": abs(mean_v - c["spo2_export"]),
-        })
+            "candidate_mean": None,
+            "n_samples": 0,
+            "matched": False,
+            "windows_sampled": covered,
+            "windows_expected": expected,
+            "coverage": coverage,
+            "low_coverage": coverage is not None and coverage < min_window_coverage,
+        }
+        hit = night_mean_at_offset(
+            records, c["t0"], c["t1"], OFF_SPO2_CANDIDATE, require_asleep=require_asleep, duty=duty
+        )
+        if hit is not None:
+            mean_v, n = hit
+            night.update(
+                candidate_mean=mean_v,
+                n_samples=n,
+                matched=True,
+                abs_err=abs(mean_v - c["spo2_export"]),
+            )
+        nights.append(night)
 
     paired_export = [n["export"] for n in nights if n["matched"]]
     paired_cand = [n["candidate_mean"] for n in nights if n["matched"]]
@@ -389,12 +625,20 @@ def validate_device(
     )
 
     # Offset specificity: among SPECIFICITY_SCAN, which offset maximises |r| on paired nights?
+    # An offset must clear the variation floor first — see MIN_DISTINCT_INBAND. Without it a byte
+    # holding 2 distinct in-band values can top the ranking on 5 nights by coincidence.
     spec_scores = []
+    rejected = []
     for off in SPECIFICITY_SCAN:
+        distinct, sd = offset_variability(records, off, require_asleep=require_asleep, duty=duty)
+        if distinct < min_distinct or sd < MIN_INBAND_STDEV:
+            if distinct:
+                rejected.append({"offset": off, "distinct": distinct, "stdev": sd})
+            continue
         xs, ys = [], []
         for c in cycles:
             hit = night_mean_at_offset(
-                records, c["t0"], c["t1"], off, require_asleep=require_asleep
+                records, c["t0"], c["t1"], off, require_asleep=require_asleep, duty=duty
             )
             if hit is None:
                 continue
@@ -406,6 +650,13 @@ def validate_device(
     spec_scores.sort(key=lambda s: abs(s["r"]), reverse=True)
     best_off = spec_scores[0]["offset"] if spec_scores else None
     r_at_82 = next((s["r"] for s in spec_scores if s["offset"] == OFF_SPO2_CANDIDATE), r)
+    distinct_82, stdev_82 = offset_variability(
+        records, OFF_SPO2_CANDIDATE, require_asleep=require_asleep, duty=duty
+    )
+
+    covs = [n["coverage"] for n in nights if n["coverage"] is not None]
+    median_coverage = statistics.median(covs) if covs else None
+    low_cov_nights = sum(1 for n in nights if n["low_coverage"])
 
     # Checklist gates (docs/WHOOP5_DEEP_DATA.md) — conservative defaults for instrumentation.
     n_paired = len(paired_cand)
@@ -417,8 +668,26 @@ def validate_device(
         "corr_ge_0_7": (r is not None and r >= 0.7),
         "mae_le_1_0": (err is not None and err <= 1.0),
         "offset_82_wins": best_off == OFF_SPO2_CANDIDATE,
+        # A byte with a handful of distinct values cannot be a nightly SpO₂ however well it correlates.
+        "value_variance": distinct_82 >= min_distinct and stdev_82 >= MIN_INBAND_STDEV,
+        # n/a (True) unless a duty cycle was detected and coverage could actually be measured.
+        "window_coverage": median_coverage is None or median_coverage >= min_window_coverage,
     }
     checklist["pass"] = all(checklist.values())
+
+    # A strap that never emits @82 has not failed a correlation — it has no data to correlate. Say so
+    # explicitly, but only once the capture is long enough that a duty-cycled feature would have had
+    # several chances to fire during sleep; a short capture that missed the window is not evidence.
+    asleep_stamps = [r["unix"] for r in records if r.get("sleep_state") == SLEEP_ASLEEP]
+    asleep_span = (max(asleep_stamps) - min(asleep_stamps)) if len(asleep_stamps) >= 2 else 0
+    feature_absent = (
+        duty["mode"] == "absent"
+        and len(records) >= ABSENT_MIN_RECORDS
+        and asleep_span >= ABSENT_MIN_ASLEEP_SPAN_S
+    )
+    classification = (
+        "feature_absent" if feature_absent else ("pass" if checklist["pass"] else "fail")
+    )
 
     return {
         "device": device,
@@ -431,6 +700,14 @@ def validate_device(
         "bias": bias,
         "best_specificity_offset": best_off,
         "specificity_top3": spec_scores[:3],
+        "specificity_rejected_low_variance": rejected,
+        "inband_distinct_82": distinct_82,
+        "inband_stdev_82": stdev_82,
+        "duty": duty,
+        "median_window_coverage": median_coverage,
+        "low_coverage_nights": low_cov_nights,
+        "asleep_span_s": asleep_span,
+        "classification": classification,
         "checklist": checklist,
         "nights": nights,
         "inband_samples_total": sum(n["n_samples"] for n in nights),
@@ -455,63 +732,172 @@ def format_summary(result: dict, *, show_nights: bool = False) -> str:
         f"MAE={'n/a' if mae_v is None else f'{mae_v:.3f}'}  "
         f"bias={'n/a' if bias is None else f'{bias:+.3f}'}"
     )
+    lines.append(format_duty_line(result))
+    cov = result.get("median_window_coverage")
+    if cov is not None:
+        lines.append(
+            f"  window coverage: median={cov:.0%} over {result['export_nights_with_spo2']} nights  "
+            f"low_coverage_nights={result['low_coverage_nights']}"
+        )
     lines.append(
         f"  specificity: best_offset={result['best_specificity_offset']}  "
+        f"@82 distinct_inband={result.get('inband_distinct_82', 0)} "
+        f"stdev={result.get('inband_stdev_82', 0.0):.2f}  "
         f"top3="
         + ", ".join(
             f"@{s['offset']} r={s['r']:+.3f} (n={s['nights']})"
             for s in result.get("specificity_top3", [])
         )
     )
+    rejected = result.get("specificity_rejected_low_variance", [])
+    if rejected:
+        lines.append(
+            "  rejected by variance floor (in-band but near-constant): "
+            + ", ".join(f"@{s['offset']}({s['distinct']}v)" for s in rejected)
+        )
     flags = " ".join(
         f"{k}={'PASS' if v else 'FAIL'}"
         for k, v in cl.items()
         if k != "pass"
     )
     lines.append(f"  checklist: {flags}")
-    lines.append(f"  OVERALL: {'PASS (candidate strengthens)' if cl['pass'] else 'FAIL (keep instrumentation-only)'}")
+    lines.append(f"  OVERALL: {OVERALL_TEXT[result.get('classification', 'fail')]}")
+    for w in coverage_warnings(result):
+        lines.append(f"  !! {w}")
     if show_nights:
         lines.append("  per-night (local only — do not post raw values):")
         for n in result["nights"]:
+            cov_s = (
+                f"  windows={n['windows_sampled']}/{n['windows_expected']}"
+                if n["windows_expected"] else ""
+            )
+            warn = "  !! LOW COVERAGE" if n["low_coverage"] else ""
             if not n["matched"]:
-                lines.append(f"    {n['cycle_start_time']}: export={n['export']:.2f}  candidate=—  (no in-band samples)")
+                lines.append(
+                    f"    {n['cycle_start_time']}: export={n['export']:.2f}  candidate=—  "
+                    f"(no in-band samples){cov_s}{warn}"
+                )
             else:
                 lines.append(
                     f"    {n['cycle_start_time']}: export={n['export']:.2f}  "
                     f"candidate={n['candidate_mean']:.2f}  n={n['n_samples']}  "
-                    f"|err|={n['abs_err']:.2f}"
+                    f"|err|={n['abs_err']:.2f}{cov_s}{warn}"
                 )
     return "\n".join(lines)
 
 
+OVERALL_TEXT = {
+    "pass": "PASS (candidate strengthens)",
+    "fail": "FAIL (keep instrumentation-only)",
+    "feature_absent": (
+        "FEATURE ABSENT (@82 flat 0x00 across the capture — neither a PASS nor a FAIL; "
+        "excluded from the multi-device gate)"
+    ),
+}
+
+
+def format_duty_line(result: dict) -> str:
+    """One line describing the DETECTED @82 schedule. Timing only — no health values."""
+    d = result.get("duty") or {}
+    mode = d.get("mode", "unknown")
+    head = (
+        f"  @82 duty cycle: mode={mode}  nonzero={d.get('n_nonzero', 0)}/{d.get('n_records', 0)} "
+        f"({d.get('nonzero_fraction', 0.0):.2%})  distinct_values={d.get('distinct_values', 0)}"
+    )
+    if mode != "duty_cycled":
+        return head
+    return (
+        head
+        + f"\n    detected: period={d['period_s']}s  window={d['window_len_s']}s  "
+        f"phase=unix%{d['period_s']}∈[{d['phase_s']},{d['phase_s'] + d['window_len_s'] - 1}]  "
+        f"windows_seen={d['windows_observed']}  jitter={d['phase_jitter_s']}s  "
+        f"equal_length_windows={d['window_len_stable']}"
+    )
+
+
+def coverage_warnings(result: dict) -> List[str]:
+    """Loud, quotable reasons a device's numbers should not be read at face value."""
+    out = []
+    d = result.get("duty") or {}
+    cov = result.get("median_window_coverage")
+    if cov is not None and cov < DEFAULT_MIN_WINDOW_COVERAGE:
+        out.append(
+            f"{result['device']}: only {cov:.0%} of the detected @82 windows were sampled — the "
+            f"nightly means are not comparable across devices; re-capture aligned to "
+            f"unix%{d.get('period_s')}={d.get('phase_s')}"
+        )
+    if result.get("low_coverage_nights"):
+        out.append(
+            f"{result['device']}: {result['low_coverage_nights']} night(s) below the coverage floor "
+            f"— their means rest on a fraction of the night's windows"
+        )
+    if result.get("classification") == "feature_absent":
+        out.append(
+            f"{result['device']}: @82 is 0x00 on all {d.get('n_records', 0)} v18 records across "
+            f"{result.get('asleep_span_s', 0) // 60} min of scored sleep — reported as feature "
+            f"absent, not as a failed correlation"
+        )
+    if d.get("mode") == "irregular":
+        out.append(
+            f"{result['device']}: @82 fires, but with no period this tool will claim — treating "
+            f"every sample as independent, which may over-weight dense bursts"
+        )
+    return out
+
+
 def format_postable(results: Sequence[dict]) -> str:
-    """One-liner block safe to paste on GitHub #103 (no health values)."""
+    """One-liner block safe to paste on GitHub #103 (no health values).
+
+    The duty columns are device timing, not health data: period/window/phase are what another owner
+    needs to align a capture, and coverage is what says whether a row is worth reading at all.
+    """
     lines = [
         "spo2_candidate_82 multi-device validation (validate_spo2_candidate.py)",
-        "device,paired_nights,r,mae,bias,best_offset,checklist_pass",
+        "device,classification,paired_nights,r,mae,bias,best_offset,"
+        "duty_mode,duty_period_s,duty_window_s,duty_phase_s,window_coverage,checklist_pass",
     ]
     for res in results:
         r = res["r"]
         mae_v = res["mae"]
         bias = res["bias"]
+        d = res.get("duty") or {}
+        cov = res.get("median_window_coverage")
         lines.append(
-            f"{res['device']},{res['paired_nights']},"
+            f"{res['device']},{res.get('classification', 'fail')},{res['paired_nights']},"
             f"{'' if r is None else f'{r:.3f}'},"
             f"{'' if mae_v is None else f'{mae_v:.3f}'},"
             f"{'' if bias is None else f'{bias:.3f}'},"
             f"{res['best_specificity_offset']},"
+            f"{d.get('mode', '')},"
+            f"{d.get('period_s') or ''},"
+            f"{d.get('window_len_s') or ''},"
+            f"{'' if d.get('phase_s') is None else d['phase_s']},"
+            f"{'' if cov is None else f'{cov:.2f}'},"
             f"{res['checklist']['pass']}"
         )
-    # Multi-device aggregate: promote only if every device with ≥5 paired nights passes.
-    eligible = [res for res in results if res["paired_nights"] >= 5]
+    # Multi-device aggregate: promote only if every device with ≥5 paired nights passes. A strap that
+    # never emits @82 is counted on neither side — it is not evidence for the candidate, and it is
+    # not evidence against it either.
+    absent = [res for res in results if res.get("classification") == "feature_absent"]
+    eligible = [
+        res for res in results
+        if res["paired_nights"] >= 5 and res.get("classification") != "feature_absent"
+    ]
     if eligible:
         all_pass = all(res["checklist"]["pass"] for res in eligible)
         lines.append(
             f"multi_device_eligible={len(eligible)} all_pass={all_pass} "
+            f"feature_absent={len(absent)} "
             f"(promote spo2Pct only if all_pass and ≥2 devices)"
         )
     else:
-        lines.append("multi_device_eligible=0 (need ≥5 paired nights per device)")
+        lines.append(
+            f"multi_device_eligible=0 feature_absent={len(absent)} "
+            f"(need ≥5 paired nights per device)"
+        )
+    for res in results:
+        for w in coverage_warnings(res):
+            lines.append(f"warning: {w}")
     return "\n".join(lines)
 
 
@@ -547,6 +933,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="print a CSV-ish block safe to paste on GitHub (no raw SpO₂ values)",
     )
+    p.add_argument(
+        "--min-window-coverage",
+        type=float,
+        default=DEFAULT_MIN_WINDOW_COVERAGE,
+        help="share of a night's detected @82 duty windows the capture must sample before its "
+             f"nightly mean is treated as meaningful (default: {DEFAULT_MIN_WINDOW_COVERAGE})",
+    )
+    p.add_argument(
+        "--min-distinct-values",
+        type=int,
+        default=MIN_DISTINCT_INBAND,
+        help="distinct in-band values an offset must show to enter the specificity ranking "
+             f"(default: {MIN_DISTINCT_INBAND}; a 2-valued byte is a flag, not a measurement)",
+    )
     args = p.parse_args(argv)
 
     require_asleep = not args.allow_any_sleep_state
@@ -566,6 +966,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     device=entry.get("device", "device"),
                     device_id=int(entry.get("device_id", args.device_id)),
                     require_asleep=require_asleep,
+                    min_window_coverage=args.min_window_coverage,
+                    min_distinct=args.min_distinct_values,
                 )
             )
     else:
@@ -578,6 +980,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 device=args.device,
                 device_id=args.device_id,
                 require_asleep=require_asleep,
+                min_window_coverage=args.min_window_coverage,
+                min_distinct=args.min_distinct_values,
             )
         )
 
@@ -587,6 +991,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.postable or len(results) > 1:
         print("--- postable summary (safe for #103) ---")
         print(format_postable(results))
+    # Same warnings on stderr so they survive a redirect of the report into a file.
+    for res in results:
+        for w in coverage_warnings(res):
+            print(f"warning: {w}", file=sys.stderr)
     return 0
 
 
