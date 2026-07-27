@@ -1090,7 +1090,11 @@ def catalog_summary() -> None:
         strings = cat.get("strings", {})
         total = len(strings)
         line = f"{catalog_path.relative_to(ROOT)} ({total} keys):"
-        for lang in LANGS:
+        # #844: report every locale the catalog actually ships, not just the focus four. Showing only
+        # LANGS is very likely WHY the drift went unnoticed for so long — this summary read 100% across
+        # the board while `it` sat at 14 of 95. The gate and the human-readable view must see the same
+        # set, or the view quietly reassures you about languages nobody is checking.
+        for lang in sorted(set(LANGS) | shipped_apple_langs(cat)):
             missing = 0
             for v in strings.values():
                 if v.get("shouldTranslate") is False:
