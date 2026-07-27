@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import WhoopProtocol
 @testable import WhoopStore
 
 /// #1014 defence-in-depth: real-file coverage for the `PRAGMA quick_check` integrity gate the
@@ -105,5 +106,36 @@ final class DatabaseIntegrityTests: XCTestCase {
         // Multiple rows can never mean healthy, even if one of them says "ok".
         XCTAssertEqual(DatabaseIntegrity.verdict(fromRows: ["ok", "Page 9 is never used"]),
                        "Page 9 is never used")
+    }
+
+    // MARK: - The probe must not checkpoint a replicated store
+
+    /// `quickCheckFailure` opens its own GRDB connection, which is the one connection in this package
+    /// that reaches a live database without going through `WhoopStore(path:)` — and therefore without
+    /// `StoreReplication`'s checkpointing policy. Under `WalCheckpointing.external` a checkpoint here
+    /// would restart the WAL under the replicator and cost it its incremental resume point, turning
+    /// the next push into a full snapshot of the whole database.
+    ///
+    /// Asserted as an observable property (the `-wal` does not shrink), not as "the pragma was set",
+    /// so it holds whichever of the read-only or read-write branch the probe actually took.
+    func testProbingALiveExternallyCheckpointedStoreDoesNotShrinkItsWal() async throws {
+        let path = NSTemporaryDirectory() + "dbintegrity-wal-\(UUID().uuidString).sqlite"
+        defer { for s in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + s) } }
+
+        // Backstop disabled so the ONLY thing that could shrink the WAL is the probe.
+        let store = try await WhoopStore(path: path, walCheckpointing: .external, walBackstop: .disabled)
+        var ts = 0
+        for _ in 0..<10 {
+            var hr: [HRSample] = []
+            for _ in 0..<400 { ts += 1; hr.append(HRSample(ts: ts, bpm: 60 + ts % 40)) }
+            _ = try await store.insert(Streams(hr: hr), deviceId: "dev")
+        }
+        let before = try XCTUnwrap(store.walFileSizeBytes())
+        XCTAssertGreaterThan(before, 0, "the test needs a non-empty WAL to be meaningful")
+
+        XCTAssertNil(DatabaseIntegrity.quickCheckFailure(atPath: path), "the store is healthy")
+
+        XCTAssertEqual(store.walFileSizeBytes(), before,
+                       "the integrity probe must not checkpoint a store an external replicator owns")
     }
 }
