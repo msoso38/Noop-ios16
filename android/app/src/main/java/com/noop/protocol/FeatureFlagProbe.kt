@@ -87,8 +87,27 @@ object FeatureFlagProbe {
         val validKey: Boolean,
         val key: String?,
     ) {
-        /** The firmware said invalid, returned the 0xFF end marker, or carried no decodable name. */
-        val isExhausted: Boolean get() = !validKey || index == 0xFF || key == null
+        /**
+         * The STRAP said stop: it returned the 0xFF end marker, or flagged the entry as not a real key.
+         * Both are the firmware's own signal, so both are trusted.
+         *
+         * Deliberately does NOT include `key == null`. That is OUR parser declining a name — a byte
+         * outside printable ASCII, or one longer than [MAX_KEY_LENGTH] — and it says nothing about
+         * whether the strap has more entries. Treating it as a terminator meant one undecodable name
+         * threw away every entry after it: a list of forty with a bad byte at seven yielded six keys.
+         * See [isSkippable].
+         */
+        val isExhausted: Boolean get() = !validKey || index == 0xFF
+
+        /**
+         * The firmware calls this a real key but the name did not decode. Record it and KEEP WALKING.
+         *
+         * Safe because the walk was never bounded by this: [MAX_FLAGS] caps the replies and the announced
+         * count bounds it further, so skipping can only spend budget that already exists. And it matters
+         * most on the run that matters most — the first real capture is the expensive one to obtain, so
+         * truncating it on our own strictness is the worst possible time to lose entries.
+         */
+        val isSkippable: Boolean get() = validKey && index != 0xFF && key == null
     }
 
     /** One decode outcome: exactly one of [value] / [failure] is non-null. */
@@ -195,6 +214,13 @@ class FeatureFlagProbeReport(private val family: DeviceFamily) {
     var startResult: Int? = null
         private set
 
+    /**
+     * Entries the strap flagged as real keys whose NAME did not decode, and which the walk stepped over
+     * rather than stopping at. Surfaced in the report so a dump with holes never reads as a complete list.
+     */
+    var skipped: Int = 0
+        private set
+
     /** Set once the walk stopped for a reason we can name. */
     var stopReason: String? = null
         private set
@@ -220,12 +246,16 @@ class FeatureFlagProbeReport(private val family: DeviceFamily) {
         r.resultCode?.let { line += " result=${FeatureFlagProbe.resultLabel(it)}($it)" }
         _trace.add(line)
         if (r.isExhausted) {
-            stopReason = when {
-                r.index == 0xFF -> "cursor exhausted (index 0xFF)"
-                r.validKey -> "entry carried no decodable key name"
-                else -> "firmware reported validKey=false"
-            }
+            stopReason = if (r.index == 0xFF) "cursor exhausted (index 0xFF)"
+            else "firmware reported validKey=false"
             return false
+        }
+        if (r.isSkippable) {
+            // Our decode declined the name; the strap still says the entry is real and may have more after
+            // it. Count it so a partial dump describes itself instead of looking complete.
+            skipped += 1
+            _trace[_trace.size - 1] = _trace[_trace.size - 1] +
+                "  (name did not decode — skipped, walk continues)"
         }
         r.key?.let { if (!_keys.contains(it)) _keys.add(it) }
         // Bound the walk on REPLIES, not on distinct keys: a firmware whose cursor never advances would
@@ -284,6 +314,7 @@ class FeatureFlagProbeReport(private val family: DeviceFamily) {
         stopReason?.let { sb.append("Stopped: $it\n") }
         sb.append("\nFlags reported by the strap (${_keys.size}")
         reportedCount?.let { sb.append(" of $it announced") }
+        if (skipped > 0) sb.append(", $skipped name(s) did not decode and were skipped")
         sb.append("):\n")
         if (_keys.isEmpty()) {
             sb.append("  (none)\n")

@@ -142,7 +142,48 @@ class FeatureFlagProbeTest {
         val frame = whoop4Response(118, payload(1, record))
         val r = FeatureFlagProbe.parseNext(frame, DeviceFamily.WHOOP4).value!!
         assertNull(r.key)
-        assertTrue(r.isExhausted)
+        // Our decode declining a name is NOT the strap saying stop: the firmware still flagged this entry
+        // valid, so the walk steps over it instead of throwing away everything after it.
+        assertFalse(r.isExhausted)
+        assertTrue(r.isSkippable)
+    }
+
+    /**
+     * The regression this split exists for: one undecodable entry used to end the enumeration, so a list
+     * with a bad byte in the middle reported only the keys BEFORE it. The first real capture is the
+     * expensive one to obtain, and it is exactly the run that must not be truncated by our own strictness.
+     */
+    @Test fun anUndecodableEntryDoesNotHideTheKeysAfterIt() {
+        val report = FeatureFlagProbeReport(DeviceFamily.WHOOP4)
+        report.noteStart(FeatureFlagProbe.StartResponse(1, 1, 4))
+        fun next(index: Int, key: String?) = FeatureFlagProbe.NextResponse(1, 1, index, true, key)
+
+        assertTrue(report.noteNext(next(0, "enable_r22_packets")))
+        assertTrue("a bad name must not stop the walk", report.noteNext(next(1, null)))
+        assertTrue(report.noteNext(next(2, "sigproc_wear_detect")))
+        assertFalse(report.noteNext(FeatureFlagProbe.NextResponse(1, 1, 0xFF, false, null)))
+
+        assertEquals(listOf("enable_r22_packets", "sigproc_wear_detect"), report.keys)
+        assertEquals(1, report.skipped)
+        assertEquals("cursor exhausted (index 0xFF)", report.stopReason)
+        assertTrue(report.render().contains("1 name(s) did not decode and were skipped"))
+    }
+
+    /**
+     * The skip cannot become an unbounded walk: [FeatureFlagProbe.MAX_FLAGS] still terminates a firmware
+     * that answers forever with entries whose names never decode.
+     */
+    @Test fun everyReplyUndecodableStillStopsAtTheSafetyCap() {
+        val report = FeatureFlagProbeReport(DeviceFamily.WHOOP4)
+        var sent = 0
+        while (report.noteNext(FeatureFlagProbe.NextResponse(1, 1, 0, true, null))) {
+            sent += 1
+            assertTrue("walk must not run away", sent < FeatureFlagProbe.MAX_FLAGS + 2)
+        }
+        assertEquals(FeatureFlagProbe.MAX_FLAGS, report.steps)
+        assertEquals(FeatureFlagProbe.MAX_FLAGS, report.skipped)
+        assertEquals("safety cap of ${FeatureFlagProbe.MAX_FLAGS} replies reached", report.stopReason)
+        assertTrue(report.keys.isEmpty())
     }
 
     @Test fun keyLongerThanTheSetSideFieldIsRejected() {
