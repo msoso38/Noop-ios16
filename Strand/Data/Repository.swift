@@ -2660,11 +2660,17 @@ final class Repository: ObservableObject {
     /// post-workout minutes. This is a narrow read (at most ~10 minutes), not a whole-workout scan, and the
     /// pure engine owns every eligibility/coverage guard. Missing post-workout HR therefore returns nil
     /// instead of fabricating a recovery value. Kotlin twin: `AppViewModel.workoutHeartRateRecovery`.
-    func workoutHeartRateRecovery(from: Int, to: Int, maxHR: Double) async -> HeartRateRecovery.Result? {
+    /// #856: reads the ids this row resolves to, like the chart, zones and Avg HR. The recovery window
+    /// extends PAST the bout, but the strap that recorded it is still the one on the wrist a few
+    /// minutes later — so a detected bout reads its own strap here too rather than the day union.
+    func workoutHeartRateRecovery(from: Int, to: Int, maxHR: Double,
+                                  source: String = "") async -> HeartRateRecovery.Result? {
         guard to > from, maxHR > 0 else { return nil }
         let readFrom = max(from, to - HeartRateRecovery.eligibilityLookbackSeconds)
         let readTo = to + 5 * 60 + HeartRateRecovery.measurementToleranceSeconds
-        let samples = await hrSamples(from: readFrom, to: readTo, limit: 2_000)
+        let ids = Self.workoutHrDeviceIds(source: source, activeStrapId: deviceId,
+                                          importedIds: importedReadIds)
+        let samples = await hrSamples(deviceIds: ids, from: readFrom, to: readTo, limit: 2_000)
         return HeartRateRecovery.calculate(samples: samples, workoutStart: from, workoutEnd: to,
                                            maxHR: maxHR)
     }

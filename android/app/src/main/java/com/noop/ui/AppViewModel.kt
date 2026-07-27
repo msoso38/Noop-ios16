@@ -1696,12 +1696,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** HRR for one workout (#516), derived from a narrow workout-end + post-workout HR read. The pure
      *  engine owns the intensity and coverage gates, so a disconnect after exercise returns null rather
      *  than an interpolated value. Mirrors macOS Repository.workoutHeartRateRecovery. */
-    suspend fun workoutHeartRateRecovery(from: Long, to: Long): com.noop.analytics.HeartRateRecovery.Result? {
+    suspend fun workoutHeartRateRecovery(
+        from: Long,
+        to: Long,
+        source: String = "",
+        rowDeviceId: String = deviceId,
+    ): com.noop.analytics.HeartRateRecovery.Result? {
         if (to <= from) return null
         val readFrom = maxOf(from, to - com.noop.analytics.HeartRateRecovery.eligibilityLookbackSeconds)
         val readTo = to + 5 * 60 + com.noop.analytics.HeartRateRecovery.measurementToleranceSeconds
+        // #856: the same resolved ids as the chart, zones and Avg HR — the fourth surface on this card.
+        // The recovery window extends PAST the bout, but the strap that recorded it is still the one on
+        // the wrist a few minutes later, so a detected bout reads its own strap here too.
+        val ids = WhoopRepository.workoutHrDeviceIds(source, rowDeviceId, deviceId)
         val samples = runCatching {
-            repository.hrSamplesUnion(activeStrapId, readFrom, readTo, limit = 2_000)
+            repository.hrSamplesFor(ids, readFrom, readTo, limit = 2_000)
         }.getOrDefault(emptyList())
         return com.noop.analytics.HeartRateRecovery.calculate(
             samples = samples,

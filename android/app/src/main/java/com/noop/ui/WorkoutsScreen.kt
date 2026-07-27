@@ -201,7 +201,7 @@ fun WorkoutsScreen(vm: AppViewModel) {
     LaunchedEffect(recoveryInputKey, vm.activeStrapId, lastHistorySyncAt) {
         val built = ArrayList<WorkoutRecoveryTrendPoint>()
         for (row in recoveryRows) {
-            val result = vm.workoutHeartRateRecovery(row.startTs, row.endTs) ?: continue
+            val result = vm.workoutHeartRateRecovery(row.startTs, row.endTs, row.source, row.deviceId) ?: continue
             built += WorkoutRecoveryTrendPoint(row.startTs, result)
         }
         recoveryTrend = built
@@ -1309,7 +1309,7 @@ private fun WorkoutDetailSheet(vm: AppViewModel, row: WorkoutRow, onDismiss: () 
             zoneMinutes = vm.workoutZoneMinutes(row.startTs, row.endTs, row.source, row.deviceId)
             zonesFromImport = false
         }
-        heartRateRecovery = vm.workoutHeartRateRecovery(row.startTs, row.endTs)
+        heartRateRecovery = vm.workoutHeartRateRecovery(row.startTs, row.endTs, row.source, row.deviceId)
     }
 
     ModalBottomSheet(
