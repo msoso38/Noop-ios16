@@ -114,6 +114,22 @@ class WhoopConnectionService : Service() {
      *  actual SoC change keeps the predictive path as cheap as the SoC-only alert beside it. */
     private var lastRuntimeEvalPct: Int? = null
 
+    /**
+     * Last (SoC %, charging) pair the battery-alert policies were evaluated for, so they run on a CHANGE
+     * rather than on every live-state emission.
+     *
+     * The collector below ticks at live-HR cadence (~1/s while connected). Both notifiers early-exit on
+     * their own PERSISTED once-per-crossing gates, but not before each has done a SharedPreferences read,
+     * a `NotificationManagerCompat.areNotificationsEnabled()` binder call and an `ensureChannel()` —
+     * roughly two binder calls and half a dozen prefs reads every second, to re-answer a question the
+     * strap only changes every ~8 minutes.
+     *
+     * Gated on the PAIR, not the percentage alone: [BatteryAlertNotifier.onBatteryUpdate] owns the
+     * charge-complete and re-arm transitions, which key off `charging`. A user plugging in before the
+     * percentage ticks would otherwise have their re-arm deferred by up to a battery-report cycle.
+     */
+    private var lastBatteryAlertKey: Pair<Int?, Boolean?>? = null
+
     /** The user's LEARNED habitual midsleep (local seconds-of-day), cached for the battery
      *  night-guard. null = cold start (< [com.noop.analytics.SleepStageTotals.HABITUAL_MIN_DAYS]
      *  nights), which is what makes `BatteryEstimator.bedtimeAlert` stay silent instead of testing
@@ -254,24 +270,31 @@ class WhoopConnectionService : Service() {
                     IllnessAlertNotifier.onEvaluated(this@WhoopConnectionService, illness)
                 }
                 lastIllnessAlert = illness
-                // Battery alerts — low (≤15%) and charge-complete (100%). The once-per-crossing
-                // dedupe is persisted in NoopPrefs (BatteryAlertPolicy), so no in-memory pct tracking.
-                BatteryAlertNotifier.onBatteryUpdate(
-                    this@WhoopConnectionService,
-                    currPct = state.batteryPct?.roundToInt(),
-                    charging = state.charging,
-                )
-                // ESCALATION 1 — critical SoC (iOS/macOS twin: BatteryNotifier.onCriticalBattery). A
-                // SECOND, lower crossing (12%) with its own persisted gate, because the 15% alert above
-                // latches until the cell recovers to 25%: measured, a user got that one warning and then
-                // total silence across the final ~3 h down to the ~10% hardware cutoff, and lost the
-                // night. Sits beside onBatteryUpdate rather than in the estimator block below because it
-                // is the same kind of pure SoC policy — no Room read, no slope fit.
-                BatteryAlertNotifier.onCriticalBattery(
-                    this@WhoopConnectionService,
-                    currPct = state.batteryPct?.roundToInt(),
-                    charging = state.charging,
-                )
+                // Evaluated only when (SoC, charging) actually MOVES — see [lastBatteryAlertKey]. Both policies
+                // are once-per-crossing and persisted, so re-running them on an unchanged pair can only repeat
+                // work that already decided nothing.
+                val batteryKey = state.batteryPct?.roundToInt() to state.charging
+                if (batteryKey != lastBatteryAlertKey) {
+                    // Battery alerts — low (≤15%) and charge-complete (100%). The once-per-crossing
+                    // dedupe is persisted in NoopPrefs (BatteryAlertPolicy), so no in-memory pct tracking.
+                    BatteryAlertNotifier.onBatteryUpdate(
+                        this@WhoopConnectionService,
+                        currPct = state.batteryPct?.roundToInt(),
+                        charging = state.charging,
+                    )
+                    // ESCALATION 1 — critical SoC (iOS/macOS twin: BatteryNotifier.onCriticalBattery). A
+                    // SECOND, lower crossing (12%) with its own persisted gate, because the 15% alert above
+                    // latches until the cell recovers to 25%: measured, a user got that one warning and then
+                    // total silence across the final ~3 h down to the ~10% hardware cutoff, and lost the
+                    // night. Sits beside onBatteryUpdate rather than in the estimator block below because it
+                    // is the same kind of pure SoC policy — no Room read, no slope fit.
+                    BatteryAlertNotifier.onCriticalBattery(
+                        this@WhoopConnectionService,
+                        currPct = state.batteryPct?.roundToInt(),
+                        charging = state.charging,
+                    )
+                }
+
                 // Predictive runtime alert (iOS/macOS twin: BatteryNotifier.onRuntimeEstimate):
                 // re-fit the "~X left" estimate from the persisted SoC series and warn at ≤24 h of
                 // runtime, whatever the strap generation. Evaluated only when the battery % actually

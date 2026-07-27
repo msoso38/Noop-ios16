@@ -2117,6 +2117,29 @@ class WhoopBleClient(
     /** Wall time (ms) the current connect attempt began, to measure connect latency at onConnectionStateChange
      *  CONNECTED. null between attempts; set when connect() kicks the radio. */
     private var connectAttemptStartedAtMs: Long? = null
+
+    /**
+     * Wall time (ms) this link reached STATE_CONNECTED, or null while down. Read only to LOG how long a
+     * connection was held before it dropped.
+     *
+     * Why it is worth a field: reaching STATE_CONNECTED zeroes [failedReconnectAttempts], and that
+     * counter is the ONLY input to [scanModeForReconnectAttempts]. So a strap that connects and drops
+     * repeatedly — edge of range, phone in another room — never accumulates a streak and every rescan
+     * stays on the battery-hungry SCAN_MODE_LOW_LATENCY, which the PR #588 backoff was meant to escape.
+     * The #982 guard covers the never-bonded variant of that loop; a bonded-but-short-lived link is not
+     * covered. Printing the hold time makes the pattern readable in an ordinary strap log: a run of
+     * drops that all say `attempt 1` with a short `held` is that bug, with no instrumentation needed.
+     *
+     * Diagnostic only — nothing reads this to make a decision.
+     */
+    @Volatile
+    private var linkUpSinceMs: Long? = null
+
+    /** `, held 24s` for the drop log, or an empty string if we never reached STATE_CONNECTED. */
+    private fun heldForLogSuffix(): String {
+        val since = linkUpSinceMs ?: return ""
+        return ", held ${(System.currentTimeMillis() - since) / 1000}s"
+    }
     /** Count of INVOLUNTARY reconnects this run, surfaced as the reconnect-churn count. Reset by an
      *  intentional disconnect. */
     private var connReconnectCount = 0
@@ -4183,6 +4206,10 @@ class WhoopBleClient(
                     // climb on a flapping co-resident band froze the link, and with it the keep-alive battery
                     // poll and every historical offload: sync + battery stopped updating (regression of #173).
                     resetReconnectBackoff()
+                    // Diagnostic only (see linkUpSinceMs): how long this link is held before it drops is
+                    // exactly what distinguishes a healthy connection from the flapping loop that keeps
+                    // the reconnect streak — and so the scan mode — pinned at its most power-hungry.
+                    linkUpSinceMs = System.currentTimeMillis()
                     // A connect succeeded → clear the stale-bond re-pair guide UNLESS we are in a known
                     // bond-loop (#617). In that loop the strap "connects" every ~3 s before timing out
                     // again, so clearing here wiped the guide on EVERY cycle: it flashed for ~1 s and
@@ -6495,6 +6522,11 @@ class WhoopBleClient(
 
     @SuppressLint("MissingPermission")
     private fun handleDisconnect(status: Int) {
+        // Snapshot the hold time and clear it IMMEDIATELY: every drop log below reads the snapshot, and a
+        // stale `linkUpSinceMs` surviving into the next drop would report a hold time for a link that never
+        // reached STATE_CONNECTED — the diagnostic would then invent exactly the evidence it exists to find.
+        val heldSuffix = heldForLogSuffix()
+        linkUpSinceMs = null
         // Reboot trail: if a user reboot is in flight, this drop is the strap acting on it. Log how long the
         // link stayed up (a real reboot drops within ~1-2s) and cancel the no-disconnect watchdog. The
         // reconnect time is logged separately once the handshake completes; rebootRequestedAtMs stays set so
@@ -6714,12 +6746,12 @@ class WhoopBleClient(
                 // count — keep it DIRECT; only a genuinely-out-of-range band escalates to PASSIVE for power.
                 val aclHeld = isStrapAclHeld(dev.address)
                 val passiveReconnect = passiveReconnectDecision(failedReconnectAttempts, aclHeld)
-                log("Disconnected (status=$status); reconnecting ${if (passiveReconnect) "passively" else "directly"} in ${directDelay / 1000}s (attempt $failedReconnectAttempts${if (aclHeld) ", ACL-held" else ""})")
+                log("Disconnected (status=$status); reconnecting ${if (passiveReconnect) "passively" else "directly"} in ${directDelay / 1000}s (attempt $failedReconnectAttempts$heldSuffix${if (aclHeld) ", ACL-held" else ""})")
                 // #1030 (ryanbr): cancellable backoff timer (see scheduleReconnect).
                 scheduleReconnect(directDelay) { connectToDevice(dev, autoConnect = passiveReconnect) }
             } else {
                 val rescanDelay = nextReconnectDelayMs()
-                log("Disconnected (status=$status); rescanning in ${rescanDelay / 1000}s (attempt $failedReconnectAttempts)")
+                log("Disconnected (status=$status); rescanning in ${rescanDelay / 1000}s (attempt $failedReconnectAttempts$heldSuffix)")
                 // #1030 (ryanbr): cancellable backoff timer (see scheduleReconnect).
                 scheduleReconnect(rescanDelay) { connect(selectedModel) }
             }
