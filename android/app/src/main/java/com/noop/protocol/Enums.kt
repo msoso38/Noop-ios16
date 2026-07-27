@@ -236,13 +236,19 @@ enum class CommandNumber(val rawValue: Int) {
     // as 121. #761 read the flag NAMES; this reads a named flag's VALUE. MAY NOT BE IMPLEMENTED in
     // firmware. Mirrors Swift WhoopCommand.getFeatureFlagValue. (#103)
     GET_FF_VALUE(128),
-    STOP_HAPTICS(122);
+    STOP_HAPTICS(122),
+    // SELECT_WRIST (123 / 0x7B) is left exactly where it already was. It has been in this enum since the
+    // initial commit, predates any ECG work here, and is referenced by no Kotlin caller. This branch does
+    // not add it and deliberately does not remove it either: dropping a pre-existing entry would change
+    // the curated send surface for a reason that has nothing to do with decoding ECG packets, and that is
+    // a separate decision from the one below.
+    SELECT_WRIST(123);
     //
-    // The WHOOP MG ECG ("Labrador") family (123 / 124 / 125 / 139) is deliberately ABSENT from this
-    // enum. This branch originally listed the four here so a COMMAND_RESPONSE for one would be labelled
+    // The three WHOOP MG ECG ("Labrador") TOGGLES (124 / 125 / 139) are deliberately ABSENT from this
+    // enum. This branch originally listed them here so a COMMAND_RESPONSE for one would be labelled
     // rather than shown as a bare hex opcode — a reason #893 has since made obsolete, by giving Android
     // a read-only `CommandNames` label table that names every opcode the schema names without making any
-    // of them constructible. Android has no ECG app layer and sends none of the four, so growing the
+    // of them constructible. Android has no ECG app layer and sends none of them, so growing the
     // SENDER enum to buy a label would widen what the command sender can express for nothing. Apple's
     // `WhoopCommand` carries them because Apple actually drives the gated probe. See
     // `com.noop.protocol.Whoop5Ecg` for the decoder and `Whoop5EcgProbe` for the verdict rules.

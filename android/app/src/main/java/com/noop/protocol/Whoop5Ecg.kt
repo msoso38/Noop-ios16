@@ -361,11 +361,9 @@ object Whoop5Ecg {
     // Discovery
 
     /**
-     * Cheap structural triage for "could these bytes be a filtered Labrador payload?" — used to hunt for
-     * the packet TYPE byte, which is not attested. A HEURISTIC, not a classifier: nothing downstream may
-     * treat a hit as proof.
+     * The frame-level form of [plausibleFilteredPayload], CRC-gated. This is what the app layer runs over
+     * unclassified 5/MG frames while an ECG probe is armed. Twin of the Swift helper.
      */
-    /** The frame-level form of [plausibleFilteredPayload], CRC-gated. Twin of the Swift helper. */
     fun plausibleFilteredFrame(
         frame: ByteArray,
         payloadStart: Int = PUFFIN_PAYLOAD_START,
@@ -375,6 +373,14 @@ object Whoop5Ecg {
         return plausibleFilteredPayload(payload, maxPadding)
     }
 
+    /**
+     * A cheap structural triage for "could these bytes be a filtered Labrador payload?".
+     *
+     * Used by the app layer to hunt for the packet TYPE byte, which is not attested: while an ECG probe is
+     * armed, every unclassified 5/MG frame is run through this and the hits are logged with their type. It
+     * is a HEURISTIC — four booleans, three enum ranges and a length agreement — not a classifier, and
+     * nothing downstream may treat a hit as proof.
+     */
     fun plausibleFilteredPayload(payload: List<Int>, maxPadding: Int = DEFAULT_MAX_PADDING): Boolean {
         val header = decodeHeader(payload) ?: return false
         if (header.signalQualityRaw > 3) return false
