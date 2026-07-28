@@ -372,6 +372,65 @@ internal fun recordingStateFor(
     else -> RecordingState.NotRecording
 }
 
+/** #245: the sync-status state the Today top bar's `SyncStatusChip` composable renders. Mirrors Swift
+ *  `SyncChipState` 1:1 (same four cases, same priority order) so the twin can't drift on WHEN to show
+ *  what. THREE non-hidden states so the ABSENCE of active syncing reads as "caught up", not "missing
+ *  indicator": actively offloading -> [Syncing]; idle with a known last-sync -> [Synced]; a 5/MG whose
+ *  history sync is experimental (live-connected, no completed offload yet) -> [ExperimentalLive].
+ *  [Hidden] only on a true cold start (the building-scores note owns that case). Previously this
+ *  priority order lived inline inside the `@Composable`, where it could not be unit-tested. */
+sealed class SyncChipState {
+    data class Syncing(val chunks: Int) : SyncChipState()
+    data class Synced(val agoText: String) : SyncChipState()
+    object ExperimentalLive : SyncChipState()
+    object Hidden : SyncChipState()
+
+    companion object {
+        /** Pure + unit-tested. Mirrors Swift `SyncChipState.resolve` exactly: backfilling wins over a
+         *  known last-sync, which wins over the 5/MG experimental fallback.
+         *
+         *  [nowSec] (unix seconds) and [nowLabel] (the already-translated "now" word) are PARAMETERS
+         *  rather than things this function reaches for, which is what keeps "pure" true. Resolving the
+         *  word in here instead cost the twin its own test: it goes through `NoopApplication`, which
+         *  throws `IllegalStateException: NoopApplication is not attached` under a plain JVM unit test —
+         *  these run without Robolectric, so no Application is ever attached. Only the `< 60s` branch of
+         *  [shortSyncAgo] wants a word, so the failure was invisible until a case landed in it. Same
+         *  injected-clock style as [recordingStateFor] just above.
+         *
+         *  Swift's twin keeps both inside its own `shortAgo` and is fine there — XCTest runs against a
+         *  real bundle, so `String(localized:)` resolves. The two SIGNATURES therefore differ on purpose;
+         *  the decision they encode does not. Don't "restore parity" by moving the lookup back in here. */
+        fun resolve(
+            backfilling: Boolean,
+            chunks: Int,
+            lastSyncAtSec: Long?,
+            historySyncExperimental: Boolean,
+            nowSec: Long,
+            nowLabel: String,
+        ): SyncChipState = when {
+            backfilling -> Syncing(chunks)
+            lastSyncAtSec != null -> Synced(shortSyncAgo(lastSyncAtSec, nowSec, nowLabel))
+            historySyncExperimental -> ExperimentalLive
+            else -> Hidden
+        }
+    }
+}
+
+/** Compact relative age for the header chip ("now" / "Nm" / "Nh" / "Nd") from a unix-SECONDS timestamp —
+ *  deliberately terse. "now" is the only word in here (the rest is digits + a unit letter), so it's the
+ *  only piece that needs a catalog entry to translate; it arrives as [nowLabel], resolved by the
+ *  composable that owns the chip, so the bucketing stays framework-free. [nowSec] is unix seconds,
+ *  injected for the same reason. Mirrors the iOS `SyncChipState.shortAgo`. */
+internal fun shortSyncAgo(unixSec: Long, nowSec: Long, nowLabel: String): String {
+    val secs = (nowSec - unixSec).coerceAtLeast(0)
+    return when {
+        secs < 60 -> nowLabel
+        secs < 3600 -> "${secs / 60}m"
+        secs < 86_400 -> "${secs / 3600}h"
+        else -> "${secs / 86_400}d"
+    }
+}
+
 /** Whether this night's sleep staging is low-confidence, using the core [ScoreConfidence] rule. */
 internal fun restStageLowConfidence(d: DailyMetric?): Boolean {
     val asleepMin = d?.totalSleepMin ?: return false

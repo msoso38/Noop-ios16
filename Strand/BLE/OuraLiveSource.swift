@@ -1377,15 +1377,19 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 }
 
             case .motionEvent(let m):
-                // 0x47 averaged accel vector (Tier-A). Diagnostic sidecar ONLY for now: decode + store + log
-                // the vector beside the incumbent so the LSB→g scale + cadence can be pinned offline from a
-                // still capture (issue #804). Never persisted to SQLite, never scored — OuraStreamMapping
-                // drops .motionEvent until the scale is calibrated. Anchored records only (deduped by
-                // ring-time inside the writer).
-                if let utc = driver.unixSeconds(forRingTimestamp: m.ringTimestamp) {
-                    motionDump?.record(ringTs: m.ringTimestamp, utc: utc, orientation: m.orientation,
+                // 0x47 averaged accel vector (Tier-A). Persisted as an OURA_MOTION event (same event-table
+                // path as OURA_HRV / OURA_SLEEP_PHASE — see OuraStreamMapping), AND appended to the raw
+                // calibration sidecar. Instrumentation only: never scored, never fed to the sleep stager
+                // (0x47 is movement-gated, a shape mismatch for the gravity-stillness stager, #804). Anchor
+                // per record (its own ring-time) so each window lands on a distinct (deviceId, ts, kind) row.
+                if let ts = driver.unixSeconds(forRingTimestamp: m.ringTimestamp) {
+                    motionDump?.record(ringTs: m.ringTimestamp, utc: ts, orientation: m.orientation,
                                        motionSeconds: m.motionSeconds, x: m.avgX, y: m.avgY, z: m.avgZ,
                                        lowIntensity: m.lowIntensity, highIntensity: m.highIntensity)
+                    enqueue([e], ts: ts)
+                    noteStoredHistoryRingTime(m.ringTimestamp)
+                } else {
+                    pendingAnchorEvents.append((e, m.ringTimestamp))
                 }
 
             default:

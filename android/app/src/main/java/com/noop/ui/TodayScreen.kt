@@ -2132,16 +2132,30 @@ private fun SyncStatusChip(
     lastSyncAt: Long?,
     historySyncExperimental: Boolean,
 ) {
-    when {
-        backfilling -> ChipCapsule(
-            Icons.Filled.Autorenew, "$chunks", Palette.accent, "Syncing strap history, $chunks chunks")
-        lastSyncAt != null -> ChipCapsule(
-            Icons.Filled.Check, shortSyncAgo(lastSyncAt), Palette.textSecondary,
-            "Strap history synced ${shortSyncAgo(lastSyncAt)} ago")
-        historySyncExperimental -> ChipCapsule(
-            Icons.Filled.Check, "live", Palette.textSecondary,
-            "Connected; strap history sync is experimental on this strap")
-        // else: cold start — render nothing; the building-scores note covers it.
+    // The clock and the translated "now" word are resolved HERE, in the composable that already depends
+    // on both, and handed down — so `SyncChipState.resolve` stays a genuinely pure decision that a plain
+    // JVM unit test can call with no attached Application. Reading the clock at composition time (rather
+    // than snapshotting it) is unchanged behaviour: `shortSyncAgo` did exactly this on every recomposition.
+    val state = SyncChipState.resolve(
+        backfilling = backfilling,
+        chunks = chunks,
+        lastSyncAtSec = lastSyncAt,
+        historySyncExperimental = historySyncExperimental,
+        nowSec = System.currentTimeMillis() / 1000L,
+        nowLabel = uiString(R.string.l10n_today_screen_sync_chip_now_c9bc849a),
+    )
+    when (state) {
+        is SyncChipState.Syncing -> ChipCapsule(
+            Icons.Filled.Autorenew, "${state.chunks}", Palette.accent,
+            uiString(R.string.l10n_today_screen_sync_chip_syncing_desc_bfc290e7, state.chunks))
+        is SyncChipState.Synced -> ChipCapsule(
+            Icons.Filled.Check, state.agoText, Palette.textSecondary,
+            uiString(R.string.l10n_today_screen_sync_chip_synced_desc_4d255944, state.agoText))
+        SyncChipState.ExperimentalLive -> ChipCapsule(
+            Icons.Filled.Check, uiString(R.string.l10n_today_screen_sync_chip_live_98aadb37), Palette.textSecondary,
+            uiString(R.string.l10n_today_screen_sync_chip_experimental_desc_3de06a70))
+        SyncChipState.Hidden -> Unit
+        // cold start — render nothing; the building-scores note covers it.
     }
 }
 
@@ -2158,18 +2172,6 @@ private fun ChipCapsule(icon: ImageVector, text: String, tint: Color, desc: Stri
     ) {
         Icon(icon, contentDescription = desc, tint = tint, modifier = Modifier.size(14.dp))
         Text(text, style = NoopType.caption, color = tint)
-    }
-}
-
-/** Compact relative age for the header chip ("now" / "Nm" / "Nh" / "Nd") from a unix-SECONDS timestamp —
- *  deliberately terse. Twin of the iOS `SyncStatusChip.shortAgo`. */
-private fun shortSyncAgo(unixSec: Long): String {
-    val secs = (System.currentTimeMillis() / 1000L - unixSec).coerceAtLeast(0)
-    return when {
-        secs < 60 -> "now"
-        secs < 3600 -> "${secs / 60}m"
-        secs < 86_400 -> "${secs / 3600}h"
-        else -> "${secs / 86_400}d"
     }
 }
 

@@ -6,7 +6,7 @@ import whoop_activity as wa
 
 
 def make_v18(unix=1000, hr=60, motion=0, wear=0, sleep_state=0,
-             hr_fixed=0, rr_packed=0, cardiac_flags=0, cardiac_status=0,
+             hr_flags=0, hr_alt=0, rr_packed=0, cardiac_flags=0, cardiac_status=0,
              record_index=0, step_cadence=0, status_word=0, aux_f32=0.0,
              temp_aux_1=0, temp_aux_2=0, status_word_1=0, status_word_2=0,
              onwrist=0, wake_quality=0, aux_byte_82=0,
@@ -18,7 +18,8 @@ def make_v18(unix=1000, hr=60, motion=0, wear=0, sleep_state=0,
     struct.pack_into("<I", f, 11, record_index & 0xFFFFFFFF)   # @11 record_index (u32)
     struct.pack_into("<I", f, 15, unix)
     f[22] = hr & 0xFF
-    struct.pack_into("<H", f, 36, hr_fixed & 0xFFFF)     # @36 hr_fixed_8_8
+    f[36] = hr_flags & 0xFF                               # @36 hr_quality_flags (a flag byte)
+    f[37] = hr_alt & 0xFF                                 # @37 heart_rate_alt (duplicate of hr@22)
     struct.pack_into("<H", f, 38, rr_packed & 0xFFFF)    # @38 rr_packed
     f[33] = cardiac_flags & 0xFF                          # @33 cardiac_flags
     f[40] = cardiac_status & 0xFF                         # @40 cardiac_status
@@ -43,7 +44,8 @@ def test_decode_v18_roundtrips_fields():
                  "onwrist": 0, "wake_quality": 0, "sleep_state": 2, "aux_byte_82": 0,
                  "spo2_candidate_82": None,  # 0 is out-of-band (not 70–100)
                  "motion_count": 4000, "step_cadence": 0, "motion_wear_quality": 1,
-                 "hr_fixed_8_8": 0, "rr_packed": 0, "cardiac_flags": 0, "cardiac_status": 0,
+                 "hr_quality_flags": 0, "heart_rate_alt": 0,
+                 "rr_packed": 0, "cardiac_flags": 0, "cardiac_status": 0,
                  "temp_aux_1_raw": 0, "temp_aux_2_raw": 0,
                  "status_word": 0, "status_word_1": 0, "status_word_2": 0,
                  "unknown_f32_113": 0.0}
@@ -61,11 +63,22 @@ def test_decode_v18_spo2_candidate_82_tri_mode():
         assert d["aux_byte_82"] == raw
 
 
-def test_decode_v18_higher_precision_hr():
-    # @36 value/256 ≈ hr@22 — observable: divide and compare to the integer HR at the same second.
-    d = wa.decode_v18(make_v18(hr=102, hr_fixed=25997))
-    assert d["hr_fixed_8_8"] == 25997
-    assert abs(d["hr_fixed_8_8"] / 256.0 - d["hr"]) < 1.0   # 25997/256 ≈ 101.55 ≈ 102
+def test_decode_v18_byte36_is_a_flag_byte_not_a_fixed_point_hr():
+    # @36/@37 was read as one u16 `hr_fixed_8_8` with bpm = value/256. Over 18,650 real v18 records that
+    # model is false: bit 4 of @36 is NEVER set (a genuine 8.8 fraction sets it ~50% of the time) and it
+    # is the only bit never set; 95.02% of values land in 0x80-0x8F (uniform would be 6.25%). @36 is a
+    # flag byte whose bit 7 reads as a validity bit, and @37 is a DUPLICATE heart rate (equal to hr@22 in
+    # 99.575% of records). The old "corr 0.989 with hr@22" was circular — the u16 is just hr@22 plus this
+    # flag byte over 256, leaving a flat +0.504 ± 0.189 residual.
+    d = wa.decode_v18(make_v18(hr=102, hr_flags=0x8D, hr_alt=101))
+    assert "hr_fixed_8_8" not in d
+    assert d["hr_quality_flags"] == 0x8D
+    assert d["hr_quality_flags"] & 0x10 == 0     # bit 4 is never set
+    assert d["hr_quality_flags"] & 0x80          # bit 7 = valid
+    assert d["heart_rate_alt"] == 101            # duplicate of hr@22 (102 here)
+    # The two bytes are independent: moving the flag byte must not move the duplicate HR (under the
+    # retired u16 model every @36 step shifted the reported "bpm" by 1/256).
+    assert wa.decode_v18(make_v18(hr=102, hr_flags=0x02, hr_alt=101))["heart_rate_alt"] == 101
 
 
 def test_decode_v18_late_fields():
