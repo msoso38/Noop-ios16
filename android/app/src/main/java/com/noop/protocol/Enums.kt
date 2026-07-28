@@ -23,7 +23,15 @@ enum class PacketType(val rawValue: Int) {
     METADATA(49),
     CONSOLE_LOGS(50),
     REALTIME_IMU_DATA_STREAM(51),
-    HISTORICAL_IMU_DATA_STREAM(52);
+    HISTORICAL_IMU_DATA_STREAM(52),
+    // 53-55 are decode-only NAMES, added for #891: the unhandled-packet-type census renders a type through
+    // this enum, and without them a 5/MG offload carrying one would report "type53" on Android and
+    // "RELATIVE_PUFFIN_EVENTS" on Apple — the same strap, two different report lines. Nothing dispatches on
+    // them. 56 stays out deliberately: both platforms alias it onto METADATA (PuffinPacketType.PUFFIN_METADATA
+    // / Swift `canonicalTypeName`), so naming it here would DIVERGE from Apple rather than match it.
+    RELATIVE_PUFFIN_EVENTS(53),
+    PUFFIN_EVENTS_FROM_STRAP(54),
+    RELATIVE_BATTERY_PACK_CONSOLE_LOGS(55);
 
     companion object {
         private val byRaw = entries.associateBy { it.rawValue }

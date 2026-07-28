@@ -523,6 +523,29 @@ public struct Streams: Equatable, Codable {
     /// The #547 gate discards them like any bad-ts record, but these are the GROUND TRUTH that the clock reset
     /// - so we capture (kind, rawTs) for the strap log before dropping. Transient, empty by default, not encoded.
     public var droppedRtcEvents: [DroppedRtcEvent] = []
+    /// #891 diagnostic: packet types this funnel DROPPED this chunk because it has no `case` for them —
+    /// keyed by the rendered type name (`schema.typeName`, so a byte the schema does not name renders
+    /// `type53`), value = how many records carried it.
+    ///
+    /// An offload records nothing about a type it does not handle. `extractHistoricalStreams` switches on
+    /// four of the schema's sixteen packet types and `default: continue`s the rest, and
+    /// `rejectedHistoricalRecords` only archives type-47 — non-47 frames are, in its own words, "excluded
+    /// by construction". So a record type nobody has mapped is dropped twice and counted zero times, and
+    /// the sync reports clean. That is not hypothetical: `HISTORICAL_IMU_DATA_STREAM(52)` is a banked
+    /// raw-stream type our own schema names, and every one of them would vanish here.
+    ///
+    /// The immediate use is #891 — whether a 5/MG banks ECG to flash after the Labrador toggles is the
+    /// leading hypothesis, and it currently cannot be answered by running the experiment, because nothing
+    /// would show the result. The general use is that any future firmware record type is invisible today.
+    ///
+    /// `METADATA` and `CONSOLE_LOGS` are deliberately NOT counted: an offload legitimately carries both,
+    /// they decode to zero rows by design, and tallying them every sync would bury the signal this exists
+    /// to surface. Everything else falls through, including named-but-unhandled types — those are the
+    /// interesting ones.
+    ///
+    /// Transient observability only, like `droppedImplausible`: not persisted, not in `CodingKeys`, empty
+    /// by default so golden fixtures stay byte-identical.
+    public var unhandledPacketTypes: [String: Int] = [:]
     /// #520 diagnostic: a summary of `dynamic_acceleration@41` (the strap's own gravity-removed motion
     /// magnitude) over this chunk's v18 records. The field is decoded but has never been persisted or
     /// scored, so there is no evidence about whether it is a usable stillness signal; this counts what
