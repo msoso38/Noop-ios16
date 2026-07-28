@@ -1619,10 +1619,20 @@ struct SettingsView: View {
     }
 
     /// Export the last 24h of decoded sensor streams for the connected strap to a CSV, then save (macOS
-    /// NSSavePanel) or share (iOS share sheet) — the same pattern as exportPuffinCaptures(). The store
-    /// handle and the strap deviceId both come from the app's single "my-whoop" id.
+    /// NSSavePanel) or share (iOS share sheet) — the same pattern as exportPuffinCaptures().
+    ///
+    /// The strap id comes from `repo.deviceId`, NOT `model.deviceId`. The latter is a hardcoded
+    /// `let "my-whoop"`; the former is seeded with it and then re-pointed to the registry's active strap
+    /// once the store opens (`adoptActiveDeviceId`). This read used the hardcoded one, so after a
+    /// remove+re-add — which mints a fresh "whoop-<uuid>" that the Collector writes today's raw under —
+    /// the CSV exported the legacy id's streams rather than the strap being worn, silently, in the file
+    /// people attach to bug reports. That is #814 on the diagnostic path, and the Android twin of it.
+    ///
+    /// Read on the MainActor before the Task hop, as `LiveSessionRunner` does, rather than reaching into
+    /// the actor-isolated repo from inside the task.
     private func exportRawSensorCSV() {
         rawCsvBusy = true
+        let strapId = model.repo.deviceId
         Task {
             let since = Date().timeIntervalSince1970 - 24 * 60 * 60
             guard let store = await model.repo.storeHandle() else {
@@ -1635,7 +1645,7 @@ struct SettingsView: View {
                 return
             }
             do {
-                let url = try await store.exportRawCSV(deviceId: model.deviceId, since: since)
+                let url = try await store.exportRawCSV(deviceId: strapId, since: since)
                 await MainActor.run {
                     rawCsvBusy = false
                     lastRawCsvURL = url
