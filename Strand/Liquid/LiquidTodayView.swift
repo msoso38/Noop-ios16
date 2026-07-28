@@ -26,6 +26,11 @@ struct LiquidTodayView: View {
     // only publishes connect/discovery state, never HR. Injected at the app roots beside .environmentObject(model).
     @EnvironmentObject var ble: BLEManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Low Power Mode — and the in-app "Reduce motion in NOOP" toggle — pose the sky still too, the
+    /// behaviour the comment on the sky branch below has always described. Neither has a SwiftUI
+    /// environment key, hence the shared monitor.
+    @ObservedObject private var motion = NoopMotionState.shared
+    private var poseStill: Bool { motion.poseStill(reduceMotion) }
 
     /// Shared with the real Today's card-customise editor so the two stay in sync.
     @AppStorage(DashboardCardPrefs.selectionKey) private var dashboardCardsRaw = ""
@@ -318,7 +323,7 @@ struct LiquidTodayView: View {
                     // "Sky behind cards" (opt-in): fill the whole backdrop with a softer settle so the sky
                     // reads under every card, instead of the default 340 top band that dissolves to canvas.
                     Group {
-                        if reduceMotion || !dataLoaded { LiquidSkyStatic(hour: liveHour, settleStrength: skyBehindCards ? 0.78 : 1) }
+                        if poseStill || !dataLoaded { LiquidSkyStatic(hour: liveHour, settleStrength: skyBehindCards ? 0.78 : 1) }
                         else { LiquidSky(hour: liveHour, settleStrength: skyBehindCards ? 0.78 : 1) }
                     }
                     .frame(maxWidth: .infinity)
