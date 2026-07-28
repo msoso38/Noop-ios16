@@ -467,6 +467,11 @@ class WhoopConnectionService : Service() {
             state.backfilling,
             recoveryPct?.roundToInt(),
             state.batteryPct?.roundToInt(),
+            // The rendered TEXT depends on the locale, and a Service is never re-posted when the user
+            // switches language — nothing above changes, so the notification would keep the previous
+            // language until the connection or battery state happened to move. On a stable link with a
+            // charged strap that is hours. (#867)
+            resources.configuration.locales[0].toLanguageTag(),
         ).joinToString("|")
         if (key == lastNotificationKey) return
         lastNotificationKey = key
@@ -484,14 +489,17 @@ class WhoopConnectionService : Service() {
         // battery cost for a number nobody reads off the lock screen. The title now reflects only the
         // connection / sync state, which changes rarely — see postNotification's dedup.
         val title = when {
-            !state.connected   -> "Reconnecting to your WHOOP…"
-            state.backfilling  -> "Syncing strap history…"
-            else               -> "Connected to your WHOOP"
+            !state.connected   -> getString(R.string.fgs_title_reconnecting)
+            state.backfilling  -> getString(R.string.fgs_title_syncing)
+            else               -> getString(R.string.fgs_title_connected)
         }
         val detail = buildList {
-            add(if (state.connected) "Streaming in the background" else "Keeping the link open")
-            recoveryPct?.let { add("Recovery ${it.roundToInt()}%") }
-            state.batteryPct?.let { add("Strap ${it.roundToInt()}%") }
+            add(
+                if (state.connected) getString(R.string.fgs_detail_streaming)
+                else getString(R.string.fgs_detail_keeping_link),
+            )
+            recoveryPct?.let { add(getString(R.string.fgs_detail_recovery, it.roundToInt())) }
+            state.batteryPct?.let { add(getString(R.string.fgs_detail_battery, it.roundToInt())) }
         }.joinToString("  ·  ")
 
         val openApp = PendingIntent.getActivity(
@@ -512,7 +520,7 @@ class WhoopConnectionService : Service() {
             .setContentTitle(title)
             .setContentText(detail)
             .setContentIntent(openApp)
-            .addAction(0, "Disconnect", stopAction)
+            .addAction(0, getString(R.string.fgs_action_disconnect), stopAction)
             .setOngoing(true)
             .setSilent(true)
             .setShowWhen(false)
@@ -554,13 +562,18 @@ class WhoopConnectionService : Service() {
         // that crash onStartCommand (it would take the FGS — and the connection — down with it).
         runCatching {
             val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (mgr.getNotificationChannel(CHANNEL_ID) != null) return
+            // Deliberately NOT skipping when the channel already exists. createNotificationChannel is
+            // idempotent and updates the name/description of an existing channel, which is the only way
+            // those follow a language change — they are set once at creation and are user-visible in
+            // system Settings, so an early return here left them in the install-time language forever.
+            // Everything else about the channel is unchanged, and importance/sound are not re-applied
+            // by the OS once a user has adjusted them.
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Strap connection",
+                getString(R.string.fgs_channel_name),
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Shown while NOOP keeps your WHOOP connected in the background."
+                description = getString(R.string.fgs_channel_desc)
                 setShowBadge(false)
                 enableVibration(false)
                 setSound(null, null)

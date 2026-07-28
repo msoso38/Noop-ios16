@@ -246,10 +246,16 @@ final class DeviceConfigReadProbeTests: XCTestCase {
         XCTAssertEqual(report.steps, 2)
         XCTAssertEqual(report.featureFlagVerb, .unsupported)
         XCTAssertEqual(report.deviceConfigVerb, .unsupported)
-        XCTAssertTrue(report.verdict.contains("rejected as UNSUPPORTED"))
+        // The one run that supports the strong sentence: the firmware itself refused both verbs.
+        XCTAssertEqual(report.verdict,
+                       "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this "
+                       + "firmware — rejected as UNSUPPORTED")
         XCTAssertTrue(report.render().contains("neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121)"))
     }
 
+    /// Two timeouts are two timeouts. `BLEManager.send` returns without transmitting when there is no
+    /// `cmdCharacteristic` and again when the 5/MG allowlist does not carry the opcode, so a run in which
+    /// nothing reached the strap must not print a claim about what the firmware serves.
     func testSilentVerbsEndTheProbeAndAreSaidPlainly() {
         var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys,
                                                  candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
@@ -260,10 +266,67 @@ final class DeviceConfigReadProbeTests: XCTestCase {
         XCTAssertNil(report.nextStep())
         XCTAssertEqual(report.featureFlagVerb, .silent)
         XCTAssertEqual(report.deviceConfigVerb, .silent)
+        XCTAssertEqual(report.verdict,
+                       "no read verb answered — GET_FF_VALUE(128) served no reply in 8s — unconfirmed; "
+                       + "GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed")
         let text = report.render()
-        XCTAssertTrue(text.contains("no reply to either"))
+        XCTAssertFalse(text.contains("served by this firmware"),
+                       "silence is not the firmware answering — it is not even proof a frame was sent")
+        XCTAssertFalse(text.contains("UNSUPPORTED"), "nothing was refused; nothing replied at all")
         XCTAssertTrue(text.contains("no COMMAND_RESPONSE within 8s"))
         XCTAssertTrue(text.contains("(none — the verb that would carry them did not answer)"))
+    }
+
+    /// One verb refused and the other timed out: the refusal belongs to the verb that was refused. The
+    /// old `||` printed "neither … is served by this firmware — rejected as UNSUPPORTED" over a 121 that
+    /// was never refused, only never heard from.
+    func testOneRefusalIsNotGeneralisedToTheVerbThatWasNeverHeardFrom() {
+        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys,
+                                                 candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
+        guard let s128 = report.nextStep() else { return XCTFail("128") }
+        XCTAssertEqual(s128.opcode, 128)
+        report.noteReply(.init(resultCode: 3, record: [0x00]), for: s128)
+        guard let s121 = report.nextStep() else { return XCTFail("121") }
+        XCTAssertEqual(s121.opcode, 121)
+        report.noteTimeout(for: s121, seconds: 8)
+
+        XCTAssertNil(report.nextStep())
+        XCTAssertEqual(report.featureFlagVerb, .unsupported)
+        XCTAssertEqual(report.deviceConfigVerb, .silent)
+        XCTAssertEqual(report.verdict,
+                       "no read verb answered — GET_FF_VALUE(128) refused by firmware (UNSUPPORTED); "
+                       + "GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed")
+        XCTAssertFalse(report.render().contains("neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121)"),
+                       "one refusal does not speak for the other verb")
+    }
+
+    /// An undecodable reply is affirmative evidence the strap DID transmit, so "not served by this
+    /// firmware" states the opposite of what the run observed.
+    func testAnUndecodableReplyIsNotReportedAsUnserved() {
+        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys, candidateKeys: [])
+        guard let s128 = report.nextStep() else { return XCTFail("128") }
+        report.noteFailure(.crc, for: s128)
+        guard let s121 = report.nextStep() else { return XCTFail("121") }
+        report.noteFailure(.envelope, for: s121)
+
+        XCTAssertEqual(report.featureFlagVerb, .undecodable)
+        XCTAssertEqual(report.deviceConfigVerb, .undecodable)
+        XCTAssertEqual(report.verdict,
+                       "no read verb answered — "
+                       + "GET_FF_VALUE(128) replied but the frame did not decode — unconfirmed; "
+                       + "GET_DEVICE_CONFIG_VALUE(121) replied but the frame did not decode — unconfirmed")
+        XCTAssertFalse(report.render().contains("served by this firmware"))
+    }
+
+    /// A probe that ended before either verb went out says so, rather than reporting an empty run as a
+    /// finding about the firmware.
+    func testAProbeThatAskedNothingClaimsNothing() {
+        let report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys, candidateKeys: [])
+        XCTAssertEqual(report.featureFlagVerb, .untried)
+        XCTAssertEqual(report.deviceConfigVerb, .untried)
+        XCTAssertEqual(report.verdict,
+                       "no read verb answered — GET_FF_VALUE(128) not asked; "
+                       + "GET_DEVICE_CONFIG_VALUE(121) not asked")
     }
 
     func testAnAnsweringFeatureFlagVerbWalksTheFifteenRemainingKnownFlags() {

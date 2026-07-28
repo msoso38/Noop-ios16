@@ -7,7 +7,7 @@ enum AppChangelog {
 
     /// Bump this when you add a release below. The "What's New" sheet shows automatically when the
     /// stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
-    static let currentVersion = "9.2.0"
+    static let currentVersion = "9.2.1"
 
     struct Release: Identifiable {
         let version: String
@@ -19,6 +19,18 @@ enum AppChangelog {
 
     /// Newest first.
     static let releases: [Release] = [
+        Release(
+            version: "9.2.1",
+            title: "Battery saver quiets the gauges, translated Android notifications, and instant chart loads",
+            date: "July 2026",
+            items: [
+                "**Battery saver stops the animation (#909).** Turn on Low Power Mode or battery saver and the live gauges, sky and pulsing dots settle into a single still frame. On iPhone that was measured at ~18% of a CPU core with the screen just sitting idle, and 0% posed still. It switches the moment you flip the setting — no restart.",
+                "**Android notifications are translated (#867).** Every notification the app sends shipped in English no matter your language — the always-on connection notice, all five battery alerts, the illness, move and smart-alarm alerts, and both notification categories in system settings. All of them now speak German, Spanish, French, Portuguese and Chinese.",
+                "**Today and the day chart open instantly on a long history (#908).** Finding your most recent reading walked every heart-rate row for the strap. On a large store that took four to six seconds every time the screen opened; it now takes hundredths of a second.",
+                "**The pulsing connection dot honours \"Remove animations\" (#909).** It kept pulsing regardless. It doesn't now.",
+                "**Strap logs name every command (#891).** An Android strap log showed a bare `0x8B(139)` where iPhone showed the command's name, and neither platform said whether a command had actually succeeded. Both now do — which is what makes a pasted log useful to anyone reading it.",
+            ]
+        ),
         Release(
             version: "9.2.0",
             title: "HRV accuracy fix, Oura sleep and motion, richer 5/MG decoding, and a stoppable sync",
