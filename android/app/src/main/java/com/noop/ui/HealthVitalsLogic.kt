@@ -190,6 +190,12 @@ internal fun vitalsFor(
         ),
         Vital(
             key = "spo2", label = uiString(R.string.l10n_health_screen_blood_o_9bf5ed9b), unit = "%",
+            // The condition is EXACTLY the Raw SpO₂ tile's own value expression (`d?.let(spo2RawMean)`,
+            // below) and must stay that way: the caption's claim is "the tile beside this one is
+            // showing a number", so if the two expressions drift, this says the sensor recorded on a
+            // night where the neighbouring tile is blank. The platforms pick that row differently —
+            // Android per selected day, Apple `logicalDay ?? most recent` — so the ROW is not the
+            // parity contract here; the relationship between the two tiles is.
             missingCaption = uiString(spo2MissingCaptionRes(d?.let(spo2RawMean) != null)),
             value = d?.spo2Pct, format = { String.format("%.0f", it) },
             deltaText = deltaText(d?.spo2Pct, previous { it.spo2Pct }, decimals = 0),

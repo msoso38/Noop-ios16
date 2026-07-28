@@ -240,6 +240,12 @@ enum BodyVitalSigns {
                 // fabricate one (spo2Pct is import-only; see Spo2ReTrace). Saying "No SpO₂ import or Health
                 // value" there reads as "your sensor recorded nothing", next to a Raw SpO₂ tile showing a
                 // live number.
+                // The condition is EXACTLY the Raw SpO₂ tile's own value expression (`spo2rawRow`, below)
+                // and must stay that way: the caption's claim is "the tile beside this one is showing a
+                // number", so if the two drift, this says the sensor recorded on a night where the
+                // neighbouring tile is blank. Note `latest()` here resolves `logicalDay ?? most recent`,
+                // where Android resolves the selected day — so the ROW differs across platforms by design
+                // and the parity contract is the relationship between the two tiles, not the row.
                 missingCaption: spo2rawRow != nil
                     ? String(localized: "Raw counts only — needs an import")
                     : String(localized: "No SpO₂ import or Health value"),
