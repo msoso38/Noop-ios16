@@ -103,7 +103,14 @@ enum SyncReplicationTrial {
         }
         let late = StoreReplication.configuredAfterFirstOpen ? " LATE-CONFIGURE" : ""
         let telemetry = shared.map { " " + $0.oneLineSummary } ?? ""
-        return "replicationTrial enabled=\(isEnabled) checkpointing=\(inForce)\(late)\(telemetry)"
+        // The FOURTH fact, and the one that was missing: what the last attempt actually did. The
+        // three above describe intent, reality and result-so-far, and all three read "healthy" while
+        // every push fails — a failing push records no telemetry at all, so `pushes=0` means both
+        // "never tried" and "tried and failed every time". See
+        // `CloudSyncUploader.litersBreadcrumbKey`.
+        let last = UserDefaults.standard.string(forKey: CloudSyncUploader.litersBreadcrumbKey)
+        let outcome = last.map { "\nlast liters attempt: \($0)" } ?? "\nlast liters attempt: none recorded"
+        return "replicationTrial enabled=\(isEnabled) checkpointing=\(inForce)\(late)\(telemetry)\(outcome)"
     }
 }
 #endif

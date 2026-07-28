@@ -183,6 +183,24 @@ enum CloudSyncUploader {
     /// `latestDay` is `nil` on this path by construction: `/liters` is a byte pipe into
     /// `mirror.sqlite` and answers with liters' protocol, not with `/ingest`'s
     /// `{ok,bytes,latestDay}`. `CloudSyncModel` uses only `bytes`.
+    /// `UserDefaults` key carrying the outcome of the LAST liters attempt — which branch was taken
+    /// and, on a failure, the error verbatim.
+    ///
+    /// Not decoration. Every non-push outcome below is otherwise reported only through `NSLog`, and
+    /// an `NSLog` on a phone that is not attached to Xcode goes nowhere a person can read: a trial
+    /// that is failing every push and a trial that was never entered produce byte-identical evidence
+    /// (no telemetry record, an empty bucket, and a perfectly healthy `/ingest`). That ambiguity cost
+    /// a full debugging session — the server said `applies: 0`, the phone said the flag was on, and
+    /// nothing anywhere named the actual failure. Mirrors
+    /// `CloudSyncAppDelegate.registrationBreadcrumbKey`, which exists for the same reason.
+    static let litersBreadcrumbKey = "cloudsync.liters.lastOutcome"
+
+    /// Records one liters outcome. Best-effort and never able to fail a sync, like every other
+    /// breadcrumb on this lane.
+    private static func noteLiters(_ outcome: String) {
+        UserDefaults.standard.set("\(outcome) \(Date())", forKey: litersBreadcrumbKey)
+    }
+
     private static func litersPushIfEnabled(
         client: any CloudIngesting, walBytes: Int64, telemetry: SyncPushTelemetry?
     ) async -> (bytes: Int, latestDay: String?)? {
@@ -194,9 +212,13 @@ enum CloudSyncUploader {
         guard SyncReplicationTrial.isInForce else {
             NSLog("liters: trial is on but WAL checkpointing is still .automatic "
                   + "(restart pending) — using /ingest for this sync")
+            noteLiters("skipped: not-in-force (restart pending)")
             return nil
         }
-        guard let dest = client.litersDestination else { return nil }
+        guard let dest = client.litersDestination else {
+            noteLiters("skipped: no liters destination")
+            return nil
+        }
 
         do {
             // The one real on-disk database, resolved exactly the way `DataBackup`/`FolderBackup`
@@ -211,6 +233,21 @@ enum CloudSyncUploader {
                                                  token: dest.token)
             }.value
 
+            // A push that captured content into an L0 file but shipped NO file is not a completed
+            // sync, and `push()` does not throw for it — `synced`/`uploaded` are separate fields and
+            // the old code read neither. Returning here on `uploaded == 0` would report a sync that
+            // delivered nothing as a success, skip `/ingest`, and stamp `lastUploadToken` so the NEXT
+            // sync skips the upload too. Fall through to `/ingest` instead, which is the same answer
+            // this function gives every other way of not pushing.
+            guard summary.uploaded > 0 else {
+                NSLog("liters: push shipped no files (txid=%llu synced=%d remoteTxid=%llu) "
+                      + "— using /ingest for this sync", summary.txid, summary.synced ? 1 : 0,
+                      summary.remoteTxid)
+                noteLiters("no-op: uploaded=0 synced=\(summary.synced) txid=\(summary.txid) "
+                           + "remoteTxid=\(summary.remoteTxid)")
+                return nil
+            }
+
             telemetry?.record(snapshotted: summary.snapshotted,
                               snapshotReason: summary.snapshotReason,
                               bytesUploaded: Int64(summary.bytesUploaded),
@@ -219,6 +256,8 @@ enum CloudSyncUploader {
             NSLog("liters: pushed txid=%llu bytes=%llu snapshotted=%d reason=%@ walAtPush=%lld",
                   summary.txid, summary.bytesUploaded, summary.snapshotted ? 1 : 0,
                   summary.snapshotReason ?? "-", walBytes)
+            noteLiters("pushed: files=\(summary.uploaded) bytes=\(summary.bytesUploaded) "
+                       + "txid=\(summary.txid) snapshotted=\(summary.snapshotted)")
             return (Int(summary.bytesUploaded), nil)
         } catch {
             // Deliberately swallowed. Every liters failure mode — an unreachable sink (503 from
@@ -227,6 +266,9 @@ enum CloudSyncUploader {
             // that ships data on the old path beats a sync that reports a new-path error.
             NSLog("liters: push failed (%@) — falling back to /ingest for this sync",
                   String(describing: error))
+            // Verbatim, not a category: the whole point is that the next person to look does not
+            // have to guess which of liters' failure modes this was.
+            noteLiters("failed: \(error)")
             return nil
         }
         #else
