@@ -212,6 +212,11 @@ data class LiveState(
      *  once empty offloads are SUSTAINED; cleared on connect or once the strap banks real records. Twin of
      *  macOS LiveState.historySyncExperimental. */
     val historySyncExperimental: Boolean = false,
+    /** #612: TRUE when the WHOOP-4/generic empty-offload streak ([emptySyncTracker]) is currently
+     *  SUSTAINED (3+ consecutive completed-but-empty offloads). Not 5/MG-specific and not coupled to HR:
+     *  a connected strap that keeps handing over nothing has this true regardless of live-HR status.
+     *  Cleared on disconnect; re-derived from the next offload. Twin of macOS LiveState.sustainedEmptyOffload. */
+    val sustainedEmptyOffload: Boolean = false,
 ) {
     /** Set the fresh-packet [rr] AND append the valid intervals onto the bounded [rrRecent] rolling
      *  buffer (oldest fall off first). Non-positive sentinels are dropped from the rolling buffer.
@@ -987,6 +992,9 @@ class WhoopBleClient(
                 // #580: the 5/MG "history experimental" note is per-link — a fresh connect re-derives it
                 // from the next offload, so it must not outlive the dropped link.
                 historySyncExperimental = false,
+                // #612: the display flag only, not the underlying emptySyncTracker streak (that counter
+                // deliberately survives a reconnect, unchanged existing behaviour).
+                sustainedEmptyOffload = false,
             )
 
         /**
@@ -6425,6 +6433,9 @@ class WhoopBleClient(
                     else -> futureClockBanner
                 },
                 historySyncExperimental = whoop5HistoryExperimental,
+                // #612: set on EVERY HISTORY_COMPLETE (not just the empty branch) so a productive sync
+                // clears it immediately, exposing the streak previously reachable only via lastSyncError text.
+                sustainedEmptyOffload = sustainedEmpty,
             )
             "timeout" -> it.copy(
                 backfilling = false,

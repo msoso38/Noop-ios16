@@ -265,6 +265,12 @@ public final class LiveState: ObservableObject {
     /// experimental on 5.0" instead of a WHOOP-4-style "not recording"/sync-error. Reset on connect/disconnect.
     @Published public var historySyncExperimental: Bool = false
 
+    /// #612 — true when the WHOOP-4/generic empty-offload streak (`EmptySyncTracker`, `BLEManager`) is
+    /// currently SUSTAINED (3+ consecutive completed-but-empty offloads). Not 5/MG-specific and not
+    /// coupled to HR: a connected strap that keeps handing over nothing has this true regardless of
+    /// whether live HR is streaming. Reset on disconnect; re-derived from the next offload.
+    @Published public var sustainedEmptyOffload: Bool = false
+
     // MARK: - Standard fitness-sensor live metrics (RSC / CSC / CPS — additive, never HR)
     //
     // Live instantaneous speed / cadence / power from a connected standard fitness sensor (a footpod, a
