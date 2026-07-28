@@ -93,14 +93,112 @@ final class SleepStagerV2Tests: XCTestCase {
 
     // MARK: - recipe invariants
 
-    /// The cycle prior concentrates deep early in the night and suppresses REM in the first ~12 %.
+    /// The cycle prior concentrates deep early in the night and suppresses REM near sleep onset.
     func testCyclePriorShapesDeepAndRem() {
-        let early = SleepStagerV2.cyclePrior(0.05)
-        let late = SleepStagerV2.cyclePrior(0.90)
+        let early = SleepStagerV2.cyclePrior(0.05, 3.0)
+        let late = SleepStagerV2.cyclePrior(0.90, 400.0)
         XCTAssertGreaterThan(early["deep"]!, late["deep"]!, "deep prior is higher early in the night")
         XCTAssertLessThan(early["rem"]!, late["rem"]!, "REM prior is suppressed early, rising toward morning")
         XCTAssertEqual(early["light"]!, 0.0)
         XCTAssertEqual(early["awake"]!, 0.0)
+    }
+
+    // MARK: - #930: the REM-latency guard is measured in MINUTES, not as a fraction of the session
+
+    /// THE point of #930, and the assertion the previous shape could not even express: a 10-hour night and a
+    /// 3-hour fragment must receive the SAME REM-latency guard at the same minute after sleep onset.
+    ///
+    /// Under the replaced `c < 0.12` step the two disagree by construction — 30 min into a 10 h night is
+    /// `c = 0.05` (suppressed by the full 3.0) while 30 min into a 3 h fragment is `c = 0.167` (not suppressed
+    /// at all), so the identical physiological instant got opposite treatment purely because of how long the
+    /// wearer stayed in bed. The guard is isolated from the `1.0 * c` REM ramp (which is CORRECTLY a fraction
+    /// of the session and legitimately differs between the two) by subtracting the ramp back out.
+    func testRemLatencyGuardIsIdenticalAcrossSessionLengths() {
+        let longNight = 10.0 * 60.0   // 600 min
+        let fragment = 3.0 * 60.0     // 180 min
+        for minutes in stride(from: 0.0, through: 180.0, by: 2.5) {
+            let cLong = minutes / longNight, cShort = minutes / fragment
+            // Strip the fraction-of-session REM ramp; what remains is the latency guard alone.
+            let guardLong = 1.0 * cLong - SleepStagerV2.cyclePrior(cLong, minutes)["rem"]!
+            let guardShort = 1.0 * cShort - SleepStagerV2.cyclePrior(cShort, minutes)["rem"]!
+            XCTAssertEqual(guardLong, guardShort, accuracy: 1e-12,
+                           "guard at \(minutes) min must not depend on session length "
+                           + "(10 h gave \(guardLong), 3 h gave \(guardShort))")
+            XCTAssertEqual(guardLong, SleepStagerV2.remLatencyGuard(minutes), accuracy: 1e-12)
+        }
+    }
+
+    /// Shape of the guard: full strength at onset, linear decay, exactly zero at and past `remLatencyMinutes`,
+    /// and clamped (never stronger than at onset) for the pre-onset epochs a mis-placed window start produces.
+    func testRemLatencyGuardShapeAndClamp() {
+        let k = SleepStagerV2.remLatencyPenalty, m0 = SleepStagerV2.remLatencyMinutes
+        XCTAssertEqual(SleepStagerV2.remLatencyGuard(0.0), k, accuracy: 1e-12, "full penalty at onset")
+        XCTAssertEqual(SleepStagerV2.remLatencyGuard(m0 / 2), k / 2, accuracy: 1e-12, "linear halfway")
+        XCTAssertEqual(SleepStagerV2.remLatencyGuard(m0), 0.0, accuracy: 1e-12, "spent at M0")
+        XCTAssertEqual(SleepStagerV2.remLatencyGuard(m0 + 500), 0.0, accuracy: 1e-12, "never negative later")
+        // #271 can place the window start hours before real onset; the guard must stay bounded there.
+        XCTAssertEqual(SleepStagerV2.remLatencyGuard(-240.0), k, accuracy: 1e-12, "clamped pre-onset")
+        XCTAssertEqual(SleepStagerV2.remLatencyGuard(.infinity), 0.0, accuracy: 1e-12,
+                       "the disabled-guard sentinel pass 1 uses must contribute nothing")
+        // Monotone non-increasing across the ramp.
+        var prev = Double.infinity
+        for m in stride(from: -60.0, through: 120.0, by: 1.0) {
+            let g = SleepStagerV2.remLatencyGuard(m)
+            XCTAssertLessThanOrEqual(g, prev + 1e-12, "guard must never increase with elapsed time")
+            prev = g
+        }
+    }
+
+    /// The 5-minute sustained-sleep onset rule (10 epochs on the 30 s grid), measured against PSG onset on
+    /// sleep-accel at bias −3.8 min / MAE 7.4 min. A shorter sleep run must NOT establish onset.
+    func testSustainedSleepOnsetRule() {
+        let wake = [String](repeating: "awake", count: 6)
+        // 9 epochs of sleep (4.5 min) is one short of the rule and must not count.
+        let brief = wake + [String](repeating: "light", count: 9) + wake
+        XCTAssertNil(SleepStagerV2.sustainedSleepOnset(brief))
+        // 10 epochs (5 min) does, and onset is the FIRST epoch of the run, not the tenth.
+        let sustained = wake + [String](repeating: "light", count: 10) + wake
+        XCTAssertEqual(SleepStagerV2.sustainedSleepOnset(sustained), 6)
+        // A brief run before a sustained one must not be mistaken for onset; the counter resets on wake.
+        let both = wake + [String](repeating: "rem", count: 4) + ["awake"]
+            + [String](repeating: "deep", count: 12)
+        XCTAssertEqual(SleepStagerV2.sustainedSleepOnset(both), 11)
+        XCTAssertNil(SleepStagerV2.sustainedSleepOnset([]), "an empty night has no onset")
+        XCTAssertNil(SleepStagerV2.sustainedSleepOnset(wake), "an all-wake window has no onset")
+    }
+
+    /// End-to-end: the same physiological night truncated to a shorter in-bed window must not shift where the
+    /// REM guard stops applying. Both windows start at the same instant and share byte-identical streams, so
+    /// any difference in the first ~60 min of the hypnogram would be the session-length dependence #930 is
+    /// about. (Epochs after the shorter window's end are not compared — they genuinely see different
+    /// per-night z-scores, which is the recipe working as designed.)
+    func testGuardRegionDoesNotDependOnHowLongTheWearerStayedInBed() {
+        let start = 1_749_517_200
+        let longDur = 10 * 60 * 60
+        let shortDur = 3 * 60 * 60
+        let grav = stillGravity(start: start, durationS: longDur)
+        let hr = sleepHR(start: start, durationS: longDur)
+        let rr = regularRR(start: start, durationS: longDur)
+
+        func labels(_ dur: Int) -> [String] {
+            let segs = SleepStagerV2.stageSession(start: start, end: start + dur,
+                                                  grav: grav, hr: hr, rr: rr, resp: [])
+            var out: [String] = []
+            for t in stride(from: start, to: start + dur, by: 30) {
+                out.append(segs.first(where: { $0.start <= t && t < $0.end })?.stage ?? "wake")
+            }
+            return out
+        }
+        let long = labels(longDur), short = labels(shortDur)
+        // Over the first hour — the whole span the guard touches — neither window may call REM, because the
+        // guard reaches the SAME 60 minutes past onset in both. Under `c < 0.12` the 10 h window was guarded
+        // for 72 min and the 3 h window for only 21.6 min, so the two could not agree here by construction.
+        let guardEpochs = Int(SleepStagerV2.remLatencyMinutes * 60 / 30)
+        for i in 0..<guardEpochs {
+            XCTAssertEqual(long[i], short[i],
+                           "epoch \(i) (minute \(Double(i) * 0.5)) differs: 10 h night says \(long[i]), "
+                           + "3 h fragment says \(short[i]) — the guard must not scale with session length")
+        }
     }
 
     /// Viterbi over a single epoch returns the highest-emission stage (uniform start, no transitions).
