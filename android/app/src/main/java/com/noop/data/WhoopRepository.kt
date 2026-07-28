@@ -66,6 +66,21 @@ data class StreamBatch(
      */
     val droppedRtcEvents: List<DroppedRtcEvent> = emptyList(),
     /**
+     * #891 diagnostic: packet types this batch carried that the decoder has no `when` branch for, keyed by
+     * the rendered type name (a byte no enum names renders `type53`), value = record count.
+     *
+     * The decode loop handles four of the schema's sixteen packet types and drops the rest at `else -> Unit`,
+     * and `rejectedHistoricalRecords` archives only type-47 — non-47 frames are excluded from it by
+     * construction. So a record type nobody has mapped was dropped twice and counted zero times, and the sync
+     * reported clean. `HISTORICAL_IMU_DATA_STREAM(52)` is a banked raw-stream type the schema already names
+     * and this funnel does not handle; every one would vanish.
+     *
+     * METADATA and CONSOLE_LOGS are excluded ([EXPECTED_UNHANDLED_HISTORICAL_TYPES]) — an offload legitimately
+     * carries both and they decode to zero rows by design, so counting them would bury the signal. Diag only
+     * (excluded from [isEmpty]); empty when nothing fell through. Mirrors Swift `Streams.unhandledPacketTypes`.
+     */
+    val unhandledPacketTypes: Map<String, Int> = emptyMap(),
+    /**
      * #520 diagnostic: a summary of `dynamic_acceleration@41` (the strap's own gravity-removed motion
      * magnitude) over this batch's v18 records. The field has been decoded on both platforms all along
      * with nothing consuming it, so there is no evidence on whether it is a usable stillness signal;

@@ -1,5 +1,13 @@
 import Foundation
 
+/// #891: packet types an offload legitimately carries that `extractHistoricalStreams` has no rows for, so
+/// reaching `default:` is expected rather than a finding. Both decode to zero rows BY DESIGN — CONSOLE_LOGS
+/// is strap-side debug text, METADATA is envelope bookkeeping — and counting them on every sync would bury
+/// the one signal `Streams.unhandledPacketTypes` exists to surface. Nothing else is excluded, including
+/// named-but-unhandled types like `HISTORICAL_IMU_DATA_STREAM(52)`: those are exactly the interesting ones.
+/// Keep in lockstep with the Android `EXPECTED_UNHANDLED_HISTORICAL_TYPES`.
+let expectedUnhandledHistoricalTypes: Set<String> = ["METADATA", "CONSOLE_LOGS"]
+
 /// Shared plausibility bounds for a type-47 record's own unix timestamp (#547). A WHOOP strap with a
 /// bad clock/flash (repeated trim=0xFFFFFFFF no-cursor) emits records whose decoded unix is scattered
 /// garbage — far-past (2024/2029), a bogus 2027=1827642881, and even FUTURE dates. NOOP used to trust
@@ -191,6 +199,8 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
     // The SAME (ts, samples) are also appended to `out.ppgWaveform` below (issue #156 follow-up) so the
     // raw waveform is durable too, not just the derived estimate this local buffer exists to produce.
     var ppgRecords: [(ts: Int, samples: [Int])] = []
+    // #891: packet types that reach `default:` and are dropped. See `Streams.unhandledPacketTypes`.
+    var unhandledTypes: [String: Int] = [:]
     for r in parsed {
         if !r.ok || r.crcOK == false { continue }
         let p = r.parsed
@@ -364,12 +374,19 @@ public func extractHistoricalStreams(_ parsed: [ParsedFrame],
             // No device timestamp on COMMAND_RESPONSE → stamp battery at wallClockRef.
             appendBattery(&out, ts: wallClockRef, p: p)
         default:
+            // #891: this funnel has no rows for this type, so the record is dropped — count it first, or
+            // an offload carrying a type nobody has mapped reports as a clean sync. See
+            // `Streams.unhandledPacketTypes` for why METADATA/CONSOLE_LOGS are excluded.
+            if !expectedUnhandledHistoricalTypes.contains(r.typeName) {
+                unhandledTypes[r.typeName, default: 0] += 1
+            }
             continue
         }
     }
     // Derive per-second HR from the collected v26 PPG bursts (issue #156). Empty when there were no v26
     // records (the WHOOP 4 / v18-only common case), so this is a no-op cost there.
     out.ppgHr = PpgHr.derivePpgHr(records: ppgRecords, subLagInterp: subLagInterp)
+    out.unhandledPacketTypes = unhandledTypes     // #891 diag census (not persisted, not encoded)
     out.droppedImplausible = droppedImplausible   // #547 diag count (not persisted, not encoded)
     out.droppedImplausibleOldestTs = droppedOldest   // #324 poisoned-range epoch span (diag only)
     out.droppedImplausibleNewestTs = droppedNewest

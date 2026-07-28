@@ -18,6 +18,16 @@ import com.noop.data.StepRow
 import com.noop.data.StreamBatch
 import com.noop.data.StreamPersistence
 
+/**
+ * #891: packet types an offload legitimately carries that [extractHistoricalStreams] has no rows for, so
+ * reaching the `else` branch is expected rather than a finding. Both decode to zero rows BY DESIGN —
+ * CONSOLE_LOGS is strap-side debug text, METADATA is envelope bookkeeping — and counting them on every sync
+ * would bury the one signal [com.noop.data.StreamBatch.unhandledPacketTypes] exists to surface. Nothing else
+ * is excluded, including named-but-unhandled types like `HISTORICAL_IMU_DATA_STREAM(52)`: those are exactly
+ * the interesting ones. Keep in lockstep with Swift's `expectedUnhandledHistoricalTypes`.
+ */
+val EXPECTED_UNHANDLED_HISTORICAL_TYPES: Set<String> = setOf("METADATA", "CONSOLE_LOGS")
+
 /*
  * Historical (offload) decode for the WHOOP 4.0 — the type-47 HISTORICAL_DATA path.
  *
@@ -591,6 +601,8 @@ fun extractHistoricalStreams(
     // Count of records dropped by the #547 plausibility gate this batch, surfaced on the returned
     // StreamBatch so the Backfiller can log "bad strap clock" once per session via its existing seam.
     var droppedImplausible = 0
+    // #891: packet types that reach the `else` branch and are dropped. See StreamBatch.unhandledPacketTypes.
+    val unhandledTypes = mutableMapOf<String, Int>()
     // #324: oldest/newest own-timestamp among the dropped records (the poisoned-range epoch span), and the
     // dropped RTC-state events (RTC_LOST / BOOT / SET_RTC) — the ground truth that the clock reset. Declared
     // before correctedWall so the local function can capture them (Kotlin: no forward reference to locals).
@@ -897,7 +909,28 @@ fun extractHistoricalStreams(
                 appendHistBattery(battery, wallClockRef.toLong(), parsed.parsed)
             }
 
-            else -> Unit
+            // #891: no branch handles this type, so the record is dropped — count it first, or an offload
+            // carrying a type nobody has mapped reports as a clean sync. See StreamBatch.unhandledPacketTypes
+            // for why METADATA/CONSOLE_LOGS are excluded. Mirrors Swift's `default:`.
+            else -> {
+                // Family-aware exactly as Swift's `frameTypeName` is: a WHOOP 4.0 frame renders through the
+                // plain enum (`schema.typeName` on Apple), a 5/MG frame through the puffin aliasing
+                // (`canonicalTypeName`). Always aliasing here would have rendered a 4.0 type-56 as METADATA
+                // and then EXCLUDED it, while Apple counted it as PUFFIN_METADATA — the census silently
+                // disagreeing across platforms about an anomalous frame, which is the one case it exists for.
+                val name = if (family == DeviceFamily.WHOOP5) Framing.typeName(t)
+                           else PacketType.fromRaw(t)?.name ?: "type$t"
+                if (name !in EXPECTED_UNHANDLED_HISTORICAL_TYPES) {
+                    // Swift skips CRC-failed frames BEFORE its switch; this loop dispatches on the raw type
+                    // byte, so the check has to happen here or a corrupt frame would be reported as an
+                    // unknown firmware feature on Android and not on Apple. A CRC failure is a different
+                    // finding with its own archive (rejectedHistoricalRecords).
+                    val parsed = Framing.parseFrame(frame, family)
+                    if (parsed.ok && parsed.crcOk != false) {
+                        unhandledTypes[name] = (unhandledTypes[name] ?: 0) + 1
+                    }
+                }
+            }
         }
     }
 
@@ -913,6 +946,7 @@ fun extractHistoricalStreams(
         ppgHr = ppgHr,
         ppgWaveform = ppgWaveform,
         v18Aux = v18Aux,
+        unhandledPacketTypes = unhandledTypes,   // #891 diag census (not persisted)
         droppedImplausibleTs = droppedImplausible,
         droppedImplausibleOldestTs = droppedOldest,   // #324 poisoned-range epoch span (diag only)
         droppedImplausibleNewestTs = droppedNewest,
