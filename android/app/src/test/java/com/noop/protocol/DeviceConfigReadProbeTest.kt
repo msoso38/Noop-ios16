@@ -411,6 +411,143 @@ class DeviceConfigReadProbeTest {
         assertTrue(report.render().contains("(none — no reply to 115)"))
     }
 
+    // ---- The verdict says only what the run established ----
+
+    /**
+     * Every verb timing out is three timeouts, not a finding about firmware. The send path can return
+     * without transmitting at all — no command characteristic, or a 5/MG allowlist that does not carry
+     * the opcode — so a run in which nothing reached the strap must not print a claim about what the
+     * firmware serves.
+     */
+    @Test
+    fun aWhollySilentRunNeverClaimsAFirmwareBehaviour() {
+        val report = smallReport()
+        while (true) { val step = report.nextStep() ?: break; report.noteTimeout(step, 8) }
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.SILENT, report.enumerationVerb)
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.SILENT, report.featureFlagVerb)
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.SILENT, report.deviceConfigVerb)
+        assertEquals(
+            "no read verb answered — device-config enumerate(115/116) served no reply in 8s " +
+                "— unconfirmed; GET_FF_VALUE(128) served no reply in 8s — unconfirmed; " +
+                "GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed",
+            report.verdict,
+        )
+        assertFalse(
+            "silence is not the firmware answering — it is not even proof a frame was sent",
+            report.render().contains("served by this firmware"),
+        )
+    }
+
+    /**
+     * One value verb refused and the other timed out: the refusal belongs to the verb that was refused.
+     * The old `||` printed "neither … is served by this firmware — rejected as UNSUPPORTED" over a 121
+     * that was never refused, only never heard from.
+     */
+    @Test
+    fun oneRefusalIsNotGeneralisedToTheVerbThatWasNeverHeardFrom() {
+        val report = smallReport()
+        val s115 = report.nextStep()!!
+        assertEquals(115, s115.opcode)
+        report.noteEnumerationStart(startReply(enumStart(3, 0, 0)))
+
+        val s128 = report.nextStep()!!
+        assertEquals(DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD, s128.opcode)
+        report.noteReply(DeviceConfigReadProbe.ValueResponse(3, byteArrayOf(0)), s128)
+
+        val s121 = report.nextStep()!!
+        assertEquals(DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD, s121.opcode)
+        report.noteTimeout(s121, 8)
+
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNSUPPORTED, report.featureFlagVerb)
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.SILENT, report.deviceConfigVerb)
+        assertEquals(
+            "no read verb answered — device-config enumerate(115/116) refused by firmware " +
+                "(UNSUPPORTED); GET_FF_VALUE(128) refused by firmware (UNSUPPORTED); " +
+                "GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed",
+            report.verdict,
+        )
+        assertFalse(
+            "one refusal does not speak for the other verb",
+            report.render().contains("neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121)"),
+        )
+    }
+
+    /** Both value verbs refused BY THE FIRMWARE is the one run that supports the strong sentence. */
+    @Test
+    fun bothValueVerbsRefusedKeepsTheStrongSentence() {
+        val report = smallReport()
+        report.nextStep()!!
+        report.noteEnumerationStart(startReply(enumStart(3, 0, 0)))
+        repeat(2) {
+            val step = report.nextStep()!!
+            report.noteReply(DeviceConfigReadProbe.ValueResponse(3, byteArrayOf(0)), step)
+        }
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNSUPPORTED, report.featureFlagVerb)
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNSUPPORTED, report.deviceConfigVerb)
+        assertEquals(
+            "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this " +
+                "firmware — rejected as UNSUPPORTED",
+            report.verdict,
+        )
+    }
+
+    /**
+     * An undecodable reply is affirmative evidence the strap DID transmit, so "not served by this
+     * firmware" states the opposite of what the run observed.
+     */
+    @Test
+    fun anUndecodableReplyIsNotReportedAsUnserved() {
+        val report = smallReport()
+        report.noteFailure(DeviceConfigReadProbe.ParseFailure.CRC, report.nextStep()!!)
+        report.noteFailure(DeviceConfigReadProbe.ParseFailure.ENVELOPE, report.nextStep()!!)
+        report.noteFailure(DeviceConfigReadProbe.ParseFailure.TRUNCATED, report.nextStep()!!)
+
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNDECODABLE, report.featureFlagVerb)
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.UNDECODABLE, report.deviceConfigVerb)
+        assertEquals(
+            "no read verb answered — device-config enumerate(115/116) replied but the frame " +
+                "did not decode — unconfirmed; GET_FF_VALUE(128) replied but the frame did not " +
+                "decode — unconfirmed; GET_DEVICE_CONFIG_VALUE(121) replied but the frame did " +
+                "not decode — unconfirmed",
+            report.verdict,
+        )
+        assertFalse(report.render().contains("served by this firmware"))
+    }
+
+    /**
+     * An INCONCLUSIVE enumeration is the strap ANSWERING and declining the request — evidence the verb
+     * exists. It must never be worded like a verb that was never heard from.
+     */
+    @Test
+    fun anInconclusiveEnumerationIsReportedAsAReplyNotAsSilence() {
+        val report = smallReport()
+        report.nextStep()!!
+        report.noteEnumerationStart(startReply(enumStart(0, 0, 0)))
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.INCONCLUSIVE, report.enumerationVerb)
+        while (true) { val step = report.nextStep() ?: break; report.noteTimeout(step, 8) }
+
+        assertEquals(
+            "no read verb answered — device-config enumerate(115/116) replied but declined " +
+                "the request — unconfirmed; GET_FF_VALUE(128) served no reply in 8s — " +
+                "unconfirmed; GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed",
+            report.verdict,
+        )
+        assertFalse(report.render().contains("served by this firmware"))
+    }
+
+    /**
+     * A probe that ended before any verb went out says so, rather than reporting an empty run as a
+     * finding about the firmware.
+     */
+    @Test
+    fun aProbeThatAskedNothingClaimsNothing() {
+        assertEquals(
+            "no read verb answered — device-config enumerate(115/116) not asked; " +
+                "GET_FF_VALUE(128) not asked; GET_DEVICE_CONFIG_VALUE(121) not asked",
+            smallReport().verdict,
+        )
+    }
+
     @Test
     fun anUndecodableEnumerationReplyRetiresIt() {
         val report = smallReport()

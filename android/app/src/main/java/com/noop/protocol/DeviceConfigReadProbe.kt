@@ -38,6 +38,14 @@ package com.noop.protocol
  * and publishable — it is what promotes the guessing fallback from a shortcut to the only available
  * method.
  *
+ * "Not served" is a claim about firmware, so the verdict makes it only on the firmware's own evidence.
+ * A verb's outcomes are not interchangeable: **only UNSUPPORTED is the firmware saying it does not serve
+ * the verb**. A timeout is a fact about one run and not even proof a frame reached the strap — the send
+ * path returns without transmitting when the command characteristic is missing, and again when the 5/MG
+ * allowlist does not carry the opcode — while an undecodable reply, and an INCONCLUSIVE one, are both
+ * affirmative evidence the strap DID transmit, which is the opposite of "not served". All three are
+ * reported as **unconfirmed**.
+ *
  * After enumeration the probe reads the values of keys already known to exist (the sixteen in
  * [Whoop5Config.enableR22Sequence], plus anything enumeration returned), spends two round-trips
  * establishing whether the two namespaces are actually separate, and only then — and only when
@@ -276,6 +284,14 @@ class DeviceConfigReadProbeReport(
     val batch: ConfigKeySweep.Batch,
 ) {
 
+    private companion object {
+        /** The two commands the enumeration verb rides on; either can be the round-trip that went silent. */
+        val ENUMERATION_OPCODES = listOf(
+            ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD,
+            ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD,
+        )
+    }
+
     /** Which part of the plan a step belongs to. Drives both the ordering and the report's sections. */
     enum class Group { ENUMERATE, DISCOVERY, CROSS_NAMESPACE, KNOWN_KEY, CANDIDATE }
 
@@ -389,6 +405,12 @@ class DeviceConfigReadProbeReport(
     /** Set once the walk stopped for a reason worth naming beyond "the plan ran out". */
     var stopReason: String? = null
         private set
+
+    /**
+     * Per-verb reply window, in seconds, recorded by [noteTimeout]. The verdict names the window a verb
+     * went silent through instead of converting that silence into a claim about the firmware.
+     */
+    private val silenceWindow = mutableMapOf<Int, Int>()
 
     private var phase = 0        // 0 enumerate, 1 discovery, 2 cross, 3 known keys, 4 candidates, 5 done
     private var cursor = 0
@@ -672,8 +694,13 @@ class DeviceConfigReadProbeReport(
     /**
      * Record the strap answering nothing at all within the per-step window. The verb is marked silent,
      * which retires it — one no-reply must not cost another twenty timeouts.
+     *
+     * The window is kept, not just printed, because the verdict has to be able to say how long nothing
+     * came back for. Silence is not the firmware refusing; it does not even establish that a frame was
+     * transmitted (see the header), so it can never be reported as what the firmware serves.
      */
     fun noteTimeout(step: Step, seconds: Int) {
+        silenceWindow[step.opcode] = seconds
         setStatus(VerbStatus.SILENT, step.opcode)
         _trace.add("${opcodeLabel(step.opcode)} key=\"${step.key}\" → no COMMAND_RESPONSE within ${seconds}s")
     }
@@ -752,7 +779,34 @@ class DeviceConfigReadProbeReport(
     /** Entries the walk actually served, decoded or not. */
     private val enumerationWalked: Int get() = _enumeratedKeys.size + enumerationSkipped
 
-    /** One-line summary of what the probe established. */
+    /**
+     * How one verb ended, worded to exactly the evidence behind it. See the file header for why the
+     * statuses are not interchangeable; the short version is that only UNSUPPORTED is the firmware saying
+     * it does not serve the verb, so only UNSUPPORTED speaks for the firmware. INCONCLUSIVE is the strap
+     * ANSWERING and declining the request, which is evidence the verb exists.
+     *
+     * [opcodes] is every command that can carry the verb, because the enumeration verb spans 115 and 116
+     * and either one can be the round-trip that went silent.
+     */
+    private fun outcome(status: VerbStatus, opcodes: List<Int>): String = when (status) {
+        VerbStatus.UNTRIED -> "not asked"
+        VerbStatus.ANSWERED -> "answered"
+        VerbStatus.UNSUPPORTED -> "refused by firmware (UNSUPPORTED)"
+        VerbStatus.INCONCLUSIVE -> "replied but declined the request — unconfirmed"
+        VerbStatus.SILENT -> opcodes.firstNotNullOfOrNull { silenceWindow[it] }
+            ?.let { "served no reply in ${it}s — unconfirmed" }
+            ?: "served no reply — unconfirmed"
+        VerbStatus.UNDECODABLE -> "replied but the frame did not decode — unconfirmed"
+    }
+
+    /**
+     * One-line summary of what the probe established.
+     *
+     * "not served by this firmware" is a claim about the firmware, so it is made in exactly one case: the
+     * firmware refused BOTH value verbs itself. Every other run in which nothing answered reports each
+     * verb against the evidence that verb produced, because two timeouts, one refusal plus one timeout,
+     * and a reply that failed to decode are three different findings, not one.
+     */
     val verdict: String
         get() {
             val found = newKeysFound
@@ -800,15 +854,17 @@ class DeviceConfigReadProbeReport(
             }
             val answered = listOf(featureFlagVerb, deviceConfigVerb).count { it == VerbStatus.ANSWERED }
             if (answered == 0) {
-                val both =
-                    "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this firmware"
-                if (featureFlagVerb == VerbStatus.UNSUPPORTED || deviceConfigVerb == VerbStatus.UNSUPPORTED) {
-                    return "$both — rejected as UNSUPPORTED"
+                if (featureFlagVerb == VerbStatus.UNSUPPORTED && deviceConfigVerb == VerbStatus.UNSUPPORTED) {
+                    // The one run that supports the strong sentence. It names only the two verbs it speaks
+                    // about; 115/116's own status is in the Verbs table and is not claimed here.
+                    return "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this " +
+                        "firmware — rejected as UNSUPPORTED"
                 }
-                if (featureFlagVerb == VerbStatus.SILENT && deviceConfigVerb == VerbStatus.SILENT) {
-                    return "$both — no reply to either"
-                }
-                return both
+                val en = outcome(enumerationVerb, ENUMERATION_OPCODES)
+                val ff = outcome(featureFlagVerb, listOf(DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD))
+                val dc = outcome(deviceConfigVerb, listOf(DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD))
+                return "no read verb answered — device-config enumerate(115/116) $en; " +
+                    "GET_FF_VALUE(128) $ff; GET_DEVICE_CONFIG_VALUE(121) $dc"
             }
             val asked = candidateReadings.size
             if (asked == 0) {

@@ -353,6 +353,116 @@ final class DeviceConfigReadProbeTests: XCTestCase {
         XCTAssertTrue(report.render().contains("(none — no reply to 115)"))
     }
 
+    // MARK: - The verdict says only what the run established
+
+    /// Every verb timing out is three timeouts, not a finding about firmware. `BLEManager.send` can
+    /// `return` without transmitting at all — no `cmdCharacteristic`, or a 5/MG allowlist that does not
+    /// carry the opcode — so a run in which nothing reached the strap must not print a claim about what
+    /// the firmware serves.
+    func testAWhollySilentRunNeverClaimsAFirmwareBehaviour() {
+        var report = smallReport()
+        while let step = report.nextStep() { report.noteTimeout(for: step, seconds: 8) }
+        XCTAssertEqual(report.enumerationVerb, .silent)
+        XCTAssertEqual(report.featureFlagVerb, .silent)
+        XCTAssertEqual(report.deviceConfigVerb, .silent)
+        XCTAssertEqual(report.verdict,
+                       "no read verb answered — device-config enumerate(115/116) served no reply in 8s "
+                       + "— unconfirmed; GET_FF_VALUE(128) served no reply in 8s — unconfirmed; "
+                       + "GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed")
+        XCTAssertFalse(report.render().contains("served by this firmware"),
+                       "silence is not the firmware answering — it is not even proof a frame was sent")
+    }
+
+    /// One value verb refused and the other timed out: the refusal belongs to the verb that was refused.
+    /// The old `||` printed "neither … is served by this firmware — rejected as UNSUPPORTED" over a 121
+    /// that was never refused, only never heard from.
+    func testOneRefusalIsNotGeneralisedToTheVerbThatWasNeverHeardFrom() {
+        var report = smallReport()
+        guard let s115 = report.nextStep() else { return XCTFail("115") }
+        report.noteEnumerationStart(startReply(enumStart(result: 3, revision: 0, count: 0)))
+        XCTAssertEqual(s115.opcode, 115)
+
+        guard let s128 = report.nextStep() else { return XCTFail("128") }
+        XCTAssertEqual(s128.opcode, DeviceConfigReadProbe.getFeatureFlagValueCmd)
+        report.noteReply(.init(resultCode: 3, record: [0x00]), for: s128)
+
+        guard let s121 = report.nextStep() else { return XCTFail("121") }
+        XCTAssertEqual(s121.opcode, DeviceConfigReadProbe.getDeviceConfigValueCmd)
+        report.noteTimeout(for: s121, seconds: 8)
+
+        XCTAssertEqual(report.featureFlagVerb, .unsupported)
+        XCTAssertEqual(report.deviceConfigVerb, .silent)
+        XCTAssertEqual(report.verdict,
+                       "no read verb answered — device-config enumerate(115/116) refused by firmware "
+                       + "(UNSUPPORTED); GET_FF_VALUE(128) refused by firmware (UNSUPPORTED); "
+                       + "GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed")
+        XCTAssertFalse(report.render().contains("neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121)"),
+                       "one refusal does not speak for the other verb")
+    }
+
+    /// Both value verbs refused BY THE FIRMWARE is the one run that supports the strong sentence, so it
+    /// keeps it.
+    func testBothValueVerbsRefusedKeepsTheStrongSentence() {
+        var report = smallReport()
+        guard report.nextStep() != nil else { return XCTFail("115") }
+        report.noteEnumerationStart(startReply(enumStart(result: 3, revision: 0, count: 0)))
+        for _ in 0..<2 {
+            guard let step = report.nextStep() else { return XCTFail("a value verb") }
+            report.noteReply(.init(resultCode: 3, record: [0x00]), for: step)
+        }
+        XCTAssertEqual(report.featureFlagVerb, .unsupported)
+        XCTAssertEqual(report.deviceConfigVerb, .unsupported)
+        XCTAssertEqual(report.verdict,
+                       "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this "
+                       + "firmware — rejected as UNSUPPORTED")
+    }
+
+    /// An undecodable reply is affirmative evidence the strap DID transmit, so "not served by this
+    /// firmware" states the opposite of what the run observed.
+    func testAnUndecodableReplyIsNotReportedAsUnserved() {
+        var report = smallReport()
+        guard let s115 = report.nextStep() else { return XCTFail("115") }
+        report.noteFailure(.crc, for: s115)
+        guard let s128 = report.nextStep() else { return XCTFail("128") }
+        report.noteFailure(.envelope, for: s128)
+        guard let s121 = report.nextStep() else { return XCTFail("121") }
+        report.noteFailure(.truncated, for: s121)
+
+        XCTAssertEqual(report.featureFlagVerb, .undecodable)
+        XCTAssertEqual(report.deviceConfigVerb, .undecodable)
+        XCTAssertEqual(report.verdict,
+                       "no read verb answered — device-config enumerate(115/116) replied but the frame "
+                       + "did not decode — unconfirmed; GET_FF_VALUE(128) replied but the frame did not "
+                       + "decode — unconfirmed; GET_DEVICE_CONFIG_VALUE(121) replied but the frame did "
+                       + "not decode — unconfirmed")
+        XCTAssertFalse(report.render().contains("served by this firmware"))
+    }
+
+    /// An `inconclusive` enumeration is the strap ANSWERING and declining the request — evidence the verb
+    /// exists. It must never be worded like a verb that was never heard from.
+    func testAnInconclusiveEnumerationIsReportedAsAReplyNotAsSilence() {
+        var report = smallReport()
+        guard report.nextStep() != nil else { return XCTFail("115") }
+        report.noteEnumerationStart(startReply(enumStart(result: 0, revision: 0, count: 0)))
+        XCTAssertEqual(report.enumerationVerb, .inconclusive)
+        while let step = report.nextStep() { report.noteTimeout(for: step, seconds: 8) }
+
+        XCTAssertEqual(report.verdict,
+                       "no read verb answered — device-config enumerate(115/116) replied but declined "
+                       + "the request — unconfirmed; GET_FF_VALUE(128) served no reply in 8s — "
+                       + "unconfirmed; GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed")
+        XCTAssertFalse(report.render().contains("served by this firmware"))
+    }
+
+    /// A probe that ended before any verb went out says so, rather than reporting an empty run as a
+    /// finding about the firmware.
+    func testAProbeThatAskedNothingClaimsNothing() {
+        let report = smallReport()
+        XCTAssertEqual(report.verdict,
+                       "no read verb answered — device-config enumerate(115/116) not asked; "
+                       + "GET_FF_VALUE(128) not asked; GET_DEVICE_CONFIG_VALUE(121) not asked")
+    }
+
     func testAnUndecodableEnumerationReplyRetiresIt() {
         var report = smallReport()
         guard let s1 = report.nextStep() else { return XCTFail("s1") }

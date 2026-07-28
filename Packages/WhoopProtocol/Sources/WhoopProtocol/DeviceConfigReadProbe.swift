@@ -32,6 +32,14 @@ import Foundation
 /// equally useful and publishable — it is what promotes the guessing fallback from a shortcut to the only
 /// available method.
 ///
+/// "Not served" is a claim about firmware, so the verdict makes it only on the firmware's own evidence.
+/// A verb's outcomes are not interchangeable: **only UNSUPPORTED is the firmware saying it does not
+/// serve the verb**. A timeout is a fact about one run and not even proof a frame reached the strap —
+/// `BLEManager.send` returns without transmitting when there is no `cmdCharacteristic`, and again when
+/// the 5/MG allowlist does not carry the opcode — while an undecodable reply, and an `inconclusive` one,
+/// are both affirmative evidence the strap DID transmit, which is the opposite of "not served". All
+/// three are reported as **unconfirmed**.
+///
 /// After enumeration the probe reads the values of keys already known to exist (the sixteen in
 /// `Whoop5Config.enableR22Sequence`, plus anything enumeration returned), spends two round-trips
 /// establishing whether the two namespaces are actually separate, and only then — and only when
@@ -409,6 +417,13 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
     public private(set) var steps = 0
     /// Set once the walk stopped for a reason worth naming beyond "the plan ran out".
     public private(set) var stopReason: String?
+    /// Per-verb reply window, in seconds, recorded by `noteTimeout`. The verdict names the window a verb
+    /// went silent through instead of converting that silence into a claim about the firmware.
+    private var silenceWindow: [UInt8: Int] = [:]
+
+    /// The two commands the enumeration verb rides on; either can be the round-trip that went silent.
+    static let enumerationOpcodes: [UInt8] = [ConfigKeySweep.startDeviceConfigKeyExchangeCmd,
+                                              ConfigKeySweep.sendNextDeviceConfigCmd]
 
     // MARK: Plan cursors
 
@@ -655,7 +670,12 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
 
     /// Record the strap answering nothing at all within the per-step window. The verb is marked silent,
     /// which retires it — one no-reply must not cost another twenty timeouts.
+    ///
+    /// The window is kept, not just printed, because the verdict has to be able to say how long nothing
+    /// came back for. Silence is not the firmware refusing; it does not even establish that a frame was
+    /// transmitted (see the header), so it can never be reported as what the firmware serves.
     public mutating func noteTimeout(for step: Step, seconds: Int) {
+        silenceWindow[step.opcode] = seconds
         setStatus(.silent, for: step.opcode)
         trace.append("\(DeviceConfigReadProbeReport.opcodeLabel(step.opcode)) key=\"\(step.key)\" → no COMMAND_RESPONSE within \(seconds)s")
     }
@@ -718,7 +738,34 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
     /// Entries the walk actually served, decoded or not.
     private var enumerationWalked: Int { enumeratedKeys.count + enumerationSkipped }
 
+    /// How one verb ended, worded to exactly the evidence behind it. See the file header for why the
+    /// statuses are not interchangeable; the short version is that only `unsupported` is the firmware
+    /// saying it does not serve the verb, so only `unsupported` speaks for the firmware. `inconclusive`
+    /// is the strap ANSWERING and declining the request, which is evidence the verb exists.
+    ///
+    /// `opcodes` is every command that can carry the verb, because the enumeration verb spans 115 and 116
+    /// and either one can be the round-trip that went silent.
+    private func outcome(_ status: VerbStatus, for opcodes: [UInt8]) -> String {
+        switch status {
+        case .untried:      return "not asked"
+        case .answered:     return "answered"
+        case .unsupported:  return "refused by firmware (UNSUPPORTED)"
+        case .inconclusive: return "replied but declined the request — unconfirmed"
+        case .silent:
+            guard let seconds = opcodes.compactMap({ silenceWindow[$0] }).first else {
+                return "served no reply — unconfirmed"
+            }
+            return "served no reply in \(seconds)s — unconfirmed"
+        case .undecodable:  return "replied but the frame did not decode — unconfirmed"
+        }
+    }
+
     /// One-line summary of what the probe established.
+    ///
+    /// "not served by this firmware" is a claim about the firmware, so it is made in exactly one case: the
+    /// firmware refused BOTH value verbs itself. Every other run in which nothing answered reports each
+    /// verb against the evidence that verb produced, because two timeouts, one refusal plus one timeout,
+    /// and a reply that failed to decode are three different findings, not one.
     public var verdict: String {
         if !newKeysFound.isEmpty {
             return "\(newKeysFound.count) config key name(s) found that NOOP did not have: \(newKeysFound.joined(separator: ", "))"
@@ -761,14 +808,17 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
         }
         let answered = [featureFlagVerb, deviceConfigVerb].filter { $0 == .answered }.count
         if answered == 0 {
-            let both = "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this firmware"
-            if featureFlagVerb == .unsupported || deviceConfigVerb == .unsupported {
-                return "\(both) — rejected as UNSUPPORTED"
+            if featureFlagVerb == .unsupported && deviceConfigVerb == .unsupported {
+                // The one run that supports the strong sentence. It names only the two verbs it speaks
+                // about; 115/116's own status is in the Verbs table and is not claimed here.
+                return "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this "
+                    + "firmware — rejected as UNSUPPORTED"
             }
-            if featureFlagVerb == .silent && deviceConfigVerb == .silent {
-                return "\(both) — no reply to either"
-            }
-            return both
+            let en = outcome(enumerationVerb, for: DeviceConfigReadProbeReport.enumerationOpcodes)
+            let ff = outcome(featureFlagVerb, for: [DeviceConfigReadProbe.getFeatureFlagValueCmd])
+            let dc = outcome(deviceConfigVerb, for: [DeviceConfigReadProbe.getDeviceConfigValueCmd])
+            return "no read verb answered — device-config enumerate(115/116) \(en); "
+                + "GET_FF_VALUE(128) \(ff); GET_DEVICE_CONFIG_VALUE(121) \(dc)"
         }
         let asked = candidateReadings.count
         if asked == 0 {
