@@ -199,6 +199,38 @@ enum DataBackup {
         }
     }
 
+    /// (Cloud sync, replicated stores) The same verified `.noopbak` as `writeBackup(checkpoint:to:)`,
+    /// but archiving a database the caller has already staged at `sourceURL` — and therefore taking
+    /// **no checkpoint at all**.
+    ///
+    /// Exists for exactly one caller: `CloudSyncUploader.defaultExporter` under
+    /// `WalCheckpointing.external`, where a checkpoint of the live store would restart the WAL under
+    /// a page replicator and cost its next push a full snapshot of the database (measured — see
+    /// `WhoopStore.writeConsistentCopy(to:)`). The staged file is a consistent full copy produced by
+    /// SQLite's Online Backup API, so it needs no flushing: it already carries everything the WAL
+    /// held. The caller owns `sourceURL`'s lifetime.
+    ///
+    /// Same `writeVerifiedBackupZip` as every other export, so the container, the entry names, the
+    /// settings sidecar and the `PRAGMA quick_check` gate are identical — a `.noopbak` produced this
+    /// way is indistinguishable from one produced by the checkpointing path. Never presents UI.
+    static func writeBackup(stagedDatabaseAt sourceURL: URL, to dest: URL) async -> BackupResult {
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            return .failure(String(localized: "The staged database copy is missing."))
+        }
+        do {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+            // Off the caller's thread for the same reason the interactive export is: a whole-database
+            // read plus DEFLATE.
+            try await Task.detached(priority: .utility) {
+                try writeVerifiedBackupZip(dbURL: sourceURL, to: dest, settingsJSON: currentSettingsJSON())
+            }.value
+            return .exported(dest)
+        } catch {
+            return .failure(String(localized: "Backup failed: \(error.localizedDescription)"))
+        }
+    }
+
     /// Test seam: write a `.noopbak` for an EXPLICIT source database (no checkpoint, no `StorePaths`),
     /// so a unit test can round-trip a throwaway SQLite through the exact ZIP container the app writes.
     /// `settings` (canonical `BackupSettings` keys) adds the `settings.json` entry; nil writes the
