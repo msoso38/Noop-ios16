@@ -1751,4 +1751,6 @@
     <string name="battery_channel_name">Alertas de bateria</string>
     <string name="battery_channel_desc">Avisos quando a bateria da correia está fraca ou totalmente carregada.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">A poupança de bateria acalma os indicadores, notificações Android traduzidas e gráficos instantâneos</string>
+    <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">Sem importação de SpO₂ ou valor de saúde</string>
+    <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Apenas valores brutos — requer importação</string>
 </resources>

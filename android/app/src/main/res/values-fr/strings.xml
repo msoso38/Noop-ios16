@@ -1757,4 +1757,6 @@
     <string name="battery_channel_name">Alertes de batterie</string>
     <string name="battery_channel_desc">Alertes lorsque la batterie du bracelet est faible ou complètement chargée.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">L\'économiseur de batterie fige les jauges, notifications Android traduites et graphiques instantanés</string>
+    <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">Aucune importation SpO₂ ni valeur Santé</string>
+    <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Valeurs brutes uniquement — importation requise</string>
 </resources>

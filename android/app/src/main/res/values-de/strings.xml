@@ -1772,4 +1772,6 @@
     <string name="battery_channel_name">Akku-Hinweise</string>
     <string name="battery_channel_desc">Hinweise, wenn der Strap-Akku schwach oder voll geladen ist.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">Energiesparmodus beruhigt die Anzeigen, übersetzte Android-Benachrichtigungen und sofort geladene Diagramme</string>
+    <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">Kein SpO₂-Import- oder Health-Wert</string>
+    <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Nur Rohwerte — Import erforderlich</string>
 </resources>
