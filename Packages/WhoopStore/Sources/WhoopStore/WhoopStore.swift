@@ -305,6 +305,68 @@ public actor WhoopStore {
         }
     }
 
+    /// Write a complete, consistent, single-file copy of this database at `path` — **without
+    /// checkpointing the live one.**
+    ///
+    /// ## Why a file-level backup cannot just checkpoint when a replicator owns the WAL
+    ///
+    /// A `.noopbak` archives the main `.sqlite` alone, with no `-wal` sidecar, so a backup has to get
+    /// every committed page into one file somehow. The obvious way is `checkpointWAL()`. Under
+    /// `WalCheckpointing.external` that is exactly what must not happen, and — this is the part that
+    /// is easy to get wrong — **a gentler checkpoint mode does not help.**
+    ///
+    /// Measured against a real `liters` writer and Apple's `libsqlite3` (`LitersRoundTripTests`,
+    /// 2026-07-28), with no replicator read lock held:
+    ///
+    /// | foreign checkpoint | `-wal` afterwards | next push |
+    /// |---|---|---|
+    /// | `TRUNCATE` | 0 bytes | **snapshot**, "wal truncated by another process" |
+    /// | `FULL` | 168,952 bytes — unchanged | **snapshot**, same reason |
+    ///
+    /// `FULL` looks harmless because the `-wal` file keeps its size, and it is not: once a checkpoint
+    /// has fully backfilled the WAL and no reader still needs those frames, **SQLite restarts the WAL
+    /// on the next write transaction** — new salt, frame 1 — and the replicator's resume offset is
+    /// gone just the same. `PASSIVE` has the identical endpoint whenever it happens to complete. The
+    /// property that matters is not the pragma's name; it is "did the WAL end up fully backfilled
+    /// with nothing pinning it", and every checkpoint mode reaches that state.
+    ///
+    /// ## What this does instead
+    ///
+    /// SQLite's Online Backup API (via GRDB's `backup(to:)`) reads the source through a read
+    /// transaction, so it sees the WAL's contents and copies them into the destination — and it never
+    /// checkpoints, never restarts, and never touches the source's `-wal` at all. The replicator's
+    /// resume point survives untouched, and the caller gets a single file that carries every
+    /// committed row.
+    ///
+    /// The cost is one full-size write. That is why this is not the default path: under `.automatic`
+    /// a checkpoint is free and correct, and this is reserved for the case where a checkpoint is not
+    /// available (see `CloudSyncUploader.defaultExporter`, its only production caller).
+    ///
+    /// Removes `path` and its `-wal`/`-shm` siblings first, and leaves no sidecars behind, so the
+    /// result is one self-contained file ready to archive.
+    public func writeConsistentCopy(to path: String) async throws {
+        try writeConsistentCopyImpl(to: path)
+    }
+
+    /// Non-async for the same reason `checkpointWALImpl` is: it runs on the actor's executor, off the
+    /// main thread, and GRDB's calls here are synchronous and blocking.
+    private func writeConsistentCopyImpl(to path: String) throws {
+        let fm = FileManager.default
+        for suffix in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: path + suffix) }
+
+        let destination = try DatabaseQueue(path: path)
+        try dbWriter.backup(to: destination)
+        // Close before anyone reads the file: GRDB flushes on close, and the caller's next act is to
+        // hand this path to a ZIP writer. `close()` throws only if a statement is still live, which
+        // cannot be the case here.
+        try destination.close()
+
+        // A `DatabaseQueue` on a fresh file is in rollback-journal mode, but the copied page 1 header
+        // carries the source's WAL marker, so a `-wal`/`-shm` pair can be left behind. They hold
+        // nothing — everything was flushed by `close()` — and a `.noopbak` must be one file.
+        for suffix in ["-wal", "-shm"] { try? fm.removeItem(atPath: path + suffix) }
+    }
+
     /// Permanently delete every recorded sample/derived row for one device across all `deviceId`-keyed
     /// tables (16+ `DELETE FROM <table> WHERE deviceId = ?` in one GRDB transaction). Wraps the
     /// synchronous `DeviceRegistryStore.deleteAllData` so the heavy multi-table write runs on the actor's

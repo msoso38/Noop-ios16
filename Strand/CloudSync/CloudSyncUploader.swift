@@ -77,8 +77,54 @@ enum CloudSyncUploader {
     /// The real export: checkpoint `store`'s WAL (so the single `.sqlite` file is whole), then reuse
     /// the SAME checkpointed, `PRAGMA quick_check`-verified export `BackupSync`/`FolderBackup` use — an
     /// auto-uploaded snapshot is byte-identical to a manual "Export backup".
+    ///
+    /// ## …except when a page replicator owns the WAL, and that exception is the whole point
+    ///
+    /// This fallback runs on exactly the syncs where the liters push did *not*, so whatever it does
+    /// to the WAL happens between every pair of pushes. `checkpointWAL()` is
+    /// `wal_checkpoint(TRUNCATE)`, which restarts the WAL and destroys the replicator's resume
+    /// offset. Measured on VK's device 2026-07-28: this checkpoint at 06:03, then a push at 14:23
+    /// reporting `snapshotReason: "wal truncated by another process"` and uploading 640 MB. Every
+    /// recorded push was a full upload — page replication reduced to a full upload with extra steps,
+    /// by the path it was replacing.
+    ///
+    /// A gentler checkpoint mode does **not** fix it: `FULL` leaves the `-wal` file at its full size
+    /// and still costs the next push a snapshot, because SQLite restarts a fully-backfilled WAL on
+    /// the next write. Both are measured in `LitersRoundTripTests`.
+    ///
+    /// So under `.external` the fallback takes no checkpoint at all. It stages a consistent full copy
+    /// through SQLite's Online Backup API — which reads *through* the WAL and never checkpoints —
+    /// and archives that. `/ingest` still ships a complete, fresh, `quick_check`-verified database;
+    /// the replicator's resume point is untouched. The cost is one full-size temp write, paid only on
+    /// the fallback path, and only on a device running the trial.
+    ///
+    /// If staging fails for any reason (disk, I/O), it degrades to the checkpointing path rather than
+    /// failing the sync: a sync that ships everything and costs one snapshot beats a sync that ships
+    /// nothing.
     static let defaultExporter: Exporter = { store, dest in
-        await DataBackup.writeBackup(checkpoint: { (try? await store.checkpointWAL()) != nil }, to: dest)
+        guard case .external = store.walCheckpointing else {
+            return await DataBackup.writeBackup(checkpoint: { (try? await store.checkpointWAL()) != nil },
+                                                to: dest)
+        }
+        // Alongside `dest` (Caches), which the caller already `defer`s a removal of — one directory,
+        // one cleanup story, and never Documents.
+        let staged = dest.deletingLastPathComponent()
+            .appendingPathComponent("cloudsync-staged-\(UUID().uuidString).sqlite")
+        defer {
+            let fm = FileManager.default
+            for suffix in ["", "-wal", "-shm"] {
+                try? fm.removeItem(atPath: staged.path + suffix)
+            }
+        }
+        do {
+            try await store.writeConsistentCopy(to: staged.path)
+        } catch {
+            NSLog("cloudsync: staging a consistent copy failed (%@) — falling back to a checkpointed "
+                  + "export, which costs the replicator one snapshot", String(describing: error))
+            return await DataBackup.writeBackup(checkpoint: { (try? await store.checkpointWAL()) != nil },
+                                                to: dest)
+        }
+        return await DataBackup.writeBackup(stagedDatabaseAt: staged, to: dest)
     }
 
     /// Export the live store to a disposable temp file in Caches (never Documents — nothing here is

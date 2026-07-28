@@ -594,6 +594,16 @@ final class Repository: ObservableObject {
     /// Checkpoint the WAL into the main DB file if the store is already open, so a file-level
     /// backup captures everything. No-op (returns false) if no handle exists yet , the caller
     /// then copies the on-disk files as-is, which still includes the -wal sidecar.
+    ///
+    /// Known residual hazard, deliberately not changed here: under `WalCheckpointing.external` this
+    /// checkpoint restarts the WAL underneath a page replicator and costs its next push a full
+    /// snapshot of the database (see `WhoopStore.writeConsistentCopy(to:)` for the measurement, and
+    /// `CloudSyncUploader.defaultExporter` for the pattern that avoids it). It is left alone because
+    /// its callers are the *user-initiated* file-level backups — the Export button, and
+    /// `BackupSync.catchUpIfDue`, which is gated on the auto-backup toggle AND a chosen folder AND a
+    /// full day elapsed. Those want the disk reclaimed, they are at most daily, and swapping them to
+    /// a staged full copy would make a manual export visibly slower for everyone to protect a trial
+    /// that only one device is running. Revisit if page replication becomes the default.
     func checkpointForBackup() async -> Bool {
         guard let store else { return false }
         do { try await store.checkpointWAL(); return true } catch { return false }
