@@ -347,12 +347,147 @@ for (nm, grp) in [("mean HR >= \(Int(hiCut))", hi), ("mean HR <  \(Int(hiCut))",
     print("  \(nm.padding(toLength: 18, withPad: " ", startingAt: 0)) n=\(e.count)  mean machine wake error \(f(mean(e), 7, 1)) min  median \(f(median(e), 7, 1))")
 }
 
-// MARK: - E. Machine cohort split — did anything change mid-history?
+// MARK: - E. Per-stage fraction calibration — the guard kappa does not provide
+
+/// The stage-level reference set for calibration: rows carrying a `stagelock` cursor, i.e. rows whose
+/// stages a human authored directly.
+///
+/// This is deliberately NOT section B's set. B excludes an edited night whose stored hypnogram is a
+/// byte-exact replay of the CURRENT V2, which is the right call for B's question but is version-dependent
+/// by construction: change the recipe and a night can enter or leave the exclusion, silently swapping the
+/// denominator underneath a before/after comparison. The `stagelock` set comes from `cursors` and does not
+/// move when the recipe moves, which is what makes a calibration delta between two builds legitimate.
+let calRef = nights.filter { $0.truth != nil && stageLocked.contains($0.row.startTs) }
+/// The cohort PR #348 broke: a plausible full sleep opportunity. #437's field symptom was a HEALTHY night
+/// re-scored 6% -> 23% awake, and an aggregate that pools short and fragmented nights hides exactly that.
+let healthyMinutes = 300.0
+func isHealthy(_ nt: Night) -> Bool { nt.row.durMin >= healthyMinutes }
+let calRefHealthy = calRef.filter(isHealthy)
+let healthyNights = nights.filter(isHealthy)
+
+/// The recipes scored below, in the order the rest of the harness uses them.
+let variants: [(String, (Night) -> [String])] = [
+    ("V1", { $0.v1 }), ("V2", { $0.v2 }), ("V1+veto", { $0.v1Veto }), ("V2+veto", { $0.v2Veto }),
+]
 
 print("""
 
 ================================================================================
-E. PER-NIGHT DETAIL (all \(nights.count) sessions)
+E. PER-STAGE FRACTION CALIBRATION  (reference (a), stage-locked, n = \(calRef.count) nights)
+================================================================================
+Cohen's kappa scores whether the label at an epoch matches; it does not constrain how much of the night a
+recipe spends at each stage. PR #348 fitted the stager to DREAMT, raised kappa on all three benchmarks with
+a held-out gap of -0.027, and was reverted 48 h later by PR #437 for re-scoring a healthy night from 6% to
+23% awake. The revert's own words: "kappa doesn't guard stage-fraction calibration." This section is that
+guard. Bias is signed, in percentage points of the night: POSITIVE = the recipe spends more of the night at
+that stage than the human did.
+""")
+
+// Agreement on the SAME nights the calibration below scores, so the two can be read against each other.
+// This is the contrast the section exists for: kappa here can rise while the biases below get worse.
+print("  E.0 AGREEMENT ON THIS REFERENCE SET — the number that is not sufficient on its own")
+for (name, get) in variants {
+    var c4 = Confusion(classes: stageOrder), c2 = Confusion(classes: ["wake", "sleep"])
+    for nt in calRef {
+        guard let t = nt.truth else { continue }
+        c4.merge(confusion(ref: t, pred: get(nt)))
+        c2.merge(confusion(ref: toSleepWake(t), pred: toSleepWake(get(nt)), classes: ["wake", "sleep"]))
+    }
+    print("    \(name.padding(toLength: 9, withPad: " ", startingAt: 0)) 4-class acc \(f(c4.accuracy * 100, 5, 1))%  kappa \(f(c4.kappa, 6, 3))   |   sleep/wake acc \(f(c2.accuracy * 100, 5, 1))%  kappa \(f(c2.kappa, 6, 3))  (epochs \(c4.total))")
+}
+
+func calibrationTable(_ title: String, _ set: [Night]) {
+    print("\n  \(title)")
+    guard !set.isEmpty else { print("    no reference nights in this stratum"); return }
+    for (name, get) in variants {
+        print("    \(name) — stage    pred mean%   ref mean%    bias pp    MAE pp   worst night")
+        for s in stageOrder {
+            var pred: [Double] = [], ref: [Double] = [], err: [Double] = []
+            var worst = ("", 0.0)
+            for nt in set {
+                guard let t = nt.truth else { continue }
+                let p = stagePercentages(get(nt))[s]!, q = stagePercentages(t)[s]!
+                pred.append(p); ref.append(q); err.append(p - q)
+                if abs(p - q) > abs(worst.1) { worst = (nt.night, p - q) }
+            }
+            print("          \(s.padding(toLength: 6, withPad: " ", startingAt: 0)) \(f(mean(pred), 12, 2)) \(f(mean(ref), 11, 2)) \(f(mean(err), 10, 2)) \(f(mae(err), 9, 2))   \(worst.0) \(f(worst.1, 7, 1))")
+        }
+    }
+}
+calibrationTable("E.1 AGGREGATE — every stage-locked reference night (n = \(calRef.count))", calRef)
+calibrationTable("""
+E.2 HEALTHY STRATUM — in-bed >= \(Int(healthyMinutes / 60)) h (n = \(calRefHealthy.count) of \(calRef.count))
+      Reported separately because the aggregate hides it: a recipe can look calibrated overall while
+      blowing out on exactly the nights a healthy sleeper has.
+""", calRefHealthy)
+
+// A reference-free view of the same quantity. It needs no human labels, so it runs over every replayed
+// night — a far larger n than the reference set, and enough to catch a distribution shift on its own.
+print("""
+
+  E.3 SHIPPED POPULATION — V2 stage fractions over all replayed nights, no reference needed
+  stage          ALL  n = \(nights.count)                        HEALTHY >= \(Int(healthyMinutes / 60)) h  n = \(healthyNights.count)
+                mean%   median%      p10      p90        mean%   median%      p10      p90
+""")
+for s in stageOrder {
+    let all = nights.map { stagePercentages($0.v2)[s]! }
+    let hea = healthyNights.map { stagePercentages($0.v2)[s]! }
+    print("  \(s.padding(toLength: 8, withPad: " ", startingAt: 0)) \(f(mean(all), 8, 2)) \(f(median(all), 9, 2)) \(f(percentile(all, 0.10), 8, 2)) \(f(percentile(all, 0.90), 8, 2))     \(f(mean(hea), 8, 2)) \(f(median(hea), 9, 2)) \(f(percentile(hea, 0.10), 8, 2)) \(f(percentile(hea, 0.90), 8, 2))")
+}
+
+print("\n  E.4 PER NIGHT — V2 signed bias in pp, on the \(calRef.count) stage-locked reference nights")
+print("  night        inbed healthy    wake   light    deep     rem")
+for nt in calRef {
+    // `calRef` filters on `truth != nil`; the guard keeps that guarantee local, because an empty reference
+    // would silently turn every predicted fraction into a bias against zero.
+    guard let t = nt.truth else { continue }
+    let b = stageBias(ref: t, pred: nt.v2)
+    print("  \(nt.night) \(f(nt.row.durMin, 6, 0)) \(isHealthy(nt) ? "      Y" : "      -") \(f(b["wake"]!, 7, 1)) \(f(b["light"]!, 7, 1)) \(f(b["deep"]!, 7, 1)) \(f(b["rem"]!, 7, 1))")
+}
+
+// MARK: - F. First-REM latency — a stage-timing property kappa is also blind to
+
+print("""
+
+================================================================================
+F. FIRST-REM LATENCY — minutes from staged sleep onset to the first REM epoch
+================================================================================
+Fraction calibration pins how MUCH REM a recipe emits; it says nothing about WHEN. A recipe can hit the
+right REM total at the wrong time — REM in the first minutes after onset is physiologically implausible in
+a healthy adult, and a stager that emits it is mislabelling early light sleep whatever its kappa says.
+Nights that never reach REM are counted separately rather than folded in as a zero.
+""")
+print("  set                        n   median     mean      p10      p90      min      max   no-REM")
+func latencyRow(_ name: String, _ set: [Night], _ get: (Night) -> [String]) {
+    let v = set.compactMap { firstRemLatencyMinutes(get($0)) }
+    guard !v.isEmpty else { print("  \(name.padding(toLength: 22, withPad: " ", startingAt: 0)) no nights reach REM"); return }
+    print("  \(name.padding(toLength: 22, withPad: " ", startingAt: 0)) \(String(format: "%4d", v.count)) \(f(median(v), 8, 1)) \(f(mean(v), 8, 1)) \(f(percentile(v, 0.10), 8, 1)) \(f(percentile(v, 0.90), 8, 1)) \(f(v.min()!, 8, 1)) \(f(v.max()!, 8, 1)) \(String(format: "%8d", set.count - v.count))")
+}
+for (name, get) in variants { latencyRow("\(name), all nights", nights, get) }
+latencyRow("V2, healthy >= \(Int(healthyMinutes / 60)) h", healthyNights, { $0.v2 })
+latencyRow("V2, reference nights", calRef, { $0.v2 })
+// The human's own latency distribution on the same nights — the target the replay rows above are aiming at.
+latencyRow("HUMAN reference", calRef, { $0.truth ?? [] })
+
+print("\n  PER NIGHT — first-REM latency in minutes, on the \(calRef.count) stage-locked reference nights")
+print("  night        inbed healthy   human      V2   error")
+var latErr: [Double] = []
+for nt in calRef {
+    guard let t = nt.truth else { continue }
+    // n/a in either column means that night never reached REM, which is not an error of zero minutes.
+    let h = firstRemLatencyMinutes(t), p = firstRemLatencyMinutes(nt.v2)
+    var err = Double.nan
+    if let h, let p { err = p - h; latErr.append(err) }
+    print("  \(nt.night) \(f(nt.row.durMin, 6, 0)) \(isHealthy(nt) ? "      Y" : "      -") \(f(h ?? .nan, 7, 1)) \(f(p ?? .nan, 7, 1)) \(f(err, 7, 1))")
+}
+print("  signed error (V2 - human), nights where BOTH reach REM: n=\(latErr.count)  median \(f(median(latErr), 6, 1))  mean \(f(mean(latErr), 6, 1))  MAE \(f(mae(latErr), 6, 1))")
+
+// MARK: - G. Machine cohort split — did anything change mid-history?
+
+print("""
+
+================================================================================
+G. PER-NIGHT DETAIL (all \(nights.count) sessions)
 ================================================================================
 """)
 print("night        edited band inbed  meanHR storedW    V1 W    V2 W  storedEff")
@@ -362,12 +497,19 @@ for nt in nights {
 }
 
 if let path = a.csv {
-    var out = "night,userEdited,hasBand,inbedMin,meanHR,storedWake,truthWake,machineWake,v1Wake,v2Wake,v1VetoWake,v2VetoWake,storedEff\n"
+    /// Blank rather than a sentinel wherever a night has no value: a night that never reaches REM has no
+    /// first-REM latency, and writing 0 there would be a different claim.
+    func num(_ v: Double?, _ p: Int = 1) -> String { v.map { String(format: "%.\(p)f", $0) } ?? "" }
+    var out = "night,userEdited,stageLocked,healthy,hasBand,inbedMin,meanHR,storedWake,truthWake,machineWake,v1Wake,v2Wake,v1VetoWake,v2VetoWake,storedEff"
+    for s in stageOrder { out += ",v2\(s.capitalized)Pct,truth\(s.capitalized)Pct" }
+    out += ",v2FirstRemLatMin,truthFirstRemLatMin\n"
     for nt in nights {
         let stored = epochLabels(nt.row.stages, start: nt.row.startTs, end: nt.row.endTs)
-        let tw = nt.truth.map { String(format: "%.1f", wakeMinutes($0)) } ?? ""
-        let mw = nt.machineWakeMin.map { String(format: "%.1f", $0) } ?? ""
-        out += "\(nt.night),\(nt.row.userEdited),\(!nt.band.isEmpty),\(String(format: "%.1f", nt.row.durMin)),\(String(format: "%.1f", nt.meanHR)),\(String(format: "%.1f", wakeMinutes(stored))),\(tw),\(mw),\(String(format: "%.1f", wakeMinutes(nt.v1))),\(String(format: "%.1f", wakeMinutes(nt.v2))),\(String(format: "%.1f", wakeMinutes(nt.v1Veto))),\(String(format: "%.1f", wakeMinutes(nt.v2Veto))),\(nt.row.efficiency.map { String(format: "%.4f", $0) } ?? "")\n"
+        let locked = stageLocked.contains(nt.row.startTs)
+        out += "\(nt.night),\(nt.row.userEdited),\(locked),\(isHealthy(nt)),\(!nt.band.isEmpty),\(num(nt.row.durMin)),\(num(nt.meanHR)),\(num(wakeMinutes(stored))),\(num(nt.truth.map { wakeMinutes($0) })),\(num(nt.machineWakeMin)),\(num(wakeMinutes(nt.v1))),\(num(wakeMinutes(nt.v2))),\(num(wakeMinutes(nt.v1Veto))),\(num(wakeMinutes(nt.v2Veto))),\(num(nt.row.efficiency, 4))"
+        let pv = stagePercentages(nt.v2), pt = nt.truth.map { stagePercentages($0) }
+        for s in stageOrder { out += ",\(num(pv[s], 2)),\(num(pt?[s], 2))" }
+        out += ",\(num(firstRemLatencyMinutes(nt.v2))),\(num(nt.truth.flatMap { firstRemLatencyMinutes($0) }))\n"
     }
     try out.write(toFile: path, atomically: true, encoding: .utf8)
     FileHandle.standardError.write(Data("wrote \(path)\n".utf8))
