@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Autorenew
@@ -74,6 +75,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -105,6 +107,10 @@ import com.noop.analytics.Baselines
 import com.noop.analytics.Zones
 import com.noop.R
 import com.noop.ble.PuffinExperiment
+import com.noop.ble.WhoopBleClient
+// #174: the R22 card reads the flag COUNT off Whoop5Config.enableR22Sequence rather than restating it —
+// the hardcoded "15" outlived the sequence growing to 16 and declared success a flag early.
+import com.noop.protocol.Whoop5Config
 import com.noop.ble.WhoopModel
 import com.noop.data.DataBackup
 import com.noop.ingest.RawSensorExport
@@ -465,6 +471,17 @@ fun SettingsScreen(
     var puffinExperiments by remember(rev) { mutableStateOf(puffinExperiment.isEnabled) }
     var puffinCapture by remember(rev) { mutableStateOf(puffinExperiment.isCaptureEnabled) }
     var deepData by remember(rev) { mutableStateOf(puffinExperiment.isDeepDataEnabled) }
+
+    // #174: set when the deep-data switch is turned OFF, so the app can OFFER to clear the flags on the
+    // strap instead of silently leaving them set. The switch alone has never written anything in either
+    // direction — it gates sends — so turning it off used to change nothing on the hardware while reading
+    // like an undo. Asking is the right shape rather than writing automatically: the strap may not be
+    // connected, and a write to bonded hardware is not something a toggle should do unannounced.
+    var confirmingDeepDataDisable by remember { mutableStateOf(false) }
+    val r22DisableReport by vm.ble.r22DisableReport.collectAsState()
+    // How many flags the enable sequence actually writes. Read from the sequence rather than restated, so
+    // the card cannot drift from it again — it said "15" for the whole life of the 16-flag sequence.
+    val r22FlagCount = Whoop5Config.enableR22Sequence.size
     var broadcastHr by remember(rev) { mutableStateOf(puffinExperiment.broadcastHr) }
     // "Sleep staging (V2)" — V2 is the DEFAULT for every strap (WHOOP 4 and 5/MG); turn it OFF to fall back
     // to V1. Model-agnostic, so it lives outside the 5/MG-only card. 4.0 is unvalidated either way (#319/#347).
@@ -1869,6 +1886,11 @@ fun SettingsScreen(
                         onCheckedChange = {
                             deepData = it
                             puffinExperiment.isDeepDataEnabled = it
+                            // #174: turning the switch OFF used to write nothing — it only hid the enable
+                            // button, so the strap kept every flag the sequence set while the UI implied it
+                            // had been undone. Now it offers the real undo. Turning it ON still writes
+                            // nothing until the button is tapped.
+                            if (!it) confirmingDeepDataDisable = true
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Palette.surfaceBase,
@@ -1902,13 +1924,35 @@ fun SettingsScreen(
                         style = NoopType.caption,
                         color = Palette.textTertiary,
                     )
-                    // Live R22 telemetry (#174): proof of what the strap is doing right now.
+                    // #174: the undo. Offered whenever the flags may be set — which is any time the
+                    // opt-in has been on, not only right after a send, because the flags persist across
+                    // launches and the app has no record of what a previous install wrote. Wear is NOT
+                    // required: the on-wrist gate exists because the R22 STREAM is on-wrist only.
+                    NoopButton(
+                        text = uiString(R.string.l10n_settings_screen_turn_deep_data_back_off_r22disable),
+                        leadingIcon = Icons.Filled.Cancel,
+                        kind = NoopButtonKind.Secondary,
+                        enabled = live.encryptedBond && r22DisableReport != WhoopBleClient.WAITING_DEVICE_CONFIG_PROBE,
+                        onClick = { vm.ble.disableWhoop5DeepData() },
+                    )
+                    Text(
+                        if (!live.encryptedBond) uiString(R.string.l10n_settings_screen_r22disable_needs_bond)
+                        else uiString(R.string.l10n_settings_screen_r22disable_reason),
+                        style = NoopType.caption,
+                        color = Palette.textTertiary,
+                    )
+                    // Live R22 telemetry (#174): proof of what the strap is doing right now. The threshold
+                    // and the number are both driven off the sequence itself — they were hardcoded to 15
+                    // while the sequence carried 16, so the card declared success one flag early.
                     if (live.r22FlagsAccepted > 0) {
                         Text(
-                            if (live.r22FlagsAccepted >= 15) "✓ Strap accepted all 15 R22 flags"
-                            else "Strap accepted ${live.r22FlagsAccepted}/15 R22 flags…",
+                            if (live.r22FlagsAccepted >= r22FlagCount) {
+                                uiString(R.string.l10n_settings_screen_r22_accepted_all, r22FlagCount)
+                            } else {
+                                uiString(R.string.l10n_settings_screen_r22_accepted_partial, live.r22FlagsAccepted, r22FlagCount)
+                            },
                             style = NoopType.caption,
-                            color = if (live.r22FlagsAccepted >= 15) Palette.statusPositive else Palette.textSecondary,
+                            color = if (live.r22FlagsAccepted >= r22FlagCount) Palette.statusPositive else Palette.textSecondary,
                         )
                     }
                     if (live.deepPacketsThisSession > 0) {
@@ -1917,12 +1961,37 @@ fun SettingsScreen(
                             style = NoopType.caption,
                             color = Palette.textSecondary,
                         )
-                    } else if (live.r22FlagsAccepted >= 15) {
+                    } else if (live.r22FlagsAccepted >= r22FlagCount) {
                         Text(
                             uiString(R.string.l10n_settings_screen_flags_accepted_but_the_enable_sequence_542b2595),
                             style = NoopType.caption,
                             color = Palette.textTertiary,
                         )
+                    }
+
+                    // #174: the disable run's per-key result. Shown verbatim because the interesting part
+                    // is the read-back table, not a green tick — a write that acked SUCCESS but did not
+                    // move the stored value renders here as "unchanged", which is the case worth seeing.
+                    val disableReport = r22DisableReport
+                    if (disableReport != null) {
+                        if (disableReport == WhoopBleClient.WAITING_DEVICE_CONFIG_PROBE) {
+                            Text(
+                                uiString(R.string.l10n_settings_screen_r22disable_running),
+                                style = NoopType.caption,
+                                color = Palette.textSecondary,
+                            )
+                        } else {
+                            Text(
+                                disableReport,
+                                style = NoopType.caption.copy(fontFamily = FontFamily.Monospace),
+                                color = Palette.textSecondary,
+                            )
+                            NoopButton(
+                                text = uiString(R.string.l10n_settings_screen_r22disable_dismiss),
+                                kind = NoopButtonKind.Secondary,
+                                onClick = { vm.ble.clearR22DisableReport() },
+                            )
+                        }
                     }
                 }
 
@@ -2300,6 +2369,49 @@ fun SettingsScreen(
                     onClick = { showRecalibrateConfirm = true },
                 )
             }
+        }
+
+        // #174: the switch going OFF is the moment to offer the undo. Declining leaves the flags set and
+        // says so — still an improvement on the old behaviour, where the same tap silently left them set
+        // with no indication either way.
+        if (confirmingDeepDataDisable) {
+            AlertDialog(
+                onDismissRequest = { confirmingDeepDataDisable = false },
+                containerColor = Palette.surfaceOverlay,
+                title = {
+                    Text(
+                        uiString(R.string.l10n_settings_screen_r22disable_confirm_title),
+                        style = NoopType.title2,
+                        color = Palette.textPrimary,
+                    )
+                },
+                text = {
+                    Text(
+                        uiString(R.string.l10n_settings_screen_r22disable_confirm_body),
+                        style = NoopType.subhead,
+                        color = Palette.textSecondary,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmingDeepDataDisable = false
+                        vm.ble.disableWhoop5DeepData()
+                    }) {
+                        Text(
+                            uiString(R.string.l10n_settings_screen_r22disable_confirm_action),
+                            color = Palette.accent,
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmingDeepDataDisable = false }) {
+                        Text(
+                            uiString(R.string.l10n_settings_screen_r22disable_confirm_cancel),
+                            color = Palette.textSecondary,
+                        )
+                    }
+                },
+            )
         }
 
         if (showRecalibrateConfirm) {

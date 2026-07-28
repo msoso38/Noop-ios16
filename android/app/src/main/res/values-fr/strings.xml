@@ -1757,4 +1757,15 @@
     <string name="battery_channel_name">Alertes de batterie</string>
     <string name="battery_channel_desc">Alertes lorsque la batterie du bracelet est faible ou complètement chargée.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">L\'économiseur de batterie fige les jauges, notifications Android traduites et graphiques instantanés</string>
+    <string name="l10n_settings_screen_turn_deep_data_back_off_r22disable">Désactiver à nouveau les données détaillées</string>
+    <string name="l10n_settings_screen_r22disable_needs_bond">Nécessite l’appairage chiffré complet : fermez d’abord l’app WHOOP officielle et appairez le bracelet à NOOP (une liaison limitée à la FC en direct ne peut pas transporter l’écriture).</string>
+    <string name="l10n_settings_screen_r22disable_reason">Écrit la valeur d’arrêt dans les 16 indicateurs et relit chacun d’eux, pour que vous voyiez ce que le bracelet enregistre réellement et pas seulement qu’il a accusé réception. La valeur d’arrêt est déduite de l’indicateur que NOOP désactive déjà ainsi pour la diffusion Garmin ; elle n’a jamais été observée sur un indicateur R22, c’est pourquoi NOOP en teste un seul d’abord et s’arrête si le bracelet le refuse. Effacer les indicateurs n’équivaut pas à voir cesser les enregistrements détaillés : vérifiez-le en synchronisant ensuite.</string>
+    <string name="l10n_settings_screen_r22disable_running">Effacement des indicateurs R22 et relecture de chacun…</string>
+    <string name="l10n_settings_screen_r22disable_dismiss">Fermer le rapport de désactivation</string>
+    <string name="l10n_settings_screen_r22disable_confirm_title">Effacer les indicateurs R22 sur votre bracelet ?</string>
+    <string name="l10n_settings_screen_r22disable_confirm_body">Désactiver cet interrupteur empêche seulement NOOP d’envoyer le déverrouillage. Les indicateurs déjà écrits restent sur le bracelet jusqu’à ce que quelque chose les efface. NOOP peut maintenant écrire la valeur d’arrêt dans les 16 et relire chacun d’eux pour que vous voyiez ce que le bracelet enregistre réellement. Nécessite le bracelet connecté et appairé.</string>
+    <string name="l10n_settings_screen_r22disable_confirm_action">Effacer les indicateurs</string>
+    <string name="l10n_settings_screen_r22disable_confirm_cancel">Cesser seulement d’envoyer</string>
+    <string name="l10n_settings_screen_r22_accepted_all">✓ Le bracelet a accepté les %1$d indicateurs R22</string>
+    <string name="l10n_settings_screen_r22_accepted_partial">Le bracelet a accepté %1$d/%2$d indicateurs R22…</string>
 </resources>

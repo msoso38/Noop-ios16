@@ -1783,4 +1783,15 @@
     <string name="battery_channel_name">Battery alerts</string>
     <string name="battery_channel_desc">Alerts when the strap battery is low or fully charged.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">Battery saver quiets the gauges, translated Android notifications, and instant chart loads</string>
+    <string name="l10n_settings_screen_turn_deep_data_back_off_r22disable">Turn deep data back off</string>
+    <string name="l10n_settings_screen_r22disable_needs_bond">Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can’t carry the write).</string>
+    <string name="l10n_settings_screen_r22disable_reason">Writes the off value to all 16 flags and reads each one back, so you see what the strap stores rather than just that it acked. The off value is inferred from the flag NOOP already turns off this way for Garmin broadcast — it has never been seen on an R22 flag, so NOOP tries one flag first and stops if the strap refuses it. Clearing the flags is not the same as watching the deep records stop: check that by syncing afterwards.</string>
+    <string name="l10n_settings_screen_r22disable_running">Clearing R22 flags and reading each one back…</string>
+    <string name="l10n_settings_screen_r22disable_dismiss">Dismiss disable report</string>
+    <string name="l10n_settings_screen_r22disable_confirm_title">Clear the R22 flags on your strap?</string>
+    <string name="l10n_settings_screen_r22disable_confirm_body">Turning this switch off only stops NOOP sending the unlock. The flags it already wrote stay on the strap until something clears them. NOOP can write the off value to all 16 now and read each one back so you can see what the strap actually stores. Needs the strap connected and bonded.</string>
+    <string name="l10n_settings_screen_r22disable_confirm_action">Clear flags on strap</string>
+    <string name="l10n_settings_screen_r22disable_confirm_cancel">Just stop sending</string>
+    <string name="l10n_settings_screen_r22_accepted_all">✓ Strap accepted all %1$d R22 flags</string>
+    <string name="l10n_settings_screen_r22_accepted_partial">Strap accepted %1$d/%2$d R22 flags…</string>
 </resources>

@@ -1757,4 +1757,15 @@
     <string name="battery_channel_name">Alertas de batería</string>
     <string name="battery_channel_desc">Avisos cuando la batería de la pulsera está baja o completamente cargada.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">El ahorro de batería calma los indicadores, notificaciones de Android traducidas y gráficos instantáneos</string>
+    <string name="l10n_settings_screen_turn_deep_data_back_off_r22disable">Volver a desactivar los datos profundos</string>
+    <string name="l10n_settings_screen_r22disable_needs_bond">Necesita el vínculo cifrado completo: cierra primero la app oficial de WHOOP y empareja la pulsera con NOOP (un enlace solo de FC en vivo no puede transportar la escritura).</string>
+    <string name="l10n_settings_screen_r22disable_reason">Escribe el valor de apagado en las 16 marcas y vuelve a leer cada una, para que veas lo que la pulsera guarda en vez de solo que confirmó. El valor de apagado se deduce de la marca que NOOP ya desactiva así para la difusión Garmin; nunca se ha visto en una marca R22, por eso NOOP prueba primero con una sola y se detiene si la pulsera la rechaza. Borrar las marcas no es lo mismo que ver parar los registros profundos: compruébalo sincronizando después.</string>
+    <string name="l10n_settings_screen_r22disable_running">Borrando las marcas R22 y releyendo cada una…</string>
+    <string name="l10n_settings_screen_r22disable_dismiss">Descartar el informe de desactivación</string>
+    <string name="l10n_settings_screen_r22disable_confirm_title">¿Borrar las marcas R22 de la pulsera?</string>
+    <string name="l10n_settings_screen_r22disable_confirm_body">Apagar este interruptor solo impide que NOOP envíe el desbloqueo. Las marcas ya escritas siguen en la pulsera hasta que algo las borre. NOOP puede escribir ahora el valor de apagado en las 16 y releer cada una para que veas lo que la pulsera guarda realmente. Requiere la pulsera conectada y vinculada.</string>
+    <string name="l10n_settings_screen_r22disable_confirm_action">Borrar marcas en la pulsera</string>
+    <string name="l10n_settings_screen_r22disable_confirm_cancel">Solo dejar de enviar</string>
+    <string name="l10n_settings_screen_r22_accepted_all">✓ La pulsera aceptó las %1$d marcas R22</string>
+    <string name="l10n_settings_screen_r22_accepted_partial">La pulsera aceptó %1$d/%2$d marcas R22…</string>
 </resources>

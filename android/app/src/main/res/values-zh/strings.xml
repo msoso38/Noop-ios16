@@ -1685,4 +1685,15 @@
     <string name="battery_channel_name">电量提醒</string>
     <string name="battery_channel_desc">当手环电量低或已充满时提醒。</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">省电模式让仪表静止、Android 通知已翻译、图表秒开</string>
+    <string name="l10n_settings_screen_r22_accepted_all">✓ 手环已接受全部 %1$d 个 R22 标记</string>
+    <string name="l10n_settings_screen_r22_accepted_partial">手环已接受 %1$d/%2$d 个 R22 标记…</string>
+    <string name="l10n_settings_screen_turn_deep_data_back_off_r22disable">重新关闭深层数据</string>
+    <string name="l10n_settings_screen_r22disable_needs_bond">需要完整的加密配对：请先关闭官方 WHOOP 应用并将手环与 NOOP 配对（仅传输实时心率的连接无法承载写入）。</string>
+    <string name="l10n_settings_screen_r22disable_reason">向全部 16 个标记写入关闭值，并逐一读回，让你看到手环实际存储的内容，而不仅仅是它已确认。该关闭值是从 NOOP 已用同样方式关闭的 Garmin 广播标记推断出来的——在 R22 标记上从未被观察到，因此 NOOP 会先试一个标记，若手环拒绝就停止。清除标记与看到深层记录停止并不相同：之后同步一次来确认。</string>
+    <string name="l10n_settings_screen_r22disable_running">正在清除 R22 标记并逐一读回…</string>
+    <string name="l10n_settings_screen_r22disable_dismiss">关闭停用报告</string>
+    <string name="l10n_settings_screen_r22disable_confirm_title">要清除手环上的 R22 标记吗？</string>
+    <string name="l10n_settings_screen_r22disable_confirm_body">关闭此开关只会让 NOOP 停止发送解锁序列。已写入的标记会留在手环上，直到有东西清除它们。NOOP 现在可以向全部 16 个标记写入关闭值并逐一读回，让你看到手环实际存储的内容。需要手环已连接并完成配对。</string>
+    <string name="l10n_settings_screen_r22disable_confirm_action">清除手环上的标记</string>
+    <string name="l10n_settings_screen_r22disable_confirm_cancel">仅停止发送</string>
 </resources>
