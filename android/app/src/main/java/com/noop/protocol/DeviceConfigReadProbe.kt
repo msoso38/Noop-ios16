@@ -297,6 +297,11 @@ class DeviceConfigReadProbeReport(
         /** The firmware refused the opcode (5/MG result code 3). */
         UNSUPPORTED("unsupported"),
 
+        /** The verb replied, but with neither a SUCCESS nor an explicit UNSUPPORTED — `FAILURE(0)` or
+         *  `PENDING(2)`. Used by the enumeration pair, where a non-SUCCESS start means no walk happened at
+         *  all: the request was declined, which says nothing about what the namespace contains. */
+        INCONCLUSIVE("inconclusive"),
+
         /** No reply inside the probe's per-step window. */
         SILENT("silent"),
 
@@ -344,6 +349,18 @@ class DeviceConfigReadProbeReport(
     /** Entries the strap called real keys whose NAME did not decode, stepped over rather than trusted as a
      *  terminator (the discipline #874 established for the 117/118 walk). */
     var enumerationSkipped: Int = 0
+        private set
+
+    /** True once the strap served its own end marker. The ONLY signal that the list is complete: every
+     *  other way the walk can stop (the cap, a timeout, an undecodable reply, the global step budget)
+     *  leaves a PREFIX of the namespace, which supports no claim about what the namespace omits. */
+    var enumerationReachedEnd: Boolean = false
+        private set
+
+    /** True when the walk was cut off by [ConfigKeySweep.MAX_ENUMERATION_STEPS] rather than by the strap.
+     *  Reported here as well as in [stopReason] because it is the verdict, not just the transcript, that
+     *  must stop short of a completeness claim. */
+    var enumerationTruncated: Boolean = false
         private set
 
     /** `GET_FF_VALUE(128)` asked for the known DEVICE-CONFIG key: does the flag verb see that namespace? */
@@ -424,6 +441,7 @@ class DeviceConfigReadProbeReport(
                     stopReason = "device-config enumeration hit its cap of " +
                         "${ConfigKeySweep.MAX_ENUMERATION_STEPS} entries; the rest of the plan still ran"
                 }
+                enumerationTruncated = true
                 enumPhase = 2
                 null
             } else {
@@ -546,22 +564,39 @@ class DeviceConfigReadProbeReport(
      * Record the `START_DEVICE_CONFIG_KEY_EXCHANGE` reply. An implausible count is reported but never
      * trusted as a loop bound — the walk is bounded by [ConfigKeySweep.MAX_ENUMERATION_STEPS] and by the
      * strap's own end marker.
+     *
+     * Only `SUCCESS(1)` — or WHOOP 4.0, where this codebase has never pinned the result byte's meaning —
+     * opens a walk. `FAILURE(0)` and `PENDING(2)` are the firmware declining THIS request, and a decline
+     * must never reach the verdict as an enumeration that happened to list nothing: the same `isFailure`
+     * doc that governs the VALUE verbs says a FAILURE is equally consistent with the request body being the
+     * wrong shape, and that body is inferred from the SET side rather than observed.
      */
     fun noteEnumerationStart(r: FeatureFlagProbe.StartResponse) {
-        enumeratedCount = r.count
-        if (r.resultCode == 3) {
-            enumerationVerb = VerbStatus.UNSUPPORTED
+        val code = r.resultCode
+        if (code != null && code != 1) {
             enumPhase = 2
+            if (code == 3) {
+                enumeratedCount = r.count
+                enumerationVerb = VerbStatus.UNSUPPORTED
+                _trace.add(
+                    "START_DEVICE_CONFIG_KEY_EXCHANGE(115) → result=UNSUPPORTED(3) — " +
+                        "the firmware does not serve this verb",
+                )
+                return
+            }
+            // Deliberately NOT recording the announced count: a reply that declined the request has not
+            // told us how many keys exist, and a count kept here would read downstream as if it had.
+            enumerationVerb = VerbStatus.INCONCLUSIVE
             _trace.add(
-                "START_DEVICE_CONFIG_KEY_EXCHANGE(115) → result=UNSUPPORTED(3) — " +
-                    "the firmware does not serve this verb",
+                "START_DEVICE_CONFIG_KEY_EXCHANGE(115) → result=${FeatureFlagProbe.resultLabel(code)}($code) — " +
+                    "the verb answered but did not start a walk; nothing was enumerated",
             )
             return
         }
+        enumeratedCount = r.count
         enumerationVerb = VerbStatus.ANSWERED
         enumPhase = 1
         var line = "START_DEVICE_CONFIG_KEY_EXCHANGE(115) →"
-        val code = r.resultCode
         if (code != null) line += " result=${FeatureFlagProbe.resultLabel(code)}($code)"
         line += " revision=${r.revision} count=${r.count}"
         if (!r.countIsPlausible) line += " (implausible — walked to the strap's own end marker instead)"
@@ -578,6 +613,7 @@ class DeviceConfigReadProbeReport(
     fun noteEnumerationNext(r: FeatureFlagProbe.NextResponse): Boolean {
         if (r.isExhausted) {
             enumPhase = 2
+            enumerationReachedEnd = true
             _trace.add("SEND_NEXT_DEVICE_CONFIG(116) → end of list (index=${r.index} validKey=${r.validKey})")
             return false
         }
@@ -694,6 +730,28 @@ class DeviceConfigReadProbeReport(
             return out
         }
 
+    /**
+     * Whether anything in this run calibrated the existence oracle.
+     *
+     * [ConfigKeySweep.existence] maps `FAILURE(0)` to "the firmware has no key by this name", but
+     * [DeviceConfigReadProbe.ValueResponse.isFailure] documents the same code as "the verb exists, the
+     * request did not satisfy it (**wrong body shape**, or an unknown key)" — and this file's own header
+     * records the request body as inferred from the SET side, never observed. Those two readings are only
+     * separable by a CONTROL: a key already known to exist answering `SUCCESS(1)` on the same path in the
+     * same run. The discovery read of [DeviceConfigReadProbe.DEVICE_CONFIG_DISCOVERY_KEY] (hardware-
+     * validated in #181) and the sixteen flags NOOP writes are those controls. Without one, an all-FAILURE
+     * sweep is a statement about our body shape, not about the names — the defect fixed in `Whoop5EcgProbe`
+     * (#896) and the reason this gate exists.
+     */
+    val oracleCalibrated: Boolean
+        get() = _readings.any {
+            (it.group == Group.DISCOVERY || it.group == Group.KNOWN_KEY) &&
+                it.existence == ConfigKeySweep.Existence.EXISTS
+        }
+
+    /** Entries the walk actually served, decoded or not. */
+    private val enumerationWalked: Int get() = _enumeratedKeys.size + enumerationSkipped
+
     /** One-line summary of what the probe established. */
     val verdict: String
         get() {
@@ -702,6 +760,42 @@ class DeviceConfigReadProbeReport(
                 return "${found.size} config key name(s) found that NOOP did not have: ${found.joinToString(", ")}"
             }
             if (enumerationVerb == VerbStatus.ANSWERED) {
+                // "the namespace contains nothing new" is a positive claim about a LIST, so it needs a
+                // list: a walk that ran, reached the strap's own end marker, and whose every entry this
+                // parser could read. Each way that fails gets its own wording rather than one blanket
+                // assertion.
+                if (_enumeratedKeys.isEmpty() && enumerationSkipped > 0) {
+                    // #874, inherited: blaming the strap for OUR decode is the opposite conclusion, and it
+                    // is the one a reader would carry into #103.
+                    return "115 answered and the strap named $enumerationSkipped device-config entr(ies), none of " +
+                        "which decoded as printable ASCII within ${FeatureFlagProbe.MAX_KEY_LENGTH} chars — this is " +
+                        "our parser rejecting them, NOT the strap serving blanks; see the trace for the raw replies"
+                }
+                if (enumerationWalked == 0) {
+                    var line = "115 answered but listed no key — enumeration inconclusive"
+                    val c = enumeratedCount
+                    if (c != null && c > 0) line += " (the strap announced $c)"
+                    return line
+                }
+                if (enumerationTruncated) {
+                    return "115 answered; the walk stopped at its cap of ${ConfigKeySweep.MAX_ENUMERATION_STEPS} " +
+                        "entries with nothing new to NOOP — a PREFIX of the namespace, so nothing is claimed " +
+                        "about what the rest of it holds"
+                }
+                if (!enumerationReachedEnd) {
+                    return "115 answered; $enumerationWalked entr(ies) were walked with nothing new to NOOP, but the " +
+                        "strap never served its end marker — the namespace is only partly listed"
+                }
+                if (enumerationSkipped > 0) {
+                    return "115 answered; ${_enumeratedKeys.size} key(s) listed, none new to NOOP, but " +
+                        "$enumerationSkipped further entr(ies) did not decode as printable ASCII here — this is " +
+                        "our parser rejecting them, NOT the strap serving blanks, so the namespace is not fully listed"
+                }
+                val announced = enumeratedCount
+                if (announced != null && announced != enumerationWalked) {
+                    return "115 answered; the strap announced $announced device-config key(s) but served " +
+                        "$enumerationWalked — the namespace is only partly listed"
+                }
                 return "the strap enumerated its device-config namespace and returned no key NOOP did not already have"
             }
             val answered = listOf(featureFlagVerb, deviceConfigVerb).count { it == VerbStatus.ANSWERED }
@@ -722,6 +816,13 @@ class DeviceConfigReadProbeReport(
             }
             val unknown = candidateReadings.count { it.existence == ConfigKeySweep.Existence.UNKNOWN }
             if (unknown == asked) {
+                // A negative about a whole DERIVATION FAMILY of names is only worth publishing when the run
+                // proved the oracle can say yes. If the known-good control failed the same way the guesses
+                // did, the shared explanation is our request body, not the absence of every name asked.
+                if (!oracleCalibrated) {
+                    return "asked $asked candidate key name(s); all returned FAILURE, but the known-good control " +
+                        "key did too — the oracle is uncalibrated this run (inconclusive)"
+                }
                 return "asked $asked candidate key name(s); this firmware has none of them (a clean negative)"
             }
             return "asked $asked candidate key name(s); $unknown do not exist, ${asked - unknown} inconclusive"
@@ -785,6 +886,8 @@ class DeviceConfigReadProbeReport(
                     VerbStatus.SILENT -> "  (none — no reply to 115)\n"
                     VerbStatus.UNDECODABLE -> "  (none — the reply did not decode)\n"
                     VerbStatus.ANSWERED -> "  (none — 115 answered but the walk produced no names)\n"
+                    VerbStatus.INCONCLUSIVE ->
+                        "  (none — 115 replied but declined to start a walk; the namespace was never listed)\n"
                     VerbStatus.UNTRIED -> "  (none — not reached)\n"
                 },
             )

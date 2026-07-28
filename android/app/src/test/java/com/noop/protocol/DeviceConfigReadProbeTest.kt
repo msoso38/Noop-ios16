@@ -482,16 +482,237 @@ class DeviceConfigReadProbeTest {
     // ---- The sweep ----
 
     /** Drive the plan with enumeration refused, stopping at the FIRST candidate step and handing it back
-     *  alongside the report (a pulled step cannot be pushed back). */
-    private fun driveToCandidates(limit: Int): Pair<DeviceConfigReadProbeReport, DeviceConfigReadProbeReport.Step?> {
+     *  alongside the report (a pulled step cannot be pushed back).
+     *
+     *  [control] is the result code every NON-candidate step is answered with. `1` is the calibrated run:
+     *  the known-good keys exist, so a later FAILURE on a guessed name really does mean "no such key". `0`
+     *  is the uncalibrated run, where even the control failed and the oracle has proved nothing. */
+    private fun driveToCandidates(
+        limit: Int,
+        control: Int = 1,
+    ): Pair<DeviceConfigReadProbeReport, DeviceConfigReadProbeReport.Step?> {
         val report = smallReport(limit)
         report.nextStep()
         report.noteEnumerationStart(startReply(enumStart(3, 0, 0)))
         while (true) {
             val step = report.nextStep() ?: return report to null
             if (step.group == DeviceConfigReadProbeReport.Group.CANDIDATE) return report to step
-            report.noteReply(valueReply(1, echoRecord(step.key, 0x32)), step)
+            val record = if (control == 1) echoRecord(step.key, 0x32) else ByteArray(0)
+            report.noteReply(valueReply(control, record), step)
         }
+    }
+
+    // ---- The oracle's calibration control (a FAILURE only means "no such key" once a known key passed) ----
+
+    /** The defect this pins: `FAILURE(0)` is documented in `ValueResponse.isFailure` as "the verb exists,
+     *  the request did not satisfy it (**wrong body shape**, or an unknown key)", and the request body is
+     *  itself an inference from the SET side. So an all-FAILURE sweep is only a statement about the NAMES
+     *  when a name known to exist answered SUCCESS in the same run. Here the known-good control failed too,
+     *  so the run proves nothing about the candidates and must not be published as a clean negative. */
+    @Test
+    fun anAllFailureSweepIsNotACleanNegativeWhenTheControlFailedToo() {
+        val (report, first) = driveToCandidates(2, control = 0)
+        var step = first!!
+        while (true) {
+            report.noteReply(valueReply(0, ByteArray(0)), step)
+            step = report.nextStep() ?: break
+        }
+        assertFalse(
+            "no discovery or known-key read came back SUCCESS, so nothing calibrated the oracle",
+            report.oracleCalibrated,
+        )
+        assertEquals(
+            "asked 2 candidate key name(s); all returned FAILURE, but the known-good control " +
+                "key did too — the oracle is uncalibrated this run (inconclusive)",
+            report.verdict,
+        )
+        assertFalse(
+            "an uncalibrated run must never publish a negative about the names",
+            report.verdict.contains("clean negative"),
+        )
+    }
+
+    /** The other side of the same gate: when the control DID answer, a fully-negative sweep is a real
+     *  result and keeps its original wording. */
+    @Test
+    fun theCleanNegativeSurvivesWhenTheControlAnswered() {
+        val (report, first) = driveToCandidates(2)
+        var step = first!!
+        while (true) {
+            report.noteReply(valueReply(0, ByteArray(0)), step)
+            step = report.nextStep() ?: break
+        }
+        assertTrue(report.oracleCalibrated)
+        assertEquals(
+            "asked 2 candidate key name(s); this firmware has none of them (a clean negative)",
+            report.verdict,
+        )
+    }
+
+    // ---- Opcode 115: only SUCCESS starts a walk ----
+
+    /** The headline defect: `noteEnumerationStart` treated every code except UNSUPPORTED(3) as an
+     *  enumeration, so a strap that answers 115 with FAILURE(0) and a zeroed record produced a verb marked
+     *  `answered`, an empty key list, and a verdict asserting a complete enumeration of the namespace — a
+     *  positive claim built from a refusal. */
+    @Test
+    fun aFailureReplyToOpcode115IsNotAnEnumeration() {
+        val report = smallReport()
+        val s1 = report.nextStep()!!
+        assertEquals(115, s1.opcode)
+        report.noteEnumerationStart(startReply(enumStart(0, 0, 0)))
+
+        assertFalse(
+            "a FAILURE never reads as an enumeration",
+            report.enumerationVerb == DeviceConfigReadProbeReport.VerbStatus.ANSWERED,
+        )
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.INCONCLUSIVE, report.enumerationVerb)
+
+        val s2 = report.nextStep()!!
+        assertEquals(
+            "116 must not be asked once 115 declined the request",
+            DeviceConfigReadProbeReport.Group.DISCOVERY,
+            s2.group,
+        )
+        assertFalse(s2.opcode == ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD)
+
+        assertFalse(
+            report.verdict,
+            report.verdict.contains("the strap enumerated its device-config namespace"),
+        )
+        assertTrue(report.render().contains("inconclusive"))
+    }
+
+    /** PENDING(2) is the same class of answer: the verb replied, no walk started. */
+    @Test
+    fun aPendingReplyToOpcode115IsNotAnEnumerationEither() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(2, 0, 0)))
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.INCONCLUSIVE, report.enumerationVerb)
+        assertFalse(report.verdict.contains("the strap enumerated its device-config namespace"))
+        assertTrue(
+            report.trace.any { it.contains("PENDING(2)") && it.contains("did not start a walk") },
+        )
+    }
+
+    /** WHOOP 4.0 carries no pinned result byte, so null must still open the walk rather than being
+     *  swallowed by the new gate. */
+    @Test
+    fun aWhoop4StartWithNoResultCodeStillOpensTheWalk() {
+        val report = DeviceConfigReadProbeReport(
+            DeviceFamily.WHOOP4,
+            listOf("enable_r22_packets"),
+            ConfigKeySweep.batch(0, 1),
+        )
+        report.nextStep()
+        report.noteEnumerationStart(FeatureFlagProbe.StartResponse(null, 10, 2))
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.ANSWERED, report.enumerationVerb)
+        assertEquals(ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD, report.nextStep()!!.opcode)
+    }
+
+    // ---- A walk only proves a namespace when it actually walked ----
+
+    /** 115 answered SUCCESS and announced two keys, but the very first 116 was the end marker. The walk
+     *  listed nothing, so the run cannot say what the namespace does or does not contain. */
+    @Test
+    fun anEnumerationThatListedNothingIsInconclusiveNotAnEmptyNamespace() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(1, 10, 2)))
+        val s2 = report.nextStep()!!
+        assertEquals(ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD, s2.opcode)
+        assertFalse(report.noteEnumerationNext(nextReply(enumNext(0xFF, null, validKey = false))))
+
+        assertTrue(report.enumeratedKeys.isEmpty())
+        assertEquals(DeviceConfigReadProbeReport.VerbStatus.ANSWERED, report.enumerationVerb)
+        assertEquals(
+            "115 answered but listed no key — enumeration inconclusive (the strap announced 2)",
+            report.verdict,
+        )
+    }
+
+    /** Every entry the strap served was a real key it could not render for us. Blaming the strap for OUR
+     *  parser is the #874 defect; `FeatureFlagProbe.verdict` already carries this branch and the walk that
+     *  borrows its parser must carry it too. */
+    @Test
+    fun anEnumerationWhoseNamesAllFailedOurParserBlamesOurParserNotTheStrap() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(1, 10, 2)))
+        for (i in 1..2) {
+            report.nextStep()
+            assertTrue(
+                report.noteEnumerationNext(
+                    FeatureFlagProbe.NextResponse(1, 10, i, validKey = true, key = null),
+                ),
+            )
+        }
+        report.nextStep()
+        assertFalse(report.noteEnumerationNext(nextReply(enumNext(0xFF, null, validKey = false))))
+
+        assertEquals(2, report.enumerationSkipped)
+        assertTrue(report.enumeratedKeys.isEmpty())
+        val v = report.verdict
+        assertTrue(v, v.contains("this is our parser rejecting them, NOT the strap serving blanks"))
+        assertFalse(v, v.contains("returned no key NOOP did not already have"))
+    }
+
+    /** A walk truncated at [ConfigKeySweep.MAX_ENUMERATION_STEPS] has seen a PREFIX of the namespace. The
+     *  cap was reported in `stopReason` only, while the verdict went on claiming a complete listing. */
+    @Test
+    fun anEnumerationTruncatedAtTheCapMakesNoCompletenessClaim() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(1, 10, 9999)))
+        // A strap with more keys than the cap allows: every entry is a name NOOP already has, so nothing
+        // is "new" and the verdict falls through to the completeness claim.
+        var walked = 0
+        while (true) {
+            val step = report.nextStep() ?: break
+            if (step.group != DeviceConfigReadProbeReport.Group.ENUMERATE) break
+            walked += 1
+            report.noteEnumerationNext(nextReply(enumNext(1, "enable_r22_packets")))
+        }
+        assertEquals(ConfigKeySweep.MAX_ENUMERATION_STEPS, walked)
+        assertTrue(report.enumerationTruncated)
+        assertTrue(report.newKeysFound.isEmpty())
+        val v = report.verdict
+        assertTrue(v, v.contains("stopped at its cap"))
+        assertFalse(v, v.contains("returned no key NOOP did not already have"))
+    }
+
+    /** A walk cut off before the strap's own end marker is likewise a prefix, not a namespace. */
+    @Test
+    fun aWalkThatNeverReachedTheEndMarkerMakesNoCompletenessClaim() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(1, 10, 2)))
+        report.nextStep()
+        assertTrue(report.noteEnumerationNext(nextReply(enumNext(1, "enable_r22_packets"))))
+        // The strap stops replying: the pair is retired mid-walk, and no end marker was ever served.
+        report.noteTimeout(report.nextStep()!!, 8)
+        assertFalse(report.enumerationReachedEnd)
+        assertFalse(report.verdict.contains("returned no key NOOP did not already have"))
+    }
+
+    /** The guard against over-correcting: a walk that really did complete, and really did list only keys
+     *  NOOP already had, keeps the original claim word for word. */
+    @Test
+    fun aCompletedWalkOfOnlyKnownKeysStillReadsAsACompleteEnumeration() {
+        val report = smallReport()
+        report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(1, 10, 1)))
+        report.nextStep()
+        assertTrue(report.noteEnumerationNext(nextReply(enumNext(1, "enable_r22_packets"))))
+        report.nextStep()
+        assertFalse(report.noteEnumerationNext(nextReply(enumNext(0xFF, null, validKey = false))))
+        assertTrue(report.enumerationReachedEnd)
+        assertTrue(report.newKeysFound.isEmpty())
+        assertEquals(
+            "the strap enumerated its device-config namespace and returned no key NOOP did not already have",
+            report.verdict,
+        )
     }
 
     /** A fully-negative sweep is a RESULT, and the verdict must say so rather than reading like a

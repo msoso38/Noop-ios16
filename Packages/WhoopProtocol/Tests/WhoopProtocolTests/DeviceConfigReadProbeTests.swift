@@ -507,16 +507,199 @@ final class DeviceConfigReadProbeTests: XCTestCase {
 
     /// Drive the plan with enumeration refused, stopping at the FIRST candidate step and handing it back
     /// alongside the report (a pulled step cannot be pushed back, so the helper must not swallow it).
-    private func driveToCandidates(limit: Int)
+    ///
+    /// `control` is the result code every NON-candidate step is answered with. `1` is the calibrated run:
+    /// the known-good keys exist, so a later FAILURE on a guessed name really does mean "no such key".
+    /// `0` is the uncalibrated run, where even the control failed and the oracle has proved nothing.
+    private func driveToCandidates(limit: Int, control: Int = 1)
         -> (report: DeviceConfigReadProbeReport, first: DeviceConfigReadProbeReport.Step?) {
         var report = smallReport(limit: limit)
         _ = report.nextStep()
         report.noteEnumerationStart(startReply(enumStart(result: 3, revision: 0, count: 0)))
         while let step = report.nextStep() {
             if step.group == .candidate { return (report, step) }
-            report.noteReply(.init(resultCode: 1, record: echoRecord(step.key, value: 0x32)), for: step)
+            let record = control == 1 ? echoRecord(step.key, value: 0x32) : []
+            report.noteReply(.init(resultCode: control, record: record), for: step)
         }
         return (report, nil)
+    }
+
+    // MARK: - The oracle's calibration control (a FAILURE only means "no such key" once a known key passed)
+
+    /// The defect this pins: `FAILURE(0)` is documented in `ValueResponse.isFailure` as "the verb exists,
+    /// the request did not satisfy it (**wrong body shape**, or an unknown key)", and the request body is
+    /// itself an inference from the SET side. So an all-FAILURE sweep is only a statement about the NAMES
+    /// when a name known to exist answered SUCCESS in the same run. Here the known-good control failed
+    /// too, so the run proves nothing about the candidates and must not be published as a clean negative.
+    func testAnAllFailureSweepIsNotACleanNegativeWhenTheControlFailedToo() {
+        var (report, first) = driveToCandidates(limit: 2, control: 0)
+        guard var step = first else { return XCTFail("no candidate") }
+        while true {
+            report.noteReply(.init(resultCode: 0, record: []), for: step)
+            guard let next = report.nextStep() else { break }
+            step = next
+        }
+        XCTAssertFalse(report.oracleCalibrated,
+                       "no discovery or known-key read came back SUCCESS, so nothing calibrated the oracle")
+        XCTAssertEqual(report.verdict,
+                       "asked 2 candidate key name(s); all returned FAILURE, but the known-good control "
+                       + "key did too — the oracle is uncalibrated this run (inconclusive)")
+        XCTAssertFalse(report.verdict.contains("clean negative"),
+                       "an uncalibrated run must never publish a negative about the names")
+    }
+
+    /// The other side of the same gate: when the control DID answer, a fully-negative sweep is a real
+    /// result and keeps its original wording.
+    func testTheCleanNegativeSurvivesWhenTheControlAnswered() {
+        var (report, first) = driveToCandidates(limit: 2)
+        guard var step = first else { return XCTFail("no candidate") }
+        while true {
+            report.noteReply(.init(resultCode: 0, record: []), for: step)
+            guard let next = report.nextStep() else { break }
+            step = next
+        }
+        XCTAssertTrue(report.oracleCalibrated)
+        XCTAssertEqual(report.verdict,
+                       "asked 2 candidate key name(s); this firmware has none of them (a clean negative)")
+    }
+
+    // MARK: - Opcode 115: only SUCCESS starts a walk
+
+    /// The headline defect: `noteEnumerationStart` treated every code except UNSUPPORTED(3) as an
+    /// enumeration, so a strap that answers 115 with FAILURE(0) and a zeroed record produced a verb marked
+    /// `answered`, an empty key list, and a verdict asserting a complete enumeration of the namespace —
+    /// a positive claim built from a refusal.
+    func testAFailureReplyToOpcode115IsNotAnEnumeration() {
+        var report = smallReport()
+        guard let s1 = report.nextStep() else { return XCTFail("s1") }
+        XCTAssertEqual(s1.opcode, 115)
+        report.noteEnumerationStart(startReply(enumStart(result: 0, revision: 0, count: 0)))
+
+        XCTAssertNotEqual(report.enumerationVerb, .answered, "a FAILURE never reads as an enumeration")
+        XCTAssertEqual(report.enumerationVerb, .inconclusive)
+
+        guard let s2 = report.nextStep() else { return XCTFail("s2") }
+        XCTAssertEqual(s2.group, .discovery, "116 must not be asked once 115 declined the request")
+        XCTAssertNotEqual(s2.opcode, ConfigKeySweep.sendNextDeviceConfigCmd)
+
+        XCTAssertFalse(report.verdict.contains("the strap enumerated its device-config namespace"),
+                       "verdict was: \(report.verdict)")
+        XCTAssertTrue(report.render().contains("inconclusive"))
+    }
+
+    /// PENDING(2) is the same class of answer: the verb replied, no walk started.
+    func testAPendingReplyToOpcode115IsNotAnEnumerationEither() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 2, revision: 0, count: 0)))
+        XCTAssertEqual(report.enumerationVerb, .inconclusive)
+        XCTAssertFalse(report.verdict.contains("the strap enumerated its device-config namespace"))
+        XCTAssertTrue(report.trace.contains { $0.contains("PENDING(2)") && $0.contains("did not start a walk") })
+    }
+
+    /// WHOOP 4.0 carries no pinned result byte, so nil must still open the walk rather than being
+    /// swallowed by the new gate.
+    func testAWhoop4StartWithNoResultCodeStillOpensTheWalk() {
+        var report = DeviceConfigReadProbeReport(family: .whoop4,
+                                                 knownFlagKeys: ["enable_r22_packets"],
+                                                 batch: ConfigKeySweep.batch(from: 0, limit: 1))
+        _ = report.nextStep()
+        report.noteEnumerationStart(.init(resultCode: nil, revision: 10, count: 2))
+        XCTAssertEqual(report.enumerationVerb, .answered)
+        guard let s2 = report.nextStep() else { return XCTFail("s2") }
+        XCTAssertEqual(s2.opcode, ConfigKeySweep.sendNextDeviceConfigCmd)
+    }
+
+    // MARK: - A walk only proves a namespace when it actually walked
+
+    /// 115 answered SUCCESS and announced two keys, but the very first 116 was the end marker. The walk
+    /// listed nothing, so the run cannot say what the namespace does or does not contain.
+    func testAnEnumerationThatListedNothingIsInconclusiveNotAnEmptyNamespace() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 2)))
+        guard let s2 = report.nextStep() else { return XCTFail("s2") }
+        XCTAssertEqual(s2.opcode, ConfigKeySweep.sendNextDeviceConfigCmd)
+        XCTAssertFalse(report.noteEnumerationNext(nextReply(enumNext(index: 0xFF, key: nil, validKey: false))))
+
+        XCTAssertTrue(report.enumeratedKeys.isEmpty)
+        XCTAssertEqual(report.enumerationVerb, .answered)
+        XCTAssertEqual(report.verdict,
+                       "115 answered but listed no key — enumeration inconclusive (the strap announced 2)")
+    }
+
+    /// Every entry the strap served was a real key it could not render for us. Blaming the strap for OUR
+    /// parser is the #874 defect; `FeatureFlagProbe.verdict` already carries this branch and the walk that
+    /// borrows its parser must carry it too.
+    func testAnEnumerationWhoseNamesAllFailedOurParserBlamesOurParserNotTheStrap() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 2)))
+        for i in 1...2 {
+            _ = report.nextStep()
+            XCTAssertTrue(report.noteEnumerationNext(
+                FeatureFlagProbe.NextResponse(resultCode: 1, revision: 10, index: i,
+                                              validKey: true, key: nil)))
+        }
+        _ = report.nextStep()
+        XCTAssertFalse(report.noteEnumerationNext(nextReply(enumNext(index: 0xFF, key: nil, validKey: false))))
+
+        XCTAssertEqual(report.enumerationSkipped, 2)
+        XCTAssertTrue(report.enumeratedKeys.isEmpty)
+        let v = report.verdict
+        XCTAssertTrue(v.contains("this is our parser rejecting them, NOT the strap serving blanks"), v)
+        XCTAssertFalse(v.contains("returned no key NOOP did not already have"), v)
+    }
+
+    /// A walk truncated at `maxEnumerationSteps` has seen a PREFIX of the namespace. The cap was reported
+    /// in `stopReason` only, while the verdict went on claiming a complete listing.
+    func testAnEnumerationTruncatedAtTheCapMakesNoCompletenessClaim() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 9999)))
+        // A strap with more keys than the cap allows: every entry is a name NOOP already has, so nothing
+        // is "new" and the verdict falls through to the completeness claim.
+        var walked = 0
+        while let step = report.nextStep(), step.group == .enumerate {
+            walked += 1
+            _ = report.noteEnumerationNext(nextReply(enumNext(index: 1, key: "enable_r22_packets")))
+        }
+        XCTAssertEqual(walked, ConfigKeySweep.maxEnumerationSteps)
+        XCTAssertTrue(report.enumerationTruncated)
+        XCTAssertTrue(report.newKeysFound.isEmpty)
+        let v = report.verdict
+        XCTAssertTrue(v.contains("stopped at its cap"), v)
+        XCTAssertFalse(v.contains("returned no key NOOP did not already have"), v)
+    }
+
+    /// A walk cut off before the strap's own end marker is likewise a prefix, not a namespace.
+    func testAWalkThatNeverReachedTheEndMarkerMakesNoCompletenessClaim() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 2)))
+        _ = report.nextStep()
+        XCTAssertTrue(report.noteEnumerationNext(nextReply(enumNext(index: 1, key: "enable_r22_packets"))))
+        // The strap stops replying: the pair is retired mid-walk, and no end marker was ever served.
+        guard let s3 = report.nextStep() else { return XCTFail("s3") }
+        report.noteTimeout(for: s3, seconds: 8)
+        XCTAssertFalse(report.enumerationReachedEnd)
+        XCTAssertFalse(report.verdict.contains("returned no key NOOP did not already have"))
+    }
+
+    /// The guard against over-correcting: a walk that really did complete, and really did list only keys
+    /// NOOP already had, keeps the original claim word for word.
+    func testACompletedWalkOfOnlyKnownKeysStillReadsAsACompleteEnumeration() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 1)))
+        _ = report.nextStep()
+        XCTAssertTrue(report.noteEnumerationNext(nextReply(enumNext(index: 1, key: "enable_r22_packets"))))
+        _ = report.nextStep()
+        XCTAssertFalse(report.noteEnumerationNext(nextReply(enumNext(index: 0xFF, key: nil, validKey: false))))
+        XCTAssertTrue(report.enumerationReachedEnd)
+        XCTAssertTrue(report.newKeysFound.isEmpty)
+        XCTAssertEqual(report.verdict,
+                       "the strap enumerated its device-config namespace and returned no key NOOP did not already have")
     }
 
     // MARK: - Report
