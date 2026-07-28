@@ -403,6 +403,9 @@
     <string name="l10n_devices_screen_stop_sync_4a1f2b6e">Stop sync</string>
     <string name="l10n_devices_screen_feature_flag_probe_result_761_c50ef4d4">Feature-flag probe result (#761)</string>
     <string name="l10n_devices_screen_feature_flag_probe_explainer_58eec30f">Asks the strap to list the feature-flag NAMES its own firmware knows: START_FF_KEY_EXCHANGE (0x75) then SEND_NEXT_FF (0x76) until the strap says it\'s done. Read-only — no flag value is written, and the SET commands are never sent from this probe. The list is shown here and written to the strap log.</string>
+    <string name="l10n_devices_screen_device_config_read_probe_103_re_837f46de">Device-config read probe (#103 RE)…</string>
+    <string name="l10n_devices_screen_device_config_read_probe_result_103_67d02ec9">Device-config read probe result (#103)</string>
+    <string name="l10n_devices_screen_device_config_probe_explainer_dd23169f">Asks the strap for config VALUES: GET_DEVICE_CONFIG_VALUE (0x79) and GET_FF_VALUE (0x80), one key per round-trip. Both commands may simply not exist in this firmware — finding that out is the point. Read-only — no value is written, and the SET commands are never sent from this probe. The result is shown here and written to the strap log.</string>
     <string name="l10n_devices_screen_battery_probe_explainer_2858bb6a">Two independent protocol tables disagree on the extended-battery opcode (98 vs 87). This sends the curated read-only 98 and dumps the strap\'s full raw reply to the strap log. A battery-style payload confirms 98 on your firmware; a short stub means it stays ambiguous. Nothing is written to the strap. Please export and share the strap log afterwards.</string>
     <string name="l10n_devices_screen_cancel_77dfd213">Cancel</string>
     <string name="l10n_devices_screen_clamped_1f39cebb">%1$s%%</string>

@@ -57,7 +57,9 @@ Commands use the maverick/puffin envelope NOOP already implements
 ## The enable sequence (`Whoop5Config`)
 
 One `SET_CONFIG` (cmd `0x78`) per flag; the 40-byte body is the flag name as ASCII NUL-padded to 32
-bytes, the value byte (an ASCII `'1'`/`'2'`) at offset 32, then 7 zeros. The exact ordered set, with
+bytes, the value byte (an ASCII `'1'`/`'2'`) at offset 32, then 7 zeros. `SET_CONFIG` is the sender
+enum's name for it on both platforms; the protocol schema calls 120 `SET_FF_VALUE`, so that is what a
+strap log shows when the strap answers one. Same opcode, two names. The exact ordered set, with
 values, is in [`Whoop5Config.swift`](../Packages/WhoopProtocol/Sources/WhoopProtocol/Whoop5Config.swift)
 and [`Whoop5Config.kt`](../android/app/src/main/java/com/noop/protocol/Whoop5Config.kt), golden-tested on
 both platforms. `enable_r22_packets` is the one that opens the type-`0x2F` biometric stream; the rest

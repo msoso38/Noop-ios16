@@ -847,6 +847,12 @@ final class AppModel: ObservableObject {
     func probeFeatureFlags() { ble.probeFeatureFlags() }
     func clearFeatureFlagProbe() { ble.clearFeatureFlagProbe() }
 
+    // #103: READ-ONLY device-config READ probe (121/128) — asks the strap for a key's VALUE, the
+    // follow-up to #761's key-NAME enumeration. Writes nothing. User-initiated, Test-Centre-gated in
+    // DevicesView.
+    func probeDeviceConfigValues() { ble.probeDeviceConfigValues() }
+    func clearDeviceConfigProbe() { ble.clearDeviceConfigProbe() }
+
     /// Drop the current strap and clear bond state so a newly-picked strap model connects fresh
     /// (lets a user with both a WHOOP 4 and a 5/MG switch between them).
     func prepareStrapSwitch() { ble.prepareForModelSwitch() }

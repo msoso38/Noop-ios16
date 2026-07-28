@@ -245,7 +245,7 @@ final class DeepCaptureChannelsTests: XCTestCase {
         let s = try await store()
         for ts in 100...109 {
             _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: ts, statusWord: ts)]),
-                                   deviceId: "dev1", v18AuxRetentionRows: 3)
+                                   deviceId: "dev1", v18AuxRetentionRows: 3, v18AuxPruneEveryRows: 1)
         }
         let rows = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
         XCTAssertEqual(rows.count, 3, "the cap must bound the table")
@@ -259,14 +259,75 @@ final class DeepCaptureChannelsTests: XCTestCase {
         try await s.upsertDevice(id: "dev2", mac: nil, name: nil)
         for ts in 100...104 {
             _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: ts, statusWord: 1)]),
-                                   deviceId: "dev1", v18AuxRetentionRows: 2)
+                                   deviceId: "dev1", v18AuxRetentionRows: 2, v18AuxPruneEveryRows: 1)
         }
         _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: 100, statusWord: 1)]),
-                               deviceId: "dev2", v18AuxRetentionRows: 2)
+                               deviceId: "dev2", v18AuxRetentionRows: 2, v18AuxPruneEveryRows: 1)
         let d1 = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
         let d2 = try await s.v18AuxSamples(deviceId: "dev2", from: 0, to: 1_000)
         XCTAssertEqual(d1.map(\.ts), [103, 104])
         XCTAssertEqual(d2.map(\.ts), [100], "dev2's single old row must survive dev1's eviction")
+    }
+
+    /// Below the threshold the sweep must not run — the overshoot is the whole point.
+    func testRetentionSweepIsDeferredBelowTheThreshold() async throws {
+        let s = try await store()
+        for ts in 100...109 {
+            _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: ts, statusWord: ts)]),
+                                   deviceId: "dev1", v18AuxRetentionRows: 3, v18AuxPruneEveryRows: 5_000)
+        }
+        let rows = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
+        XCTAssertEqual(rows.count, 10, "under the threshold the sweep must not run — overshoot is the point")
+    }
+
+    /// …and once the threshold is crossed it runs, so amortising did not make the cap unbounded.
+    func testRetentionSweepRunsOnceTheThresholdIsCrossed() async throws {
+        let s = try await store()
+        // Four batches of two rows: the sweep is due on the fourth (8 >= 7) and not before.
+        for batch in 0..<4 {
+            let base = 100 + batch * 2
+            _ = try await s.insert(
+                Streams(v18Aux: [V18AuxSample(ts: base, statusWord: base),
+                                 V18AuxSample(ts: base + 1, statusWord: base + 1)]),
+                deviceId: "dev1", v18AuxRetentionRows: 3, v18AuxPruneEveryRows: 7)
+        }
+        let rows = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
+        XCTAssertEqual(rows.map(\.ts), [105, 106, 107],
+                       "the sweep still keeps exactly the newest v18AuxRetentionRows")
+    }
+
+    /// The counter resets per sweep, so a long offload sweeps repeatedly rather than latching.
+    func testTheAmortisationCounterResetsAfterEachSweep() async throws {
+        let s = try await store()
+        for ts in 100...111 {
+            _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: ts, statusWord: ts)]),
+                                   deviceId: "dev1", v18AuxRetentionRows: 2, v18AuxPruneEveryRows: 4)
+        }
+        // 12 rows banked, sweeps due after the 4th, 8th and 12th — the last one leaves exactly the cap.
+        let rows = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
+        XCTAssertEqual(rows.map(\.ts), [110, 111],
+                       "a second sweep must happen; the counter cannot latch after the first")
+    }
+
+    /// The budget is per device, because the delete is — one strap must not spend another's.
+    func testTheAmortisationBudgetIsNotSharedBetweenDevices() async throws {
+        let s = try await store()
+        try await s.upsertDevice(id: "dev2", mac: nil, name: nil)
+        // dev1 banks three rows against a threshold of four — one short, so no sweep is due for it.
+        for ts in 100...102 {
+            _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: ts, statusWord: ts)]),
+                                   deviceId: "dev1", v18AuxRetentionRows: 1, v18AuxPruneEveryRows: 4)
+        }
+        // dev2 banks one row. With a SHARED counter this crosses the threshold and sweeps — and because
+        // the delete is scoped to dev2, it would evict nothing from dev1 while zeroing dev1's budget.
+        _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: 200, statusWord: 1)]),
+                               deviceId: "dev2", v18AuxRetentionRows: 1, v18AuxPruneEveryRows: 4)
+        // dev1's fourth row must now be what crosses ITS OWN threshold and sweeps it to the cap.
+        _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: 103, statusWord: 103)]),
+                               deviceId: "dev1", v18AuxRetentionRows: 1, v18AuxPruneEveryRows: 4)
+        let d1 = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
+        XCTAssertEqual(d1.map(\.ts), [103],
+                       "dev1's own fourth row must trigger dev1's sweep — dev2 cannot spend its budget")
     }
 
     /// A batch that banks no aux row must not run the retention delete at all — a WHOOP 4.0 offload
@@ -275,10 +336,10 @@ final class DeepCaptureChannelsTests: XCTestCase {
         let s = try await store()
         _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: 100, statusWord: 1),
                                                 V18AuxSample(ts: 101, statusWord: 2)]),
-                               deviceId: "dev1", v18AuxRetentionRows: 5)
+                               deviceId: "dev1", v18AuxRetentionRows: 5, v18AuxPruneEveryRows: 1)
         // An all-absent sample packs to nothing, so this batch writes no row and must sweep nothing.
         _ = try await s.insert(Streams(v18Aux: [V18AuxSample(ts: 200)]),
-                               deviceId: "dev1", v18AuxRetentionRows: 1)
+                               deviceId: "dev1", v18AuxRetentionRows: 1, v18AuxPruneEveryRows: 1)
         let rows = try await s.v18AuxSamples(deviceId: "dev1", from: 0, to: 1_000)
         XCTAssertEqual(rows.map(\.ts), [100, 101])
     }
