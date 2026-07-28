@@ -357,6 +357,16 @@ object Framing {
         if (CommandNumber.fromRaw(cmd) == CommandNumber.GET_BATTERY_LEVEL) {
             frame.u8(13)?.let { pct -> if (pct <= 100) parsed["battery_pct"] = pct.toDouble() }
         }
+        // #827 CONFIRMED on real WHOOP 5.0 hardware: pay[2..6) (frame[13..17)), u32 LE, unix seconds — the
+        // same payload-relative offset as WHOOP4 (decodeCommandResponse below), carried over on the "+4
+        // rule" (both families' payload arrays start immediately after their own command byte, so an
+        // unchanged field's payload-relative offset carries over — see other confirmed +4-rule fields, e.g.
+        // GET_BATTERY_LEVEL above). Verified 2026-07-26 with two Devices-probe captures 62s apart
+        // (1785050961 → 1785051023): the decoded clock advanced by exactly the wall-clock gap between
+        // captures, not just a plausible-looking single value. Twin of Swift Interpreter.decodeWhoop5CommandResponse.
+        if (CommandNumber.fromRaw(cmd) == CommandNumber.GET_CLOCK) {
+            frame.u32(13)?.let { parsed["clock"] = it.toInt() }
+        }
         // GET_HELLO (145): device name + firmware version. Mirrors the Swift Interpreter decode of the
         // same 50.38.1.0 capture: payload base is frame[11]; the name is printable ASCII at pay[16],
         // the firmware is 4 bytes at pay[93] gated on pay[93]==50 (the "5.x" generation). The session

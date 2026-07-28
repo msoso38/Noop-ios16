@@ -1874,6 +1874,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearBodyLocationProbe() = ble.clearBodyLocationProbe()
 
+    /** #827: read-only GET_CLOCK(11) probe. User-initiated, Test-Centre-gated in DevicesScreen. GET_CLOCK
+     *  is already sent on every connect; this just re-requests it on demand so the raw bytes are readable
+     *  without a full log export. Never writes to the strap. */
+    fun probeGetClock() = ble.probeGetClock()
+
+    /** #827 probe result text (null until a reply lands; waiting sentinel while in flight). */
+    val clockProbe = ble.clockProbe
+
+    fun clearClockProbe() = ble.clearClockProbe()
+
     /** #761: READ-ONLY feature-flag ENUMERATION probe (117 then repeated 118) — reads the flag NAMES the
      *  strap's own firmware knows and writes nothing (no SET_FF_VALUE, no value of any kind).
      *  User-initiated, Test-Centre-gated in DevicesScreen; the report goes to the dialog + strap log. */

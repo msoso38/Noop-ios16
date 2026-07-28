@@ -842,6 +842,10 @@ final class AppModel: ObservableObject {
     func probeBodyLocationAndStatus() { ble.probeBodyLocationAndStatus() }
     func clearBodyLocationProbe() { ble.clearBodyLocationProbe() }
 
+    // #827: read-only GET_CLOCK probe (11). User-initiated, Test-Centre-gated in DevicesView.
+    func probeGetClock() { ble.probeGetClock() }
+    func clearClockProbe() { ble.clearClockProbe() }
+
     // #761: READ-ONLY feature-flag ENUMERATION probe (117/118) — reads the flag NAMES the strap's firmware
     // knows and writes nothing. User-initiated, Test-Centre-gated in DevicesView.
     func probeFeatureFlags() { ble.probeFeatureFlags() }

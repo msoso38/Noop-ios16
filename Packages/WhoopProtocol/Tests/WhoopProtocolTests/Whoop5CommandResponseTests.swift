@@ -70,6 +70,22 @@ final class Whoop5CommandResponseTests: XCTestCase {
         XCTAssertNil(f.parsed["fw_version"])     // pay[93] != 50 → fails the generation guard
     }
 
+    /// #827: real GET_CLOCK(11) responses, captured 62s apart via the Devices probe. Confirms the offset —
+    /// not just that ONE decode looks plausible, but that the clock advances by exactly the wall-clock gap
+    /// between two real captures (a wrong offset landing in-range twice, 62s apart, isn't realistic).
+    private let clockHex1 = "aa011400010021b1241c0b040151b7656a51380000000000efda48d5"
+    private let clockHex2 = "aa011400010021b1241d0b05018fb7656a1e450000000000b000f3e9"
+
+    func testClockRealCapturesTrackElapsedWallTime() {
+        let f1 = parseFrame(bytes(clockHex1), family: .whoop5)
+        let f2 = parseFrame(bytes(clockHex2), family: .whoop5)
+        XCTAssertEqual(f1.crcOK, true)
+        XCTAssertEqual(f2.crcOK, true)
+        XCTAssertEqual(f1.parsed["clock"]?.intValue, 1785050961)
+        XCTAssertEqual(f2.parsed["clock"]?.intValue, 1785051023)
+        XCTAssertEqual((f2.parsed["clock"]?.intValue ?? 0) - (f1.parsed["clock"]?.intValue ?? 0), 62)
+    }
+
     /// Real WHOOP 5 MG (`WS50_r03`) replies to the three ECG/Labrador toggles, posted in #891.
     ///
     /// Committed because they are the only real 5/MG COMMAND_RESPONSE frames in the tree whose payload is

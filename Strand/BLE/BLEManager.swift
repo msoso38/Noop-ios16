@@ -1075,10 +1075,9 @@ public final class BLEManager: NSObject, ObservableObject {
         // and tell the router which decoder to use. Fresh per connection so no stale bytes carry over.
         reassembler = Reassembler(family: model.deviceFamily)
         router.family = model.deviceFamily
-        // Live 5/MG persistence: point the Collector's decode at the selected family and install the
-        // identity clock ref for a 5/MG (its live timestamps are already real unix). WHOOP 4.0 keeps
-        // the GET_CLOCK correlation flow untouched. Re-applied after bootstrapStore builds the
-        // collector so whichever runs last wins.
+        // Point the Collector's decode at the selected family. #827 cleanup: both families now share the
+        // same GET_CLOCK correlation flow (clockRef, nil until a reply lands post-connect). Re-applied
+        // after bootstrapStore builds the collector so whichever runs last wins.
         configureCollectorFamily()
         guard central.state == .poweredOn else {
             log("Bluetooth not powered on (state=\(central.state.rawValue)); cannot scan yet")
@@ -1572,21 +1571,40 @@ public final class BLEManager: NSObject, ObservableObject {
         log("→ \(command.label) payload=\(hex(payload))")
     }
 
-    /// Point the Collector's live decode at the selected family. For a 5/MG, also install an identity
-    /// clock ref: live puffin REALTIME_DATA timestamps are already real-unix seconds, so device==wall
-    /// makes toWall a no-op (the same idiom the Backfiller uses for 5/MG history). For a WHOOP 4.0 the
-    /// collector takes the manager's GET_CLOCK correlation (nil until it lands — the normal 4.0 flow);
-    /// this also evicts a stale identity ref a prior 5/MG session installed when the user switches
-    /// straps, which would otherwise mis-stamp WHOOP4 device-epoch frames as wall-clock. Idempotent;
-    /// called from connect() AND after the async store bootstrap builds the collector, so the
-    /// configuration lands regardless of which finishes first.
+    /// Point the Collector's live decode at the selected family and hand it the manager's GET_CLOCK
+    /// correlation (nil until it lands — see `applyClockCorrelation`). Same for both families since
+    /// #827: a 5/MG reply is correlated exactly like a WHOOP4 one now, so there's no more identity
+    /// special-case here to evict on a strap-family switch. Idempotent; called from connect() AND after
+    /// the async store bootstrap builds the collector, so the configuration lands regardless of which
+    /// finishes first.
     private func configureCollectorFamily() {
         collector?.family = selectedModel.deviceFamily
-        if selectedModel.deviceFamily == .whoop5 {
-            let now = Int(Date().timeIntervalSince1970)
-            collector?.clockRef = ClockRef(device: now, wall: now)
-        } else {
-            collector?.clockRef = clockRef   // the WHOOP4 correlation, nil until GET_CLOCK lands
+        collector?.clockRef = clockRef
+    }
+
+    /// #827 cleanup: establish the (device, wall) clock correlation from a decoded GET_CLOCK
+    /// COMMAND_RESPONSE — same treatment on BOTH families now. Sets `clockRef` once (nil-guarded, like
+    /// the historical WHOOP4-only flow), threads it to the Collector (unblocks buffered live
+    /// persistence) and Backfiller (historical chunk decode — a no-op offset for 5/MG, whose type-47
+    /// records already carry real-unix timestamps, but a genuine drift correction for WHOOP4's
+    /// device-relative epoch), logs it, and re-issues SET_CLOCK if `ClockPolicy` flags the strap's RTC
+    /// as drifted. A 5/MG's own timestamps being already real-unix doesn't make this a no-op: the
+    /// correlation's (device, wall) offset now captures the strap's ACTUAL RTC error vs wall time,
+    /// which the old forced-identity ref (`configureCollectorFamily`, pre-#827-cleanup) papered over.
+    private func applyClockCorrelation(from parsed: ParsedFrame) {
+        guard clockRef == nil,
+              let ref = ClockCorrelation.clockRef(from: parsed, wall: Int(Date().timeIntervalSince1970))
+        else { return }
+        clockRef = ref
+        collector?.clockRef = ref                  // unblocks buffered persistence
+        backfiller?.clockRef = ref                 // unblocks historical chunk decode
+        log("Clock correlated: device=\(ref.device) wall=\(ref.wall)\(clockRetries > 0 ? " (after retry \(clockRetries))" : "")")
+        // Conditional SET_CLOCK (mirrors WHOOP): only when the strap RTC has drifted /
+        // is frozen — not blindly every connect. Offload doesn't depend on this (it uses
+        // clockRef for decoding); SET_CLOCK only keeps FUTURE logging timestamps sane.
+        if ClockPolicy.shouldSetClock(deviceClock: ref.device, wallNow: ref.wall) {
+            log("Clock drift detected — issuing SET_CLOCK")
+            sendSetClockBothForms()
         }
     }
 
@@ -2545,6 +2563,11 @@ public final class BLEManager: NSObject, ObservableObject {
     private static let bodyLocationProbeTimeout: TimeInterval = 8
     private static let bodyLocationPrevPayloadKey = "noop.690.prevPayload"
 
+    // #827 GET_CLOCK probe (twins of the #592 constants above).
+    public static let clockProbeWaiting = "__waiting__"
+    private static let clockProbeTimeout: TimeInterval = 8
+    private static let clockPrevPayloadKey = "noop.827.prevPayload"
+
     /// #592 opcode probe: send the read-only GET_EXTENDED_BATTERY_INFO(98) and surface the strap's reply
     /// (raw hex + payload triage + capture diff) on `LiveState.extendedBatteryProbe` for the Devices dialog.
     /// The number is disputed (an APK decompile reads 87); a battery-shaped payload confirms 98 on this
@@ -2608,6 +2631,45 @@ public final class BLEManager: NSObject, ObservableObject {
 
     /// Clear the #690 probe result (Devices dialog dismissed). Twin of Android clearBodyLocationProbe().
     public func clearBodyLocationProbe() { state.bodyLocationProbe = nil }
+
+    /// #827 opcode probe: send GET_CLOCK(11, read-only) and surface the strap's reply (raw hex + decoded
+    /// clock + capture diff) on `LiveState.clockProbe` for the Devices dialog. GET_CLOCK is already sent
+    /// unconditionally on every connect (both families); this just lets a developer re-request it on
+    /// demand and see the raw bytes, rather than digging through the log. Works on both families.
+    /// User-initiated only.
+    public func probeGetClock() {
+        guard state.connected else {
+            log("GET_CLOCK probe (#827) ignored — not connected")
+            return
+        }
+        state.clockProbe = BLEManager.clockProbeWaiting
+        log("GET_CLOCK probe (#827): sending GET_CLOCK(11, read-only) on family=\(selectedModel.deviceFamily); the raw COMMAND_RESPONSE is surfaced when it lands")
+        send(.getClock)
+        DispatchQueue.main.asyncAfter(deadline: .now() + BLEManager.clockProbeTimeout) { [weak self] in
+            guard let self, self.state.clockProbe == BLEManager.clockProbeWaiting else { return }
+            let secs = Int(BLEManager.clockProbeTimeout)
+            let msg = "GET_CLOCK probe (#827): no COMMAND_RESPONSE for opcode 11 within \(secs)s — the strap served no reply. (If a sync/offload was mid-flight the response can be delayed — retry idle.)"
+            self.log(msg)
+            self.state.clockProbe = msg
+        }
+    }
+
+    /// Clear the #827 probe result (Devices dialog dismissed). Twin of Android clearClockProbe() (once added).
+    public func clearClockProbe() { state.clockProbe = nil }
+
+    /// #827: format a GET_CLOCK COMMAND_RESPONSE and publish it, diffing against the persisted previous
+    /// payload. Called from the inbound frame handler for both families. Guarded on a probe being
+    /// IN-FLIGHT (parity with the #690 guard): GET_CLOCK is also sent unconditionally by the normal
+    /// connect handshake, so an unguarded match would surface a probe "result" the user never requested.
+    private func handleClockProbeResponse(_ frame: [UInt8], isWhoop5: Bool) {
+        guard state.clockProbe == BLEManager.clockProbeWaiting else { return }
+        let prev = UserDefaults.standard.string(forKey: BLEManager.clockPrevPayloadKey)
+        let (text, payHex) = ClockProbe.format(
+            frame: frame, cmdOff: isWhoop5 ? 10 : 6, isWhoop5: isWhoop5, prevPayloadHex: prev)
+        log("GET_CLOCK probe (#827):\n\(text)")
+        state.clockProbe = text
+        if let payHex { UserDefaults.standard.set(payHex, forKey: BLEManager.clockPrevPayloadKey) }
+    }
 
     // MARK: #761 feature-flag enumeration probe (READ-ONLY)
 
@@ -3836,6 +3898,8 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         state.strapFirmware = nil     // a stale firmware version must not outlive the link
         state.extendedBatteryProbe = nil  // #592: drop a stale probe result on disconnect
         state.bodyLocationProbe = nil     // #690: drop a stale probe result on disconnect
+        state.clockProbe = nil            // #827: drop a stale probe result on disconnect
+        state.strapClockUnix = nil        // #827: a stale strap-clock signal must not outlive the link
         state.featureFlagProbe = nil      // #761: drop a stale probe result on disconnect
         // …and abandon a walk the link interrupted, which also re-closes the 117/118 send() allowlist.
         featureFlagReport = nil
@@ -3856,6 +3920,12 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         whoop5SessionStarted = false
         clockRequested = false
         clockRetries = 0
+        // #827 cleanup: a stale (device, wall) correlation must not outlive the link — now that BOTH
+        // families write into this one shared property (applyClockCorrelation), carrying it across a
+        // disconnect risks cross-contaminating a family switch (a WHOOP5 session's real-unix-based
+        // offset misapplied to a freshly-connected WHOOP4's device-relative epoch, or vice versa).
+        // clockRef == nil is also the guard that lets a fresh connection re-correlate at all.
+        clockRef = nil
         connectHandshakeDone = false
         cmdNotifyConfirmedActive = false   // #34: a fresh connection needs its own notify-confirm + settle
         connectSettledSignaled = false
@@ -4654,6 +4724,11 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 if frame.count > 6, frame[6] == WhoopCommand.getBodyLocationAndStatus.rawValue {
                     handleBodyLocationProbeResponse(frame, isWhoop5: false)
                 }
+                // #827: the read-only GET_CLOCK probe's COMMAND_RESPONSE (in-flight-guarded inside — GET_CLOCK
+                // is also sent unconditionally by the connect handshake, not only by the probe).
+                if frame.count > 6, frame[6] == WhoopCommand.getClock.rawValue {
+                    handleClockProbeResponse(frame, isWhoop5: false)
+                }
                 // #761: a reply to the read-only feature-flag enumeration (117/118) — in-flight-guarded
                 // inside, so this is a byte compare on every other frame.
                 if frame.count > 6, frame[6] == WhoopCommand.startFeatureFlagKeyExchange.rawValue
@@ -4676,22 +4751,8 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 }
                 // Clock correlation runs in both live and backfill modes. Once established it
                 // unblocks both the Collector (live path) and the Backfiller (chunk decoding).
-                if clockRef == nil {
-                    // #47: reuse the single decode above (byte-identical for WHOOP4) instead of re-parsing.
-                    if let ref = ClockCorrelation.clockRef(from: parsed, wall: Int(Date().timeIntervalSince1970)) {
-                        clockRef = ref
-                        collector?.clockRef = ref                  // unblocks buffered persistence
-                        backfiller?.clockRef = ref                 // unblocks historical chunk decode
-                        log("Clock correlated: device=\(ref.device) wall=\(ref.wall)\(clockRetries > 0 ? " (after retry \(clockRetries))" : "")")
-                        // Conditional SET_CLOCK (mirrors WHOOP): only when the strap RTC has drifted /
-                        // is frozen — not blindly every connect. Offload doesn't depend on this (it uses
-                        // clockRef for decoding); SET_CLOCK only keeps FUTURE logging timestamps sane.
-                        if ClockPolicy.shouldSetClock(deviceClock: ref.device, wallNow: ref.wall) {
-                            log("Clock drift detected — issuing SET_CLOCK")
-                            sendSetClockBothForms()
-                        }
-                    }
-                }
+                // #47: reuse the single decode above (byte-identical for WHOOP4) instead of re-parsing.
+                applyClockCorrelation(from: parsed)
                 if !backfilling {
                     // Live path: synchronous ingest preserves delegate arrival order. #47: thread the
                     // single parse so the collector's flush doesn't re-decode the batch.
@@ -4702,10 +4763,10 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             // EXPERIMENTAL WHOOP 5.0/MG puffin notify chars (fd4b0003/0004/0005/0007): reassemble with
             // the family-aware reassembler and route through the family-aware FrameRouter so the UI
             // reflects arriving frames. The historical offload uses the WHOOP4 backfill machinery
-            // (family-aware), and live puffin frames are now persisted too — see below. (Clock: the
-            // Collector runs an identity ref for 5/MG via configureCollectorFamily, since live puffin
-            // timestamps are already real-unix seconds.) Live HR/battery still also come from the
-            // standard 0x2A37 / 0x2A19 profiles handled above.
+            // (family-aware), and live puffin frames are now persisted too — see below. (Clock: #827
+            // cleanup — a GET_CLOCK reply now drives the same applyClockCorrelation flow as WHOOP4;
+            // clockRef stays nil, and the Collector/Backfiller buffer, until the first reply lands.)
+            // Live HR/battery still also come from the standard 0x2A37 / 0x2A19 profiles handled above.
             if BLEManager.whoop5NotifyChars.contains(characteristic.uuid) {
                 for frame in reassembler.feed(bytes) {
                     let isOffload = backfilling && BLEManager.isOffloadFrame(frame, family: .whoop5)
@@ -4733,7 +4794,10 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                         router.dispatchLiveGestureIfFresh(frame: frame, now: strapClockNow)
                         continue
                     }
-                    router.handle(frame: frame)
+                    // #47: decode this 5/MG frame ONCE and thread it to both the router and the #827
+                    // clock-correlation check below, matching the WHOOP4 loop's parse-once idiom.
+                    let parsed = parseFrame(frame, family: .whoop5)
+                    router.handle(parsed: parsed, frame: frame)
                     // #592: a 5/MG extended-battery probe COMMAND_RESPONSE (puffin envelope: type @8, cmd
                     // @10). Format + publish it for the Devices dialog, exactly like the 4.0 path above.
                     if frame.count > 10, frame[8] == 0x24, frame[10] == WhoopCommand.getExtendedBatteryInfo.rawValue {
@@ -4742,6 +4806,16 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // #690: a 5/MG body-location probe COMMAND_RESPONSE (puffin envelope: type @8, cmd @10).
                     if frame.count > 10, frame[8] == 0x24, frame[10] == WhoopCommand.getBodyLocationAndStatus.rawValue {
                         handleBodyLocationProbeResponse(frame, isWhoop5: true)
+                    }
+                    // #827: a 5/MG GET_CLOCK probe COMMAND_RESPONSE (puffin envelope: type @8, cmd @10).
+                    // In-flight-guarded inside — GET_CLOCK is also sent unconditionally by the connect
+                    // handshake (#78), not only by the probe.
+                    if frame.count > 10, frame[8] == 0x24, frame[10] == WhoopCommand.getClock.rawValue {
+                        handleClockProbeResponse(frame, isWhoop5: true)
+                        // #827 cleanup: same clock-correlation treatment as WHOOP4 now — see
+                        // applyClockCorrelation's doc comment for why a 5/MG's already-real-unix
+                        // timestamps don't make this redundant with the old forced-identity ref.
+                        applyClockCorrelation(from: parsed)
                     }
                     // #761: a 5/MG reply to the read-only feature-flag enumeration (117/118), same puffin
                     // envelope offsets. In-flight-guarded inside.

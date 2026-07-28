@@ -1311,6 +1311,81 @@ class WhoopBleClient(
             else -> "raw$v"
         }
 
+        /** #827: sentinel value of [clockProbe] between sending the probe and its reply landing. */
+        const val WAITING_CLOCK_PROBE = "__waiting__"
+
+        /** #827: how long to wait for a probe COMMAND_RESPONSE before treating silence as "no reply". */
+        const val CLOCK_PROBE_TIMEOUT_MS = 8_000L
+
+        /** #827: persisted previous clock payload hex, so a new capture can diff against it. */
+        private const val KEY_827_PREV_PAYLOAD = "noop.827.prevPayload"
+
+        /**
+         * #827: format a GET_CLOCK COMMAND_RESPONSE into a clean, readable, copyable report — a verdict,
+         * the full raw hex on one line, an offset-labelled payload hex grid, a decoded clock value, and a
+         * per-byte diff vs [prevPayloadHex]. Pure + deterministic so it's unit-tested without a strap.
+         * Twin of the Swift `ClockProbe.format`. [cmdOff] is the response-command byte offset (6 on WHOOP4,
+         * 10 on 5/MG); the 4-byte CRC32 trailer both families carry is excluded from the payload.
+         *
+         * The decode (payload bytes 2..6, u32 LE, unix seconds) is confirmed on BOTH families: WHOOP4 by
+         * the existing GET_CLOCK decode in [com.noop.protocol.Framing], and WHOOP 5/MG by two real captures
+         * 62s apart on 2026-07-26 (#827) whose decoded clocks advanced by exactly the wall-clock gap
+         * between them — not just a plausible-looking single value.
+         */
+        internal fun formatClockProbe(
+            frame: ByteArray,
+            cmdOff: Int,
+            isWhoop5: Boolean,
+            prevPayloadHex: String?,
+        ): Pair<String, String?> {
+            val fam = if (isWhoop5) "WHOOP 5/MG" else "WHOOP 4.0"
+            val payStart = cmdOff + 1
+            val payEnd = frame.size - 4
+            val hasPayload = payEnd > payStart
+            val pay = if (hasPayload) frame.copyOfRange(payStart, payEnd) else ByteArray(0)
+
+            val sb = StringBuilder()
+            sb.append("#827 GET_CLOCK PROBE — ").append(fam).append('\n')
+            sb.append("\nRaw frame (").append(frame.size).append(" B):\n")
+            sb.append(frame.joinToString("") { "%02x".format(it) }).append('\n')
+
+            var payloadHex: String? = null
+            if (hasPayload) {
+                payloadHex = pay.joinToString("") { "%02x".format(it) }
+                sb.append("\nPayload (").append(pay.size).append(" B, CRC excluded):\n")
+                sb.append(hexGrid(pay))
+                if (pay.size >= 6) {
+                    val v = (pay[2].toLong() and 0xFFL) or ((pay[3].toLong() and 0xFFL) shl 8) or
+                        ((pay[4].toLong() and 0xFFL) shl 16) or ((pay[5].toLong() and 0xFFL) shl 24)
+                    val plausible = v >= com.noop.analytics.ConnectionTrace.RTC_EPOCH_CEILING_UNIX
+                    val date = java.util.Date(v * 1000L)
+                    sb.append("\nDecoded clock @2 (u32 LE): ").append(v).append(" → ").append(date)
+                    sb.append(if (plausible) "  (plausible unix time)\n" else "  (epoch-era — RTC never set, or offset is wrong)\n")
+                } else {
+                    sb.append("\nPayload too short (").append(pay.size).append(" B) to decode a u32 clock at @2\n")
+                }
+                sb.append('\n')
+                if (prevPayloadHex != null && prevPayloadHex.length == payloadHex.length) {
+                    val prev = prevPayloadHex.chunked(2).map { it.toInt(16) }
+                    val deltas = StringBuilder()
+                    for (i in pay.indices) {
+                        val a = prev[i]
+                        val b = pay[i].toInt() and 0xFF
+                        if (a != b) deltas.append(" @%02d:%02x→%02x".format(i, a, b))
+                    }
+                    sb.append(
+                        if (deltas.isEmpty()) "Δ vs previous capture: identical"
+                        else "Δ vs previous capture:$deltas\n",
+                    )
+                } else {
+                    sb.append("Δ vs previous capture: first capture")
+                }
+            } else {
+                sb.append("\nNo payload beyond the command byte (bare stub) — GET_CLOCK may not be served on this firmware")
+            }
+            return sb.toString() to payloadHex
+        }
+
         const val MAX_AUTO_CONTINUES = 24
 
         /** #364 "more backlog remains" margin (seconds): how far ahead the strap must be of our persisted
@@ -1521,6 +1596,11 @@ class WhoopBleClient(
     // #690: the body-location probe result (or the waiting sentinel), shown + copied in the Devices dialog.
     private val _bodyLocationProbe = MutableStateFlow<String?>(null)
     val bodyLocationProbe: StateFlow<String?> = _bodyLocationProbe.asStateFlow()
+
+    // #827: the read-only GET_CLOCK probe result (or the waiting sentinel), shown + copied in the Devices
+    // dialog.
+    private val _clockProbe = MutableStateFlow<String?>(null)
+    val clockProbe: StateFlow<String?> = _clockProbe.asStateFlow()
 
     // #761: the READ-ONLY feature-flag ENUMERATION report — the flag NAMES the strap's own firmware lists
     // — or the waiting sentinel while the walk runs. Nothing is written to the strap to produce it.
@@ -3292,6 +3372,29 @@ class WhoopBleClient(
     /** Clear the #690 probe result (Devices dialog dismissed). */
     fun clearBodyLocationProbe() { _bodyLocationProbe.value = null }
 
+    /** #827 opcode probe: send the read-only GET_CLOCK(11) and let the COMMAND_RESPONSE hook decode +
+     *  surface it. GET_CLOCK is already sent on every connect handshake; this just re-requests it on
+     *  demand so the raw bytes are readable without a full log export. User-initiated (Test Centre
+     *  gated). Never writes to the strap. */
+    fun probeGetClock() {
+        if (!_state.value.connected) {
+            log("Clock probe (#827) ignored — not connected")
+            return
+        }
+        _clockProbe.value = WAITING_CLOCK_PROBE
+        log("Clock probe (#827): sending GET_CLOCK(11, read-only) on family=$connectedFamily; the raw COMMAND_RESPONSE is dumped below when it lands")
+        send(CommandNumber.GET_CLOCK)
+        handler.postDelayed({
+            val msg = "Clock probe (#827): no COMMAND_RESPONSE for opcode 11 within " +
+                "${CLOCK_PROBE_TIMEOUT_MS / 1000}s — the strap served no reply. Retry idle if a sync/offload " +
+                "was mid-flight."
+            if (_clockProbe.compareAndSet(WAITING_CLOCK_PROBE, msg)) log(msg)
+        }, CLOCK_PROBE_TIMEOUT_MS)
+    }
+
+    /** Clear the #827 probe result (Devices dialog dismissed). */
+    fun clearClockProbe() { _clockProbe.value = null }
+
     /**
      * #761 read-only probe: ask the strap to ENUMERATE the feature-flag key names its firmware knows —
      * `START_FF_KEY_EXCHANGE(117)` for the count, then `SEND_NEXT_FF(118)` repeatedly (its body is a
@@ -4794,6 +4897,21 @@ class WhoopBleClient(
                         log("Body-location probe (#690):\n$text")
                         _bodyLocationProbe.value = text
                         if (payHex != null) NoopPrefs.of(context).edit().putString(KEY_690_PREV_PAYLOAD, payHex).apply()
+                    }
+                    // #827 opcode probe: dump the raw GET_CLOCK(11) response, decode the clock, log it (rides
+                    // the strap-log bundle) AND publish to the StateFlow the Devices dialog shows + copies.
+                    // Gated on a probe being IN-FLIGHT (the waiting sentinel) — GET_CLOCK is also sent
+                    // unconditionally by the connect handshake, not only by the probe, so an ungated match
+                    // would pop the result dialog on every connect.
+                    if (frame.size > cmdOff && (frame[cmdOff].toInt() and 0xFF) == CommandNumber.GET_CLOCK.rawValue &&
+                        _clockProbe.value == WAITING_CLOCK_PROBE) {
+                        val prevHex = NoopPrefs.of(context).getString(KEY_827_PREV_PAYLOAD, null)
+                        val (text, payHex) = formatClockProbe(
+                            frame, cmdOff, connectedFamily == DeviceFamily.WHOOP5, prevHex,
+                        )
+                        log("Clock probe (#827):\n$text")
+                        _clockProbe.value = text
+                        if (payHex != null) NoopPrefs.of(context).edit().putString(KEY_827_PREV_PAYLOAD, payHex).apply()
                     }
                     // #761: a reply to the read-only feature-flag enumeration (117/118). In-flight-guarded
                     // inside handleFeatureFlagProbeResponse, so this is a byte compare on every other frame.

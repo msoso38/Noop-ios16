@@ -116,6 +116,8 @@ fun DevicesScreen(
     val batteryProbeResult by viewModel.extendedBatteryProbe.collectAsStateWithLifecycle()
     // #690 body-location probe result — same non-null-shows-the-dialog contract.
     val bodyLocationProbeResult by viewModel.bodyLocationProbe.collectAsStateWithLifecycle()
+    // #827 clock probe result — same non-null-shows-the-dialog contract.
+    val clockProbeResult by viewModel.clockProbe.collectAsStateWithLifecycle()
     // #761: the read-only feature-flag ENUMERATION report (or the waiting sentinel while it walks).
     val featureFlagProbeResult by viewModel.featureFlagProbe.collectAsStateWithLifecycle()
     // #103: the read-only device-config READ report (or the waiting sentinel while the plan runs).
@@ -145,6 +147,7 @@ fun DevicesScreen(
     var probeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var batteryProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var bodyLocationProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
+    var clockProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var featureFlagProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     var deviceConfigProbeTarget by remember { mutableStateOf<PairedDeviceRow?>(null) }
     // After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
@@ -273,6 +276,11 @@ fun DevicesScreen(
                     SourceCoordinator.isWhoop(device) &&
                     TestCentre.from(context).active(TestDomain.CONNECTION)
                 ) { { bodyLocationProbeTarget = device } } else null,
+                // #827 GET_CLOCK probe: read-only, both families. Same Test Centre gate.
+                onClockProbe = if (device.status == DeviceStatus.active.name && live.connected &&
+                    SourceCoordinator.isWhoop(device) &&
+                    TestCentre.from(context).active(TestDomain.CONNECTION)
+                ) { { clockProbeTarget = device } } else null,
                 // #761 feature-flag ENUMERATION probe: read-only (names only, nothing written), both
                 // families. Same Test Centre gate.
                 onFeatureFlagProbe = if (device.status == DeviceStatus.active.name && live.connected &&
@@ -433,6 +441,19 @@ fun DevicesScreen(
             onDismiss = { viewModel.clearBodyLocationProbe() },
         )
     }
+    // #827 GET_CLOCK opcode probe: read-only send + full raw-response dump + decoded clock.
+    clockProbeTarget?.let {
+        ClockProbeDialog(
+            onSend = { viewModel.probeGetClock(); clockProbeTarget = null },
+            onDismiss = { clockProbeTarget = null },
+        )
+    }
+    clockProbeResult?.let { result ->
+        ClockProbeResultDialog(
+            text = result,
+            onDismiss = { viewModel.clearClockProbe() },
+        )
+    }
     // #761 feature-flag ENUMERATION probe: read-only key-name listing (117 then repeated 118); no value
     // is written to the strap.
     featureFlagProbeTarget?.let {
@@ -535,6 +556,8 @@ private fun DeviceCard(
     onBatteryProbe: (() -> Unit)? = null,
     // #690 body-location opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
     onBodyLocationProbe: (() -> Unit)? = null,
+    // #827 GET_CLOCK opcode probe (Test Centre → Connection, both WHOOP families). Read-only.
+    onClockProbe: (() -> Unit)? = null,
     /** #761 feature-flag ENUMERATION probe (Test Centre → Connection, both WHOOP families). Read-only:
      *  it reads the flag NAMES the strap's firmware knows and writes nothing. */
     onFeatureFlagProbe: (() -> Unit)? = null,
@@ -658,8 +681,9 @@ private fun DeviceCard(
                     onRebootProbe = onRebootProbe,
                     onBatteryProbe = onBatteryProbe,
                     onBodyLocationProbe = onBodyLocationProbe,
+                    onClockProbe = onClockProbe,
                     onFeatureFlagProbe = onFeatureFlagProbe,
-                onAbortSync = onAbortSync,
+                    onAbortSync = onAbortSync,
                     onDeviceConfigProbe = onDeviceConfigProbe,
                 )
             }
@@ -781,6 +805,7 @@ private fun DeviceActionsMenu(
     onRebootProbe: (() -> Unit)? = null,
     onBatteryProbe: (() -> Unit)? = null,
     onBodyLocationProbe: (() -> Unit)? = null,
+    onClockProbe: (() -> Unit)? = null,
     /** #761 feature-flag ENUMERATION probe (Test Centre → Connection, both WHOOP families). Read-only:
      *  it reads the flag NAMES the strap's firmware knows and writes nothing. */
     onFeatureFlagProbe: (() -> Unit)? = null,
@@ -844,6 +869,11 @@ private fun DeviceActionsMenu(
                 // #690: read-only body-location opcode probe — decodes revision/location/confidence/status.
                 if (onBodyLocationProbe != null) {
                     MenuItem(uiString(R.string.l10n_devices_screen_body_location_probe_690_re_7def8c39), Icons.Filled.BugReport) { onOpenChange(false); onBodyLocationProbe() }
+                }
+                // #827: read-only GET_CLOCK opcode probe — re-requests the clock the connect handshake
+                // already asks for, so the raw reply is readable without a full log export.
+                if (onClockProbe != null) {
+                    MenuItem(uiString(R.string.l10n_devices_screen_clock_probe_827_re_81f36a9b), Icons.Filled.BugReport) { onOpenChange(false); onClockProbe() }
                 }
                 // #761 feature-flag ENUMERATION probe (RE): read-only key-name listing, both families.
                 if (onAbortSync != null) {
@@ -1048,6 +1078,74 @@ private fun BatteryInfoProbeResultDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.surfaceOverlay,
         title = { Text(uiString(R.string.l10n_devices_screen_battery_info_probe_result_592_b97c0bb8), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                SelectionContainer {
+                    Text(shown, style = if (waiting) NoopType.subhead else NoopType.mono, color = Palette.textSecondary)
+                }
+            }
+        },
+        confirmButton = {
+            if (!waiting) {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(text)) }) {
+                    Text(uiString(R.string.l10n_devices_screen_copy_af74f7c5), style = NoopType.body, color = Palette.accent)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_close_bbfa773e), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #827 GET_CLOCK opcode probe: a single read-only send + a full raw-response dump + decoded clock value.
+ *  Gated to Test Centre → Connection + a live WHOOP at the call site. Twin of the Swift ClockProbeSheets'
+ *  confirmation dialog. */
+@Composable
+private fun ClockProbeDialog(
+    onSend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_clock_probe_827_re_81f36a9b), style = NoopType.title2, color = Palette.textPrimary) },
+        text = {
+            Text(
+                uiString(R.string.l10n_devices_screen_clock_probe_explainer_a0bca2bf),
+                style = NoopType.subhead,
+                color = Palette.textSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onSend) {
+                Text(uiString(R.string.l10n_devices_screen_send_probe_read_only_36b318bc), style = NoopType.body, color = Palette.accent)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_devices_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+/** #827 probe result: raw hex + decoded clock value (or a "waiting…" state), with a Copy button. Read-only;
+ *  dismiss clears the result. Twin of the Swift ClockProbeResultView. */
+@Composable
+private fun ClockProbeResultDialog(
+    text: String,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val waiting = text == WhoopBleClient.WAITING_CLOCK_PROBE
+    val shown = if (waiting) uiString(R.string.l10n_devices_screen_waiting_for_the_straps_reply_5a06e7ac) else text
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = { Text(uiString(R.string.l10n_devices_screen_clock_probe_result_827_e6daef3d), style = NoopType.title2, color = Palette.textPrimary) },
         text = {
             Column(modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
                 SelectionContainer {

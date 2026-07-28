@@ -381,6 +381,9 @@
     <string name="l10n_devices_screen_device_config_read_probe_result_103_67d02ec9">Resultado da sonda de leitura da configuração do dispositivo (#103)</string>
     <string name="l10n_devices_screen_device_config_probe_explainer_dd23169f">Pede à bracelete os VALORES de configuração: GET_DEVICE_CONFIG_VALUE (0x79) e GET_FF_VALUE (0x80), uma chave por troca. É possível que ambos os comandos simplesmente não existam neste firmware — descobri-lo é precisamente o objetivo. Apenas leitura: nenhum valor é escrito e os comandos SET nunca são enviados por esta sonda. O resultado é mostrado aqui e escrito no registo da bracelete.</string>
     <string name="l10n_devices_screen_battery_probe_explainer_2858bb6a">Duas tabelas de protocolo independentes discordam quanto ao opcode de bateria alargada (98 vs 87). Isto envia o 98 de leitura, validado e regista a resposta bruta completa do bracelete no registo da bracelete. Uma carga útil tipo bateria confirma 98 no teu firmware; um esboço curto significa que permanece ambíguo. Nada é escrito na bracelete. Exporte e partilhe o registo da bracelete posteriormente.</string>
+    <string name="l10n_devices_screen_clock_probe_827_re_81f36a9b">Sonda de relógio (#827 RE)…</string>
+    <string name="l10n_devices_screen_clock_probe_result_827_e6daef3d">Resultado da sonda de relógio (#827)</string>
+    <string name="l10n_devices_screen_clock_probe_explainer_a0bca2bf">Envia o GET_CLOCK (11) de leitura apenas e mostra a resposta bruta completa do bracelete, descodificando um valor de relógio. O GET_CLOCK já é enviado em cada ligação; isto apenas volta a pedi-lo por pedido para poderes ver os bytes brutos e confirmar o indicador \"Clock latched\". Nada é escrito na bracelete.</string>
     <string name="l10n_devices_screen_cancel_77dfd213">Cancelar</string>
     <string name="l10n_devices_screen_clamped_1f39cebb">%1$s%%</string>
     <string name="l10n_devices_screen_close_bbfa773e">Fechar</string>

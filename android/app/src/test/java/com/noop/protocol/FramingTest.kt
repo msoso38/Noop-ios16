@@ -484,6 +484,24 @@ class FramingTest {
         assertEquals("SUCCESS(1)", parsed.parsed["result"])
     }
 
+    // #827: real GET_CLOCK(11) responses, captured 62s apart via the Devices probe. Confirms the offset —
+    // not just that ONE decode looks plausible, but that the clock advances by exactly the wall-clock gap
+    // between two real captures (a wrong offset landing in-range twice, 62s apart, isn't realistic).
+    // Parity fixtures with WhoopProtocol's Whoop5CommandResponseTests.swift.
+    private val clockHex1 = "aa011400010021b1241c0b040151b7656a51380000000000efda48d5"
+    private val clockHex2 = "aa011400010021b1241d0b05018fb7656a1e450000000000b000f3e9"
+
+    @Test
+    fun whoop5_clockRealCapturesTrackElapsedWallTime() {
+        val f1 = Framing.parseFrame(fromHex(clockHex1), DeviceFamily.WHOOP5)
+        val f2 = Framing.parseFrame(fromHex(clockHex2), DeviceFamily.WHOOP5)
+        assertEquals(true, f1.crcOk)
+        assertEquals(true, f2.crcOk)
+        assertEquals(1785050961, f1.parsed["clock"])
+        assertEquals(1785051023, f2.parsed["clock"])
+        assertEquals(62, (f2.parsed["clock"] as Int) - (f1.parsed["clock"] as Int))
+    }
+
     @Test
     fun whoop5_event_decodesAtPlus4AndPreservesPayload() {
         // Real 5/MG capture: event 29 with a 16-byte payload. The shared catalogue names it

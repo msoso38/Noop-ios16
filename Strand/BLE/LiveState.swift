@@ -245,6 +245,17 @@ public final class LiveState: ObservableObject {
     /// Cleared on disconnect and on dialog dismiss. Twin of the Android WhoopBleClient.bodyLocationProbe flow.
     @Published public var bodyLocationProbe: String? = nil
 
+    /// #827: the read-only GET_CLOCK probe result (or the waiting sentinel), shown + copied in the Devices
+    /// dialog. Cleared on disconnect and on dialog dismiss.
+    @Published public var clockProbe: String? = nil
+
+    /// #827: the strap's own clock value from the newest decoded GET_CLOCK COMMAND_RESPONSE, either family
+    /// — set by `FrameRouter`. On WHOOP4 this duplicates the log-scraped `deviceClockUnix` signal
+    /// (`ConnectionReadout.clockCorrelatedDevice`); on WHOOP 5/MG it is the only non-log-scraped clock
+    /// signal there is, since the GET_DATA_RANGE fallback never fires (GET_DATA_RANGE isn't sent to
+    /// 5/MG). nil until a GET_CLOCK reply lands; cleared on disconnect.
+    @Published public var strapClockUnix: Int? = nil
+
     /// #761: the READ-ONLY feature-flag enumeration report — the flag NAMES the strap's own firmware lists
     /// (`START_FF_KEY_EXCHANGE`/`SEND_NEXT_FF`), or the waiting sentinel while the walk runs. Nothing is
     /// written to the strap to produce it. Cleared on disconnect and on dialog dismiss. Twin of the Android
