@@ -1756,4 +1756,5 @@
     <string name="smart_alarm_body">Tu alarma inteligente acaba de sonar.</string>
     <string name="battery_channel_name">Alertas de batería</string>
     <string name="battery_channel_desc">Avisos cuando la batería de la pulsera está baja o completamente cargada.</string>
+    <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">El ahorro de batería calma los indicadores, notificaciones de Android traducidas y gráficos instantáneos</string>
 </resources>
