@@ -1782,4 +1782,5 @@
     <string name="smart_alarm_body">Your smart alarm just went off.</string>
     <string name="battery_channel_name">Battery alerts</string>
     <string name="battery_channel_desc">Alerts when the strap battery is low or fully charged.</string>
+    <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">Battery saver quiets the gauges, translated Android notifications, and instant chart loads</string>
 </resources>

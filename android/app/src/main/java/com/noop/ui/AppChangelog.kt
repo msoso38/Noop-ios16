@@ -39,7 +39,7 @@ object AppChangelog {
     val releases: List<Release> = listOf(
         Release(
             version = "9.2.1",
-            title = "Battery saver quiets the gauges, translated Android notifications, and instant chart loads",
+            title = uiString(R.string.l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650),
             date = "July 2026",
             items = listOf(
                 "**Battery saver stops the animation (#909).** Turn on Low Power Mode or battery saver and the live gauges, sky and pulsing dots settle into a single still frame. On iPhone that was measured at ~18% of a CPU core with the screen just sitting idle, and 0% posed still. It switches the moment you flip the setting — no restart.",
