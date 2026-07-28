@@ -20,8 +20,9 @@ import StrandAnalytics
 //                            "heads-up". On-device estimate — not a diagnosis.
 //
 // DESIGN-SYSTEM ONLY: NoopCard + DomainTheme/StrandPalette tokens, StrandFont, NoopMetrics,
-// ScoreStatePill, the house buttons. No raw hex, no ad-hoc cards. Privacy-forward copy: this
-// data is physically incapable of leaving the device, and every sensitive surface says so.
+// ScoreStatePill, the house buttons. No raw hex, no ad-hoc cards. Privacy-forward copy:
+// there is no upload or sync path, and every sensitive surface names the user-exported
+// backup exception.
 //
 // The cards take VALUES, not stores — so a slip here stays local and can't take Health down,
 // and the engines stay testable + I/O-free upstream. Wave 3 wiring is documented at the foot.
@@ -31,7 +32,7 @@ import StrandAnalytics
 /// The standing privacy promise repeated on every sensitive skin-temp surface (the single
 /// biggest competitive wedge vs cloud cycle trackers, and the ethical stance).
 private let skinTempPrivacyLine =
-    String(localized: "This stays on your device. It is never uploaded, never synced, never shared.")
+    String(localized: "This never leaves your device unless you export a backup yourself.")
 
 /// A small, footnote-styled privacy row with a lock glyph — dropped at the foot of each
 /// sensitive card so the promise is impossible to miss without shouting.

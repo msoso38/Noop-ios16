@@ -17,12 +17,16 @@ class CycleTrackingStoreTest {
         fun delete(deviceId: String, day: String, key: String) {
             rows.remove(Triple(deviceId, day, key))
         }
+        fun deleteSeries(deviceId: String, key: String) {
+            rows.keys.removeAll { it.first == deviceId && it.third == key }
+        }
     }
 
     private fun store(fake: FakeSeries) = CycleTrackingStore(
         { fake.upsert(it) },
         { deviceId, key, from, to -> fake.query(deviceId, key, from, to) },
         { deviceId, day, key -> fake.delete(deviceId, day, key) },
+        { deviceId, key -> fake.deleteSeries(deviceId, key) },
     )
 
     @Test
@@ -55,6 +59,7 @@ class CycleTrackingStoreTest {
 
         store.deleteAll()
         assertEquals(emptyList<String>(), store.starts())
+        assertEquals(1.0, fake.rows[Triple("other-source", "2026-05-25", "period_start")]!!.value, 0.0)
     }
 
     @Test

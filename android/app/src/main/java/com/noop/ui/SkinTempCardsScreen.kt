@@ -66,18 +66,14 @@ import kotlin.math.roundToInt
 //                            "heads-up". On-device estimate — not a diagnosis.
 //
 // DESIGN-SYSTEM ONLY: NoopCard + Palette/DomainTheme tokens, NoopType, Metrics, StatePill.
-// No raw hex, no ad-hoc cards. Privacy-forward copy (this data is incapable of leaving the
-// device, said on every sensitive surface). Cards take VALUES not stores, so a slip stays
-// local and the engines remain testable + I/O-free. Wave-3 wiring noted at the foot.
+// No raw hex, no ad-hoc cards. Privacy-forward copy names the user-exported backup exception
+// on every sensitive surface. Cards take VALUES not stores, so a slip stays local and the
+// engines remain testable + I/O-free. Wave-3 wiring noted at the foot.
 
 // MARK: - Shared chrome
 
-/** The standing privacy promise repeated on every sensitive skin-temp surface. */
-private const val SKIN_TEMP_PRIVACY_LINE =
-    "This stays on your device. It is never uploaded, never synced, never shared."
-
 @Composable
-private fun PrivacyNote(text: String = SKIN_TEMP_PRIVACY_LINE) {
+private fun PrivacyNote(text: String = uiString(com.noop.R.string.cycle_tracker_privacy)) {
     Row(
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(6.dp),

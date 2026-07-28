@@ -2320,6 +2320,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             cycleOptedIn = _cycleTrackingEnabled.value,
             loggedPeriodStarts = starts,
             journalContext = illnessJournalContext(days),
+            activityBins = lastCircadianBins.first,
+            daysObserved = lastCircadianBins.second,
         )
     }
 

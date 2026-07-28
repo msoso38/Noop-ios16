@@ -51,13 +51,9 @@ extension Repository {
 
     /// Delete every logged period start after an explicit user confirmation.
     func deleteAllPeriodStarts() async {
-        let starts = await periodStarts()
-        guard !starts.isEmpty, let store = await storeHandle() else { return }
-        for day in starts {
-            _ = try? await store.deleteMetricSeriesPoint(deviceId: CycleTrackingStore.sourceId,
-                                                          day: day,
-                                                          key: CycleTrackingStore.periodStartKey)
-        }
+        guard let store = await storeHandle() else { return }
+        _ = try? await store.deleteMetricSeries(deviceId: CycleTrackingStore.sourceId,
+                                                 key: CycleTrackingStore.periodStartKey)
         noteCycleTrackingChanged()
     }
 }

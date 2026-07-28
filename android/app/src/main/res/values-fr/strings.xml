@@ -1780,7 +1780,7 @@
     <string name="cycle_tracker_delete_all">Tout supprimer</string>
     <string name="cycle_tracker_empty">Aucun début de règles enregistré pour le moment.</string>
     <string name="cycle_tracker_delete_day">Supprimer %1$s</string>
-    <string name="cycle_tracker_privacy">Ces données restent sur votre appareil. Elles ne sont jamais téléversées, synchronisées ni partagées.</string>
+    <string name="cycle_tracker_privacy">Ces données ne quittent votre appareil que si vous exportez vous-même une sauvegarde.</string>
     <string name="cycle_tracker_done">Terminé</string>
     <string name="cycle_tracker_delete_title">Supprimer tous les débuts de règles enregistrés ?</string>
     <string name="cycle_tracker_delete_message">Cela supprime définitivement l’historique des débuts de règles enregistré sur cet appareil. L’historique du capteur reste inchangé.</string>

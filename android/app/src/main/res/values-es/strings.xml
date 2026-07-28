@@ -1780,7 +1780,7 @@
     <string name="cycle_tracker_delete_all">Eliminar todo</string>
     <string name="cycle_tracker_empty">Aún no se ha registrado ningún inicio del período.</string>
     <string name="cycle_tracker_delete_day">Eliminar %1$s</string>
-    <string name="cycle_tracker_privacy">Esto permanece en tu dispositivo. Nunca se sube, sincroniza ni comparte.</string>
+    <string name="cycle_tracker_privacy">Estos datos solo salen de tu dispositivo si tú mismo exportas una copia de seguridad.</string>
     <string name="cycle_tracker_done">Listo</string>
     <string name="cycle_tracker_delete_title">¿Eliminar todos los inicios de período registrados?</string>
     <string name="cycle_tracker_delete_message">Esto elimina permanentemente el historial de inicios de período guardado en este dispositivo. El historial del sensor no cambia.</string>

@@ -12,11 +12,13 @@ class CycleTrackingStore(
     private val upsertRows: suspend (List<MetricSeriesRow>) -> Unit,
     private val queryRows: suspend (String, String, String, String) -> List<MetricSeriesRow>,
     private val deletePoint: suspend (String, String, String) -> Unit,
+    private val deleteSeries: suspend (String, String) -> Unit,
 ) {
     constructor(repo: WhoopRepository) : this(
         { rows -> repo.upsertMetricSeries(rows) },
         { deviceId, key, from, to -> repo.metricSeries(deviceId, key, from, to) },
         { deviceId, day, key -> repo.deleteMetricSeriesPoint(deviceId, day, key) },
+        { deviceId, key -> repo.deleteMetricSeries(deviceId, key) },
     )
 
     /** Log or idempotently re-log cycle day 1. */
@@ -38,7 +40,7 @@ class CycleTrackingStore(
 
     /** Remove all logged starts after explicit confirmation in the UI. */
     suspend fun deleteAll() {
-        starts().forEach { deleteStart(it) }
+        deleteSeries(SOURCE_ID, PERIOD_START_KEY)
     }
 
     companion object {

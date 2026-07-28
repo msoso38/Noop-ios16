@@ -103,4 +103,17 @@ extension WhoopStore {
             return db.changesCount
         }
     }
+
+    /// Delete every point for one source/key pair in a single statement. Returns the number of rows
+    /// removed; deleting an absent series is an idempotent zero-row change.
+    @discardableResult
+    public func deleteMetricSeries(deviceId: String, key: String) async throws -> Int {
+        try syncWrite { db in
+            try db.execute(sql: """
+                DELETE FROM metricSeries
+                WHERE deviceId = ? AND key = ?
+                """, arguments: [deviceId, key])
+            return db.changesCount
+        }
+    }
 }

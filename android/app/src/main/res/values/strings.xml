@@ -1806,7 +1806,7 @@
     <string name="cycle_tracker_delete_all">Delete all</string>
     <string name="cycle_tracker_empty">No period starts logged yet.</string>
     <string name="cycle_tracker_delete_day">Delete %1$s</string>
-    <string name="cycle_tracker_privacy">This stays on your device. It is never uploaded, never synced, never shared.</string>
+    <string name="cycle_tracker_privacy">This never leaves your device unless you export a backup yourself.</string>
     <string name="cycle_tracker_done">Done</string>
     <string name="cycle_tracker_delete_title">Delete all logged period starts?</string>
     <string name="cycle_tracker_delete_message">This permanently removes the on-device period-start history. Sensor history is not changed.</string>
