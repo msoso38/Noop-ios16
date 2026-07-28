@@ -210,14 +210,16 @@ struct SettingsView: View {
 
                 // Lower-frequency sections collapse behind a single default-closed disclosure so the
                 // screen opens at ~6 sections instead of 11. Nothing is removed; every section here
-                // (Recovery / advanced scoring, Test Centre, the experimental probes + raw-capture, and
-                // Backup & restore) stays one tap away. Modelled on the Test Centre "Advanced" group.
+                // (Recovery / advanced scoring, HRV tuning, Test Centre, the experimental probes +
+                // raw-capture, and Backup & restore) stays one tap away. Modelled on the Test Centre
+                // "Advanced" group.
                 SettingsDisclosureGroup(
                     title: "Advanced",
-                    subtitle: "Recovery, Test Centre, experimental probes, and backup. Tucked away to keep the everyday screen tidy.",
+                    subtitle: "Recovery, HRV tuning, Test Centre, experimental probes, and backup. Tucked away to keep the everyday screen tidy.",
                     isExpanded: $advancedOpen
                 ) {
                     recoveryCard
+                    hrvCard
                     testCentreCard
                     experimentalCard
                     backupCard
@@ -910,74 +912,9 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Divider().overlay(StrandPalette.hairline)
-
-                // MARK: Continuous HRV capture — keep the dense beat-to-beat (R-R) stream armed 24/7.
-                Toggle(isOn: $continuousHrvEnabled) {
-                    Text("Continuous HRV capture")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                .onChangeCompat(of: continuousHrvEnabled) { on in model.ble.setKeepRealtimeForData(on) }
-                Text("Keeps the detailed beat-to-beat heart-rate stream running all day and night, not just while a live screen is open, so NOOP captures much more for overnight HRV, recovery and sleep. Uses more battery: your strap streams heart rate continuously while connected.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                // #927 Overnight only: window-gate the continuous stream to the nightly quiet-hours
-                // window. Re-pushing the UNCHANGED base preference just re-runs the BLE reconciler,
-                // which re-derives the window gate and arms/disarms on the edge immediately.
-                if continuousHrvEnabled {
-                    Toggle(isOn: $continuousHrvOvernightOnly) {
-                        Text("Overnight only")
-                            .font(StrandFont.subhead)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                    }
-                    .toggleStyle(.switch)
-                    .tint(StrandPalette.accent)
-                    .onChangeCompat(of: continuousHrvOvernightOnly) { _ in
-                        model.ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
-                    }
-                    Text("Runs the continuous HRV stream only during your quiet hours window (22:00–07:00 by default), roughly halving the battery cost. Daytime Stress readings will be sparser. Note: continuous background HRV capture (including daytime naps) is paused outside this window. For on-demand daytime HRV readings (including naps), use the \"Take an HRV reading\" button on the Live screen.")
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                // HRV window (#141) — grouped with the other HRV settings (#155). Whole night (NOOP's
-                // long-standing value) or DEEP sleep only (WHOOP-style, reads lower and more comparable to
-                // WHOOP/Polar). Unlike the Effort scale this CHANGES the number, so a switch re-scores +
-                // re-baselines (like a sleep edit).
-                FormRow(label: "HRV window") {
-                    Picker("HRV window", selection: $hrvWindowRaw) {
-                        // #153: "Night" (not "Whole night") — a single short word so the two-segment
-                        // control doesn't truncate once it sizes to the row (some locales' longer
-                        // translations overflowed), matching the Temperature/Theme pickers above.
-                        Text("Night").tag(HrvWindow.whole.rawValue)
-                        Text("Deep sleep").tag(HrvWindow.deep.rawValue)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .tint(StrandPalette.accent)
-                    .accessibilityLabel("HRV window")
-                    .onChangeCompat(of: hrvWindowRaw) { _ in
-                        // #201: the new window shifts every night's avgHrv, so the HRV baseline must reflect it
-                        // too — but a plain re-score already achieves that. analyzeRecent re-scores the recent
-                        // ~21 nights' avgHrv under the new window AND re-folds the HRV baseline from them in the
-                        // same pass, and the baseline's 14-night-half-life EWMA is dominated by that fresh
-                        // re-scored tail. So DON'T re-anchor the baseline epoch: doing so would drop all history
-                        // and force a multi-night "calibrating" reset for someone who already has plenty of nights
-                        // (that reset reading as "the setting is broken" was #195). A genuine cold-start user
-                        // (<4 valid nights) still calibrates honestly; established users see the switch immediately.
-                        Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
-                    }
-                }
-                Text("Whole night is NOOP's default measure; Deep sleep pools HRV over slow-wave sleep only, reading lower and matching WHOOP. Switching re-scores your recent nights over the new window and takes effect right away once you have a few nights of data.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // Continuous HRV capture, "Overnight only" and the HRV window picker moved to the
+                // "HRV" card under Advanced (#155/#141/#927 unaffected — same bindings, same BLE +
+                // re-score wiring, just tucked away as tuning rather than shown here at all times).
 
                 // MARK: Strap name — rename the WHOOP 4.0's BLE advertising name (Harvard command set).
                 if live.connected && selectedWhoopModelRaw == WhoopModel.whoop4.rawValue {
@@ -988,14 +925,10 @@ struct SettingsView: View {
                 #if os(iOS)
                 Divider().overlay(StrandPalette.hairline)
                 // MARK: Live Activity — show live HR on the Lock Screen + Dynamic Island (#336).
-                Toggle(isOn: $liveActivityEnabled) {
-                    Text("Live heart rate in Dynamic Island")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
+                SettingsToggleRow(title: "Live heart rate in Dynamic Island", isOn: $liveActivityEnabled) {
+                    InfoButton(text: "Shows your live heart rate on the Lock Screen and in the Dynamic Island while the strap is connected. (Any one already showing clears within a moment.)")
                 }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                Text("Shows your live heart rate on the Lock Screen and in the Dynamic Island while the strap is connected. Turn it off to keep your live HR out of the Dynamic Island. (Any one already showing clears within a moment.)")
+                Text("Turn it off to keep your live HR out of the Dynamic Island.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1168,6 +1101,81 @@ struct SettingsView: View {
         showBackupAlert = true
     }
 
+    // MARK: - HRV tuning (moved out of the always-visible Strap card into Advanced; same bindings,
+    // same BLE + re-score wiring as before — see strapCard for what stayed: status, Re-scan/Disconnect,
+    // the strap log, strap name and Live Activity toggle, all still findable without opening Advanced)
+
+    private var hrvCard: some View {
+        SettingsSection(
+            icon: "waveform.path.ecg",
+            title: "HRV",
+            blurb: "Tune how NOOP captures and windows your heart-rate-variability reading."
+        ) {
+            VStack(alignment: .leading, spacing: 16) {
+                // MARK: Continuous HRV capture — keep the dense beat-to-beat (R-R) stream armed 24/7.
+                SettingsToggleRow(title: "Continuous HRV capture", isOn: $continuousHrvEnabled) {
+                    InfoButton(text: "Keeps the detailed beat-to-beat heart-rate stream running all day and night, not just while a live screen is open, so NOOP captures much more for overnight HRV, recovery and sleep.")
+                }
+                .onChangeCompat(of: continuousHrvEnabled) { on in model.ble.setKeepRealtimeForData(on) }
+                Text("Uses more battery: your strap streams heart rate continuously while connected.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                // #927 Overnight only: window-gate the continuous stream to the nightly quiet-hours
+                // window. Re-pushing the UNCHANGED base preference just re-runs the BLE reconciler,
+                // which re-derives the window gate and arms/disarms on the edge immediately.
+                if continuousHrvEnabled {
+                    SettingsToggleRow(title: "Overnight only", isOn: $continuousHrvOvernightOnly) {
+                        InfoButton(text: "Runs the continuous HRV stream only during your quiet hours window (22:00–07:00 by default), roughly halving the battery cost. Note: continuous background HRV capture (including daytime naps) is paused outside this window.")
+                    }
+                    .onChangeCompat(of: continuousHrvOvernightOnly) { _ in
+                        model.ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
+                    }
+                    Text("Daytime Stress readings will be sparser. For on-demand daytime HRV readings (including naps), use the \"Take an HRV reading\" button on the Live screen.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // HRV window (#141) — grouped with the other HRV settings (#155). Whole night (NOOP's
+                // long-standing value) or DEEP sleep only (WHOOP-style, reads lower and more comparable to
+                // WHOOP/Polar). Unlike the Effort scale this CHANGES the number, so a switch re-scores +
+                // re-baselines (like a sleep edit).
+                FormRow(label: "HRV window") {
+                    Picker("HRV window", selection: $hrvWindowRaw) {
+                        // #153: "Night" (not "Whole night") — a single short word so the two-segment
+                        // control doesn't truncate once it sizes to the row (some locales' longer
+                        // translations overflowed), matching the Temperature/Theme pickers above.
+                        Text("Night").tag(HrvWindow.whole.rawValue)
+                        Text("Deep sleep").tag(HrvWindow.deep.rawValue)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .tint(StrandPalette.accent)
+                    .accessibilityLabel("HRV window")
+                    .onChangeCompat(of: hrvWindowRaw) { _ in
+                        // #201: the new window shifts every night's avgHrv, so the HRV baseline must reflect it
+                        // too — but a plain re-score already achieves that. analyzeRecent re-scores the recent
+                        // ~21 nights' avgHrv under the new window AND re-folds the HRV baseline from them in the
+                        // same pass, and the baseline's 14-night-half-life EWMA is dominated by that fresh
+                        // re-scored tail. So DON'T re-anchor the baseline epoch: doing so would drop all history
+                        // and force a multi-night "calibrating" reset for someone who already has plenty of nights
+                        // (that reset reading as "the setting is broken" was #195). A genuine cold-start user
+                        // (<4 valid nights) still calibrates honestly; established users see the switch immediately.
+                        Task { await model.intelligence.analyzeRecent(); await model.repo.refresh() }
+                    }
+                } accessory: {
+                    InfoButton(text: "Whole night is NOOP's default measure; Deep sleep pools HRV over slow-wave sleep only, reading lower and matching WHOOP.")
+                }
+                Text("Switching re-scores your recent nights over the new window and takes effect right away once you have a few nights of data.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     // MARK: - Test Centre (the diagnostic home, #507/#509)
 
     /// A nav row into the Test Centre, the single home for the diagnostic, log and test controls (spec
@@ -1207,47 +1215,26 @@ struct SettingsView: View {
             blurb: "Optional trackers, off by default. Turn them on to add their cards. Everything stays on \(Platform.deviceNounPhrase)."
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.space2 + 2) {
-                Toggle(isOn: $hydrationEnabled) {
-                    Text("Hydration tracking")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
+                SettingsToggleRow(title: "Hydration tracking", isOn: $hydrationEnabled,
+                                  accessibilityHint: "Adds a water-log card to your dashboard") {
+                    InfoButton(text: "Adds a simple fluid log with a daily goal that adjusts to your effort. Tap to add a sip, cup or bottle and watch a progress ring fill. On \(Platform.deviceNounPhrase) only. Nothing is synced.")
                 }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                .accessibilityHint("Adds a water-log card to your dashboard")
 
-                Text("Adds a simple fluid log with a daily goal that adjusts to your effort. Tap to add a sip, cup or bottle and watch a progress ring fill. On \(Platform.deviceNounPhrase) only. Nothing is synced.")
+                Divider().overlay(StrandPalette.hairline)
+
+                SettingsToggleRow(title: "Auto-detect workouts", isOn: $autoDetectWorkoutsEnabled,
+                                  accessibilityHint: "Offers to save a workout when it spots sustained elevated heart rate") {
+                    InfoButton(text: "After a sync, NOOP looks over your recent heart rate for a sustained, raised stretch that looks like exercise and offers to save it. Deliberately conservative, so the odd workout may be missed. On \(Platform.deviceNounPhrase) only.")
+                }
+                Text("It only ever suggests. Nothing is saved until you tap Save, and you can dismiss any suggestion.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Divider().overlay(StrandPalette.hairline)
 
-                Toggle(isOn: $autoDetectWorkoutsEnabled) {
-                    Text("Auto-detect workouts")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                .accessibilityHint("Offers to save a workout when it spots sustained elevated heart rate")
-
-                Text("After a sync, NOOP looks over your recent heart rate for a sustained, raised stretch that looks like exercise and offers to save it. It only ever suggests. Nothing is saved until you tap Save, and you can dismiss any suggestion. Deliberately conservative, so the odd workout may be missed. On \(Platform.deviceNounPhrase) only.")
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Divider().overlay(StrandPalette.hairline)
-
-                Toggle(isOn: $journalReminderEnabled) {
-                    Text("Journal reminder")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                .accessibilityHint("Show a Today card reminding you to log your journal")
-
+                SettingsToggleRow(title: "Journal reminder", isOn: $journalReminderEnabled,
+                                  accessibilityHint: "Show a Today card reminding you to log your journal")
                 Text("Show a Today card reminding you to log your journal")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -1255,16 +1242,11 @@ struct SettingsView: View {
 
                 Divider().overlay(StrandPalette.hairline)
 
-                Toggle(isOn: $workoutKeepScreenOn) {
-                    Text("Keep screen on during a workout")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
+                SettingsToggleRow(title: "Keep screen on during a workout", isOn: $workoutKeepScreenOn,
+                                  accessibilityHint: "Stops the screen dimming while a workout is recording") {
+                    InfoButton(text: "Holds the screen awake while you're recording a workout, so your live heart rate stays visible without the device dimming. Only applies during a recording. The screen sleeps normally the rest of the time.")
                 }
-                .toggleStyle(.switch)
-                .tint(StrandPalette.accent)
-                .accessibilityHint("Stops the screen dimming while a workout is recording")
-
-                Text("Holds the screen awake while you're recording a workout, so your live heart rate stays visible without the device dimming. Only applies during a recording. The screen sleeps normally the rest of the time. Leaving it on does use a bit more battery, and means your unlocked screen stays visible for the whole workout, so flip it off if that's a concern.")
+                Text("Uses a bit more battery, and means your unlocked screen stays visible for the whole workout, so flip it off if that's a concern.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2400,11 +2382,14 @@ private struct SettingsDisclosureGroup<Content: View>: View {
 
 /// A grouped settings card: a "Settings" overline + icon + title header, an explanatory blurb,
 /// then content. A faint accent-blue wash anchors the card to NOOP's neutral chrome (WHOOP skin).
-private struct SettingsSection<Content: View>: View {
+/// `accessory` is an optional trailing view next to the title (e.g. an `InfoButton`); the
+/// `Accessory == EmptyView` extension below keeps every existing call site source-compatible.
+private struct SettingsSection<Content: View, Accessory: View>: View {
     let icon: String
     let title: LocalizedStringKey
     let blurb: LocalizedStringKey
     @ViewBuilder var content: () -> Content
+    @ViewBuilder var accessory: () -> Accessory
 
     var body: some View {
         StrandCard(padding: 20, tint: StrandPalette.accent) {
@@ -2418,6 +2403,8 @@ private struct SettingsSection<Content: View>: View {
                         Text(title)
                             .font(StrandFont.title2)
                             .foregroundStyle(StrandPalette.textPrimary)
+                        Spacer(minLength: 0)
+                        accessory()
                     }
                 }
                 Text(blurb)
@@ -2427,6 +2414,13 @@ private struct SettingsSection<Content: View>: View {
                 content()
             }
         }
+    }
+}
+
+extension SettingsSection where Accessory == EmptyView {
+    init(icon: String, title: LocalizedStringKey, blurb: LocalizedStringKey,
+         @ViewBuilder content: @escaping () -> Content) {
+        self.init(icon: icon, title: title, blurb: blurb, content: content, accessory: { EmptyView() })
     }
 }
 
@@ -2950,9 +2944,12 @@ struct StepsCalibrationSheet: View {
 // MARK: - Two-column form row
 
 /// Label on the left, control on the right — the two-column form feel.
-private struct FormRow<Control: View>: View {
+/// `accessory` is an optional trailing view after `control` (e.g. an `InfoButton`); the
+/// `Accessory == EmptyView` extension below keeps every existing call site source-compatible.
+private struct FormRow<Control: View, Accessory: View>: View {
     let label: LocalizedStringKey
     @ViewBuilder var control: () -> Control
+    @ViewBuilder var accessory: () -> Accessory
 
     var body: some View {
         HStack(alignment: .center, spacing: NoopMetrics.space4) {
@@ -2961,8 +2958,45 @@ private struct FormRow<Control: View>: View {
                 .foregroundStyle(StrandPalette.textPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             control()
+            accessory()
         }
         .frame(minHeight: 32)
+    }
+}
+
+extension FormRow where Accessory == EmptyView {
+    init(label: LocalizedStringKey, @ViewBuilder control: @escaping () -> Control) {
+        self.init(label: label, control: control, accessory: { EmptyView() })
+    }
+}
+
+/// A `Toggle` with its title, and an optional trailing `accessory` (e.g. an `InfoButton`) for
+/// background prose that used to be a permanent caption underneath. Any safety/battery-impact
+/// sentence stays a plain `Text` sibling at the call site — this only replaces "nice to know" prose.
+private struct SettingsToggleRow<Accessory: View>: View {
+    let title: LocalizedStringKey
+    @Binding var isOn: Bool
+    var accessibilityHint: LocalizedStringKey? = nil
+    @ViewBuilder var accessory: () -> Accessory
+
+    var body: some View {
+        HStack(spacing: NoopMetrics.space2) {
+            Toggle(isOn: $isOn) {
+                Text(title)
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textPrimary)
+            }
+            .toggleStyle(.switch)
+            .tint(StrandPalette.accent)
+            .accessibilityHint(accessibilityHint ?? "")
+            accessory()
+        }
+    }
+}
+
+extension SettingsToggleRow where Accessory == EmptyView {
+    init(title: LocalizedStringKey, isOn: Binding<Bool>, accessibilityHint: LocalizedStringKey? = nil) {
+        self.init(title: title, isOn: isOn, accessibilityHint: accessibilityHint, accessory: { EmptyView() })
     }
 }
 
