@@ -2033,9 +2033,11 @@ class WhoopBleClient(
                         // the night MEAN (the other app's number) — from the post-backfill scoring pass, not
                         // only the UI's 15-min loop. log() PII-scrubs at the sink. Best-effort + logging only.
                         diag = { s -> log(s) },
-                        // Opt-in experimental sleep staging (V2): stage this post-backfill pass with the same
+                        // Experimental sleep staging (V2): stage this post-backfill pass with the same
                         // engine the user chose in Settings, read off SharedPreferences here (the analytics
-                        // layer is Context-free). Default off → V1. (V7 Pillar 3b)
+                        // layer is Context-free). The stored preference is default TRUE
+                        // (getBoolean(KEY, true)), so this normally passes V2 — turning the Settings toggle
+                        // off is what falls back to V1. (V7 Pillar 3b)
                         useExperimentalSleepV2 = PuffinExperiment.from(context).experimentalSleepV2,
                         // Opt-in motion-aware wake refinement (#364 follow-up) — same Context-free threading.
                         useMotionAwareWake = PuffinExperiment.from(context).motionAwareWake,
