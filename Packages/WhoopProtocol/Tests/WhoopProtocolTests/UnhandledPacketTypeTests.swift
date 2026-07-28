@@ -104,7 +104,11 @@ final class UnhandledPacketTypeTests: XCTestCase {
         // WHOOP 4.0 envelope: [AA][len lo][len hi][crc8(len)] + inner + crc32(inner). Type byte leads the
         // inner record, so this is a well-formed frame of a type the schema does not name.
         let inner: [UInt8] = [99, 0x11, 0x00]
-        var frame: [UInt8] = [0xAA, UInt8(inner.count), 0, 0]
+        // The length field covers the inner record PLUS the 4-byte CRC32 trailer, not the record alone —
+        // get it wrong and the parser cannot locate the trailer, so `crcOK` comes back nil rather than
+        // true and the frame is malformed in a way that still counts. Same convention as
+        // Whoop4ResponseResultTests ([0xAA, 7, 0, 0] for a 3-byte inner).
+        var frame: [UInt8] = [0xAA, UInt8(inner.count + 4), 0, 0]
         frame[3] = crc8(Array(frame[1..<3]))
         frame += inner
         let c32 = crc32(inner)

@@ -30,11 +30,15 @@ class HistoricalStreamsUnhandledTypeTest {
      */
     private fun frameOfType(t: Int): ByteArray {
         val inner = byteArrayOf(t.toByte(), 0, 0)
+        // Length covers the inner record PLUS the 4-byte CRC32 trailer, not the record alone. Getting this
+        // wrong leaves crcOk null rather than true — the frame still reaches the census, so the test passes
+        // while feeding the decoder something malformed. Swift's twin caught it; pinned here too.
+        val declaredLen = (inner.size + 4).toByte()
         val out = ArrayList<Byte>()
         out.add(0xAA.toByte())
-        out.add(inner.size.toByte())
+        out.add(declaredLen)
         out.add(0)
-        out.add(Crc.crc8(byteArrayOf(inner.size.toByte(), 0)).toByte())
+        out.add(Crc.crc8(byteArrayOf(declaredLen, 0)).toByte())
         inner.forEach { out.add(it) }
         val c32 = Crc.crc32(inner)
         out.add((c32 and 0xFF).toByte())
