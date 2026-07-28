@@ -52,6 +52,16 @@
 
     <!-- Today screen: workouts feed header. Matches the iOS German entry for "Latest Workouts". -->
     <string name="today_latest_workouts">Neueste Workouts</string>
+    <string name="today_customize_title">Heute anpassen</string>
+    <string name="today_customize_action">Anpassen</string>
+    <string name="today_customize_description">Ordne sichtbare Elemente neu an oder verschiebe einen Abschnitt nach „Ausgeblendet“, ohne ihn zu löschen.</string>
+    <string name="today_customize_shown">ANGEZEIGT</string>
+    <string name="today_customize_hidden">AUSGEBLENDET</string>
+    <string name="today_customize_nothing_hidden">Nichts ausgeblendet</string>
+    <string name="today_customize_move_up">%1$s nach oben verschieben</string>
+    <string name="today_customize_move_down">%1$s nach unten verschieben</string>
+    <string name="today_customize_hide">%1$s ausblenden</string>
+    <string name="today_customize_show">%1$s anzeigen</string>
 
     <!-- First-run Terms gate (clickwrap). Wording kept identical to the iOS German entries in
          Localizable.xcstrings (PR #984) so both platforms present the same text. The German gate is

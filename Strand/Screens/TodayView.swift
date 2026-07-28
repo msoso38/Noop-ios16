@@ -215,9 +215,10 @@ struct TodayView: View {
     private var hrvWindow: HrvWindow { HrvWindow(rawValue: hrvWindowRaw) ?? .whole }
 
     // Editable Key-Metrics layout (#251), an ordered list of the enabled tiles, persisted display-only.
-    // Empty/unset shows the full default order. The "Edit" affordance on the section opens a local sheet.
+    // Empty/unset shows the full default order. Every edit affordance routes into one customization sheet.
     @AppStorage(KeyMetricPrefs.layoutKey) private var keyMetricsRaw = ""
-    @State private var showingMetricsEditor = false
+    @AppStorage("today.keyMetricsDetailed") private var keyMetricsDetailed = false
+    @AppStorage("today.keyMetricsWindowDays") private var keyMetricsWindowDays = 14
     private var enabledKeyMetrics: [KeyMetric] { KeyMetricPrefs.decodeEnabled(keyMetricsRaw) }
 
     // "Your cards" customisable dashboard (WHOOP "My Dashboard"), a persisted, reorderable selection of
@@ -225,7 +226,13 @@ struct TodayView: View {
     // Resting HR). The "CUSTOMISE" link on the section header opens a local sheet (no new nav destination).
     // Persistence is display-only, these cards read the SAME values the rest of Today already loads.
     @AppStorage(DashboardCardPrefs.selectionKey) private var dashboardCardsRaw = ""
-    @State private var showingDashboardEditor = false
+    @AppStorage(TodayLayoutPrefs.orderKey) private var sectionOrderRaw = ""
+    @AppStorage(TodayLayoutPrefs.hiddenKey) private var hiddenSectionsRaw = ""
+    @AppStorage(LiveSessionPrefs.betaKey) private var liveSessionsBeta = true
+    private var sectionOrder: [TodaySection] {
+        TodayLayoutPrefs.visibleOrder(orderRaw: sectionOrderRaw, hiddenRaw: hiddenSectionsRaw)
+    }
+    @State private var customizationDestination: TodayCustomizationDestination?
     // Hydration tracker (opt-in, default OFF). When off the hydration dashboard card is hidden even if a
     // user had it in their saved selection, the feature owns its own gate.
     @AppStorage(HydrationStore.enabledKey) private var hydrationEnabled = false
@@ -339,6 +346,7 @@ struct TodayView: View {
     // iOS top-bar state: the date-jump popover and the profile/settings sheet.
     @State private var showDayPicker = false
     @State private var showSettings = false
+    @State private var showLiveSession = false
     /// The Updates inbox sheet (opened by the header bell). Shared across both platforms.
     @State private var showUpdatesInbox = false
 
@@ -1312,47 +1320,15 @@ struct TodayView: View {
                 // without tinting the rest of the dashboard. The day-cycle scene wash caps at ~0.42 opacity
                 // and fades top-down with a bottom dark scrim, no glow, so the white ring numbers + labels
                 // stay crisp and high-contrast.
-                #if os(iOS)
-                // Pull the rings up under the compact top bar, the full section gap left too much air
-                // above them now the big "Today's Synthesis" header is gone. The hero now sits over the
-                // day-cycle SCENE wash (picked by the local hour), which fades top-down behind the rings;
-                // the scene IS the atmosphere here, replacing the procedural time-of-day backdrop. It caps
-                // at ~0.42 opacity with a bottom dark scrim so the white ring numbers + labels stay crisp.
-                heroSection
-                    .padding(.vertical, NoopMetrics.space4)
-                    .frame(maxWidth: .infinity)
-                    // The dark hero CARD floats over the vivid day-scene so the rings + white numbers stay
-                    // crisp, the card does the contrast work, not a muted scene (2026-06-23).
-                    .background(
-                        RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous)
-                            .fill(StrandPalette.surfaceBase.opacity(0.72))
-                    )
-                    .staggeredAppear(index: 0)
-                #else
-                heroSection
-                    .padding(.vertical, NoopMetrics.space4)
-                    .frame(maxWidth: .infinity)
-                    .background(
-                        RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous)
-                            .fill(StrandPalette.surfaceBase.opacity(0.72))
-                    )
-                    .staggeredAppear(index: 0)
-                #endif
-                synthesisSection.staggeredAppear(index: 1)
-                // S4: the SEPARATE Readiness block is no longer a home-screen card, it folded into the
-                // Charge-ring tap (chargeBreakdownSheet). A one-word readiness read (Push / Maintain / Rest,
-                // #205) stays on the hero via the Synthesis section's pill row, so the home screen keeps a
-                // glanceable verdict without the full card. Readiness is NOT deleted, only moved behind a tap.
-                metricsSection.staggeredAppear(index: 2)
-                workoutsSection.staggeredAppear(index: 3)
-                heartRateTrendSection.staggeredAppear(index: 4)
-                yourCardsSection.staggeredAppear(index: 5)
+                // The same full order/visibility registry as Liquid Today and Android. Every editor row maps
+                // to one real section here, so a change saved from the shared sheet immediately affects this
+                // reference implementation too.
+                ForEach(sectionOrder) { section in
+                    todaySection(section)
+                }
                 // Opt-in "looks like a workout?" suggestion (default OFF). Renders only when the
                 // Settings toggle is on AND the detector finds a recent unsaved, un-dismissed window.
                 AutoWorkoutCard()
-                // #627: the persistent journal widget (last-7-days strip + tap-through to the journal).
-                // Today only; self-hides when the reminder toggle is off. Twin of Android JournalReminderCard.
-                if selectedDayOffset == 0 { JournalReminderCard() }
                 sourcesSection
             }
             #if os(iOS)
@@ -1439,6 +1415,28 @@ struct TodayView: View {
         // A1 (#514/#706): the Charge breakdown, opened by tapping the Today hero Charge ring. The body
         // builds lazily here (#819 lag) from the drivers DERIVED off the displayed row (never a second read).
         .sheet(isPresented: $showChargeBreakdown) { chargeBreakdownSheet }
+        // Every Today layout/card affordance presents the same draft-based editor. Section-level buttons
+        // deep-link to their child page; Cancel/Save semantics and Shown/Hidden rows stay identical.
+        .sheet(item: $customizationDestination) { destination in
+            TodayCustomizationSheet(
+                initialDestination: destination,
+                sectionOrderRaw: $sectionOrderRaw,
+                hiddenSectionsRaw: $hiddenSectionsRaw,
+                keyMetricsRaw: $keyMetricsRaw,
+                keyMetricsDetailed: $keyMetricsDetailed,
+                keyMetricsWindowDays: $keyMetricsWindowDays,
+                dashboardCardsRaw: $dashboardCardsRaw
+            )
+        }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $showLiveSession) {
+            LiveSessionView(onClose: { showLiveSession = false })
+        }
+        #else
+        .sheet(isPresented: $showLiveSession) {
+            LiveSessionView(onClose: { showLiveSession = false })
+        }
+        #endif
         // Honour a "Restore to Today" tap from the inbox: flip the matching dismissed flag back so the
         // card reappears (the inbox also clears the @AppStorage key directly, but this covers an
         // already-mounted Today). Cleared once handled.
@@ -1679,6 +1677,74 @@ struct TodayView: View {
 
     // MARK: (a) HERO, three ring scores (Charge / Effort / Rest) over a scenic backdrop,
     // then the green-tinted Synthesis coaching card. Bevel layout.
+
+    @ViewBuilder
+    private func todaySection(_ section: TodaySection) -> some View {
+        switch section {
+        case .hero:
+            classicHeroSection
+        case .liveSession:
+            if liveSessionsBeta { liveSessionStartSection }
+        case .synthesis:
+            synthesisSection
+        case .keyMetrics:
+            metricsSection
+        case .workouts:
+            workoutsSection
+        case .heartRate:
+            heartRateTrendSection
+        case .recoveryVitals:
+            recoveryVitalsSection
+        case .yourCards:
+            yourCardsSection
+        case .journal:
+            if selectedDayOffset == 0 { JournalReminderCard() }
+        }
+    }
+
+    private var classicHeroSection: some View {
+        heroSection
+            .padding(.vertical, NoopMetrics.space4)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous)
+                    .fill(StrandPalette.surfaceBase.opacity(0.72))
+            )
+    }
+
+    private var liveSessionStartSection: some View {
+        Button { showLiveSession = true } label: {
+            NoopCard(tint: StrandPalette.metricCyan) {
+                HStack(spacing: NoopMetrics.space3) {
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(StrandFont.headline)
+                        .foregroundStyle(StrandPalette.metricCyan)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: NoopMetrics.space1) {
+                        Text("Start session")
+                            .font(StrandFont.headline)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Text("Silent strap coaching against today's Charge.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    }
+                    Spacer(minLength: NoopMetrics.space2)
+                    Text("BETA")
+                        .strandOverline()
+                    Image(systemName: "chevron.right")
+                        .font(StrandFont.caption.weight(.semibold))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Start a live session. Beta. Silent strap coaching against today's Charge.")
+    }
+
+    private var recoveryVitalsSection: some View {
+        recoveryVitalsCard(displayDay)
+    }
 
     @ViewBuilder
     private var heroSection: some View {
@@ -1975,8 +2041,6 @@ struct TodayView: View {
                 .accessibilityElement(children: .combine)
             }
 
-            // HRV / Resting HR / Respiratory, the vitals that drive recovery.
-            recoveryVitalsCard(d)
         }
     }
 
@@ -2091,7 +2155,7 @@ struct TodayView: View {
                     Text("Your cards").strandOverline()
                     Spacer(minLength: 8)
                     Button {
-                        showingDashboardEditor = true
+                        customizationDestination = .yourCards
                     } label: {
                         Label(String(localized: "Edit").uppercased(), systemImage: "slider.horizontal.3")   // #492/#563: unified "EDIT"
                             .font(StrandFont.overline)
@@ -2105,9 +2169,6 @@ struct TodayView: View {
                 ForEach(enabledDashboardCards) { card in
                     dashboardCardRow(card)
                 }
-            }
-            .sheet(isPresented: $showingDashboardEditor) {
-                DashboardCardsEditorSheet(selectionRaw: $dashboardCardsRaw)
             }
         }
     }
@@ -3104,7 +3165,7 @@ struct TodayView: View {
             HStack(alignment: .firstTextBaseline) {
                 SectionHeader("Key Metrics", overline: "\(selectedDayOverline)", trailing: String(localized: "14-day trend"))
                 Button {
-                    showingMetricsEditor = true
+                    customizationDestination = .keyMetrics
                 } label: {
                     Label(String(localized: "Edit").uppercased(), systemImage: "slider.horizontal.3")   // #492/#563: uppercase to match
                         .font(StrandFont.footnote)
@@ -3133,9 +3194,6 @@ struct TodayView: View {
             if metricsHasOverflow {
                 metricsExpander
             }
-        }
-        .sheet(isPresented: $showingMetricsEditor) {
-            KeyMetricsEditorSheet(layoutRaw: $keyMetricsRaw)
         }
     }
 

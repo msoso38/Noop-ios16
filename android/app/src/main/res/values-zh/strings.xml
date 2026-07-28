@@ -46,6 +46,16 @@
     <string name="action_log_journal">记录日志</string>
     <string name="action_breathe">深呼吸</string>
     <string name="today_latest_workouts">近期运动</string>
+    <string name="today_customize_title">自定义“今天”</string>
+    <string name="today_customize_action">自定义</string>
+    <string name="today_customize_description">重新排序已显示内容，或将某个部分移至“已隐藏”而不删除。</string>
+    <string name="today_customize_shown">已显示</string>
+    <string name="today_customize_hidden">已隐藏</string>
+    <string name="today_customize_nothing_hidden">没有隐藏项目</string>
+    <string name="today_customize_move_up">上移%1$s</string>
+    <string name="today_customize_move_down">下移%1$s</string>
+    <string name="today_customize_hide">隐藏%1$s</string>
+    <string name="today_customize_show">显示%1$s</string>
     <string name="terms_title">在使用 NOOP 之前</string>
     <string name="terms_subtitle">请仔细阅读以下要点，并确认每一项声明。</string>
     <string name="terms_point_independent_head">独立开发：与 WHOOP 无关</string>

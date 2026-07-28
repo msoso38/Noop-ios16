@@ -1541,6 +1541,16 @@
     <string name="action_log_journal">Registrar diario</string>
     <string name="action_breathe">Respira</string>
     <string name="today_latest_workouts">Últimos entrenamientos</string>
+    <string name="today_customize_title">Personalizar Hoy</string>
+    <string name="today_customize_action">Personalizar</string>
+    <string name="today_customize_description">Reordena lo que se muestra o mueve una sección a Ocultos sin eliminarla.</string>
+    <string name="today_customize_shown">VISIBLES</string>
+    <string name="today_customize_hidden">OCULTOS</string>
+    <string name="today_customize_nothing_hidden">No hay nada oculto</string>
+    <string name="today_customize_move_up">Mover %1$s hacia arriba</string>
+    <string name="today_customize_move_down">Mover %1$s hacia abajo</string>
+    <string name="today_customize_hide">Ocultar %1$s</string>
+    <string name="today_customize_show">Mostrar %1$s</string>
     <string name="terms_title">Antes de usar NOOP</string>
     <string name="terms_subtitle">Por favor lea los puntos de abajo, luego confirme cada declaración.</string>
     <string name="terms_point_independent_head">Independiente: no afiliado a WHOOP</string>
