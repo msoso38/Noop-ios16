@@ -111,8 +111,7 @@ class HistoricalStreamsUnhandledTypeTest {
 
     /**
      * Packet-type NAMES must match Swift for every byte the census can render, or the same strap produces
-     * two different report lines. 53-55 were missing from the Kotlin enum until #891; 56 must stay absent
-     * because both platforms alias it onto METADATA.
+     * two different report lines. 53-56 were missing from the Kotlin enum until #891.
      */
     @Test
     fun packetTypeNamesMatchTheSwiftSchema() {
@@ -121,7 +120,29 @@ class HistoricalStreamsUnhandledTypeTest {
         assertEquals("RELATIVE_PUFFIN_EVENTS", Framing.typeName(53))
         assertEquals("PUFFIN_EVENTS_FROM_STRAP", Framing.typeName(54))
         assertEquals("RELATIVE_BATTERY_PACK_CONSOLE_LOGS", Framing.typeName(55))
-        assertEquals("METADATA", Framing.typeName(56))   // puffin alias, both platforms
+        assertEquals("METADATA", Framing.typeName(56))   // 5/MG puffin alias, both platforms
         assertEquals("type99", Framing.typeName(99))     // nothing names it
+    }
+
+    /**
+     * The rendering is FAMILY-AWARE, mirroring Swift's `frameTypeName`: a WHOOP 4.0 frame renders through
+     * the plain enum, a 5/MG frame through the puffin aliasing.
+     *
+     * Type 56 is where that bites. Apple parses a 4.0 frame with `schema.typeName` (no alias) and counts it
+     * as PUFFIN_METADATA; if this side always aliased, it would become METADATA and be silently EXCLUDED —
+     * the two platforms disagreeing about an anomalous frame, which is the single case the census exists
+     * for. A puffin type arriving on a 4.0 is exactly the kind of thing worth reporting, not swallowing.
+     */
+    @Test
+    fun puffinMetadataOnWhoop4IsCountedNotAliasedIntoTheExclusion() {
+        val b = extract(listOf(frameOfType(PacketType.PUFFIN_METADATA.rawValue)))
+        assertEquals(mapOf("PUFFIN_METADATA" to 1), b.unhandledPacketTypes)
+    }
+
+    /** The 4.0 rendering never aliases 38 either — same rule, the other puffin type. */
+    @Test
+    fun puffinCommandResponseOnWhoop4KeepsItsOwnName() {
+        val b = extract(listOf(frameOfType(PacketType.PUFFIN_COMMAND_RESPONSE.rawValue)))
+        assertEquals(mapOf("PUFFIN_COMMAND_RESPONSE" to 1), b.unhandledPacketTypes)
     }
 }

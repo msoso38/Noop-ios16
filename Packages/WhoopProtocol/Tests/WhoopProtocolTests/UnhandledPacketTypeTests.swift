@@ -92,6 +92,51 @@ final class UnhandledPacketTypeTests: XCTestCase {
         XCTAssertTrue(extract([bad]).unhandledPacketTypes.isEmpty)
     }
 
+    /// END TO END, through the real parser — the test that actually proves the feature works.
+    ///
+    /// Every other case here hand-builds a `ParsedFrame` with `ok: true`, which assumes the thing most
+    /// likely to be wrong: `extractHistoricalStreams` skips `!r.ok` BEFORE its switch, so if `parseFrame`
+    /// marked an unmapped type not-ok the census would never fire on a real frame and every assertion above
+    /// would still pass. It does not — `spec == nil` annotates the payload and falls through to `ok: true` —
+    /// but that is a fact about the parser, and a fact the census depends on belongs in a test rather than
+    /// in my reading of it. The Kotlin twin builds real bytes throughout; this is the Swift equivalent.
+    func testRealFrameOfAnUnmappedTypeReachesTheCensus() {
+        // WHOOP 4.0 envelope: [AA][len lo][len hi][crc8(len)] + inner + crc32(inner). Type byte leads the
+        // inner record, so this is a well-formed frame of a type the schema does not name.
+        let inner: [UInt8] = [99, 0x11, 0x00]
+        var frame: [UInt8] = [0xAA, UInt8(inner.count), 0, 0]
+        frame[3] = crc8(Array(frame[1..<3]))
+        frame += inner
+        let c32 = crc32(inner)
+        frame += [UInt8(c32 & 0xFF), UInt8((c32 >> 8) & 0xFF),
+                  UInt8((c32 >> 16) & 0xFF), UInt8((c32 >> 24) & 0xFF)]
+
+        let parsed = parseFrame(frame)
+        XCTAssertTrue(parsed.ok, "an unmapped type must still parse, or the census is unreachable")
+        XCTAssertEqual(parsed.crcOK, true)
+        XCTAssertEqual(parsed.typeName, "type99")
+
+        let st = extract([parsed])
+        XCTAssertEqual(st.unhandledPacketTypes, ["type99": 1])
+    }
+
+    /// The rendering is FAMILY-AWARE: a WHOOP 4.0 frame renders through `schema.typeName` (no aliasing), a
+    /// 5/MG frame through `canonicalTypeName`.
+    ///
+    /// Type 56 is where that bites. Here it is PUFFIN_METADATA and gets counted; had Android always aliased
+    /// (its `Framing.typeName` does), it would have become METADATA there and been silently EXCLUDED — the
+    /// two platforms disagreeing about an anomalous frame, which is the single case the census exists for.
+    /// A puffin type arriving on a 4.0 is worth reporting, not swallowing.
+    func testPuffinMetadataOnWhoop4IsCountedNotAliasedIntoTheExclusion() {
+        XCTAssertEqual(extract([frame("PUFFIN_METADATA")]).unhandledPacketTypes, ["PUFFIN_METADATA": 1])
+    }
+
+    /// The 4.0 rendering never aliases 38 either — same rule, the other puffin type.
+    func testPuffinCommandResponseOnWhoop4KeepsItsOwnName() {
+        XCTAssertEqual(extract([frame("PUFFIN_COMMAND_RESPONSE")]).unhandledPacketTypes,
+                       ["PUFFIN_COMMAND_RESPONSE": 1])
+    }
+
     /// The census is transient diagnostics: it must not ride the Codable path that golden fixtures assert.
     func testCensusIsNotEncoded() throws {
         var st = Streams()

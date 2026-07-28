@@ -913,7 +913,13 @@ fun extractHistoricalStreams(
             // carrying a type nobody has mapped reports as a clean sync. See StreamBatch.unhandledPacketTypes
             // for why METADATA/CONSOLE_LOGS are excluded. Mirrors Swift's `default:`.
             else -> {
-                val name = Framing.typeName(t)
+                // Family-aware exactly as Swift's `frameTypeName` is: a WHOOP 4.0 frame renders through the
+                // plain enum (`schema.typeName` on Apple), a 5/MG frame through the puffin aliasing
+                // (`canonicalTypeName`). Always aliasing here would have rendered a 4.0 type-56 as METADATA
+                // and then EXCLUDED it, while Apple counted it as PUFFIN_METADATA — the census silently
+                // disagreeing across platforms about an anomalous frame, which is the one case it exists for.
+                val name = if (family == DeviceFamily.WHOOP5) Framing.typeName(t)
+                           else PacketType.fromRaw(t)?.name ?: "type$t"
                 if (name !in EXPECTED_UNHANDLED_HISTORICAL_TYPES) {
                     // Swift skips CRC-failed frames BEFORE its switch; this loop dispatches on the raw type
                     // byte, so the check has to happen here or a corrupt frame would be reported as an
