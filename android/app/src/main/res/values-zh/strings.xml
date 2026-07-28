@@ -374,6 +374,9 @@
     <string name="l10n_devices_screen_device_config_read_probe_103_re_837f46de">设备配置读取探测（#103 RE）…</string>
     <string name="l10n_devices_screen_device_config_read_probe_result_103_67d02ec9">设备配置读取探测结果（#103）</string>
     <string name="l10n_devices_screen_device_config_probe_explainer_dd23169f">向手环询问配置的取值：GET_DEVICE_CONFIG_VALUE (0x79) 与 GET_FF_VALUE (0x80)，每次往返查询一个键。这两条命令在该固件中可能根本不存在——弄清这一点正是本次探测的目的。只读——不会写入任何取值，本探测也绝不会发送 SET 命令。结果会显示在此处并写入手环日志。</string>
+    <string name="l10n_devices_screen_clock_probe_827_re_81f36a9b">时钟探测 (#827 RE)…</string>
+    <string name="l10n_devices_screen_clock_probe_result_827_e6daef3d">时钟探测结果 (#827)</string>
+    <string name="l10n_devices_screen_clock_probe_explainer_a0bca2bf">发送只读的 GET_CLOCK (11) 命令并显示腕带的完整原始回复，解码出一个时钟值。GET_CLOCK 已在每次连接时发送；这只是按需重新请求它，以便你查看原始字节并确认 \"Clock latched\" 读数。不会向腕带写入任何内容。</string>
     <string name="l10n_devices_screen_clamped_1f39cebb">%1$s%%</string>
     <string name="l10n_devices_screen_device_name_79d7a157">设备名称</string>
     <string name="l10n_devices_screen_give_device_brand_device_model_a_7a15585c">为您的 %1$s %2$s 起一个好记的名字。</string>
