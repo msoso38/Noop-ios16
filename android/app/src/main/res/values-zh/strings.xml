@@ -1684,4 +1684,5 @@
     <string name="smart_alarm_body">你的智能闹钟刚刚响了。</string>
     <string name="battery_channel_name">电量提醒</string>
     <string name="battery_channel_desc">当手环电量低或已充满时提醒。</string>
+    <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">省电模式让仪表静止、Android 通知已翻译、图表秒开</string>
 </resources>
