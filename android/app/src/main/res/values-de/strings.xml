@@ -1772,4 +1772,15 @@
     <string name="battery_channel_name">Akku-Hinweise</string>
     <string name="battery_channel_desc">Hinweise, wenn der Strap-Akku schwach oder voll geladen ist.</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">Energiesparmodus beruhigt die Anzeigen, übersetzte Android-Benachrichtigungen und sofort geladene Diagramme</string>
+    <string name="l10n_settings_screen_turn_deep_data_back_off_r22disable">Tiefe Daten wieder ausschalten</string>
+    <string name="l10n_settings_screen_r22disable_needs_bond">Benötigt die vollständig verschlüsselte Kopplung: Schließe zuerst die offizielle WHOOP-App und koppele das Band mit NOOP (eine Verbindung nur für den Live-Puls kann den Schreibvorgang nicht übertragen).</string>
+    <string name="l10n_settings_screen_r22disable_reason">Schreibt den Aus-Wert in alle 16 Flags und liest jedes einzeln zurück, sodass du siehst, was das Band tatsächlich speichert — nicht nur, dass es bestätigt hat. Der Aus-Wert ist von dem Flag abgeleitet, das NOOP für die Garmin-Übertragung bereits so ausschaltet; auf einem R22-Flag wurde er noch nie beobachtet. Deshalb testet NOOP zuerst ein einzelnes Flag und bricht ab, wenn das Band es ablehnt. Gelöschte Flags sind nicht dasselbe wie tatsächlich versiegende Tiefendaten: prüfe das mit einer anschließenden Synchronisierung.</string>
+    <string name="l10n_settings_screen_r22disable_running">R22-Flags werden gelöscht und einzeln zurückgelesen…</string>
+    <string name="l10n_settings_screen_r22disable_dismiss">Deaktivierungsbericht schließen</string>
+    <string name="l10n_settings_screen_r22disable_confirm_title">R22-Flags auf dem Band löschen?</string>
+    <string name="l10n_settings_screen_r22disable_confirm_body">Diesen Schalter auszuschalten stoppt nur, dass NOOP die Freischaltung sendet. Die bereits geschriebenen Flags bleiben auf dem Band, bis sie etwas löscht. NOOP kann jetzt den Aus-Wert in alle 16 schreiben und jedes zurücklesen, damit du siehst, was das Band tatsächlich speichert. Das Band muss verbunden und gekoppelt sein.</string>
+    <string name="l10n_settings_screen_r22disable_confirm_action">Flags auf dem Band löschen</string>
+    <string name="l10n_settings_screen_r22disable_confirm_cancel">Nur nicht mehr senden</string>
+    <string name="l10n_settings_screen_r22_accepted_all">✓ Band hat alle %1$d R22-Flags akzeptiert</string>
+    <string name="l10n_settings_screen_r22_accepted_partial">Band hat %1$d/%2$d R22-Flags akzeptiert…</string>
 </resources>
