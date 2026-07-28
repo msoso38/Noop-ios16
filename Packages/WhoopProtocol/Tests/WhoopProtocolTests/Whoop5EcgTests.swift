@@ -7,7 +7,7 @@ import XCTest
 /// repo, and inventing one would be worse than having none. What these tests DO pin is the thing a
 /// capture cannot change — the structural contract: field order and widths, the length agreement between
 /// `numberOfECGSamples` and the sample array, fail-closed behaviour on truncation and on a bad CRC, the
-/// exact command bytes that go on the wire, and the device-flag verdict logic.
+/// exact command bytes that go on the wire, and the run-scoped verdict logic.
 final class Whoop5EcgTests: XCTestCase {
 
     // MARK: - Fixture builders
@@ -448,7 +448,7 @@ final class Whoop5EcgTests: XCTestCase {
         XCTAssertEqual(Whoop5Ecg.toggleSaveRawEcgFrame(on: false, seq: 1)[12], 0)
     }
 
-    // MARK: - blockedByDeviceFlags detection
+    // MARK: - Verdict classification
 
     private func responseFrame(cmd: UInt8, result: UInt8) -> [UInt8] {
         // COMMAND_RESPONSE (type 36) with the result code at frame[12] = payload byte 1.
@@ -517,7 +517,7 @@ final class Whoop5EcgTests: XCTestCase {
         // the old precedence turned one loose match into an unhedged "not blocked".
         let failed = [sent(124, arg: 1, .failure)]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: failed, ecgPacketsSeen: 12, windowSeconds: 30),
-                       .blockedByDeviceFlagsLikely(commands: ["TOGGLE_LABRADOR_DATA_GENERATION(124)"]))
+                       .dataRequestRefused(commands: ["TOGGLE_LABRADOR_DATA_GENERATION(124)"]))
         let unsupported = [sent(139, arg: 1, .unsupported)]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: unsupported, ecgPacketsSeen: 12, windowSeconds: 30),
                        .opcodeUnsupported(commands: ["TOGGLE_LABRADOR_FILTERED(139)"]))
@@ -537,13 +537,13 @@ final class Whoop5EcgTests: XCTestCase {
         XCTAssertFalse(text.contains("is ACTIVE"))
     }
 
-    func testVerdictFailureIsTheDeviceFlagSignature() {
+    func testVerdictFailureOnADataRequestIsReportedAsARefusal() {
         let steps = [
             sent(139, arg: 1, .success),
             sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .failure),
         ]
         XCTAssertEqual(Whoop5EcgProbe.verdict(steps: steps, ecgPacketsSeen: 0, windowSeconds: 30),
-                       .blockedByDeviceFlagsLikely(commands: ["TOGGLE_LABRADOR_DATA_GENERATION(124)"]))
+                       .dataRequestRefused(commands: ["TOGGLE_LABRADOR_DATA_GENERATION(124)"]))
     }
 
     func testVerdictAllSuccessButSilentIsTheSilentNoOpCase() {
@@ -644,8 +644,6 @@ final class Whoop5EcgTests: XCTestCase {
             [.success, .failure, .pending, .unsupported, .unmapped(42), .noReply]
         let noDataArgs: [(UInt8, UInt8)] = [(123, 0), (123, 1), (125, 1), (125, 0),
                                             (139, 0), (124, Whoop5Ecg.ControlSignal.stop.rawValue)]
-        // The two AFFIRMATIVE claims. Matched exactly, because `opcodeUnsupported` legitimately contains
-        // the words "not a device-flag block" — denying the claim is the opposite of making it.
         let asserts = ["LIKELY blockedByDeviceFlags", "Consistent with a device-flag block"]
         for (cmd, arg) in noDataArgs {
             for outcome in outcomes {
@@ -657,6 +655,47 @@ final class Whoop5EcgTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// REGRESSION (#891). No verdict may name `blockedByDeviceFlags` or a "device-flag block" AT ALL —
+    /// not to assert it, and not to deny it.
+    ///
+    /// The scoping fix made the two offending verdicts unreachable without a data request; it left the
+    /// WORDING in place, and the wording is independently wrong. `blockedByDeviceFlags` is a client-side
+    /// construct: no command in the `CommandNumber` table reads or writes such a flag, nothing in this
+    /// repo implements one, and it is never transmitted to a strap. A probe that sees only result codes
+    /// and packet counts cannot attribute anything to it. #891 then wrote the leading named firmware-side
+    /// candidate (`enable_raw_data_w_ecg`) to `'1'`, confirmed the read-back, and still saw zero packets.
+    ///
+    /// Enumerated over EVERY verdict case rather than every input, so a new case cannot be added with the
+    /// old vocabulary and slip through on the grounds that no input reaches it.
+    func testNoVerdictMentionsDeviceFlagsAtAll() {
+        let cmds = ["TOGGLE_LABRADOR_DATA_GENERATION(124)"]
+        let every: [Whoop5EcgProbe.Verdict] = [
+            .ecgCandidatesArrived(packets: 3),
+            .dataRequestRefused(commands: cmds),
+            .commandRefused(commands: cmds),
+            .acceptedButSilent(windowSeconds: 30),
+            .noDataRequested(commands: cmds),
+            .dataRequestNotAccepted(commands: cmds),
+            .opcodeUnsupported(commands: cmds),
+            .noReplies,
+            .inconclusive,
+        ]
+        for verdict in every {
+            let headline = verdict.headline.lowercased()
+            XCTAssertFalse(headline.contains("deviceflag"), "leaked the identifier: \(verdict.headline)")
+            XCTAssertFalse(headline.contains("device-flag"), "leaked the phrase: \(verdict.headline)")
+        }
+    }
+
+    /// The silent verdict must still say something useful — removing the false cause must not leave the
+    /// report mute about what else explains the silence.
+    func testAcceptedButSilentNamesTheAlternativesInsteadOfACause() {
+        let headline = Whoop5EcgProbe.Verdict.acceptedButSilent(windowSeconds: 30).headline
+        XCTAssertTrue(headline.contains("does not identify a cause"))
+        XCTAssertTrue(headline.contains("flash"))
+        XCTAssertTrue(headline.contains("entitlement gate"))
     }
 
     func testVerdictUnsupportedIsReportedAsItselfNotAsABlock() {
@@ -689,7 +728,7 @@ final class Whoop5EcgTests: XCTestCase {
         ]
         let text = Whoop5EcgProbe.report(steps: steps, ecgPacketsSeen: 0,
                                          candidateFrames: ["type=0x28 len=220"], windowSeconds: 30)
-        XCTAssertTrue(text.contains("blockedByDeviceFlags"))
+        XCTAssertTrue(text.contains("DATA REQUEST REFUSED"))
         XCTAssertTrue(text.contains("SELECT_WRIST(123): SUCCESS(1)"))
         XCTAssertTrue(text.contains("TOGGLE_LABRADOR_DATA_GENERATION(124): FAILURE(0)"))
         XCTAssertTrue(text.contains("type=0x28 len=220"))

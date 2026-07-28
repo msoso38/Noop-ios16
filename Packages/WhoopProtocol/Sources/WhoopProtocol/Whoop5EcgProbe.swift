@@ -1,35 +1,46 @@
 import Foundation
 
 /// Formats the WHOOP MG ECG ("Labrador") turn-on attempt into one readable, copyable report — the
-/// per-command COMMAND_RESPONSE result codes, whether any ECG-shaped packet actually arrived, and the
-/// verdict on the ONE gating question the client cannot answer: whether the strap's firmware
-/// `WhoopDeviceFlag` layer returns `blockedByDeviceFlags` for this feature.
+/// per-command COMMAND_RESPONSE result codes, whether any ECG-shaped packet actually arrived, and a
+/// verdict that describes WHAT THE RUN OBSERVED rather than naming a mechanism behind it.
 ///
 /// Pure + deterministic, so `swift test` covers it with no strap. Structurally the twin of
 /// `BodyLocationProbe` / `ExtendedBatteryProbe`.
 ///
 /// Mirrored in Kotlin as `com.noop.protocol.Whoop5EcgProbe` even though the Android client has no ECG
-/// app layer to drive it. The classification below decides whether a null result gets reported as
-/// evidence of a firmware block, which is the claim this probe exists to make — a rule that important
-/// is worth two independent implementations and two test suites, and both suites pin the same runs.
+/// app layer to drive it. The classification below decides how a null result gets reported, which is
+/// the claim this probe exists to make — a rule that important is worth two independent
+/// implementations and two test suites, and both suites pin the same runs.
 ///
-/// ## How the block is detected
+/// ## The verdicts name observations, not mechanisms
 ///
-/// The client-side gates are known and satisfiable: the hardware gate is `gen5MG` (non-bypassable, and
-/// an MG owner satisfies it), while the entitlement and feature-flag gates live entirely in the app.
-/// The remaining unknown is a FIRMWARE gate, so it can only be answered by what the strap does. Three
-/// signals separate the cases, and the report states which one fired:
+/// An earlier version of this type reported a silent run as *"consistent with a device-flag block
+/// applied as a silent no-op"* and a refusal as `blockedByDeviceFlagsLikely`. **Both named a mechanism
+/// this probe cannot observe and the protocol does not carry.** `blockedByDeviceFlags` is a
+/// CLIENT-SIDE construct: it is never transmitted to a strap, no command in `whoop_protocol.json`'s
+/// `CommandNumber` table reads or writes such a flag, and nothing in this repo implements one. It is
+/// not a strap capability gate, so a probe that only ever sees result codes and packet counts is in no
+/// position to attribute silence to it.
 ///
-///   1. `UNSUPPORTED(3)` — the firmware does not implement the opcode at all. Not a flag block; a
-///      different (and more final) answer.
-///   2. `FAILURE(0)` — the firmware KNOWS the opcode and REFUSES to run it. That is the single-frame
-///      signature most consistent with a device-flag block, and the strongest evidence a one-shot probe
-///      can produce.
-///   3. `SUCCESS(1)` on every command, but ZERO ECG packets across the capture window — a silent
-///      no-op: acknowledged and then not honoured. Also consistent with a flag block, and the reason
-///      this probe counts arriving packets instead of trusting the acks.
+/// That mattered in practice. #891 tested the leading named candidate for a firmware-side gate
+/// (`enable_raw_data_w_ecg`, written to `'1'` and read back through `GET_DEVICE_CONFIG_VALUE(121)`)
+/// and still got zero packets in 30 s with the electrodes held — so the flag-block reading is not
+/// where the evidence points, and it was the probe's own wording that kept lending it weight. Five
+/// other explanations fit the same silence: banked to flash rather than streamed, a wrong opcode
+/// mapping, no actual start verb among three `TOGGLE_*` commands, an entitlement gate, or an
+/// electrode circuit that never closed.
 ///
-/// A block is never inferred from silence alone: no reply at all is reported as exactly that, because
+/// So the three signals below are reported as themselves, and the report states which one fired:
+///
+///   1. `UNSUPPORTED(3)` — the firmware does not implement the opcode at all. A different, and more
+///      final, answer than a refusal.
+///   2. `FAILURE(0)` — the firmware KNOWS the opcode and REFUSES to run it. That is a fact about the
+///      opcode; WHY it refused is not on the wire.
+///   3. `SUCCESS(1)` on every command, but ZERO ECG packets across the capture window — acknowledged
+///      and then not honoured. That is the reason this probe counts arriving packets instead of
+///      trusting the acks. It does not identify what suppressed them.
+///
+/// Nothing is ever inferred from silence alone: no reply at all is reported as exactly that, because
 /// an in-flight sync or a dropped notification produces the same silence.
 ///
 /// ## What a run has to contain before silence means anything
@@ -42,7 +53,7 @@ import Foundation
 ///
 /// - `acceptedButSilent` needs a data request that came back `SUCCESS`. Requested-but-unacknowledged is
 ///   `dataRequestNotAccepted`; nothing requested at all is `noDataRequested`.
-/// - `blockedByDeviceFlagsLikely` needs the refused command to be a data request. A `FAILURE` on a
+/// - `dataRequestRefused` needs the refused command to be a data request. A `FAILURE` on a
 ///   configuration write is reported as `commandRefused` — the firmware refused *that write*, which is
 ///   a fact about that opcode and not about whether ECG generation is gated.
 ///
@@ -128,8 +139,9 @@ public enum Whoop5EcgProbe {
         /// bytes in the log — never this count alone.
         case ecgCandidatesArrived(packets: Int)
         /// At least one command that ASKED FOR DATA came back FAILURE: the opcode exists and execution
-        /// was refused.
-        case blockedByDeviceFlagsLikely(commands: [String])
+        /// was refused. WHY it was refused is not on the wire — the reply carries a result code and
+        /// nothing that names a cause.
+        case dataRequestRefused(commands: [String])
         /// A command that asks for no data came back FAILURE. The firmware refused THAT WRITE, which is
         /// a fact about that opcode and says nothing about whether ECG generation is gated.
         case commandRefused(commands: [String])
@@ -154,9 +166,10 @@ public enum Whoop5EcgProbe {
                 return "\(packets) frame(s) matched the ECG structural triage. That is a CANDIDATE, not proof: "
                     + "the triage is a shape heuristic and unrelated traffic can match it. Confirm against the "
                     + "raw bytes below before concluding anything about whether the feature is blocked."
-            case .blockedByDeviceFlagsLikely(let commands):
-                return "LIKELY blockedByDeviceFlags — the firmware returned FAILURE for \(commands.joined(separator: ", ")), "
-                    + "which asked it to produce ECG data: it knows the opcode and refused to run it."
+            case .dataRequestRefused(let commands):
+                return "DATA REQUEST REFUSED — the firmware returned FAILURE for \(commands.joined(separator: ", ")), "
+                    + "which asked it to produce ECG data: it knows the opcode and refused to run it. "
+                    + "The reply says THAT it refused, not WHY — no cause is carried on the wire."
             case .commandRefused(let commands):
                 return "REFUSED — the firmware returned FAILURE for \(commands.joined(separator: ", ")). "
                     + "That command asks for no ECG data, so this is a fact about that write and NOT evidence "
@@ -164,7 +177,9 @@ public enum Whoop5EcgProbe {
             case .acceptedButSilent(let windowSeconds):
                 return "Accepted but SILENT — a command that asks for realtime ECG data returned SUCCESS, every "
                     + "other command did too, yet no ECG packet arrived in \(windowSeconds)s. "
-                    + "Consistent with a device-flag block applied as a silent no-op."
+                    + "That is the observation; it does not identify a cause. Data banked to flash rather than "
+                    + "streamed, a wrong opcode mapping, no start verb among these commands, an entitlement gate "
+                    + "and an open electrode circuit all produce this same silence."
             case .noDataRequested(let commands):
                 return "NOT A TEST of whether ECG is blocked — this run sent no command that could produce "
                     + "realtime ECG data (\(commands.joined(separator: ", "))), so zero packets is the EXPECTED "
@@ -175,7 +190,7 @@ public enum Whoop5EcgProbe {
                     + "Retry idle."
             case .opcodeUnsupported(let commands):
                 return "Opcode UNSUPPORTED on this firmware for \(commands.joined(separator: ", ")) — "
-                    + "not a device-flag block, the command is not implemented."
+                    + "the command is not implemented, which is a different and more final answer than a refusal."
             case .noReplies:
                 return "No COMMAND_RESPONSE at all — the strap answered nothing. Silence is not evidence of a block "
                     + "(a mid-flight sync or a missed notification looks identical); retry idle."
@@ -206,7 +221,7 @@ public enum Whoop5EcgProbe {
         if !failures.isEmpty {
             // A refusal is only evidence about the BLOCK question when what was refused asked for data.
             let dataFailures = failures.filter(\.requestsRealtimeData).map(\.label)
-            if !dataFailures.isEmpty { return .blockedByDeviceFlagsLikely(commands: dataFailures) }
+            if !dataFailures.isEmpty { return .dataRequestRefused(commands: dataFailures) }
             return .commandRefused(commands: failures.map(\.label))
         }
         let unsupported = steps.filter { $0.outcome == .unsupported }.map(\.label)

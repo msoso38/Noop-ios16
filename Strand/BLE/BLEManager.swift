@@ -3078,8 +3078,8 @@ public final class BLEManager: NSObject, ObservableObject {
     private func noteEcgProbeFrame(_ frame: [UInt8]) {
         // CRC GATE FIRST (safety contract §2: "New inbound paths must do the same"). The verdict this
         // probe produces is its entire output, and a single flipped bit at byte 12 would turn a healthy
-        // SUCCESS into "LIKELY blockedByDeviceFlags" — the strongest claim the report can make. So no
-        // byte of an unverified frame is read here, on either branch.
+        // SUCCESS into "DATA REQUEST REFUSED" — the strongest claim the report can make. So no byte of
+        // an unverified frame is read here, on either branch.
         guard verifyFrame(frame, family: .whoop5).ok else { return }
         // Both COMMAND_RESPONSE spellings: 0x24 (36, what the #592/#690 handlers key on) and the puffin
         // alias 38, which `canonicalTypeName` folds onto the same name. Accepting both means a strap that

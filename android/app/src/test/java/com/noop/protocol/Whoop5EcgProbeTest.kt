@@ -103,7 +103,7 @@ class Whoop5EcgProbeTest {
     @Test
     fun attestedResultCodesOutrankTheShapeHeuristic() {
         assertEquals(
-            Whoop5EcgProbe.Verdict.BlockedByDeviceFlagsLikely(listOf("TOGGLE_LABRADOR_DATA_GENERATION(124)")),
+            Whoop5EcgProbe.Verdict.DataRequestRefused(listOf("TOGGLE_LABRADOR_DATA_GENERATION(124)")),
             Whoop5EcgProbe.verdict(listOf(sent(124, 1, Whoop5EcgProbe.CommandOutcome.Failure)), 12, 30),
         )
         assertEquals(
@@ -304,12 +304,59 @@ class Whoop5EcgProbeTest {
             sent(124, Whoop5Ecg.ControlSignal.START.raw, Whoop5EcgProbe.CommandOutcome.Failure, "ccdd"),
         )
         val text = Whoop5EcgProbe.report(steps, 0, listOf("type=0x28 len=220"), 30)
-        assertTrue(text.contains("blockedByDeviceFlags"))
+        assertTrue(text.contains("DATA REQUEST REFUSED"))
         assertTrue(text.contains("SELECT_WRIST(123): SUCCESS(1)"))
         assertTrue(text.contains("TOGGLE_LABRADOR_DATA_GENERATION(124): FAILURE(0)"))
         assertTrue(text.contains("type=0x28 len=220"))
         assertTrue(text.contains("aabb"))
         assertTrue(text.contains("not a medical measurement or a diagnosis"))
+    }
+
+    /**
+     * REGRESSION (#891), twin of Swift `testNoVerdictMentionsDeviceFlagsAtAll`. No verdict may name
+     * `blockedByDeviceFlags` or a "device-flag block" AT ALL — not to assert it, and not to deny it.
+     *
+     * The scoping fix made the two offending verdicts unreachable without a data request; it left the
+     * WORDING in place, and the wording is independently wrong. `blockedByDeviceFlags` is a client-side
+     * construct: no command in the `CommandNumber` table reads or writes such a flag, nothing in this
+     * repo implements one, and it is never transmitted to a strap. #891 then wrote the leading named
+     * firmware-side candidate (`enable_raw_data_w_ecg`) to `'1'`, confirmed the read-back, and still saw
+     * zero packets.
+     *
+     * Enumerated over EVERY verdict case rather than every input, so a new case cannot be added with the
+     * old vocabulary and slip through on the grounds that no input reaches it.
+     */
+    @Test
+    fun noVerdictMentionsDeviceFlagsAtAll() {
+        val cmds = listOf("TOGGLE_LABRADOR_DATA_GENERATION(124)")
+        val every = listOf(
+            Whoop5EcgProbe.Verdict.EcgCandidatesArrived(3),
+            Whoop5EcgProbe.Verdict.DataRequestRefused(cmds),
+            Whoop5EcgProbe.Verdict.CommandRefused(cmds),
+            Whoop5EcgProbe.Verdict.AcceptedButSilent(30),
+            Whoop5EcgProbe.Verdict.NoDataRequested(cmds),
+            Whoop5EcgProbe.Verdict.DataRequestNotAccepted(cmds),
+            Whoop5EcgProbe.Verdict.OpcodeUnsupported(cmds),
+            Whoop5EcgProbe.Verdict.NoReplies,
+            Whoop5EcgProbe.Verdict.Inconclusive,
+        )
+        for (verdict in every) {
+            val headline = verdict.headline.lowercase()
+            assertFalse("leaked the identifier: ${verdict.headline}", headline.contains("deviceflag"))
+            assertFalse("leaked the phrase: ${verdict.headline}", headline.contains("device-flag"))
+        }
+    }
+
+    /**
+     * The silent verdict must still say something useful — removing the false cause must not leave the
+     * report mute about what else explains the silence.
+     */
+    @Test
+    fun acceptedButSilentNamesTheAlternativesInsteadOfACause() {
+        val headline = Whoop5EcgProbe.Verdict.AcceptedButSilent(30).headline
+        assertTrue(headline.contains("does not identify a cause"))
+        assertTrue(headline.contains("flash"))
+        assertTrue(headline.contains("entitlement gate"))
     }
 
     @Test

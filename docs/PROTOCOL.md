@@ -801,21 +801,34 @@ empirically with a structural triage, logging candidates. The wrist enum's raw v
 sentinel, and the ECG sample unit/scale are likewise unattested and are carried raw.
 
 **Gating.** The hardware gate is MG-only and non-bypassable; entitlement and feature-flag gates are
-client-side. A firmware `WhoopDeviceFlag` layer can also refuse the feature, and only the strap can
-answer that. `Whoop5EcgProbe` separates the cases from the COMMAND_RESPONSE result code at `frame[12]`
-(0 FAILURE / 1 SUCCESS / 2 PENDING / 3 UNSUPPORTED): `UNSUPPORTED` means the opcode is not implemented,
-`FAILURE` is the single-frame signature most consistent with a device-flag block, and all-`SUCCESS`
-with zero packets arriving is the same block applied as a silent no-op. Silence alone is never read as
-a block.
+client-side. Whether the strap ALSO refuses the feature is a separate question that only the strap's own
+behaviour can answer. `Whoop5EcgProbe` separates the observable cases from the COMMAND_RESPONSE result
+code at `frame[12]` (0 FAILURE / 1 SUCCESS / 2 PENDING / 3 UNSUPPORTED): `UNSUPPORTED` means the opcode
+is not implemented, `FAILURE` means the firmware knows the opcode and refused to run it, and
+all-`SUCCESS` with zero packets arriving means acknowledged and then not honoured. Silence alone is
+never read as evidence of anything.
 
-**Both block verdicts are scoped to what the run actually asked for.** A verdict about "is the feature
-blocked" is only reachable when the run exercised the ECG data path, which `Whoop5Ecg.requestsRealtimeData`
-decides from the opcode AND the argument sent: `SELECT_WRIST` configures and starts nothing on either
-argument, the OFF sequence asks for the silence it gets, and `RAW_SAVE` names flash rather than a live
-channel. So a run built only from those reports "no data-generation command was sent; this run cannot
-speak to whether ECG is blocked", and a `FAILURE` on one of them reports as a refusal of that write.
-Without the scoping a `SELECT_WRIST`-only run rendered as a device-flag block on real hardware — twice,
-once through each verdict — which is what #891 records.
+**The verdicts name observations, not mechanisms — and this was got wrong once.** Earlier wording
+attributed both the refusal and the silence to a firmware `WhoopDeviceFlag` layer returning
+`blockedByDeviceFlags`. **That is a client-side construct.** No command in `whoop_protocol.json`'s
+`CommandNumber` table reads or writes such a flag, nothing in this repo implements one, and it is never
+transmitted to a strap — so it is not a strap capability gate and a probe that sees only result codes
+and packet counts cannot attribute silence to it. The reply carries *that* the firmware refused, never
+*why*. #891 then tested the leading named firmware-side candidate — `enable_raw_data_w_ecg`, written to
+`'1'` through `SET_DEVICE_CONFIG_VALUE(119)` and read back through `GET_DEVICE_CONFIG_VALUE(121)` — and
+still saw zero packets in 30 s with the electrodes held, which falsified it. Five explanations remain
+live for that silence: data banked to flash rather than streamed (one toggle is literally `RAW_SAVE`), a
+wrong opcode mapping, no actual start verb among three `TOGGLE_*` commands, an entitlement gate, and an
+electrode circuit that never closed.
+
+**Both silence-interpreting verdicts are scoped to what the run actually asked for.** A verdict that
+reads silence as informative is only reachable when the run exercised the ECG data path, which
+`Whoop5Ecg.requestsRealtimeData` decides from the opcode AND the argument sent: `SELECT_WRIST` configures
+and starts nothing on either argument, the OFF sequence asks for the silence it gets, and `RAW_SAVE`
+names flash rather than a live channel. So a run built only from those reports "no data-generation
+command was sent; this run cannot speak to whether ECG is blocked", and a `FAILURE` on one of them
+reports as a refusal of that write. Without the scoping a `SELECT_WRIST`-only run rendered as a
+device-flag block on real hardware — twice, once through each verdict — which is what #891 records.
 
 ## 10. SpO₂ on 5.0 / MG — what the wire does and does not carry
 
@@ -863,7 +876,7 @@ is deliberately **not** duplicated here — one table, one place to keep correct
 | `Packages/WhoopProtocol/Sources/WhoopProtocol/HistoricalMeta.swift` | `classifyHistoricalMeta` (START/END/COMPLETE) |
 | `Packages/WhoopProtocol/Sources/WhoopProtocol/Resources/whoop_protocol.json` | canonical enums + packet layouts |
 | `Packages/WhoopProtocol/Sources/WhoopProtocol/Whoop5Ecg.swift` | MG ECG ("Labrador") packet decode + command construction (§9.1) |
-| `Packages/WhoopProtocol/Sources/WhoopProtocol/Whoop5EcgProbe.swift` | ECG turn-on report + the `blockedByDeviceFlags` verdict |
+| `Packages/WhoopProtocol/Sources/WhoopProtocol/Whoop5EcgProbe.swift` | ECG turn-on report + the run-scoped result-code verdicts (§9.1) |
 | `Strand/BLE/BLEManager.swift` | CoreBluetooth transport, bond, connect lifecycle, backfill orchestration |
 | `Strand/BLE/Commands.swift` | safe `WhoopCommand` set + outbound frame builder |
 | `Strand/BLE/FrameRouter.swift` | decode → `LiveState` (UI) |
