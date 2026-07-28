@@ -1,0 +1,37 @@
+// Tracked wrapper for the liters (page-replication) linkage, so a clean checkout that has never run
+// Rust/build-ios.sh still generates and builds. Included from Config/BundleId.xcconfig, which
+// project.yml applies project-wide, so every target inherits these.
+//
+// Liters.xcframework is a BUILD ARTIFACT, not a tracked file: the device slice alone is ~83 MB, and
+// three slices plus a macOS slice is far past what belongs in git. It is produced by
+// `Rust/build-ios.sh`, which ALSO writes the untracked Config/LitersLocal.xcconfig included at the
+// bottom of this file. That is deliberate — the search paths below name specific xcframework slice
+// directories, and having the build script emit them from the layout `xcodebuild -create-xcframework`
+// actually produced is the only way they cannot drift from it.
+//
+// The three variables default to EMPTY here. project.yml appends them unconditionally
+// (LIBRARY_SEARCH_PATHS / SWIFT_INCLUDE_PATHS / OTHER_LDFLAGS), so with no local file the appends
+// expand to nothing: no -l flag, no search path, and a default build links exactly what it links
+// today. Absence of the xcframework is therefore not a build error for anyone who does not want it.
+//
+// LITERS_LDFLAGS is what actually pulls the archive in. It is kept separate from the search path so
+// that "the paths are configured" and "the library is linked" stay two decisions: a build with the
+// paths set but LITERS_LDFLAGS empty compiles the generated bindings' module import and fails at
+// link, which is a clearer error than a missing module.
+LITERS_LIB_DIR =
+LITERS_HEADER_DIR =
+LITERS_LDFLAGS =
+
+// Set by build-ios.sh alongside the paths above. Gates every line of Swift that touches liters
+// (Strand/CloudSync/Generated/, and the round-trip tests), so a checkout without the xcframework
+// compiles none of it rather than failing to resolve `import liters_ffiFFI`:
+//
+//   OTHER_SWIFT_FLAGS = $(inherited) -D LITERS
+//
+// NOT SWIFT_ACTIVE_COMPILATION_CONDITIONS, even though that is the idiomatic setting and what
+// OuraSecrets.xcconfig uses for OURA_CLOUD_IMPORT / CLOUD_SYNC. Those work because OuraConfig.xcconfig
+// is a TARGET-level xcconfig, which outranks the project build settings; this file is included from
+// the PROJECT-level xcconfig, which xcodegen's own `SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG`
+// (written into the project's Debug config, with no $(inherited)) sits above and silently overwrites.
+// Verified with `xcodebuild -showBuildSettings`: the LITERS entry vanishes, DEBUG survives.
+#include? "LitersLocal.xcconfig"

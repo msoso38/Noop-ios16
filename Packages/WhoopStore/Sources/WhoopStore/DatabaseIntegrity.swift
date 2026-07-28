@@ -35,6 +35,22 @@ public enum DatabaseIntegrity {
         func quickCheckRows(readonly: Bool) throws -> [String] {
             var config = Configuration()
             config.readonly = readonly
+            if !readonly {
+                // The read-write fallback is the ONE connection in this tree that can reach the live
+                // store without going through `WhoopStore(path:)`, and therefore without
+                // `StoreReplication`'s checkpointing policy (see `WalCheckpointing`). Today it is
+                // harmless only by a chain of reasoning about SQLite internals — autocheckpoint fires
+                // at the end of a WRITE transaction and this probe only reads, and the close-time
+                // checkpoint only runs for the LAST connection, which this never is while the app's
+                // pool is open. Under `.external` that chain is the whole safety argument for a
+                // replicator's resume offset, so it is replaced with the guarantee: this connection
+                // cannot restart the WAL because it is not permitted to checkpoint.
+                //
+                // No behaviour change for the common case (probing a staged backup file): the
+                // close-time checkpoint that cleans up the `-wal` this connection creates is a
+                // separate mechanism and is unaffected by `wal_autocheckpoint`.
+                config.prepareDatabase { try $0.execute(sql: "PRAGMA wal_autocheckpoint = 0") }
+            }
             let dbQueue = try DatabaseQueue(path: path, configuration: config)
             return try dbQueue.read { db in try String.fetchAll(db, sql: "PRAGMA quick_check(1)") }
         }
