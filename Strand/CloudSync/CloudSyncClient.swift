@@ -27,8 +27,13 @@ enum CloudSyncError: LocalizedError, Equatable {
 /// The noop-cloud edit-journal client. Injected `session` makes it URLProtocol-testable.
 /// Networking lives here in the app target by design (mirrors Strand/Oura/OuraAPIClient.swift).
 final class CloudSyncClient {
-    private let baseURL: URL
-    private let token: String
+    /// Internal rather than private so the liters push path can address the *same* server with the
+    /// *same* credential this client already holds. Deliberately not a second settings read: a
+    /// server URL that has been through `CloudSyncModel.saveSettings`' validation and a token that
+    /// came out of the Keychain are exactly what `/ingest` is using, and the two paths must never
+    /// be able to disagree about where "the server" is.
+    let baseURL: URL
+    let token: String
     private let session: URLSession
 
     init(baseURL: URL, token: String, session: URLSession = .shared) {

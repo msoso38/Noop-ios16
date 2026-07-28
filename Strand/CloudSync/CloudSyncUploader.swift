@@ -9,8 +9,30 @@ import WhoopStore
 /// mirrors `CloudSyncCoordinator`'s `CloudEditFetching` seam. `CloudSyncClient` conforms below.
 protocol CloudIngesting {
     func ingest(fileURL: URL) async throws -> (bytes: Int, latestDay: String?)
+
+    /// Where a page-replication push would go, and with what credential — the same server and the
+    /// same token `ingest` uses. `nil` means "this ingester has no liters destination", which is
+    /// the correct answer for every test double and makes the liters branch inert for them without
+    /// each one having to opt out.
+    var litersDestination: (endpoint: String, token: String)? { get }
 }
-extension CloudSyncClient: CloudIngesting {}
+
+extension CloudIngesting {
+    /// Default: no liters destination. Only `CloudSyncClient` overrides this.
+    var litersDestination: (endpoint: String, token: String)? { nil }
+}
+
+extension CloudSyncClient: CloudIngesting {
+    var litersDestination: (endpoint: String, token: String)? {
+        #if LITERS
+        return (LitersReplicator.endpoint(base: baseURL), token)
+        #else
+        // The xcframework is not in this build, so there is nothing to push with. Reporting `nil`
+        // rather than an endpoint keeps the trial flag from selecting a path that cannot exist.
+        return nil
+        #endif
+    }
+}
 
 /// The export half's user-facing failure. The network half of an upload throws `CloudSyncError` (same
 /// typed error every other CloudSync network call throws); this covers only "never got as far as
@@ -100,6 +122,30 @@ enum CloudSyncUploader {
         // i.e. the upload path would defeat the thing it is being replaced by.
         let walBytes = store.walFileSizeBytes() ?? 0
 
+        // --- page replication, when the trial is on -------------------------------------------
+        //
+        // Placed HERE, before the exporter, and that placement is the whole design. `exporter`'s
+        // first act is `checkpointWAL()` — a `wal_checkpoint(TRUNCATE)` — which is precisely what a
+        // page replicator must be the sole caller of (see the note above `walBytes`). Running the
+        // export and then pushing would restart the WAL underneath the writer and force
+        // `snapshotted: true` on every push: the old path would defeat the new one while both ran.
+        //
+        // Three conditions, all required, all cheap to check:
+        //   * the trial flag is on (`UserDefaults`, default false — a shipped build is unaffected);
+        //   * `.external` is actually in force, not merely requested. `isEnabled` and `isInForce`
+        //     differ for exactly one launch after every flip, and pushing while SQLite still owns
+        //     autocheckpoint is the configuration that snapshots on every sync;
+        //   * the client has a liters destination (it does not when LITERS is not compiled in, and
+        //     no test double has one).
+        //
+        // A failure here is NOT fatal and NOT retried in place: it falls through to `/ingest`
+        // below, which is untouched and remains both the fallback and the recovery path. The one
+        // thing that must not happen is a sync that ships nothing and reports success.
+        if let result = await litersPushIfEnabled(client: client, walBytes: walBytes,
+                                                  telemetry: telemetry) {
+            return result
+        }
+
         switch await exporter(store, tempURL) {
         case .exported:
             let result = try await client.ingest(fileURL: tempURL)
@@ -125,6 +171,68 @@ enum CloudSyncUploader {
             // handled explicitly so the switch stays exhaustive without a silently-wrong `default`.
             throw CloudSyncUploadError.exportFailed("The export step returned an unexpected result.")
         }
+    }
+
+    /// One page-replication push, or `nil` to mean "not this time — use `/ingest`".
+    ///
+    /// Returns `nil` for every reason a push does not happen (trial off, `.external` not in force,
+    /// no destination, liters not compiled in) *and* for a push that failed, because the caller's
+    /// only correct response to all of them is the same: fall through to the whole-database upload.
+    /// The distinction is preserved in the log, not in the control flow.
+    ///
+    /// `latestDay` is `nil` on this path by construction: `/liters` is a byte pipe into
+    /// `mirror.sqlite` and answers with liters' protocol, not with `/ingest`'s
+    /// `{ok,bytes,latestDay}`. `CloudSyncModel` uses only `bytes`.
+    private static func litersPushIfEnabled(
+        client: any CloudIngesting, walBytes: Int64, telemetry: SyncPushTelemetry?
+    ) async -> (bytes: Int, latestDay: String?)? {
+        #if LITERS
+        guard SyncReplicationTrial.isEnabled else { return nil }
+        // `isEnabled` is the intent; `isInForce` is the reality. Pushing while SQLite still owns
+        // wal_autocheckpoint means a foreign checkpoint can restart the WAL between pushes, and
+        // every push then ships the whole database — measurably, not theoretically.
+        guard SyncReplicationTrial.isInForce else {
+            NSLog("liters: trial is on but WAL checkpointing is still .automatic "
+                  + "(restart pending) — using /ingest for this sync")
+            return nil
+        }
+        guard let dest = client.litersDestination else { return nil }
+
+        do {
+            // The one real on-disk database, resolved exactly the way `DataBackup`/`FolderBackup`
+            // resolve it. Throwing is folded into the same catch: a store path we cannot even name
+            // is a reason to use `/ingest`, not a reason to fail the sync.
+            let dbPath = try StorePaths.defaultDatabasePath()
+            // Synchronous and blocking by liters' contract; kept off the cooperative pool's
+            // forward progress by running it on a detached background task.
+            let summary = try await Task.detached(priority: .utility) {
+                try LitersReplicator.shared.push(databasePath: dbPath,
+                                                 endpoint: dest.endpoint,
+                                                 token: dest.token)
+            }.value
+
+            telemetry?.record(snapshotted: summary.snapshotted,
+                              snapshotReason: summary.snapshotReason,
+                              bytesUploaded: Int64(summary.bytesUploaded),
+                              walBytes: walBytes,
+                              txid: summary.txid)
+            NSLog("liters: pushed txid=%llu bytes=%llu snapshotted=%d reason=%@ walAtPush=%lld",
+                  summary.txid, summary.bytesUploaded, summary.snapshotted ? 1 : 0,
+                  summary.snapshotReason ?? "-", walBytes)
+            return (Int(summary.bytesUploaded), nil)
+        } catch {
+            // Deliberately swallowed. Every liters failure mode — an unreachable sink (503 from
+            // the proxy when LITERS_SINK_ENABLED is unset), a full volume (507), a lease conflict,
+            // a rotated token — is survivable by uploading the whole database instead, and a sync
+            // that ships data on the old path beats a sync that reports a new-path error.
+            NSLog("liters: push failed (%@) — falling back to /ingest for this sync",
+                  String(describing: error))
+            return nil
+        }
+        #else
+        _ = (client, walBytes, telemetry)
+        return nil
+        #endif
     }
 }
 #endif // CLOUD_SYNC
