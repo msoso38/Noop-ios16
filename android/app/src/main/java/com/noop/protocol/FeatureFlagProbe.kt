@@ -306,6 +306,20 @@ class FeatureFlagProbeReport(private val family: DeviceFamily) {
         if (stopReason == null) stopReason = "strap served no reply to opcode $command within ${seconds}s"
     }
 
+    /**
+     * The announced count as a phrase for the verdict line, qualified when it falls outside the range a
+     * real key list could occupy. [noteStart] already marks an implausible count in the trace, but the
+     * verdict is the line that gets pasted into an issue, and restating a number the probe itself
+     * distrusts as bare fact is the same over-claim in a smaller place. A plausible count renders
+     * exactly as before, so the common report is unchanged.
+     */
+    private val announcedFlags: String
+        get() {
+            val n = reportedCount ?: 0
+            val plausible = n > 0 && n <= FeatureFlagProbe.MAX_FLAGS
+            return if (plausible) "$n flag(s)" else "an implausible $n flag(s)"
+        }
+
     /** One-line summary of what the probe established. */
     val verdict: String
         get() {
@@ -324,7 +338,18 @@ class FeatureFlagProbeReport(private val family: DeviceFamily) {
                     "${FeatureFlagProbe.MAX_KEY_LENGTH} chars — this is our parser rejecting them, NOT " +
                     "the strap serving blanks; see the trace for the raw replies"
             }
-            if (_keys.isEmpty()) return "strap announced ${reportedCount ?: 0} flag(s) but named none"
+            // Same discipline one condition over: with no 118 reply decoded, the walk never asked for a
+            // single name, so "named none" would blame the strap for OUR timeout (or our parse failure).
+            // [steps] counts decoded SEND_NEXT replies, so `steps == 0` is exactly "the key list was
+            // never read" — the reachable case being `probeFeatureFlags()` getting its 117 answer and
+            // then the 8s timer firing on the first 118. What the strap would have named is unknown, and
+            // the report has to say unknown. [stopReason], rendered directly under this line, names
+            // which of the two it was.
+            if (_keys.isEmpty() && steps == 0) {
+                return "strap announced $announcedFlags; no SEND_NEXT_FF(118) reply was decoded — " +
+                    "the key list was never read (inconclusive)"
+            }
+            if (_keys.isEmpty()) return "strap announced $announcedFlags but named none"
             if (skipped > 0) {
                 return "enumerated ${_keys.size} feature-flag key name(s); $skipped further name(s) did not decode"
             }
