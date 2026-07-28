@@ -188,7 +188,46 @@ public func parseFrame(_ frame: [UInt8], family: DeviceFamily) -> ParsedFrame
 `38 PUFFIN_COMMAND_RESPONSE` and `56 PUFFIN_METADATA` are aliased onto `COMMAND_RESPONSE` /
 `METADATA` by `canonicalTypeName(_:schema:)` so they never decode as "unknown".
 
-### 2.4 Checksums
+### 2.4 COMMAND_RESPONSE body
+
+Every reply to a command (`COMMAND_RESPONSE`, type 36 — and its 5/MG alias 38) opens with two bytes
+before whatever the command itself returns:
+
+```
+WHOOP 4.0    [6] resp_cmd   [7] resp_seq   [8] result   [9..] per-command body
+WHOOP 5/MG   [10] resp_cmd  [11] resp_seq  [12] result  [13..] per-command body
+```
+
+the 5/MG offsets being the 4.0 ones + 4, like the rest of the puffin inner record.
+
+- **`resp_cmd`** — the command being answered (`CommandNumber`).
+- **`resp_seq`** — the strap's own per-response counter. Not the envelope `seq` at `[5]`/`[9]`, which is
+  host-assigned and echoed back: a single capture shows envelope `seq` 147 alongside `resp_seq` 2. A
+  repeated `resp_seq` across replies is how a duplicated write was identified in #791.
+- **`result`** — `CommandResult`: `0` FAILURE, `1` SUCCESS, `2` PENDING, `3` UNSUPPORTED. `GET_DATA_RANGE`
+  answers PENDING then SUCCESS; `3` is what a real MG returned when it rejected `RUN_HAPTICS_PATTERN`
+  (#48). Both fields are decoded from the bounded payload slice, so a reply too short to carry them
+  yields neither rather than reading the CRC32 trailer (#894).
+
+**The first body byte is per-command, and is not a status flag.** `GET_BATTERY_LEVEL` puts the charge
+percentage there — `47` in the hardware-confirmed fixture — so the slot carries real data. On other
+commands it has only ever been observed as `1`:
+
+| capture | command | result | first body byte |
+|---|---|---|---:|
+| real 5/MG | `GET_BATTERY_LEVEL` | SUCCESS | **47** (= 47%) |
+| real 5/MG | `GET_DATA_RANGE` | SUCCESS | 1 |
+| real MG | `SELECT_WRIST`, accepted | SUCCESS | 1 |
+| real MG | `SELECT_WRIST`, refused | FAILURE | 1 |
+| real MG | `TOGGLE_LABRADOR_*` | SUCCESS | 1 |
+
+For the wrist and ECG commands what that `1` means is **open**. A capture that sent `SELECT_WRIST` with
+argument `0` got `1` back, which refutes an echo of the request — but every frame anyone has captured had
+a stored value of `1`, so "reads back stored state" and "this handler writes a literal `1`" make identical
+predictions on all of them. It is therefore left undecoded rather than named; settling it needs a reply
+from a strap whose stored value is `0`. See #891.
+
+### 2.5 Checksums
 
 | Algorithm | Function | Parameters |
 |-----------|----------|------------|
@@ -202,7 +241,7 @@ and `classifyHistoricalMeta(_:)` refuses to act on a frame where `p.crcOK == fal
 that gate a garbled or hostile peer could forge a `HISTORY_END`/`HISTORY_COMPLETE` and advance
 the strap's trim cursor, discarding data that was never durably stored.
 
-### 2.5 Reassembly
+### 2.6 Reassembly
 
 BLE notifications arrive as MTU-sized fragments. `Reassembler` (`Framing.swift`) accumulates
 bytes, finds the `0xAA` SOF, reads the `u16` LE length at `buf[1..3]`, and emits a complete
