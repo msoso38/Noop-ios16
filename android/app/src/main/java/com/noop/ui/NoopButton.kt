@@ -88,7 +88,7 @@ private val noopAccentBlue: Color
     @Composable get() = Palette.accent
 
 /** Crisp white label/icon on accent + critical fills (iOS `goldDeepText` = #FFFFFF post-reset). */
-private val noopOnFill: Color = Color(0xFFFFFFFF)
+private val noopOnFill: Color get() = OnAccent
 
 /** Resolves a [NoopButtonKind] to its concrete fill / label / border tokens. */
 private data class NoopButtonAppearance(
