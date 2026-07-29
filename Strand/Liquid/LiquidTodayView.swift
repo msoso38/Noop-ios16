@@ -267,6 +267,14 @@ struct LiquidTodayView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     scene
+                    // The illness early-warning banner, dropped in the liquid Home rewrite while Liquid became
+                    // the default Today — so a raised/already-unwell signal had no surface on the screen the
+                    // user actually opens (only the Health tab's HeadsUpCard and the once-a-day notification).
+                    // Restored as the SAME leaf the classic TodayView renders directly under its top bar, so
+                    // it sits above the reorderable block and can't be reordered out of sight. Renders nothing
+                    // when there's no alert; it owns its own AppModel observation, so the ~1 Hz HR stream
+                    // re-renders only the banner, not this body.
+                    HealthAlertBanner()
                     // #105: the live "workout in progress" card, dropped in the liquid Home rewrite. Restored
                     // here as the SAME leaf the classic TodayView renders (and Android's WorkoutInProgressCard),
                     // pinned above the reorderable block so an active manual workout is immediately visible
