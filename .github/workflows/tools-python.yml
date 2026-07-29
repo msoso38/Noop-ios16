@@ -14,11 +14,13 @@ on:
     branches: [main]
     paths:
       - 'tools/**'
+      - 'Tools/*.py'
       - '.github/workflows/tools-python.yml'
   push:
     branches: [main]
     paths:
       - 'tools/**'
+      - 'Tools/*.py'
       - '.github/workflows/tools-python.yml'
   workflow_dispatch:
 
@@ -40,6 +42,35 @@ jobs:
 
       # `discover` rather than a hand-listed set, so a NEW test file is picked up without editing this
       # workflow — the failure mode that leaves a suite unrun is exactly what this job exists to end.
+      #
+      # The count assertion is the same idea one level up: `discover` exits 0 having found NOTHING, so a
+      # wrong working-directory or a renamed pattern would turn this job green while running no tests at
+      # all. Checking a floor makes that fail loudly instead. Raise the floor when suites are added; do
+      # not lower it to make a red run pass.
       - name: Run tools/linux-capture tests
-        run: python3 -m unittest discover -p "test_*.py" -v
+        run: |
+          set -o pipefail   # GitHub's default shell is `bash -e` WITHOUT pipefail: piping into tee
+                            # would return tee's status and swallow a failing suite entirely.
+          python3 -m unittest discover -p "test_*.py" -v 2>&1 | tee out.txt
+          ran=$(grep -oE '^Ran [0-9]+ test' out.txt | grep -oE '[0-9]+')
+          echo "collected ${ran:-0} tests"
+          if [ "${ran:-0}" -lt 200 ]; then
+            echo "::error::expected at least 200 tests, collected ${ran:-0} — discovery is broken, not the suite"
+            exit 1
+          fi
         working-directory: tools/linux-capture
+
+      # Tools/test_i18n_audit.py covers the audit that gates every PR's translations, and nothing ran it
+      # either: i18n-coverage.yml invokes `i18n_audit.py --ci` but never its own test file. Run from
+      # inside Tools/ because the suite imports the module by bare name.
+      - name: Run Tools/ audit tests
+        run: |
+          set -o pipefail   # see above — without this a red suite exits 0 through the pipe.
+          python3 -m unittest test_i18n_audit -v 2>&1 | tee out.txt
+          ran=$(grep -oE '^Ran [0-9]+ test' out.txt | grep -oE '[0-9]+')
+          echo "collected ${ran:-0} tests"
+          if [ "${ran:-0}" -lt 30 ]; then
+            echo "::error::expected at least 30 tests, collected ${ran:-0} — discovery is broken, not the suite"
+            exit 1
+          fi
+        working-directory: Tools

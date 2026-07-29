@@ -12,13 +12,15 @@ on:
     branches: [main]
     paths:
       - 'Packages/**'
-      - 'Tools/**'
+      - 'Tools/SleepBench/**'
+      - 'Tools/Backfill/**'
       - '.github/workflows/swift-packages.yml'
   push:
     branches: [main]
     paths:
       - 'Packages/**'
-      - 'Tools/**'
+      - 'Tools/SleepBench/**'
+      - 'Tools/Backfill/**'
       - '.github/workflows/swift-packages.yml'
   workflow_dispatch:
 
