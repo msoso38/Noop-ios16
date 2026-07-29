@@ -6,6 +6,7 @@ import WhoopProtocol
 // independent reference the database carries.
 //
 // USAGE:  sleepbench --db /path/to/whoop.sqlite [--device my-whoop-noop] [--pad 3600] [--csv out.csv]
+//                     [--exclude <startTs,…>]
 //
 // The database is never written to and never lives in this repository. Pass a COPY; never point this at
 // a device's live database.
@@ -20,6 +21,15 @@ struct Args {
     var streamDevice = "my-whoop"
     var pad = 3600
     var csv: String?
+    /// Session `startTs` values held out of the stage-locked calibration set in section E.
+    ///
+    /// Section E's reference set has to stay FIXED across the two builds of a before/after comparison, or
+    /// the denominator moves underneath the delta. That is why it keys on `stagelock` rather than on
+    /// section B's recipe-dependent exclusion. But `stagelock` alone does not guarantee the row is
+    /// independent of V2 (see the self-comparison warning below), and the honest fix for a contaminated row
+    /// is to name it ONCE and pass the same `--exclude` list to every build being compared. Excluding by
+    /// explicit timestamp keeps the set frozen; excluding by "matches this build's V2" would not.
+    var exclude: Set<Int> = []
 }
 var a = Args()
 var it = CommandLine.arguments.dropFirst().makeIterator()
@@ -30,11 +40,18 @@ while let k = it.next() {
     case "--stream-device": a.streamDevice = it.next() ?? a.streamDevice
     case "--pad": a.pad = Int(it.next() ?? "") ?? a.pad
     case "--csv": a.csv = it.next()
+    case "--exclude": a.exclude = Set((it.next() ?? "").split(separator: ",").compactMap { Int($0) })
     default: FileHandle.standardError.write(Data("unknown argument \(k)\n".utf8)); exit(2)
     }
 }
 guard !a.db.isEmpty else {
-    print("usage: sleepbench --db <sqlite> [--device <id>] [--pad <s>] [--csv <path>]")
+    print("""
+    usage: sleepbench --db <sqlite> [--device <id>] [--stream-device <id>] [--pad <s>] [--csv <path>]
+                      [--exclude <startTs,startTs,…>]
+
+      --exclude   session startTs values held out of section E's calibration reference set. Pass the SAME
+                  list to every build in a before/after comparison; section E names the candidates.
+    """)
     exit(2)
 }
 
@@ -43,7 +60,7 @@ let rows = try db.sessions(device: a.device)
 guard !rows.isEmpty else { print("no sessions for device \(a.device)"); exit(1) }
 // Which `userEdited` rows carry a HUMAN-AUTHORED hypnogram rather than machine stages re-derived over a
 // human-corrected window. Only the former can serve as a stage-level reference.
-let stageLocked = try db.stageLockedStarts(device: a.device)
+let stageLocked = try db.stageLockedStarts(device: a.device).subtracting(a.exclude)
 let editedCount = rows.filter { $0.userEdited }.count
 print("""
 
@@ -149,12 +166,16 @@ var v1Match = 0, v2Match = 0, neither = 0
 /// This says nothing about HOW the row came to match — the harness reports the fact and excludes the
 /// night, and deliberately does not assert a mechanism it has not established.
 var indistinguishableFromV2: Set<String> = []
+/// Per-night epoch agreement between the STORED hypnogram and a fresh V2 replay, by `startTs`. Section E
+/// reads it to warn when its own reference set contains rows V2 cannot be scored against independently.
+var v2AgreePct: [Int: Double] = [:]
 print("night        edited  epochs  V1 agree  V2 agree  verdict")
 for nt in nights {
     let stored = epochLabels(nt.row.stages, start: nt.row.startTs, end: nt.row.endTs)
     let a1 = zip(stored, nt.v1).filter { $0 == $1 }.count
     let a2 = zip(stored, nt.v2).filter { $0 == $1 }.count
     let p1 = Double(a1) / Double(stored.count) * 100, p2 = Double(a2) / Double(stored.count) * 100
+    v2AgreePct[nt.row.startTs] = p2
     let verdict = p2 >= 99.9 ? "V2 exact" : (p1 >= 99.9 ? "V1 exact" : (p2 > p1 ? "V2 closer" : "V1 closer"))
     if !nt.row.userEdited {
         if p2 >= 99.9 { v2Match += 1 } else if p1 >= 99.9 { v1Match += 1 } else { neither += 1 }
@@ -357,6 +378,13 @@ for (nm, grp) in [("mean HR >= \(Int(hiCut))", hi), ("mean HR <  \(Int(hiCut))",
 /// by construction: change the recipe and a night can enter or leave the exclusion, silently swapping the
 /// denominator underneath a before/after comparison. The `stagelock` set comes from `cursors` and does not
 /// move when the recipe moves, which is what makes a calibration delta between two builds legitimate.
+///
+/// The cost of that choice, and why the warning below exists: a `stagelock` cursor proves the stages
+/// arrived through the `edit_sleep_stages` path, NOT that they differ from what V2 would emit. A row whose
+/// stored hypnogram replays byte-exact from V2 carries no information about V2 — it hands the incumbent a
+/// free perfect night and charges every alternative for the same nights. Section B drops such rows; section
+/// E cannot drop them the same way without reintroducing the version-dependence it exists to avoid. So the
+/// harness NAMES them and leaves the choice to the operator, who freezes it with `--exclude`.
 let calRef = nights.filter { $0.truth != nil && stageLocked.contains($0.row.startTs) }
 /// The cohort PR #348 broke: a plausible full sleep opportunity. #437's field symptom was a HEALTHY night
 /// re-scored 6% -> 23% awake, and an aggregate that pools short and fragmented nights hides exactly that.
@@ -382,6 +410,39 @@ a held-out gap of -0.027, and was reverted 48 h later by PR #437 for re-scoring 
 guard. Bias is signed, in percentage points of the night: POSITIVE = the recipe spends more of the night at
 that stage than the human did.
 """)
+
+// SELF-COMPARISON AUDIT of this section's own reference set. A stage-locked row whose stored hypnogram is a
+// byte-exact V2 replay scores V2 against itself: it is a guaranteed 100% for the incumbent and a guaranteed
+// loss for any alternative, so it biases a before/after delta toward "change nothing" by an amount nobody
+// reading only the kappa line would see. The audit reports the contamination rather than silently absorbing
+// it, and names the timestamps so the same held-out set can be pinned across both builds with `--exclude`.
+let selfMatched = calRef.filter { (v2AgreePct[$0.row.startTs] ?? 0) >= 99.9 }
+let nearMatched = calRef.filter {
+    let p = v2AgreePct[$0.row.startTs] ?? 0
+    return p >= 95.0 && p < 99.9
+}
+print("  E.-1 SELF-COMPARISON AUDIT of the reference set")
+if selfMatched.isEmpty && nearMatched.isEmpty {
+    print("    clean — no stage-locked night replays from V2 at >= 95% agreement.")
+} else {
+    print("    night                      stored-vs-V2 agreement    verdict")
+    for nt in (selfMatched + nearMatched).sorted(by: { $0.row.startTs < $1.row.startTs }) {
+        let p = v2AgreePct[nt.row.startTs] ?? 0
+        print("    \(nt.night) (startTs \(nt.row.startTs)) \(f(p, 12, 2))%    \(p >= 99.9 ? "BYTE-EXACT — carries no information about V2" : "near-exact — nearly none")")
+    }
+    let pct = Double(selfMatched.count) / Double(max(1, calRef.count)) * 100
+    print("""
+        \(selfMatched.count) of \(calRef.count) reference nights (\(f(pct, 0, 0))%) are byte-exact V2 replays; \(nearMatched.count) more sit at >= 95%.
+        These inflate every V2 figure in E.0-E.4 and penalise any alternative recipe by construction. To
+        compare two builds honestly, pass the SAME list to BOTH:
+          --exclude \(selfMatched.map { String($0.row.startTs) }.joined(separator: ","))
+        The harness asserts no mechanism for the match; it reports only that the row cannot serve as an
+        independent reference for the recipe it replays.
+    """)
+}
+if !a.exclude.isEmpty {
+    print("    HELD OUT by --exclude this run: \(a.exclude.sorted().map(String.init).joined(separator: ", "))")
+}
 
 // Agreement on the SAME nights the calibration below scores, so the two can be read against each other.
 // This is the contrast the section exists for: kappa here can rise while the biases below get worse.
