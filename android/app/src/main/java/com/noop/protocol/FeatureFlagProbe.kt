@@ -144,8 +144,10 @@ object FeatureFlagProbe {
         END_MARKER("endMarker"),
 
         /**
-         * A `validKey = 0` reply repeated the previous reply's index: the cursor is parked, so on this
-         * firmware `validKey = 0` behaves as a terminator rather than as an empty slot.
+         * A `validKey = 0` reply repeated the previous reply's index: the cursor did not advance, so
+         * this walk cannot reach anything beyond that point. Note what this does NOT establish — a
+         * firmware whose cursor parks on an empty slot emits the identical frame, so "the list ends
+         * here" and "the walk is stuck on a hole" are not separable by this observation.
          */
         EMPTY_SLOT_CURSOR_PARKED("emptySlotCursorParked"),
 
@@ -690,9 +692,15 @@ class FeatureFlagProbeReport(
                 return s
             }
             if (stopCode == FeatureFlagProbe.StopCode.EMPTY_SLOT_CURSOR_PARKED) {
+                // The DECISIVE label is kept, narrowed to what the run actually decides. "There is nothing
+                // past it" is a step beyond the observation, and TWO firmwares emit this identical frame:
+                // a list that genuinely ends at a parked sentinel, and a cursor that advances only on a
+                // valid record — where validKey=0 is a SLOT, the walk is stuck on a hole, and keys may sit
+                // behind it. The second is precisely the reading this probe exists to make testable.
                 return "DECISIVE — validKey=0 is a TERMINATOR on this firmware: the next request returned " +
-                    "the same index with validKey=0 again, so the cursor is parked and there is nothing " +
-                    "past it."
+                    "the same index with validKey=0 again, so the cursor does not advance past it, so " +
+                    "this walk cannot see anything beyond. Whether the list truly ends here is not " +
+                    "separable from a firmware whose cursor parks on an empty slot."
             }
             if (sawEmptySlot) {
                 return "INCONCLUSIVE — validKey=0 was served and the walk continued past it, but a " +

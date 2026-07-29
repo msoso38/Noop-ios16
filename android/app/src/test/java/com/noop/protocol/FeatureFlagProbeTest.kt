@@ -202,8 +202,10 @@ class FeatureFlagProbeTest {
 
     /**
      * The other decisive outcome, and the one that costs two round-trips: the strap repeats the same index
-     * with `validKey = 0`. A parked cursor has nothing past it, so `validKey = 0` really is a terminator on
-     * that firmware — and the report says so in those words rather than assuming it.
+     * with `validKey = 0`. What that decides is that the cursor does not advance, so this walk cannot see
+     * past the point — NOT that the list ends there. A firmware whose cursor parks on an empty slot emits
+     * the identical frame, and that is the reading this whole probe exists to make testable, so the
+     * verdict must not print it as settled. Both halves are pinned below.
      */
     @Test fun repeatedEmptySlotAtTheSameIndexIsReportedAsATerminator() {
         val report = FeatureFlagProbeReport(DeviceFamily.WHOOP5)
@@ -215,6 +217,23 @@ class FeatureFlagProbeTest {
         assertTrue(
             report.terminatorFinding,
             report.terminatorFinding.startsWith("DECISIVE — validKey=0 is a TERMINATOR"),
+        )
+        // The narrowing, pinned so it cannot be quietly widened back. "There is nothing past it" is the
+        // conclusion a reader would paste into an issue as settled, and it is the one this probe exists
+        // to question — two firmwares emit this identical frame.
+        assertTrue(
+            report.terminatorFinding,
+            report.terminatorFinding.contains("the cursor does not advance past it"),
+        )
+        assertTrue(
+            report.terminatorFinding,
+            report.terminatorFinding.contains(
+                "not separable from a firmware whose cursor parks on an empty slot",
+            ),
+        )
+        assertFalse(
+            "the walk observes a stalled cursor, not an empty tail: ${report.terminatorFinding}",
+            report.terminatorFinding.contains("there is nothing past it"),
         )
         assertEquals("settling this must cost two round-trips, not a full cap", 2, report.steps)
     }
