@@ -151,6 +151,27 @@ ring  → phone: 2f 02 2e <status>
 ### 3.6 Pre-auth readable / gated commands
 Before app-auth, the ring answers a small set unauthenticated: firmware (`0x08`), product serial/hardware (`0x18`). Auth-required commands return `2f 02 2f 01` until authenticated: battery (`0x0c`), history events (`0x10`), feature status (`0x2f…0x20`), realtime/feature-latest. [open_oura-r3][open_oura-r5]
 
+### 3.7 macOS pairing limitation (observed, 2026-07-29)
+
+Pairing an Oura ring that has never been Bluetooth-bonded to the Mac (i.e. any ring whose only prior
+bond is with the official Oura app on a phone) reproducibly fails on macOS. `CBCentralManager.connect()`
+is issued cleanly (scanning stopped first, `central.state == .poweredOn`, a valid, in-range peripheral -
+observed RSSI as good as -55), but **no CoreBluetooth delegate callback ever arrives** - not
+`didConnect`, not `didFailToConnect`. The ring never appears in System Settings ▸ Bluetooth either
+(no partial bond record is created). Ruled out: a second central holding the ring - the same failure
+reproduces with the paired phone's Bluetooth fully off. This matches CoreBluetooth's documented
+behavior that `connect()` has no built-in timeout (an unanswered connect just stays pending forever),
+so the practical symptom is a silent, permanent hang rather than an error.
+
+This is a different (and apparently more total) failure surface than the already-known WHOOP 5.0/MG
+macOS limitation (§ see `docs/WHOOP5_DEEP_DATA.md` "iOS / Android only") - WHOOP 5/MG at least connects
+and discovers services, failing only at an authenticated characteristic write (`CBATTError` "Encryption
+is insufficient"). Oura's connect doesn't get that far at all. The exact CoreBluetooth/bluetoothd
+mechanism isn't diagnosed further than this (would need a low-level HCI/SMP trace), but the practical
+conclusion is the same as WHOOP 5/MG's: **treat Oura ring pairing as iOS/Android-only** until proven
+otherwise on macOS. Not yet tested: whether a genuinely never-bonded-anywhere (factory-reset) ring
+behaves differently from the already-Oura-app-owned case tested here.
+
 ---
 
 ## 4. Opcode Table

@@ -720,6 +720,22 @@ struct AddDeviceWizard: View {
         .background(StrandPalette.statusWarning.opacity(0.10),
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
+        #if os(macOS)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(StrandPalette.statusCritical)
+                .accessibilityHidden(true)
+            Text("This currently doesn't work on a Mac: a ring that's only ever been Bluetooth-bonded to a phone (via the Oura app) fails to connect from macOS - CoreBluetooth never completes the connection, even with that phone's Bluetooth off. iPhone/Android are unaffected. See docs/OURA_PROTOCOL.md §3.7.")
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.statusCritical)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(StrandPalette.statusCritical.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        #endif
+
         Text("Ring key (32 hex characters)").strandOverline()
         TextField("0123456789abcdef0123456789abcdef", text: $ouraKeyDraft)
             .textFieldStyle(.plain)
