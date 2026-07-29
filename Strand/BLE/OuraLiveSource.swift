@@ -1643,9 +1643,23 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
         peripheral.discoverServices([Self.service])
     }
 
+    /// Stable, loggable token for a CoreBluetooth connect/disconnect error - twin of BLEManager's
+    /// `connErrorToken`. Oura's own connect-failure handling only ever branched on ONE CBError case
+    /// (peerRemovedPairingInformation); every other failure just fell through to a free-text
+    /// `localizedDescription`, which isn't diagnosable across reports (its wording isn't a stable
+    /// identifier). This makes every case loggable the same way, notably so a macOS Advanced-key pairing
+    /// attempt against a ring that's never been OS-bonded to that Mac (no Oura app exists there to have
+    /// done it) produces a code we can actually act on instead of prose.
+    private static func connErrorToken(_ error: Error?) -> String {
+        guard let error else { return "none" }
+        if let cb = error as? CBError { return "cbError\(cb.code.rawValue)" }
+        if let att = error as? CBATTError { return "cbAttError\(att.code.rawValue)" }
+        return "unknown"
+    }
+
     public func centralManager(_ central: CBCentralManager,
                                didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        log("Oura: WARNING failed to connect - \(error?.localizedDescription ?? "unknown error")")
+        log("Oura: WARNING failed to connect (\(Self.connErrorToken(error))) - \(error?.localizedDescription ?? "unknown error")")
         if feedsLive { live.connected = false; live.streamingLiveHR = false }
         // The ring wiped its bond (re-paired in the Oura app, or a firmware reset). CoreBluetooth surfaces
         // this as a stable CBError, and re-issuing connect just loops the same stale-pairing failure and
@@ -1663,7 +1677,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager,
                                didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         if let error = error {
-            log("Oura: disconnected - \(error.localizedDescription)")
+            log("Oura: disconnected (\(Self.connErrorToken(error))) - \(error.localizedDescription)")
         } else {
             log("Oura: disconnected (clean)")
         }
