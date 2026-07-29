@@ -108,7 +108,7 @@ class TodayLayoutPrefsTest {
             listOf(
                 TodaySection.HEART_RATE, TodaySection.YOUR_CARDS, TodaySection.LIVE_SESSION,
                 TodaySection.SYNTHESIS, TodaySection.KEY_METRICS, TodaySection.RECOVERY_VITALS,
-                TodaySection.JOURNAL,
+                TodaySection.MENSTRUAL_CYCLE, TodaySection.JOURNAL,
             ),
             TodayLayoutPrefs.visibleOrder(order, "hero,workouts"),
         )

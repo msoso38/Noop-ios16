@@ -63,11 +63,11 @@ final class TodayLayoutPrefsTests: XCTestCase {
         let order = "heartRate,hero,yourCards,liveSession,synthesis,keyMetrics,workouts,recoveryVitals,journal"
         XCTAssertEqual(
             TodayLayoutPrefs.visibleOrder(orderRaw: order, hiddenRaw: "hero,workouts"),
-            [.heartRate, .yourCards, .liveSession, .synthesis, .keyMetrics, .recoveryVitals, .journal]
+            [.heartRate, .yourCards, .liveSession, .synthesis, .keyMetrics, .recoveryVitals, .menstrualCycle, .journal]
         )
         XCTAssertEqual(TodayLayoutPrefs.decodeOrder(order), [
             .heartRate, .hero, .yourCards, .liveSession, .synthesis, .keyMetrics, .workouts,
-            .recoveryVitals, .journal,
+            .recoveryVitals, .menstrualCycle, .journal,
         ])
     }
 
