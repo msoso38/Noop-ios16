@@ -45,10 +45,6 @@ import re
 import sys
 import pathlib
 
-try:
-    import yaml
-except ImportError:
-    sys.exit("appchangelog-gen: needs PyYAML (pip install pyyaml)")
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 KT = ROOT / "android/app/src/main/java/com/noop/ui/AppChangelog.kt"
@@ -103,6 +99,13 @@ def write_title_strings(key: str, title: str, locales: dict) -> None:
 
 
 def frontmatter(md: pathlib.Path) -> dict:
+    # Imported HERE, not at module scope: the pure helpers below carry the #878 key scheme and are
+    # unit-tested, and a test runner should not need PyYAML installed to import them. Parsing the
+    # front-matter is the only thing that actually needs it, and it still fails with the same message.
+    try:
+        import yaml
+    except ImportError:
+        sys.exit("appchangelog-gen: needs PyYAML (pip install pyyaml)")
     m = re.match(r"^---\n(.*?)\n---\n", md.read_text(), re.S)
     if not m:
         sys.exit(f"appchangelog-gen: no YAML front-matter in {md}")
