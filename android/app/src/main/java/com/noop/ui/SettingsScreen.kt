@@ -1969,29 +1969,36 @@ fun SettingsScreen(
                         )
                     }
 
-                    // #174: the disable run's per-key result. Shown verbatim because the interesting part
-                    // is the read-back table, not a green tick — a write that acked SUCCESS but did not
-                    // move the stored value renders here as "unchanged", which is the case worth seeing.
-                    val disableReport = r22DisableReport
-                    if (disableReport != null) {
-                        if (disableReport == WhoopBleClient.WAITING_DEVICE_CONFIG_PROBE) {
-                            Text(
-                                uiString(R.string.l10n_settings_screen_r22disable_running),
-                                style = NoopType.caption,
-                                color = Palette.textSecondary,
-                            )
-                        } else {
-                            Text(
-                                disableReport,
-                                style = NoopType.caption.copy(fontFamily = FontFamily.Monospace),
-                                color = Palette.textSecondary,
-                            )
-                            NoopButton(
-                                text = uiString(R.string.l10n_settings_screen_r22disable_dismiss),
-                                kind = NoopButtonKind.Secondary,
-                                onClick = { vm.ble.clearR22DisableReport() },
-                            )
-                        }
+                }
+
+                // #174: the disable run's per-key result. Shown verbatim because the interesting part
+                // is the read-back table, not a green tick — a write that acked SUCCESS but did not
+                // move the stored value renders here as "unchanged", which is the case worth seeing.
+                //
+                // OUTSIDE the `if (deepData)` block on purpose. The commonest way to reach a disable run is
+                // flipping the switch OFF and confirming, which means the pref is already false while the
+                // run is walking its plan — so nesting this inside that block hid the progress line and the
+                // whole read-back table for exactly the run a user is most likely to start. The report is
+                // about what is on the STRAP, which outlives the app's opt-in.
+                val disableReport = r22DisableReport
+                if (disableReport != null) {
+                    if (disableReport == WhoopBleClient.WAITING_DEVICE_CONFIG_PROBE) {
+                        Text(
+                            uiString(R.string.l10n_settings_screen_r22disable_running),
+                            style = NoopType.caption,
+                            color = Palette.textSecondary,
+                        )
+                    } else {
+                        Text(
+                            disableReport,
+                            style = NoopType.caption.copy(fontFamily = FontFamily.Monospace),
+                            color = Palette.textSecondary,
+                        )
+                        NoopButton(
+                            text = uiString(R.string.l10n_settings_screen_r22disable_dismiss),
+                            kind = NoopButtonKind.Secondary,
+                            onClick = { vm.ble.clearR22DisableReport() },
+                        )
                     }
                 }
 

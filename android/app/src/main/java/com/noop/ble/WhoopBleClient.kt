@@ -2878,15 +2878,23 @@ class WhoopBleClient(
                 // keep their own separate opt-in clauses below and are never sent from this path. Driven
                 // only by probeDeviceConfigValues() (user-initiated, Test Centre gated).
                 !(DeviceConfigReadProbe.isReadOnlyOpcode(cmd.rawValue) && deviceConfigReport != null) &&
-                // SET_CONFIG / SET_FF_VALUE (120) — the R22 deep-stream unlock AND its undo. Allowed only
-                // while the deep-data experiment is opted in, and now additionally only for a KEY and a
-                // VALUE the gate recognises: one of the sixteen R22 flags carrying either that key's own
-                // enable value or the documented off value. The clause this replaces was opcode-only, so
-                // it admitted ANY feature-flag key with ANY value for as long as the opt-in happened to be
-                // on — the same weakness #907 closed on opcode 119. Driven only by enableWhoop5DeepData()
-                // and disableWhoop5DeepData(). (#174)
-                !FeatureFlagWriteGate.admitsSend(
+                // SET_CONFIG / SET_FF_VALUE (120), ENABLE direction — the R22 deep-stream unlock. Allowed
+                // only while the deep-data experiment is opted in, and only for a KEY and a VALUE the gate
+                // recognises: one of the sixteen R22 flags carrying that key's own enable value. The clause
+                // this replaces was opcode-only, so it admitted ANY feature-flag key with ANY value for as
+                // long as the opt-in happened to be on — the same weakness #907 closed on opcode 119.
+                // Driven only by enableWhoop5DeepData(). (#174)
+                !FeatureFlagWriteGate.admitsEnableWrite(
                     cmd.rawValue, payload, puffinExperiment.isDeepDataEnabled,
+                ) &&
+                // SET_FF_VALUE (120), DISABLE direction — the undo. Gated on a disable run being in flight
+                // rather than on the opt-in, exactly like the 128 read-back clause below, and restricted to
+                // FEATURE_FLAG_OFF_VALUE. The opt-in CANNOT gate this: the Settings switch writes the pref
+                // false before it raises the confirmation dialog, so it is already false by the time the
+                // user confirms the undo the switch itself offered — gating on it made the whole toggle-off
+                // path dead. Driven only by disableWhoop5DeepData(). (#174)
+                !FeatureFlagWriteGate.admitsDisableWrite(
+                    cmd.rawValue, payload, r22DisableRun != null,
                 ) &&
                 // GET_FF_VALUE (128) as the disable run's mandatory READ-BACK. Gated on a disable run being
                 // in flight, exactly like the read probes' 121/128 clause above, so a default install can
@@ -5727,11 +5735,13 @@ class WhoopBleClient(
         if (connectedFamily != DeviceFamily.WHOOP5) {
             log("Deep-data disable: needs a WHOOP 5.0/MG strap — ignored."); return
         }
-        if (!puffinExperiment.isDeepDataEnabled) {
-            // The send allowlist keys off this same pref, so the writes would be dropped anyway. Fail with
-            // a message that says what to do rather than letting sixteen frames vanish silently.
-            log("Deep-data disable: the deep-data opt-in is off, so the writes would be refused by the send allowlist. Turn the toggle back on, tap the disable button, then turn it off — ignored."); return
-        }
+        // NOTE there is deliberately NO isDeepDataEnabled guard here. There was one, and it made this whole
+        // function unreachable from the control users actually use: the Settings switch writes the pref
+        // false the moment it is flipped OFF, THEN raises the "Clear the R22 flags on your strap?" dialog.
+        // By the time the user taps "Clear flags on strap" the pref is already false, so the guard returned
+        // at the top and nothing happened — the same shape of defect this change exists to fix (UI
+        // promising an undo that never runs). The send allowlist now gates the off-value writes on
+        // r22DisableRun != null instead, which is the state that is actually about this operation. (#174)
         val s = _state.value
         if (!s.connected || !s.encryptedBond) {
             log("Deep-data disable: needs the full encrypted bond, not the live-HR-only link. Close the official WHOOP app, put the strap in pairing mode, and bond it to NOOP first — ignored."); return
@@ -5763,8 +5773,10 @@ class WhoopBleClient(
             payload = byteArrayOf(0x01) +
                 Whoop5Config.payloadBody(step.key, Whoop5Config.FEATURE_FLAG_OFF_VALUE)
             // Fail closed: the same predicate the send path consults, asked here too, so a future edit that
-            // widened the plan cannot put an unrecognised key or value on the wire.
-            if (!FeatureFlagWriteGate.admitsSend(step.opcode, payload, puffinExperiment.isDeepDataEnabled)) {
+            // widened the plan cannot put an unrecognised key or value on the wire. `r22DisableRun != null`
+            // is true by construction here (this is only called from inside a run) — it is passed rather
+            // than hardcoded so this and the send path evaluate the identical predicate.
+            if (!FeatureFlagWriteGate.admitsDisableWrite(step.opcode, payload, r22DisableRun != null)) {
                 log("Deep-data disable: refusing to write ${step.key} — not admitted by the feature-flag gate")
                 finishR22Disable(); return
             }

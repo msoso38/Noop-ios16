@@ -1537,23 +1537,31 @@ struct SettingsView: View {
                             .foregroundStyle(StrandPalette.textTertiary)
                     }
 
-                    // #174: the disable run's per-key result. Shown verbatim because the interesting part is
-                    // the read-back table, not a green tick — a write that acked SUCCESS but did not move
-                    // the stored value renders here as "unchanged", which is the case worth seeing.
-                    if let report = live.r22DisableReport {
-                        if report == BLEManager.deviceConfigProbeWaiting {
-                            Label("Clearing R22 flags and reading each one back\u{2026}", systemImage: "ellipsis")
-                                .font(StrandFont.caption)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                        } else {
-                            Text(report)
-                                .font(StrandFont.caption.monospaced())
-                                .foregroundStyle(StrandPalette.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                            NoopButton("Dismiss disable report", systemImage: "xmark", kind: .secondary) {
-                                model.ble.clearR22DisableReport()
-                            }
+                }
+
+                // #174: the disable run's per-key result. Shown verbatim because the interesting part is
+                // the read-back table, not a green tick — a write that acked SUCCESS but did not move
+                // the stored value renders here as "unchanged", which is the case worth seeing.
+                //
+                // OUTSIDE the `if deepDataEnabled` block on purpose. The commonest way to reach a disable
+                // run is flipping the switch OFF and confirming, which means the pref is already false while
+                // the run is walking its plan — so nesting this inside that block hid the progress line and
+                // the whole read-back table for exactly the run a user is most likely to start. The report
+                // is about what is on the STRAP, which outlives the app's opt-in: it stays legible (and
+                // dismissable) whatever the switch says.
+                if let report = live.r22DisableReport {
+                    if report == BLEManager.deviceConfigProbeWaiting {
+                        Label("Clearing R22 flags and reading each one back\u{2026}", systemImage: "ellipsis")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    } else {
+                        Text(report)
+                            .font(StrandFont.caption.monospaced())
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                        NoopButton("Dismiss disable report", systemImage: "xmark", kind: .secondary) {
+                            model.ble.clearR22DisableReport()
                         }
                     }
                 }
