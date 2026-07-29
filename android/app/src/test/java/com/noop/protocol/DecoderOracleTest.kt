@@ -13,6 +13,7 @@ import com.noop.data.SleepStateRow
 import com.noop.data.Spo2Row
 import com.noop.data.StepRow
 import com.noop.data.StreamBatch
+import com.noop.data.V18AuxRow
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -194,7 +195,8 @@ class DecoderOracleTest {
         "hr" to b.hr.size, "rr" to b.rr.size, "spo2" to b.spo2.size, "skin_temp" to b.skinTemp.size,
         "resp" to b.resp.size, "gravity" to b.gravity.size, "steps" to b.steps.size,
         "sleep_state" to b.sleepState.size, "ppg_hr" to b.ppgHr.size,
-        "ppg_waveform" to b.ppgWaveform.size, "events" to b.events.size, "battery" to b.battery.size,
+        "ppg_waveform" to b.ppgWaveform.size, "v18_aux" to b.v18Aux.size,
+        "events" to b.events.size, "battery" to b.battery.size,
     )
 
     /**
@@ -219,6 +221,10 @@ class DecoderOracleTest {
             "sleep_state" to StreamBatch(sleepState = listOf(SleepStateRow(1L, 2))),
             "ppg_hr" to StreamBatch(ppgHr = listOf(PpgHrRow(1L, 60, 0.5))),
             "ppg_waveform" to StreamBatch(ppgWaveform = listOf(PpgWaveformRow(1L, listOf(1, 2)))),
+            // Carries a real slot value rather than a bare ts: V18AuxRow.isEmpty is "every slot is null",
+            // so an all-null row would still make the LIST non-empty and pass this check while saying
+            // nothing about a row that carries data.
+            "v18_aux" to StreamBatch(v18Aux = listOf(V18AuxRow(1L, recordIndex = 1L))),
             "events" to StreamBatch(events = listOf(EventEntry(1L, "BOOT", "{}"))),
             "battery" to StreamBatch(battery = listOf(BatteryRow(1L, 50.0, 3900))),
         )
