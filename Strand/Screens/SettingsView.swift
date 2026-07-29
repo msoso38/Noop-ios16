@@ -99,8 +99,8 @@ struct SettingsView: View {
     // Card-surface opacity percent (100 = solid). Reactive — moving the slider live-updates every card.
     @AppStorage(CardAppearancePrefs.opacityKey) private var cardOpacityPercent = CardAppearancePrefs.defaultPercent
     // "Reduce motion in NOOP" (default OFF): pose every looping animation still and stop the decorative
-    // tilt sensor, without needing system Low Power Mode or system Reduce Motion. Mirrors Kotlin
-    // NoopPrefs.quietMotion.
+    // tilt sensor, without needing system Low Power Mode or system Reduce Motion. Apple-only so far —
+    // Android has no such toggle yet and its gate reads two signals, not three (#941).
     @AppStorage(QuietMotionPrefs.enabledKey) private var quietMotion = false
     // Hydration tracker (opt-in, MVP). Default OFF — when off the hydration dashboard card + detail are
     // hidden. Mirrors the Android pref so the toggle reads the same on both platforms.
