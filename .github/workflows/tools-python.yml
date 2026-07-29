@@ -60,17 +60,19 @@ jobs:
           fi
         working-directory: tools/linux-capture
 
-      # Tools/test_i18n_audit.py covers the audit that gates every PR's translations, and nothing ran it
-      # either: i18n-coverage.yml invokes `i18n_audit.py --ci` but never its own test file. Run from
-      # inside Tools/ because the suite imports the module by bare name.
-      - name: Run Tools/ audit tests
+      # The Tools/ suites: the i18n audit that gates every PR's translations, and the What's New
+      # generator (#878). Neither ran before — i18n-coverage.yml invokes `i18n_audit.py --ci` but never
+      # its test file. `discover`, not named modules, for the same reason as above: naming them meant the
+      # generator's tests would have been added and silently never run. Run from inside Tools/ because
+      # the suites import their modules by bare name.
+      - name: Run Tools/ tests
         run: |
           set -o pipefail   # see above — without this a red suite exits 0 through the pipe.
-          python3 -m unittest test_i18n_audit -v 2>&1 | tee "$RUNNER_TEMP/out.txt"
+          python3 -m unittest discover -p "test_*.py" -v 2>&1 | tee "$RUNNER_TEMP/out.txt"
           ran=$(grep -oE '^Ran [0-9]+ test' "$RUNNER_TEMP/out.txt" | grep -oE '[0-9]+')
           echo "collected ${ran:-0} tests"
-          if [ "${ran:-0}" -lt 30 ]; then
-            echo "::error::expected at least 30 tests, collected ${ran:-0} — discovery is broken, not the suite"
+          if [ "${ran:-0}" -lt 45 ]; then
+            echo "::error::expected at least 45 tests, collected ${ran:-0} — discovery is broken, not the suite"
             exit 1
           fi
         working-directory: Tools
