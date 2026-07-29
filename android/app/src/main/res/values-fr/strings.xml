@@ -230,7 +230,15 @@
     <string name="l10n_devices_screen_body_location_probe_690_re_7def8c39">Sonde de position corporelle (#690 RE)…</string>
     <string name="l10n_devices_screen_body_location_probe_result_690_60c5ee79">Résultat de la sonde de position corporelle (#690)</string>
     <string name="l10n_devices_screen_body_location_probe_explainer_a9363239">Envoie la commande de position corporelle en lecture seule (0x54) et consigne la réponse brute complète du bracelet dans le journal, en décodant l\'enregistrement (révision / position / confiance / état) sur la WHOOP 4.0. Rien n\'est écrit sur le bracelet, et la détection de port ou la notation ne sont jamais modifiées.</string>
+    <string name="l10n_devices_screen_delete_this_device_s_data_3cae7a2a">Supprimer les données de cet appareil…</string>
+    <string name="l10n_devices_screen_disconnect_ed28e068">Déconnecter</string>
     <string name="l10n_devices_screen_feature_flag_probe_761_re_21241d68">Sonde des indicateurs de fonction (#761 RE)…</string>
+    <string name="l10n_devices_screen_make_active_75690bb8">Activer</string>
+    <string name="l10n_devices_screen_reboot_probe_4_0_re_828b3916">Sonde de redémarrage (4.0 RE)…</string>
+    <string name="l10n_devices_screen_reconnect_6988b16a">Reconnecter</string>
+    <string name="l10n_devices_screen_remove_e963907d">Supprimer</string>
+    <string name="l10n_devices_screen_rename_d3f4cb89">Renommer</string>
+    <string name="l10n_devices_screen_restart_strap_c976cd6c">Redémarrer le bracelet…</string>
     <string name="l10n_devices_screen_stop_sync_4a1f2b6e">Arrêter la synchronisation</string>
     <string name="l10n_devices_screen_feature_flag_probe_result_761_c50ef4d4">Résultat de la sonde des indicateurs de fonction (#761)</string>
     <string name="l10n_devices_screen_feature_flag_probe_explainer_58eec30f">Demande au bracelet la liste des NOMS des indicateurs de fonction que son propre micrologiciel connaît : START_FF_KEY_EXCHANGE (0x75) puis SEND_NEXT_FF (0x76) jusqu\'à ce que le bracelet signale la fin. Lecture seule — aucune valeur n\'est écrite, et les commandes SET ne sont jamais envoyées par cette sonde. La liste s\'affiche ici et est consignée dans le journal du bracelet.</string>
