@@ -85,7 +85,7 @@ private object NoopButtonMetrics {
 
 /** The reset accent blue (iOS `StrandPalette.accent`: #234F9E light / #60A0E0 dark). */
 private val noopAccentBlue: Color
-    @Composable get() = if (Palette.isLight) Color(0xFF234F9E) else Color(0xFF60A0E0)
+    @Composable get() = Palette.accent
 
 /** Crisp white label/icon on accent + critical fills (iOS `goldDeepText` = #FFFFFF post-reset). */
 private val noopOnFill: Color = Color(0xFFFFFFFF)
@@ -154,7 +154,7 @@ fun NoopButton(
     val scale by animateFloatAsState(
         targetValue = targetScale,
         animationSpec = if (reduced) tween(0) else NoopMotion.value(),
-        label = uiString(R.string.l10n_noop_button_noopbutton_scale_1bee88be),
+        label = "NoopButton.scale",
     )
     val opacity = when {
         !enabled -> NoopButtonMetrics.disabledOpacity
