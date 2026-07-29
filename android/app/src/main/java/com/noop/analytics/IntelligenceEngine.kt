@@ -575,7 +575,7 @@ object IntelligenceEngine {
                 wristOff = wristOff,
                 habitualMidsleepSec = habitualMidsleepSec,
                 bandSleepState = bandSleepState,
-                // #690: thread the V2 toggle into the NORMAL staging path so it affects detected nights,
+                // 7.0.0: thread the V2 toggle into the NORMAL staging path so it affects detected nights,
                 // not just the userEdited self-heal restage. The Context-aware caller (AppViewModel/
                 // WhoopBleClient) supplied it from PuffinExperiment.from(context).experimentalSleepV2.
                 // V2 is the default staging engine for EVERY strap (toggle defaults on); turn it off for V1.

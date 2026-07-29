@@ -221,7 +221,7 @@ object AnalyticsEngine {
         // [SleepStagerV2] instead of V1. This PARAMETER defaults false to keep pure-function callers/tests
         // byte-identical — it is NOT the product default. IntelligenceEngine threads
         // PuffinExperiment.from(context).experimentalSleepV2, which is default TRUE (#277/#351), so the
-        // shipped app stages with V2. Mirrors Swift. (V7 / #690)
+        // shipped app stages with V2. Mirrors Swift. (7.0.0)
         useSleepStagerV2: Boolean = false,
         // Opt-in motion-aware wake refinement (#364 "Proposal 2" follow-up; density gate precedent #345).
         // When true, [WakeMotionRefinement] re-derives each detected session's stages, reclassifying a

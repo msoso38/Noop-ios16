@@ -324,7 +324,7 @@ public enum AnalyticsEngine {
                                   // false to keep pure-function callers/tests byte-identical — it is NOT
                                   // the product default. IntelligenceEngine threads
                                   // `PuffinExperiment.experimentalSleepV2Enabled`, which is default ON
-                                  // (#277/#351), so the shipped app stages with V2. (V7 / #690)
+                                  // (#277/#351), so the shipped app stages with V2. (7.0.0)
                                   useSleepStagerV2: Bool = false,
                                   // Opt-in motion-aware wake refinement (#364 "Proposal 2" follow-up; density
                                   // gate precedent #345). When true, `WakeMotionRefinement` re-derives each
