@@ -326,6 +326,32 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// (#414) and the Android `ReconnectBackoff` so a ring genuinely out of range doesn't hammer BLE.
     private var failedReconnectAttempts = 0
 
+    /// Twin of BLEManager's `pendingConnectProbe`/`pendingConnectProbeSeconds` (#730): CoreBluetooth's
+    /// `connect()` has NO built-in timeout, so an unanswered connect just stays pending forever with
+    /// neither `didConnect` nor `didFailToConnect` ever firing - Oura had no equivalent probe, so a stalled
+    /// connect (e.g. a ring that's already bonded/busy with another central, such as a phone running the
+    /// official Oura app) looked identical to "still working" with nothing in the log to tell them apart.
+    private var pendingConnectProbe: DispatchWorkItem?
+    private static let pendingConnectProbeSeconds: TimeInterval = 15
+
+    private func armPendingConnectProbe(for id: UUID) {
+        pendingConnectProbe?.cancel()
+        let probe = DispatchWorkItem { [weak self] in
+            guard let self, self.peripheral?.identifier == id, self.peripheral?.state != .connected else { return }
+            self.log("Oura: WARNING still not connected \(Int(Self.pendingConnectProbeSeconds))s after connect(\(id)) "
+                     + "- CoreBluetooth connect has no timeout, so this is still PENDING (no didFailToConnect). The "
+                     + "ring is likely out of range, asleep, or already bonded to another device (e.g. a phone "
+                     + "running the official Oura app).")
+        }
+        pendingConnectProbe = probe
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pendingConnectProbeSeconds, execute: probe)
+    }
+
+    private func cancelPendingConnectProbe() {
+        pendingConnectProbe?.cancel()
+        pendingConnectProbe = nil
+    }
+
     /// Next backoff delay, capped at 60s, matching BLEManager's `min(60, 3 * 2^(n-1))` and the Android twin.
     private func nextReconnectDelay() -> TimeInterval {
         min(60.0, 3.0 * pow(2.0, Double(max(0, failedReconnectAttempts - 1))))
@@ -833,6 +859,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         }
         log("Oura: connecting to \(id)")
         central.connect(p, options: nil)
+        armPendingConnectProbe(for: id)
     }
 
     /// Tear down: cancel the connection, stop scanning, flush, clear all transient state. Idempotent.
@@ -842,6 +869,7 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         intentionalDisconnect = true
         reconnectID = nil
         failedReconnectAttempts = 0
+        cancelPendingConnectProbe()
         stopScan()
         pendingConnectID = nil
         stopReengageTimer()
@@ -1545,6 +1573,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
             if let id = pendingConnectID, let p = seenPeripherals[id] {
                 pendingConnectID = nil
                 central.connect(p, options: nil)
+                armPendingConnectProbe(for: id)
             } else if scanning {
                 central.scanForPeripherals(withServices: [Self.service],
                                            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
@@ -1585,6 +1614,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        cancelPendingConnectProbe()   // the connect resolved; no pending-connect warning needed
         log("Oura: connected - discovering services")
         failedReconnectAttempts = 0   // a real connection clears the reconnect backoff (#912)
         peripheral.delegate = self
@@ -1659,6 +1689,7 @@ extension OuraLiveSource: @preconcurrency CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager,
                                didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        cancelPendingConnectProbe()   // it FAILED rather than pending — this log is the answer
         log("Oura: WARNING failed to connect (\(Self.connErrorToken(error))) - \(error?.localizedDescription ?? "unknown error")")
         if feedsLive { live.connected = false; live.streamingLiveHR = false }
         // The ring wiped its bond (re-paired in the Oura app, or a firmware reset). CoreBluetooth surfaces
