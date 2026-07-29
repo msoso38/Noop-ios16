@@ -1,0 +1,45 @@
+# The Python test suites under tools/, which nothing ran.
+#
+# `tools/linux-capture` carries 212 tests across 8 files — the frame decoder, the HCI extractor, the
+# activity and sync decoders, the spot-HRV path, and the SpO2 promote gate that #103 is waiting on. Every
+# one of them only ever executed when a contributor remembered to, which meant a decoder could regress and
+# the suite that would have caught it stayed green by never being run.
+#
+# Cheap to run: pure stdlib `unittest`, no dependencies, no fixtures to fetch, ubuntu rather than macOS.
+# Path-filtered so it only fires when tools/ changes.
+name: Tools Python CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/**'
+      - '.github/workflows/tools-python.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/**'
+      - '.github/workflows/tools-python.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: tools-python-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-capture:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # `discover` rather than a hand-listed set, so a NEW test file is picked up without editing this
+      # workflow — the failure mode that leaves a suite unrun is exactly what this job exists to end.
+      - name: Run tools/linux-capture tests
+        run: python3 -m unittest discover -p "test_*.py" -v
+        working-directory: tools/linux-capture
