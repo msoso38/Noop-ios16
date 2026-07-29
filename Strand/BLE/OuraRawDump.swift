@@ -26,6 +26,11 @@ final class OuraRawDump {
     private var resolveFailed = false
     private var announced = false
 
+    /// Rotate the sidecar past this size (keeping one previous ".1"), so an always-on research corpus is
+    /// bounded to ~2× this on disk instead of growing forever. Matches `OuraMotionDump`/`OuraActivityDump` —
+    /// this file needs it MORE than either: full hex of every notification, and no dedup high-water.
+    private static let maxBytes = 25 * 1024 * 1024
+
     private static let iso: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.timeZone = TimeZone(identifier: "UTC")
@@ -40,7 +45,20 @@ final class OuraRawDump {
     /// Append one raw notification's bytes verbatim (hex-encoded), stamped with wall-clock arrival time.
     /// No-op on empty input. Best-effort: any file error is logged once and never disrupts the BLE path.
     func record(bytes: [UInt8]) {
-        guard !bytes.isEmpty, let url = resolveURL() else { return }
+        guard !bytes.isEmpty, var url = resolveURL() else { return }
+
+        // Bound the corpus (rotate to a single ".1", dropping the prior one) so an always-on research sidecar
+        // can't grow unbounded — same rotation as OuraMotionDump. Read the size via a fresh FileManager stat
+        // rather than URL.resourceValues, whose cache on the reused URL can return a stale small size.
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
+        if size > Self.maxBytes {
+            let old = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".1")
+            try? FileManager.default.removeItem(at: old)
+            try? FileManager.default.moveItem(at: url, to: old)
+            fileURL = nil
+            guard let fresh = resolveURL() else { return }
+            url = fresh
+        }
 
         let now = Date()
         let line = OuraRawDumpLine.encode(
