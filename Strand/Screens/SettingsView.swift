@@ -98,6 +98,10 @@ struct SettingsView: View {
     @AppStorage(SkyBehindCardsPrefs.enabledKey) private var skyBehindCards = true
     // Card-surface opacity percent (100 = solid). Reactive — moving the slider live-updates every card.
     @AppStorage(CardAppearancePrefs.opacityKey) private var cardOpacityPercent = CardAppearancePrefs.defaultPercent
+    // "Reduce motion in NOOP" (default OFF): pose every looping animation still and stop the decorative
+    // tilt sensor, without needing system Low Power Mode or system Reduce Motion. Apple-only so far —
+    // Android has no such toggle yet and its gate reads two signals, not three (#941).
+    @AppStorage(QuietMotionPrefs.enabledKey) private var quietMotion = false
     // Hydration tracker (opt-in, MVP). Default OFF — when off the hydration dashboard card + detail are
     // hidden. Mirrors the Android pref so the toggle reads the same on both platforms.
     @AppStorage(HydrationStore.enabledKey) private var hydrationEnabled = false
@@ -770,6 +774,22 @@ struct SettingsView: View {
                 #endif
 
                 Divider().overlay(StrandPalette.hairline).padding(.vertical, 4)
+                // MARK: Reduce motion in NOOP — pose every looping animation still and stop the tilt
+                // sensor, WITHOUT requiring system Low Power Mode. Off by default; system Reduce Motion
+                // and Low Power Mode already force the same behaviour, this is the third, in-app signal.
+                Toggle(isOn: $quietMotion) {
+                    Text("Reduce motion in NOOP")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                Text("Holds the liquid gauges, the sky and the tilt response still, and turns off the motion sensor that drives them. Saves battery. Low Power Mode and the system Reduce Motion setting already do this.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 // MARK: Day-cycle background — the time-of-day scene behind Today (#698). On by default.
                 // Off swaps it for the plain dark canvas for people who find the moving scene distracting.
                 Toggle(isOn: $showDayCycleBackground) {
