@@ -39,7 +39,7 @@ public enum NoopMetrics {
 
     // MARK: Named layout constants — the canonical margins/heights screens compose with.
     /// Horizontal page margin (the gutter on the left/right edge of a screen). Use via `.screenPadding()`.
-    public static let screenHPadding: CGFloat = 20
+    public static let screenHPadding: CGFloat = 22
     /// Vertical gap between top-level page sections.
     public static let sectionSpacing: CGFloat = 24
     /// Interior padding inside a card's content (matches `cardPadding`).
