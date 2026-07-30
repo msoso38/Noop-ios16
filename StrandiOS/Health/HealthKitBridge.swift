@@ -104,7 +104,13 @@ final class HealthKitBridge: ObservableObject {
         // Water — READ-ONLY (#949), so drinks logged in a dedicated hydration app (or by a smart bottle)
         // show up without being typed in twice. Lands in the hydration source rather than apple-health,
         // because the hydration screen is what consumes it. Never written back.
-        .dietaryWater
+        .dietaryWater,
+        // Caffeine — READ-ONLY (#949). Feeds the caffeine window's decay estimate, which already stores
+        // time + optional mg per intake, so a Health sample maps onto it directly. Apple exposes this as
+        // its own narrow type; Health Connect has no caffeine-only scope (caffeine is a field on
+        // NutritionRecord, behind READ_NUTRITION — the whole food log), which is why Android is not
+        // matched here. Never written back.
+        .dietaryCaffeine
     ]
     private static let quantityWriteIds: [HKQuantityTypeIdentifier] = [
         .restingHeartRate, .heartRateVariabilitySDNN, .oxygenSaturation, .respiratoryRate
@@ -516,6 +522,18 @@ final class HealthKitBridge: ObservableObject {
                 }
                 for (day, a) in byDay { if let ml = a.waterMl { waterByDay[day] = ml } }
                 await repo.setImportedHydration(waterByDay)
+            }
+            // Imported caffeine (#949) — only the last `CaffeineLogStore.retentionHours`, because the
+            // store prunes past that on load and the decay estimate is long dead by then. Reading the
+            // full 30-day sync window would hand over hundreds of samples for them all to be dropped.
+            //
+            // The caffeine card is manual-first and shows nothing until something is logged, so unlike
+            // hydration there is no separate opt-in toggle to gate on: an empty Health cupboard still
+            // leaves the card exactly as quiet as it is today.
+            if let caffeineStart = cal.date(byAdding: .hour,
+                                            value: -Int(CaffeineLogStore.retentionHours), to: end) {
+                let imported = await collectCaffeine(start: caffeineStart, end: end)
+                CaffeineLogStore.shared.replaceImported(imported)
             }
             try await writeBack(whoopStore: store)
             lastSync = Date()
@@ -981,6 +999,38 @@ final class HealthKitBridge: ObservableObject {
     /// the macOS export importer and the Android Health Connect importer, which already ingest workouts,
     /// closing the iOS gap. The upsert is idempotent on (deviceId, startTs), so re-running a sync window
     /// refreshes rather than duplicates.
+    /// Individual caffeine samples in the window, newest first (#949).
+    ///
+    /// A SAMPLE query, not the day-bucketed `collect`: the caffeine card estimates what is still active
+    /// from a half-life decay, so it needs each intake's own timestamp. A day total would collapse a 7am
+    /// coffee and a 9pm one into a single number that answers no question the card asks.
+    ///
+    /// Each sample keeps its HealthKit UUID as `externalId` so a re-import can tell an intake it already
+    /// has from a new one. `notNoopAuthored` keeps NOOP's own samples out — we do not write caffeine
+    /// today, but the predicate costs nothing and closes the loop if that ever changes.
+    private func collectCaffeine(start: Date, end: Date) async -> [CaffeineIntake] {
+        guard let type = HKQuantityType.quantityType(forIdentifier: .dietaryCaffeine) else { return [] }
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),
+            Self.notNoopAuthored,
+        ])
+        return await withCheckedContinuation { (cont: CheckedContinuation<[CaffeineIntake], Never>) in
+            let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
+            let q = HKSampleQuery(sampleType: type, predicate: predicate,
+                                  limit: HKObjectQueryNoLimit, sortDescriptors: [sort]) { _, samples, _ in
+                let out: [CaffeineIntake] = (samples as? [HKQuantitySample] ?? []).compactMap { s in
+                    let mg = s.quantity.doubleValue(for: .gramUnit(with: .milli))
+                    // A zero or non-finite sample carries no dose worth showing; skip it rather than log
+                    // a 0 mg intake, which would pad the "intakes still active" count with nothing.
+                    guard mg.isFinite, mg > 0 else { return nil }
+                    return CaffeineIntake(at: s.startDate, mg: mg, externalId: s.uuid.uuidString)
+                }
+                cont.resume(returning: out)
+            }
+            store.execute(q)
+        }
+    }
+
     private func collectWorkouts(start: Date, end: Date) async -> [WorkoutRow] {
         let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),
