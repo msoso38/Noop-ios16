@@ -2042,7 +2042,7 @@ fun SettingsScreen(
                     leadingIcon = Icons.Filled.Upload,
                     kind = NoopButtonKind.Secondary,
                     fullWidth = true,
-                    onClick = { LogExport.shareWhoop5Capture(context, live.whoop5Detected) },
+                    onClick = { scope.launch { LogExport.shareWhoop5Capture(context, live.whoop5Detected) } },
                 )
 
                 // One-tap "matched pair" export (#510): hands a reporter BOTH the raw capture file and

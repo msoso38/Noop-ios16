@@ -1828,6 +1828,9 @@ struct SettingsView: View {
     /// both stamped with the same `yyMMdd-HHmm` minute so they're obviously a pair. Reuses the existing
     /// export utilities — `FileExport.exportPair` shares both files in one iOS share sheet, and saves
     /// each via its own NSSavePanel on macOS (no new file plumbing).
+    ///
+    /// #646/#651: `exportPair` is now async (its file read + zip build run off the main actor), so this
+    /// launches it in a `Task` — the button action itself stays synchronous from the caller's perspective.
     private func exportRawAndLog() {
         model.ble.flushPuffinCaptures()
         guard let capture = live.puffinCaptureURL else {
@@ -1837,9 +1840,11 @@ struct SettingsView: View {
             return
         }
         let stamp = FileExport.timestamp()
-        FileExport.exportPair(
-            file: capture, fileSuggestedName: "noop-raw-capture-\(stamp).json",
-            text: live.exportableLogText(), textSuggestedName: "noop-strap-log-\(stamp).txt")
+        Task {
+            await FileExport.exportPair(
+                file: capture, fileSuggestedName: "noop-raw-capture-\(stamp).json",
+                text: live.exportableLogText(), textSuggestedName: "noop-strap-log-\(stamp).txt")
+        }
     }
 
     #if os(macOS)

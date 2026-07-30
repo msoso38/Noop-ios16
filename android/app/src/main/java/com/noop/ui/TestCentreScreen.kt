@@ -185,16 +185,20 @@ fun TestCentreScreen(vm: AppViewModel) {
             onCancel = { pendingReport = null },
             onShare = {
                 p.gate.confirm()
-                TestReportFlow.run(
-                    context = context,
-                    profile = p.profile,
-                    title = p.title,
-                    version = BuildConfig.VERSION_NAME,
-                    platform = "Android",
-                    osVersion = android.os.Build.VERSION.RELEASE ?: "?",
-                    gate = p.gate,
-                    entries = p.entries,
-                )
+                // Launched (#646/#651): TestReportFlow.run is now suspend since it awaits
+                // LogExport.exportBundle's off-main zip build.
+                scope.launch {
+                    TestReportFlow.run(
+                        context = context,
+                        profile = p.profile,
+                        title = p.title,
+                        version = BuildConfig.VERSION_NAME,
+                        platform = "Android",
+                        osVersion = android.os.Build.VERSION.RELEASE ?: "?",
+                        gate = p.gate,
+                        entries = p.entries,
+                    )
+                }
                 pendingReport = null
             },
         )
