@@ -515,4 +515,48 @@ public enum OuraDecoders {
         }
         return OuraActivityInfo(ringTimestamp: rec.ringTimestamp, state: Int(state), met: met)
     }
+
+    // MARK: - CVA raw PPG, delta + 24-bit absolute anchor (0x81; s6.14) - Tier B, third-party formula
+
+    /// Decode ONE `0x81` cva_raw_ppg_data record's delta/absolute-anchor byte stream into a running
+    /// sample series, given the running total carried in from the previous `0x81` record THIS SESSION
+    /// (`runningIn: nil` at session start or after a reset - see `OuraDriver`'s gap/ring-reset handling).
+    /// Formula (OURA_PROTOCOL.md s6.14, [open_ring], clean-room fact citation): byte `0x80` -> the next 3
+    /// bytes are a LE u24 ABSOLUTE value that re-syncs the running total; a byte with the MSB set
+    /// (`0x81`-`0xFF`) is a signed delta `byte - 0x100`; else (`0x00`-`0x7F`) a signed 7-bit delta
+    /// (`byte - 128` when `byte >= 64`, else `byte`) - both add onto the running total. `runningIn ?? 0`
+    /// starts the chain at 0 when no anchor has synced yet THIS session, the same non-guessing convention
+    /// `decodeSpO2DC` (0x77) already uses for its own delta-with-optional-base stream.
+    ///
+    /// SPLIT MARKER (honest, not a bug): a `0x80` marker with fewer than 3 trailing bytes in THIS record
+    /// means the absolute value would span into the NEXT BLE notification. Per this codebase's
+    /// one-packet-per-notification / no-cross-notification-buffering rule (`Framing.swift`), decoding
+    /// stops at the marker rather than guessing bytes from a notification that has not arrived yet -
+    /// samples already decoded from earlier in the record are still returned. Returns nil when the
+    /// payload is empty or the marker split leaves nothing to return.
+    public static func decodeCvaRawPPG(_ rec: OuraRecord, runningIn: Int?) -> (values: [Int], runningOut: Int)? {
+        let b = rec.payload
+        guard !b.isEmpty else { return nil }
+        var running = runningIn ?? 0
+        var out: [Int] = []
+        var i = 0
+        while i < b.count {
+            let byte = Int(b[i])
+            if byte == 0x80 {
+                guard i + 3 < b.count else { break }   // split marker across a notification boundary
+                running = u24le(b, i + 1)
+                out.append(running)
+                i += 4
+            } else if byte & 0x80 != 0 {
+                running += byte - 0x100
+                out.append(running)
+                i += 1
+            } else {
+                running += (byte >= 64) ? byte - 128 : byte
+                out.append(running)
+                i += 1
+            }
+        }
+        return out.isEmpty ? nil : (out, running)
+    }
 }

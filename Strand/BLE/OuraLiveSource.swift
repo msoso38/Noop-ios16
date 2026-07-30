@@ -268,6 +268,9 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     private let activityDump: OuraActivityDump?
     /// Append-only JSONL sidecar for the 0x47 motion vectors (Tier-A), for offline LSB→g calibration (#804).
     private let motionDump: OuraMotionDump?
+    /// Append-only JSONL research corpus for the reconstructed 0x81 CVA raw-PPG series (Tier-B, third-party
+    /// [open_ring] formula, never scored/persisted to SQLite). See OuraCvaPpgDump.
+    private let cvaPpgDump: OuraCvaPpgDump?
     /// Append-only JSONL capture of the RAW, undecoded history-drain notification bytes (`oura-raw-<id>.jsonl`).
     /// Complement to the decoded sidecars above: those show what NOOP interpreted, this shows exactly what the
     /// ring sent, so after a full connect a hole in a decoded file can be pinned as a decode drop vs ring-side.
@@ -781,6 +784,8 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         self.activityDump = feedsLive && !deviceId.isEmpty ? OuraActivityDump(deviceId: deviceId, log: log) : nil
         // 0x47 motion calibration corpus: same gate as the activity dump (live/persisting source only).
         self.motionDump = feedsLive && !deviceId.isEmpty ? OuraMotionDump(deviceId: deviceId, log: log) : nil
+        // 0x81 CVA raw-PPG research corpus: same gate as the activity/motion dumps.
+        self.cvaPpgDump = feedsLive && !deviceId.isEmpty ? OuraCvaPpgDump(deviceId: deviceId, log: log) : nil
         // RAW undecoded history-drain capture: same live/persisting gate; complements the decoded sidecars.
         self.rawDump = feedsLive && !deviceId.isEmpty ? OuraRawDump(deviceId: deviceId, log: log) : nil
         super.init()
@@ -1372,6 +1377,21 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                     }
                     lastActivityUtc = utc
                     lastActivitySampleCount = info.met.count
+                }
+
+            case .cvaRawPpg(let ppg):
+                // INVESTIGATION ONLY (0x81 CVA raw PPG, Tier B - a plausible third-party [open_ring]
+                // formula, NOT ground-truth-validated; see OuraCvaPpg). Logged once per kind (like the
+                // other raw Tier-B tags) rather than every occurrence - this stream runs at a much higher
+                // rate than 0x50 MET, so the JSONL corpus is the real record; the strap log just confirms
+                // the ring sends it at all. Never persisted, never scored (OuraStreamMapping drops
+                // .cvaRawPpg unconditionally).
+                if !loggedTierBKinds.contains("cva_raw_ppg") {
+                    loggedTierBKinds.insert("cva_raw_ppg")
+                    log("Oura: Tier-B cva_raw_ppg seen (tag 0x81) - first values: \(ppg.values)")
+                }
+                if let utc = driver.unixSeconds(forRingTimestamp: ppg.ringTimestamp) {
+                    cvaPpgDump?.record(ringTs: ppg.ringTimestamp, utc: utc, values: ppg.values)
                 }
 
             case .state(let s):

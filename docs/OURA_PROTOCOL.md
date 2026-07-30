@@ -520,7 +520,29 @@ edit of the ring's tag.
 ### 6.14 Raw PPG
 - **`0x67` raw_ppg_summary** (12–13 B): start-UTC, type, scale, session header for following data. [ringverse]
 - **`0x68` raw_ppg_data** (variable, delta-encoded): needs scale/accumulator from the paired `0x67`. [ringverse]
-- **`0x81` cva_raw_ppg_data** (variable): delta + 24-bit absolute, session-stateful. Decode: byte `0x80` → next 3 bytes absolute u24; MSB-set byte → signed delta `b-0x100`; else signed 7-bit `+= b`. Reset on ring-reset ack or 60 s gap. [open_ring]
+- **`0x81` cva_raw_ppg_data** (variable): delta + 24-bit absolute, session-stateful. Decode: byte `0x80` → next 3 bytes absolute u24 (LE); MSB-set byte → signed delta `b-0x100`; else signed 7-bit delta (`b-128` when `b>=64`, else `b`). Reset on ring-reset ack or 60 s gap. [open_ring]
+  - **Wired into a decoder (both platforms, Tier B) and validated against a real capture** (2026-07-30, a
+    2169-record Gen 3 session, plain NOOP pairing - no Advanced-key handshake in that session's log,
+    server-gated-unlock persistence not otherwise investigated here): chaining the running total across
+    records the whole session yields a SMOOTH series (median sample-to-sample jump 33, baseline
+    ~390-400K counts) consistent with a real PPG channel, not noise - the strongest evidence yet that the
+    [open_ring] formula's core (LE u24 absolute anchor + delta walk) is right. 4-of-22745 samples show an
+    anomalous jump to ~8.39M and back within 2 anchor reads, cause not yet explained (candidates: a
+    genuine sensor artifact, or the anchor's 3-byte field not being plain LE in that instance) - left
+    unresolved, Tier B stays UNVERIFIED.
+  - **Split markers are common, not exceptional:** in the same capture, roughly a quarter of records end
+    on a `0x80` marker with fewer than 3 trailing bytes (the absolute value would span into the next BLE
+    notification). Per this codebase's one-packet-per-notification / no-cross-notification-buffering rule
+    (`Framing.swift` / `Framing.kt`), the decoder stops at the marker instead of guessing into the next
+    notification - samples already decoded earlier in the record are still returned, honestly.
+  - **"Ring-reset ack" is not a distinct documented opcode.** NOOP's decoder invalidates the running
+    total on the 0x41 `ring_start_ind` lifecycle marker (the same signal that already invalidates the UTC
+    anchor on rt regression) as the closest wire analogue - a best-current-interpretation, not a
+    wire-confirmed mapping.
+  - Still Tier B end to end: decoded only behind `allowTierB`, logged once per session + appended to a
+    diagnostic JSONL sidecar (`oura-cva-ppg-<id>.jsonl`, deduped by ring-time), never folded into
+    `OuraStreamMapping`/scoring. `OuraDecoders.decodeCvaRawPPG` (Swift) / `Decoders.decodeCvaRawPPG`
+    (Kotlin).
 
 ### 6.15 Lifecycle / state
 - **`0x41` ring_start_ind** (18 B): bytes6–10 = 40-bit device id; bytes15–19 config; triggers anchor invalidation on rt regress. [ringverse][open_ring]

@@ -83,7 +83,10 @@ enum class OuraEventTag(val raw: Int) {
     REAL_STEPS_2(0x7F),       // real_steps_features_2, OURA_PROTOCOL.md s6.13 (UNVERIFIED)
 
     // --- Smoothed SpO2 (Tier B, UNVERIFIED) ---
-    SPO2_SMOOTHED(0x70);      // spo2_smoothed, OURA_PROTOCOL.md s6.6 (UNVERIFIED)
+    SPO2_SMOOTHED(0x70),      // spo2_smoothed, OURA_PROTOCOL.md s6.6 (UNVERIFIED)
+
+    // --- Raw PPG (Tier B, UNVERIFIED) ---
+    CVA_RAW_PPG(0x81);        // cva_raw_ppg_data (delta + 24-bit absolute), OURA_PROTOCOL.md s6.14 (UNVERIFIED)
 
     /**
      * The trust tier for this tag. Tier B tags are decoded but the OuraDriver gates their emission
@@ -93,7 +96,7 @@ enum class OuraEventTag(val raw: Int) {
         get() = when (this) {
             SLEEP_SUMMARY_1, SLEEP_SUMMARY_C, SLEEP_SUMMARY_D, SLEEP_SUMMARY_E,
             SLEEP_SUMMARY_F, ACTIVITY_INFO, ACTIVITY_SUMMARY_1, ACTIVITY_SUMMARY_2,
-            REAL_STEPS_1, REAL_STEPS_2, SPO2_SMOOTHED,
+            REAL_STEPS_1, REAL_STEPS_2, SPO2_SMOOTHED, CVA_RAW_PPG,
             // #287: 0x71 green_ibi_and_amp is NOT corpus-verified — no captured 0x71 fixture, and
             // OURA_PROTOCOL.md §6.2 documents a DIFFERENT layout (5 IBI deltas + 6 amplitudes, shift
             // [2:0]) than the 0x60 decoder it was wired to (6 absolute IBIs, 4-bit shift). Decoding it
@@ -141,6 +144,7 @@ enum class OuraEventTag(val raw: Int) {
             REAL_STEPS_1 -> "REAL_STEPS_1"
             REAL_STEPS_2 -> "REAL_STEPS_2"
             SPO2_SMOOTHED -> "SPO2_SMOOTHED"
+            CVA_RAW_PPG -> "CVA_RAW_PPG"
         }
 
     companion object {

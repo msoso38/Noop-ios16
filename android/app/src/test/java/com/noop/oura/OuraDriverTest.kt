@@ -567,6 +567,139 @@ class OuraDriverTest {
         )
     }
 
+    // MARK: - CVA raw PPG (0x81, Tier B, third-party formula) - real Gen 3 capture (2026-07-30)
+    //
+    // PARITY: the three payloads below are byte-for-byte the same three CONSECUTIVE 0x81 records pinned
+    // in the Swift OuraDriverTests (real capture, ring times 3584349-3584351). Expected values are
+    // RECOMPUTED from the s6.14 formula (marker 0x80 -> LE u24 absolute; MSB-set byte -> signed
+    // byte-0x100 delta; else signed 7-bit delta), not copied blind. Record 0 also happens to end on a
+    // real split marker (payload offset 12, only 1 trailing byte) - genuine capture evidence for the
+    // honest-drop path, not a constructed edge case.
+
+    @Test
+    fun testCvaRawPPGDecodesRealCaptureChain() {
+        // Record 0: three back-to-back absolute anchors, then a split marker (payload offset 12) with
+        // only one trailing byte - decoding honestly stops there instead of guessing into record 1.
+        val rec0 = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 3_584_349,
+                              payload = bytes("800707068079060680b705068003"))
+        val step0 = OuraDecoders.decodeCvaRawPPG(rec0, null)
+        assertEquals(listOf(395015, 394873, 394679), step0?.values)
+        assertEquals(394679, step0?.runningOut)
+
+        // Record 1 continues the chain from record 0's running total (no anchor of its own).
+        val rec1 = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 3_584_350,
+                              payload = bytes("0506804604068090030680f00206"))
+        val step1 = OuraDecoders.decodeCvaRawPPG(rec1, step0?.runningOut)
+        assertEquals(listOf(394684, 394690, 394310, 394128, 393968), step1?.values)
+        assertEquals(393968, step1?.runningOut)
+
+        // Record 2 continues from record 1.
+        val rec2 = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 3_584_351,
+                              payload = bytes("80300206809b0106800a010694ab"))
+        val step2 = OuraDecoders.decodeCvaRawPPG(rec2, step1?.runningOut)
+        assertEquals(listOf(393776, 393627, 393482, 393374, 393289), step2?.values)
+        assertEquals(393289, step2?.runningOut)
+    }
+
+    @Test
+    fun testCvaRawPPGSplitMarkerStopsHonestly() {
+        // Same record 0 as above, decoded standalone (runningIn: null): the trailing split marker at
+        // payload offset 12 (only 1 of the needed 3 trailing bytes present) must not be guessed across
+        // into the next notification - decoding stops there and returns only the 3 clean samples.
+        val rec = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 3_584_349,
+                             payload = bytes("800707068079060680b705068003"))
+        val step = OuraDecoders.decodeCvaRawPPG(rec, null)
+        assertEquals(listOf(395015, 394873, 394679), step?.values)
+    }
+
+    @Test
+    fun testCvaRawPPGThroughDriverChainsAcrossRecords() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key, allowTierB = true)
+        val rec0 = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 3_584_349,
+                              payload = bytes("800707068079060680b705068003"))
+        assertEquals(
+            listOf<OuraEvent>(
+                OuraEvent.CvaRawPpg(OuraCvaPpg(ringTimestamp = 3_584_349, values = listOf(395015, 394873, 394679))),
+            ),
+            d.ingest(rec0),
+        )
+
+        val rec1 = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 3_584_350,
+                              payload = bytes("0506804604068090030680f00206"))
+        val events1 = d.ingest(rec1)
+        assertEquals(
+            listOf<OuraEvent>(
+                OuraEvent.CvaRawPpg(
+                    OuraCvaPpg(ringTimestamp = 3_584_350, values = listOf(394684, 394690, 394310, 394128, 393968)),
+                ),
+            ),
+            events1,
+        )
+        assertTrue("cvaRawPpg must still report isTierB - the formula is UNVERIFIED", events1[0].isTierB)
+    }
+
+    @Test
+    fun testCvaRawPPGGapResetsRunningTotal() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key, allowTierB = true)
+        // First record anchors the running total via a 0x80 marker.
+        val rec0 = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 1000,
+                              payload = intArrayOf(0x80, 0x10, 0x00, 0x00))   // absolute = 0x000010 = 16
+        assertEquals(
+            listOf<OuraEvent>(OuraEvent.CvaRawPpg(OuraCvaPpg(ringTimestamp = 1000, values = listOf(16)))),
+            d.ingest(rec0),
+        )
+
+        // Second record arrives 601 ticks later (> the 60s/600-tick reset window) with a plain +5 delta.
+        // Without the gap reset this would read 16+5=21; the reset makes it start fresh from 0.
+        val rec1 = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 1601, payload = intArrayOf(0x05))
+        assertEquals(
+            listOf<OuraEvent>(OuraEvent.CvaRawPpg(OuraCvaPpg(ringTimestamp = 1601, values = listOf(5)))),
+            d.ingest(rec1),
+        )
+    }
+
+    @Test
+    fun testCvaRawPPGRingStartResetsRunningTotal() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key, allowTierB = true)
+        val rec0 = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 1000,
+                              payload = intArrayOf(0x80, 0x10, 0x00, 0x00))   // absolute = 16
+        assertEquals(
+            listOf<OuraEvent>(OuraEvent.CvaRawPpg(OuraCvaPpg(ringTimestamp = 1000, values = listOf(16)))),
+            d.ingest(rec0),
+        )
+
+        // A 0x41 ring_start_ind (well within the gap window) must still invalidate the running total.
+        val ringStart = OuraRecord(type = OuraEventTag.RING_START.raw, ringTimestamp = 1010, payload = intArrayOf())
+        assertEquals(emptyList<OuraEvent>(), d.ingest(ringStart))
+
+        val rec1 = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = 1020, payload = intArrayOf(0x05))
+        assertEquals(
+            listOf<OuraEvent>(OuraEvent.CvaRawPpg(OuraCvaPpg(ringTimestamp = 1020, values = listOf(5)))),
+            d.ingest(rec1),
+        )
+    }
+
+    @Test
+    fun testCvaRawPPGDroppedByDefaultLikeOtherTierB() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)   // allowTierB defaults to false
+        val rec = OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = rt, payload = intArrayOf(0x05))
+        assertEquals(
+            "the Tier-B gate must cover CvaRawPpg too",
+            emptyList<OuraEvent>(),
+            d.ingest(rec),
+        )
+    }
+
+    @Test
+    fun testCvaRawPPGEmptyPayloadDecodesToNull() {
+        assertNull(
+            OuraDecoders.decodeCvaRawPPG(
+                OuraRecord(type = OuraEventTag.CVA_RAW_PPG.raw, ringTimestamp = rt, payload = intArrayOf()),
+                null,
+            ),
+        )
+    }
+
     // MARK: - Live-HR push routing + decode
 
     @Test

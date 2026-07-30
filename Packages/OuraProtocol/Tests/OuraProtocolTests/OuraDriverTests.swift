@@ -464,6 +464,104 @@ final class OuraDriverTests: XCTestCase {
             OuraRecord(type: OuraEventTag.activityInfo.rawValue, ringTimestamp: rt, payload: [])))
     }
 
+    // MARK: - CVA raw PPG (0x81, Tier B, third-party formula) - real Gen 3 capture (2026-07-30)
+    //
+    // The three payloads below are byte-for-byte three CONSECUTIVE 0x81 records from a real Gen 3
+    // capture (2026-07-30, ring times 3584349-3584351). Expected values are RECOMPUTED from the s6.14
+    // formula (marker 0x80 -> LE u24 absolute; MSB-set byte -> signed byte-0x100 delta; else signed
+    // 7-bit delta), not copied blind. Record 0 also happens to end on a real split marker (a `0x80` at
+    // payload offset 12 with only 1 trailing byte) - genuine capture evidence for the honest-drop path,
+    // not a constructed edge case.
+
+    func testCvaRawPPGDecodesRealCaptureChain() {
+        // Record 0: three back-to-back absolute anchors, then a split marker (payload offset 12) with
+        // only one trailing byte - decoding honestly stops there instead of guessing into record 1.
+        let rec0 = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 3_584_349,
+                              payload: bytes("800707068079060680b705068003"))
+        let step0 = OuraDecoders.decodeCvaRawPPG(rec0, runningIn: nil)
+        XCTAssertEqual(step0?.values, [395015, 394873, 394679])
+        XCTAssertEqual(step0?.runningOut, 394679)
+
+        // Record 1 continues the chain from record 0's running total (no anchor of its own).
+        let rec1 = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 3_584_350,
+                              payload: bytes("0506804604068090030680f00206"))
+        let step1 = OuraDecoders.decodeCvaRawPPG(rec1, runningIn: step0?.runningOut)
+        XCTAssertEqual(step1?.values, [394684, 394690, 394310, 394128, 393968])
+        XCTAssertEqual(step1?.runningOut, 393968)
+
+        // Record 2 continues from record 1.
+        let rec2 = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 3_584_351,
+                              payload: bytes("80300206809b0106800a010694ab"))
+        let step2 = OuraDecoders.decodeCvaRawPPG(rec2, runningIn: step1?.runningOut)
+        XCTAssertEqual(step2?.values, [393776, 393627, 393482, 393374, 393289])
+        XCTAssertEqual(step2?.runningOut, 393289)
+    }
+
+    func testCvaRawPPGSplitMarkerStopsHonestly() {
+        // Same record 0 as above, decoded standalone (runningIn: nil): the trailing split marker at
+        // payload offset 12 (only 1 of the needed 3 trailing bytes present) must not be guessed across
+        // into the next notification (Framing.swift's one-packet-per-notification rule) - decoding stops
+        // there and returns only the 3 samples that decoded cleanly.
+        let rec = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 3_584_349,
+                             payload: bytes("800707068079060680b705068003"))
+        let step = OuraDecoders.decodeCvaRawPPG(rec, runningIn: nil)
+        XCTAssertEqual(step?.values, [395015, 394873, 394679])
+    }
+
+    func testCvaRawPPGThroughDriverChainsAcrossRecords() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key, allowTierB: true)
+        let rec0 = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 3_584_349,
+                              payload: bytes("800707068079060680b705068003"))
+        XCTAssertEqual(d.ingest(record: rec0),
+                       [.cvaRawPpg(OuraCvaPpg(ringTimestamp: 3_584_349, values: [395015, 394873, 394679]))])
+
+        let rec1 = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 3_584_350,
+                              payload: bytes("0506804604068090030680f00206"))
+        let events1 = d.ingest(record: rec1)
+        XCTAssertEqual(events1,
+            [.cvaRawPpg(OuraCvaPpg(ringTimestamp: 3_584_350,
+                                   values: [394684, 394690, 394310, 394128, 393968]))])
+        XCTAssertTrue(events1[0].isTierB, "cvaRawPpg must still report isTierB - the formula is UNVERIFIED")
+    }
+
+    func testCvaRawPPGGapResetsRunningTotal() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key, allowTierB: true)
+        // First record anchors the running total via a 0x80 marker.
+        let rec0 = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 1000,
+                              payload: [0x80, 0x10, 0x00, 0x00])   // absolute = 0x000010 = 16
+        XCTAssertEqual(d.ingest(record: rec0), [.cvaRawPpg(OuraCvaPpg(ringTimestamp: 1000, values: [16]))])
+
+        // Second record arrives 601 ticks later (> the 60s/600-tick reset window) with a plain +5 delta.
+        // Without the gap reset this would read 16+5=21; the reset makes it start fresh from 0.
+        let rec1 = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 1601, payload: [0x05])
+        XCTAssertEqual(d.ingest(record: rec1), [.cvaRawPpg(OuraCvaPpg(ringTimestamp: 1601, values: [5]))])
+    }
+
+    func testCvaRawPPGRingStartResetsRunningTotal() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key, allowTierB: true)
+        let rec0 = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 1000,
+                              payload: [0x80, 0x10, 0x00, 0x00])   // absolute = 16
+        XCTAssertEqual(d.ingest(record: rec0), [.cvaRawPpg(OuraCvaPpg(ringTimestamp: 1000, values: [16]))])
+
+        // A 0x41 ring_start_ind (well within the gap window) must still invalidate the running total.
+        let ringStart = OuraRecord(type: OuraEventTag.ringStart.rawValue, ringTimestamp: 1010, payload: [])
+        XCTAssertEqual(d.ingest(record: ringStart), [])
+
+        let rec1 = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: 1020, payload: [0x05])
+        XCTAssertEqual(d.ingest(record: rec1), [.cvaRawPpg(OuraCvaPpg(ringTimestamp: 1020, values: [5]))])
+    }
+
+    func testCvaRawPPGDroppedByDefaultLikeOtherTierB() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key)   // allowTierB defaults to false
+        let rec = OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: rt, payload: [0x05])
+        XCTAssertEqual(d.ingest(record: rec), [], "the Tier-B gate must cover .cvaRawPpg too")
+    }
+
+    func testCvaRawPPGEmptyPayloadDecodesToNil() {
+        XCTAssertNil(OuraDecoders.decodeCvaRawPPG(
+            OuraRecord(type: OuraEventTag.cvaRawPpg.rawValue, ringTimestamp: rt, payload: []), runningIn: nil))
+    }
+
     // MARK: - Live-HR push routing + decode
 
     func testHandleSecureFrameRoutesNonceStatusAndPush() {

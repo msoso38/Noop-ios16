@@ -153,6 +153,7 @@ func describe(_ e: OuraEvent) -> String {
     case .debugText(_, let t): return "DEBUG \(t)"
     case .tierB(let v): return "TIER_B[UNVERIFIED] tag=0x\(String(v.tag, radix: 16)) kind=\(v.kind) bytes=\(v.rawPayload.count)"
     case .activityInfo(let v): return "ACTIVITY[TIER-B,UNVERIFIED] state=\(v.state) met=\(v.met) rt=\(v.ringTimestamp)"
+    case .cvaRawPpg(let v): return "CVA_PPG[TIER-B,UNVERIFIED] values=\(v.values) rt=\(v.ringTimestamp)"
     }
 }
 

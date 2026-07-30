@@ -164,6 +164,21 @@ data class OuraTierBSummary(
  */
 data class OuraActivityInfo(val ringTimestamp: Long, val state: Int, val met: List<Double>)
 
+/**
+ * One decoded `0x81` cva_raw_ppg_data record: a running, dimensionless ADC-like PPG count reconstructed
+ * from the ring's delta/absolute-anchor byte stream (OURA_PROTOCOL.md s6.14). THIRD-PARTY FORMULA
+ * ([open_ring], clean-room fact citation, no code copied): a marker byte `0x80` re-syncs a running total
+ * from the next 3 bytes (LE u24); every other byte is a delta walked forward from that total (MSB-set =
+ * `byte-0x100`, else signed 7-bit). Validated on a 2169-record real Gen 3 capture (2026-07-30): the
+ * reconstructed series is smooth (median sample-to-sample jump 33, baseline ~390-400K) - consistent with a
+ * real PPG channel - with rare (4-of-22745) anomalous jumps AT an absolute-anchor byte, not yet explained.
+ * NOT independently ground-truth-validated against a known PPG channel, so this stays Tier B end to end:
+ * emitted only behind `OuraDriver.allowTierB`, and NEVER folded into `OuraStreamMapping`/scoring. `values`
+ * holds every sample this ONE record contributed to the running total, in wire order. Kotlin twin of the
+ * Swift `OuraCvaPpg`.
+ */
+data class OuraCvaPpg(val ringTimestamp: Long, val values: List<Int>)
+
 // MARK: - The emitted event union
 
 /**
@@ -208,8 +223,16 @@ sealed class OuraEvent {
      */
     data class ActivityInfo(val value: OuraActivityInfo) : OuraEvent()
 
+    /**
+     * A decoded `0x81` cva_raw_ppg_data record (running PPG count series). Still Tier-B (see
+     * [OuraCvaPpg] doc) - split out of the raw-bytes [TierB] wrapper for the same reason [ActivityInfo]
+     * was: a plausible decode formula worth surfacing as real numbers instead of hex. Same gate
+     * (`allowTierB`), same discipline (never reaches `OuraStreamMapping`).
+     */
+    data class CvaRawPpg(val value: OuraCvaPpg) : OuraEvent()
+
     /** True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink. */
-    val isTierB: Boolean get() = this is TierB || this is ActivityInfo
+    val isTierB: Boolean get() = this is TierB || this is ActivityInfo || this is CvaRawPpg
 
     /**
      * The record's envelope ring-time, when it carries one (battery is a plain response, not a log
@@ -234,5 +257,6 @@ sealed class OuraEvent {
             is DebugTextEvent -> ringTimestamp
             is TierB -> value.ringTimestamp
             is ActivityInfo -> value.ringTimestamp
+            is CvaRawPpg -> value.ringTimestamp
         }
 }

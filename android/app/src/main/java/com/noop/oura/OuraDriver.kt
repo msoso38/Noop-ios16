@@ -118,6 +118,20 @@ class OuraDriver(
     private var installedKey: IntArray? = null
 
     /**
+     * The 0x81 cva_raw_ppg_data running total, carried across records THIS SESSION (OURA_PROTOCOL.md
+     * s6.14). null until the first anchor/delta byte of the session, and after a reset (see
+     * [cvaPpgLastRingTimestamp] below and the RING_START / [stop] handling). Kotlin twin of Swift's
+     * cvaPpgRunning.
+     */
+    private var cvaPpgRunning: Int? = null
+
+    /**
+     * The ring-time of the last decoded 0x81 record, used to detect the documented 60 s gap reset. null
+     * until the first 0x81 record of the session.
+     */
+    private var cvaPpgLastRingTimestamp: Long? = null
+
+    /**
      * The key the auth handshake should use: the freshly-installed key takes precedence over the
      * injected one (so re-auth after a key install uses the new key). Per OURA_PROTOCOL.md s3.2.
      */
@@ -284,6 +298,8 @@ class OuraDriver(
         // A stale anchor must not survive stop()/a new session - the ring may have rebooted (s5.5).
         anchorUtcMs = null
         anchorRingTime = null
+        cvaPpgRunning = null
+        cvaPpgLastRingTimestamp = null
     }
 
     // MARK: - Ring-time -> UTC anchor (s5.5)
@@ -443,11 +459,18 @@ class OuraDriver(
                 OuraDecoders.decodeDebugText(record)?.let {
                     listOf(OuraEvent.DebugTextEvent(ringTimestamp = record.ringTimestamp, text = it))
                 } ?: emptyList()
-            OuraEventTag.RING_START ->
+            OuraEventTag.RING_START -> {
                 // 0x41 ring_start_ind: a lifecycle marker (the app uses it to invalidate the UTC anchor on
                 // rt regression). It carries no biometric value, so emit nothing here. Per OURA_PROTOCOL.md
                 // s5.5 / s6.15. The app observes ring-start via the record stream directly.
+                // Also the closest wire signal to the 0x81 spec's documented "ring-reset ack" (s6.14) - a
+                // best-current-interpretation, not a wire-confirmed mapping, since no distinct reset-ack
+                // opcode is documented. Invalidate the CVA-PPG running total so a stale baseline never
+                // survives a real ring reboot.
+                cvaPpgRunning = null
+                cvaPpgLastRingTimestamp = null
                 emptyList()
+            }
 
             // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
             OuraEventTag.GREEN_IBI_AMP ->
@@ -508,6 +531,23 @@ class OuraDriver(
                         ),
                     ),
                 )
+            OuraEventTag.CVA_RAW_PPG -> {
+                // Split out of the raw-bytes TierB wrapper, same as ActivityInfo: this ONE tag has a
+                // plausible decode formula (OuraDecoders.decodeCvaRawPPG, third-party [open_ring]). Still
+                // Tier B - only reached behind allowTierB (gated above), and OuraStreamMapping never folds
+                // CvaRawPpg into a durable stream. A 60 s gap (or a ring-reset, s6.14) invalidates the
+                // running total BEFORE this record is decoded, so a stale accumulator never leaks across a
+                // real session break; an out-of-order re-serve (rt regression) is treated the same as a gap.
+                val last = cvaPpgLastRingTimestamp
+                if (last != null) {
+                    val gap = if (record.ringTimestamp >= last) record.ringTimestamp - last else last - record.ringTimestamp
+                    if (gap > CVA_PPG_GAP_RESET_TICKS) cvaPpgRunning = null
+                }
+                cvaPpgLastRingTimestamp = record.ringTimestamp
+                val step = OuraDecoders.decodeCvaRawPPG(record, cvaPpgRunning) ?: return emptyList()
+                cvaPpgRunning = step.runningOut
+                listOf(OuraEvent.CvaRawPpg(OuraCvaPpg(ringTimestamp = record.ringTimestamp, values = step.values)))
+            }
         }
     }
 
@@ -605,6 +645,12 @@ class OuraDriver(
          */
         private const val MIN_PLAUSIBLE_EPOCH_SECONDS = 1_577_836_800L
         private const val MAX_PLAUSIBLE_EPOCH_SECONDS = 2_051_222_400L
+
+        /**
+         * 60 s at the ring's default 100 ms/tick clock (OURA_PROTOCOL.md s5.5) - the documented CVA-PPG
+         * accumulator reset window (s6.14). Byte-identical to Swift's cvaPpgGapResetTicks.
+         */
+        private const val CVA_PPG_GAP_RESET_TICKS = 600L
 
         /**
          * Resolve the 0x13 SyncTime-response device timestamp into ring TICKS, or null when no

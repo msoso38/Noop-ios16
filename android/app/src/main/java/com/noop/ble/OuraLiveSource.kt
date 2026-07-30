@@ -249,6 +249,11 @@ class OuraLiveSource(
      *  of the Swift `OuraMotionDump`. Null when there is no device id. */
     private val motionDump: OuraMotionDump? =
         if (deviceId.isNotEmpty()) OuraMotionDump(appContext, deviceId, log) else null
+
+    /** 0x81 CVA raw-PPG research corpus (Tier-B), for offline investigation. Kotlin twin of the Swift
+     *  `OuraCvaPpgDump`. Null when there is no device id. */
+    private val cvaPpgDump: OuraCvaPpgDump? =
+        if (deviceId.isNotEmpty()) OuraCvaPpgDump(appContext, deviceId, log) else null
     private val scanner: BluetoothLeScanner? get() = adapter?.bluetoothLeScanner
 
     private var gatt: BluetoothGatt? = null
@@ -1720,6 +1725,20 @@ class OuraLiveSource(
                         ringTs = e.value.ringTimestamp, utc = utc, state = e.value.state,
                         secPerSample = 60, met = e.value.met, // 60 s = assumed MET cadence (s6.13)
                     )
+                }
+            }
+            is OuraEvent.CvaRawPpg -> {
+                // INVESTIGATION ONLY (0x81 CVA raw PPG, Tier B - a plausible third-party [open_ring]
+                // formula, NOT ground-truth-validated; see OuraCvaPpg). Logged once per kind (like the
+                // other raw Tier-B tags) rather than every occurrence - this stream runs at a much higher
+                // rate than 0x50 MET, so the JSONL corpus is the real record; the strap log just confirms
+                // the ring sends it at all. Never persisted, never scored (OuraStreamMapping drops
+                // CvaRawPpg unconditionally).
+                if (loggedTierBKinds.add("cva_raw_ppg")) {
+                    log("Oura: Tier-B cva_raw_ppg seen (tag 0x81) - first values: ${e.value.values}")
+                }
+                d.unixSeconds(forRingTimestamp = e.value.ringTimestamp)?.let { utc ->
+                    cvaPpgDump?.record(ringTs = e.value.ringTimestamp, utc = utc, values = e.value.values)
                 }
             }
             is OuraEvent.MotionVectorEvent -> {

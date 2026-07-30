@@ -163,6 +163,9 @@ final class OuraStreamMappingTests: XCTestCase {
             // 0x50 activity/MET (PR #960): decoded but Tier-B/unvalidated - in particular it must never
             // mint a `steps` row (MET is not a step count; the per-source day-owner rules stay intact).
             .activityInfo(OuraActivityInfo(ringTimestamp: 100, state: 0x41, met: [1.8, 1.9])),
+            // 0x81 CVA raw PPG: decoded but Tier-B/unvalidated (third-party [open_ring] formula) - must
+            // never leak a value into a durable stream either.
+            .cvaRawPpg(OuraCvaPpg(ringTimestamp: 100, values: [395015, 394873])),
         ], at: ts)
         XCTAssertTrue(s.isEmpty, "Tier-B and diagnostic events must not produce any durable stream row")
         XCTAssertTrue(s.steps.isEmpty, "activity/MET must never fabricate a steps row")

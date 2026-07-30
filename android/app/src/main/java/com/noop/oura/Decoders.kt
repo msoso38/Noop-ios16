@@ -572,4 +572,56 @@ object OuraDecoders {
         }
         return OuraActivityInfo(ringTimestamp = rec.ringTimestamp, state = b[0], met = met)
     }
+
+    // MARK: - CVA raw PPG, delta + 24-bit absolute anchor (0x81; s6.14) - Tier B, third-party formula
+
+    /**
+     * Decode ONE `0x81` cva_raw_ppg_data record's delta/absolute-anchor byte stream into a running
+     * sample series, given the running total carried in from the previous `0x81` record THIS SESSION
+     * (`runningIn: null` at session start or after a reset - see OuraDriver's gap/ring-reset handling).
+     * Formula (OURA_PROTOCOL.md s6.14, [open_ring], clean-room fact citation): byte `0x80` -> the next 3
+     * bytes are a LE u24 ABSOLUTE value that re-syncs the running total; a byte with the MSB set
+     * (`0x81`-`0xFF`) is a signed delta `byte - 0x100`; else (`0x00`-`0x7F`) a signed 7-bit delta
+     * (`byte - 128` when `byte >= 64`, else `byte`) - both add onto the running total. `runningIn ?: 0`
+     * starts the chain at 0 when no anchor has synced yet THIS session, the same non-guessing convention
+     * `decodeSpO2DC` (0x77) already uses for its own delta-with-optional-base stream.
+     *
+     * SPLIT MARKER (honest, not a bug): a `0x80` marker with fewer than 3 trailing bytes in THIS record
+     * means the absolute value would span into the NEXT BLE notification. Per this codebase's
+     * one-packet-per-notification / no-cross-notification-buffering rule, decoding stops at the marker
+     * rather than guessing bytes from a notification that has not arrived yet - samples already decoded
+     * from earlier in the record are still returned. Returns null when the payload is empty or the
+     * marker split leaves nothing to return. Byte-identical twin of Swift's `decodeCvaRawPPG`.
+     */
+    fun decodeCvaRawPPG(rec: OuraRecord, runningIn: Int?): OuraCvaPpgDecodeStep? {
+        val b = rec.payload
+        if (b.isEmpty()) return null
+        var running = runningIn ?: 0
+        val out = ArrayList<Int>()
+        var i = 0
+        while (i < b.size) {
+            val byte = b[i]
+            if (byte == 0x80) {
+                if (i + 3 >= b.size) break   // split marker across a notification boundary
+                running = u24le(b, i + 1)
+                out.add(running)
+                i += 4
+            } else if (byte and 0x80 != 0) {
+                running += byte - 0x100
+                out.add(running)
+                i += 1
+            } else {
+                running += if (byte >= 64) byte - 128 else byte
+                out.add(running)
+                i += 1
+            }
+        }
+        return if (out.isEmpty()) null else OuraCvaPpgDecodeStep(out, running)
+    }
 }
+
+/**
+ * The result of decoding one 0x81 record: the samples decoded from THIS record (in wire order) and the
+ * running total to carry into the next record. Twin of the Swift `(values:runningOut:)` tuple return.
+ */
+data class OuraCvaPpgDecodeStep(val values: List<Int>, val runningOut: Int)

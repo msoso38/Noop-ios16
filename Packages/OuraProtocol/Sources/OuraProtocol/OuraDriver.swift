@@ -78,6 +78,16 @@ public final class OuraDriver {
     /// The freshly-provisioned key the transport generated during an adopt flow (s3.2). Once set by
     /// beginKeyInstall it becomes the effective key for the post-install re-auth. nil otherwise.
     private var installedKey: [UInt8]?
+    /// The 0x81 cva_raw_ppg_data running total, carried across records THIS SESSION (OURA_PROTOCOL.md
+    /// s6.14). nil until the first anchor/delta byte of the session, and after a reset (see
+    /// `cvaPpgLastRingTimestamp` below and the `.ringStart` / `stop()` handling).
+    private var cvaPpgRunning: Int?
+    /// The ring-time of the last decoded 0x81 record, used to detect the documented 60 s gap reset. nil
+    /// until the first 0x81 record of the session.
+    private var cvaPpgLastRingTimestamp: UInt32?
+    /// 60 s at the ring's default 100 ms/tick clock (OURA_PROTOCOL.md s5.5) - the documented CVA-PPG
+    /// accumulator reset window (s6.14).
+    private static let cvaPpgGapResetTicks: UInt32 = 600
 
     /// The key the auth handshake should use: the freshly-installed key takes precedence over the
     /// injected one (so re-auth after a key install uses the new key). Per OURA_PROTOCOL.md s3.2.
@@ -211,6 +221,8 @@ public final class OuraDriver {
         installedKey = nil
         anchorUtcMs = nil
         anchorRingTime = nil
+        cvaPpgRunning = nil
+        cvaPpgLastRingTimestamp = nil
     }
 
     // MARK: - Ring-time -> UTC anchor (s5.5)
@@ -382,6 +394,12 @@ public final class OuraDriver {
             // 0x41 ring_start_ind: a lifecycle marker (the app uses it to invalidate the UTC anchor on
             // rt regression). It carries no biometric value, so emit nothing here. Per OURA_PROTOCOL.md
             // s5.5 / s6.15. The app observes ring-start via the record stream directly.
+            // Also the closest wire signal to the 0x81 spec's documented "ring-reset ack" (s6.14) - a
+            // best-current-interpretation, not a wire-confirmed mapping, since no distinct reset-ack
+            // opcode is documented. Invalidate the CVA-PPG running total so a stale baseline never
+            // survives a real ring reboot.
+            cvaPpgRunning = nil
+            cvaPpgLastRingTimestamp = nil
             return []
 
         // --- Tier B (only reached when allowTierB == true; otherwise dropped above) ---
@@ -412,6 +430,24 @@ public final class OuraDriver {
         case .spo2Smoothed:
             return [.tierB(OuraTierBSummary(tag: record.type, ringTimestamp: record.ringTimestamp,
                                             rawPayload: record.payload, kind: "spo2_smoothed"))]
+        case .cvaRawPpg:
+            // Split out of the raw-bytes .tierB wrapper, same as .activityInfo: this ONE tag has a
+            // plausible decode formula (OuraDecoders.decodeCvaRawPPG, third-party [open_ring]). Still
+            // Tier B - only reached behind allowTierB (gated above), and OuraStreamMapping never folds
+            // .cvaRawPpg into a durable stream. A 60 s gap (or a ring-reset, s6.14) invalidates the
+            // running total BEFORE this record is decoded, so a stale accumulator never leaks across a
+            // real session break; an out-of-order re-serve (rt regression) is treated the same as a gap.
+            let gap: UInt32
+            if let last = cvaPpgLastRingTimestamp {
+                gap = record.ringTimestamp >= last ? record.ringTimestamp - last : last - record.ringTimestamp
+                if gap > Self.cvaPpgGapResetTicks { cvaPpgRunning = nil }
+            }
+            cvaPpgLastRingTimestamp = record.ringTimestamp
+            guard let (values, next) = OuraDecoders.decodeCvaRawPPG(record, runningIn: cvaPpgRunning) else {
+                return []
+            }
+            cvaPpgRunning = next
+            return [.cvaRawPpg(OuraCvaPpg(ringTimestamp: record.ringTimestamp, values: values))]
         }
     }
 
