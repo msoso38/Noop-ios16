@@ -6,7 +6,7 @@
 
 **Citation keys used below:**
 - **[open_ring]** - LogosIsLife/open_ring `PROTOCOL.md` (GPL-3.0; byte-for-byte verified vs ~953k records, Ring 4). Treat as the authoritative framing/layout source where repos conflict.
-- **[ringverse]** - ringverse/protocol `oura/BLE.md`, `oura/events/EVENTS.md` (no-license; Ring 4 event-tag dictionary + layouts).
+- **[ringverse]** - ringverse/protocol `oura/BLE.md`, `oura/events/EVENTS.md` (no-license; Ring 4 event-tag dictionary + layouts), and `oura/storage.md` (the official iOS app's local SQLite schema, cited only for §3.7's key-extraction recipe).
 - **[open_oura-r3]** - Th0rgal/open_oura `docs/horizon-ring3-protocol-cheatsheet.md` (no-license; Ring 3).
 - **[open_oura-r5]** - Th0rgal/open_oura `docs/ring-5-observations.md` (Ring 5).
 - **[open_oura-feat]** - Th0rgal/open_oura `docs/ring-features.md` (feature gating).
@@ -150,6 +150,21 @@ ring  → phone: 2f 02 2e <status>
 
 ### 3.6 Pre-auth readable / gated commands
 Before app-auth, the ring answers a small set unauthenticated: firmware (`0x08`), product serial/hardware (`0x18`). Auth-required commands return `2f 02 2f 01` until authenticated: battery (`0x0c`), history events (`0x10`), feature status (`0x2f…0x20`), realtime/feature-latest. [open_oura-r3][open_oura-r5]
+
+### 3.7 Advanced pairing: using the ring's genuine app-issued `auth_key` (optional, user-recipe)
+§3.2 provisions **NOOP's own** key, which only works post-factory-reset and does not carry any of the account's server-side feature entitlements (§7.1). An alternative — entirely optional, and only usable with **your own** ring/account/iPhone — is to pair NOOP with the **same** `auth_key` the real Oura app already uses. Because that key is tied to the account, the ring keeps whatever cloud `ClientConfiguration` (SpO2, Exercise HR, real-steps, …) the real app has already unlocked for it (§7.1 documents the 2026-07-30 observation this produced).
+
+1. Pair the ring with the genuine Oura app first, and enable the features you want (e.g. SpO2 — [Oura support: Blood Oxygen Sensing](https://support.ouraring.com/hc/en-us/articles/7328398760851-Blood-Oxygen-Sensing-SpO2), steps/activity — [Oura support: How Oura Measures Steps](https://support.ouraring.com/hc/en-us/articles/360025576833-How-Oura-Measures-Steps-Activity)). These toggles are account-side settings, not something NOOP can set.
+2. On the same Mac, start a **local, unencrypted** iPhone backup (Finder → device → Back Up Now). No jailbreak, no decryption bypass — this is Apple's own standard backup mechanism over your own data.
+3. Browse the backup with a third-party backup explorer (e.g. "iBackup Viewer") and locate the Oura app's container: search for `AppDomain-com.ouraring.oura`, then under it `<UUID>/assa.sqlite` (UUID is uppercase). [ringverse: `oura/storage.md`]
+4. Extract `assa.sqlite` and open it with any SQLite browser. Per [ringverse]'s `oura/storage.md`, the ring's id and key live in table `ringconfiguration`:
+   ```sql
+   SELECT id, auth_key FROM ringconfiguration;
+   ```
+5. `auth_key` comes back **Base64-encoded**; decode it to get the raw 16-byte AES key.
+6. In NOOP's Oura pairing wizard, choose **"Advanced: I already have my ring's key"** (`AddDeviceWizard.swift`) instead of the normal factory-reset flow, and paste in the decoded key.
+
+Treat this key like a password: it authenticates as the real Oura app against your account's ring. NOOP stores it locally the same way it stores its own provisioned key (Keychain on iOS / EncryptedSharedPreferences-Keystore on Android, §3.2) — nothing is transmitted anywhere. This recipe extracts a fact from **your own** device backup and a public schema doc; it does not touch, decompile, or redistribute any Oura app code.
 
 ---
 
@@ -520,7 +535,7 @@ edit of the ring's tag.
 ### 6.14 Raw PPG
 - **`0x67` raw_ppg_summary** (12–13 B): start-UTC, type, scale, session header for following data. [ringverse]
 - **`0x68` raw_ppg_data** (variable, delta-encoded): needs scale/accumulator from the paired `0x67`. [ringverse]
-- **`0x81` cva_raw_ppg_data** (variable): delta + 24-bit absolute, session-stateful. Decode: byte `0x80` → next 3 bytes absolute u24; MSB-set byte → signed delta `b-0x100`; else signed 7-bit `+= b`. Reset on ring-reset ack or 60 s gap. [open_ring]
+- **`0x81` cva_raw_ppg_data** (variable): delta + 24-bit absolute, session-stateful. Decode: byte `0x80` → next 3 bytes absolute u24; MSB-set byte → signed delta `b-0x100`; else signed 7-bit `+= b`. Reset on ring-reset ack or 60 s gap. [open_ring] **First live observation 2026-07-30** (668 records, 18 B each) — same Advanced/Auth-Key-pairing + SpO2-enabled session as the `0x03`/`0x04` unlock above (§7.1); previously only a documented decode formula, never seen in a NOOP capture. Still not wired into a Swift decoder.
 
 ### 6.15 Lifecycle / state
 - **`0x41` ring_start_ind** (18 B): bytes6–10 = 40-bit device id; bytes15–19 config; triggers anchor invalidation on rt regress. [ringverse][open_ring]
@@ -540,15 +555,15 @@ edit of the ring's tag.
 | `0x00` | Background DFU | - |
 | `0x01` | Research Data (RData) | often server-blocked; returns idle status 3 [open_oura-r3] |
 | `0x02` | Daytime HR | Gen3+; **live-HR path (§5.6)** |
-| `0x03` | Exercise HR (AWHR) | Gen3+; cap version ≥ 2; data arrives as `0x73` `ehr_trace_event` / `0x74` `ehr_acm_intensity_event` [ring4-ble] — never observed in a NOOP capture (server-gated, like SpO2/steps) |
-| `0x04` | SpO2 | Gen3+; server-gated. **Confirmed OFF on a real Gen 3 ring** (2026-07-20 capture): the read-only `2f 02 20 04` feature-status probe NOOP ships (`spo2_status`, §7.4) decoded to `mode=0 status=0 state=0 subscription=0` - all-zero, i.e. the cloud never enabled SpO2 for that ring/account; it is not a NOOP decode issue. SpO2 also never arrives as a live push (unlike HR's feature `0x02`); it only ever arrives via history fetch (§5), same as skin temp. NOOP sends the diagnostic READ only; it does NOT enable/subscribe SpO2 (a live enable produces nothing during the day regardless). |
+| `0x03` | Exercise HR (AWHR) | Gen3+; cap version ≥ 2; data arrives as `0x73` `ehr_trace_event` / `0x74` `ehr_acm_intensity_event` [ring4-ble]. **Gating is per-account, not per-ring/firmware:** a 2026-07-20 capture on stock NOOP-only pairing saw zero `0x73`/`0x74` (server-gated, like SpO2/steps below); a **2026-07-30 capture on the same physical ring, paired via the ring's own Advanced/Auth Key extracted from the real Oura app (§3.7) with SpO2 subsequently enabled in that app, observed 1023×`0x73` + 220×`0x74` records** in a single session. Pairing through the genuine app-issued key inherits that account's actual cloud `ClientConfiguration` (see `0x04` below), which evidently unlocked a feature bundle beyond just SpO2. Payloads: `0x74` is 14 B / 7×uint16-LE, a monotonic ramp (`001e 0048 006f 0099 00bc 00d0 00e2` → 30,72,111,153,188,208,226) consistent with an intensity trace; `0x73` alternates 18 B/9 B record lengths. Still **UNVERIFIED layout** — decode-only, not wired into scoring. |
+| `0x04` | SpO2 | Gen3+; server-gated. **Confirmed OFF on a real Gen 3 ring** (2026-07-20 capture): the read-only `2f 02 20 04` feature-status probe NOOP ships (`spo2_status`, §7.4) decoded to `mode=0 status=0 state=0 subscription=0` - all-zero, i.e. the cloud never enabled SpO2 for that ring/account; it is not a NOOP decode issue. SpO2 also never arrives as a live push (unlike HR's feature `0x02`); it only ever arrives via history fetch (§5), same as skin temp. NOOP sends the diagnostic READ only; it does NOT enable/subscribe SpO2 (a live enable produces nothing during the day regardless). **2026-07-30, same ring, after enabling SpO2 in the real Oura app and pairing via its Advanced/Auth Key:** the same probe now reads `mode=1 (automatic) status=0 state=0 subscription=0` — `mode` flips 0→1 once the account entitlement is on, even though `status`/`state` stay 0 outside an active SpO2 session. Confirms gating tracks the Oura-cloud account config, not the ring hardware or NOOP's own commands. |
 | `0x05` | Bundling | - |
 | `0x06` | Encrypted API | (Oura's encrypted channel - NOOP does NOT use) |
 | `0x07` | Tap-to-tag | - |
 | `0x08` | Resting HR | firmware-computed, no app toggle |
 | `0x09` | App auth | the §3 handshake feature |
 | `0x0A` | BLE mode | - |
-| `0x0B` | Real steps | Gen3+; server-flag-gated (`activity/real_steps`, default false). **Confirmed OFF on a real Gen 3 ring** (2026-07-20 capture): the read-only `2f 02 20 0b` probe (`realsteps_status`, §7.4) decoded to `mode=0 status=0 state=0 subscription=0` - all-zero, matching SpO2, which is why `0x7E`/`0x7F` never appear (§6.13). |
+| `0x0B` | Real steps | Gen3+; server-flag-gated (`activity/real_steps`, default false). **Confirmed OFF on a real Gen 3 ring** (2026-07-20 capture): the read-only `2f 02 20 0b` probe (`realsteps_status`, §7.4) decoded to `mode=0 status=0 state=0 subscription=0` - all-zero, matching SpO2, which is why `0x7E`/`0x7F` never appear (§6.13). **2026-07-30, same ring, after enabling SpO2 + Advanced/Auth-Key pairing (see `0x04` above):** the probe now reads `mode=1 (automatic) status=1 state=2 subscription=0` — no longer all-zero, though `0x7E`/`0x7F` still weren't seen in that session. Same per-account gating mechanism as `0x03`/`0x04`, not a NOOP-side change. |
 | `0x0C` | Experimental | server-flag-gated |
 | `0x0D` | CVA PPG sampler | Gen3+; server-flag-gated; feeds `0x81` |
 | `0x0E` | Charging control | [ring4-ble] |
