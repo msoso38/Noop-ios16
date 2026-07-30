@@ -572,4 +572,34 @@ object OuraDecoders {
         }
         return OuraActivityInfo(ringTimestamp = rec.ringTimestamp, state = b[0], met = met)
     }
+
+    // MARK: - Real steps features (0x7E/0x7F; s6.13) - Tier B, third-party formula
+
+    /**
+     * Decode a `0x7E`/`0x7F` real_steps_features record: 14 bit-packed fields from a 14-byte body.
+     * Formula ([oura-rs] - Th0rgal/open_oura `crates/oura-protocol/src/events.rs`, clean-room fact
+     * citation, no code copied): fields 0 and 8 are 9-bit values built as `byte*2 + carry_bit`, where
+     * the carry bit is the MSB of a neighboring byte (byte 3's MSB for field 0, byte 11's MSB for
+     * field 8) - the same byte then also supplies field 3 / field 11 from its own low 7 bits. Fields
+     * 1, 2, 9, 10 are a bare `byte<<1` (no carry completion). Fields 4-7 and 12-13 are plain bytes.
+     * Returns null unless the body is exactly 14 bytes (the source's own length gate). Byte-identical
+     * twin of Swift's `decodeRealStepsFields`.
+     */
+    fun decodeRealStepsFields(rec: OuraRecord): OuraRealStepsFields? {
+        val p = rec.payload
+        if (p.size != 14) return null
+        val fields = listOf(
+            (p[3] shr 7) or (p[0] shl 1),
+            p[1] shl 1,
+            p[2] shl 1,
+            p[3] and 0x7f,
+            p[4], p[5], p[6], p[7],
+            (p[11] shr 7) or (p[8] shl 1),
+            p[9] shl 1,
+            p[10] shl 1,
+            p[11] and 0x7f,
+            p[12], p[13],
+        )
+        return OuraRealStepsFields(tag = rec.type, ringTimestamp = rec.ringTimestamp, fields = fields)
+    }
 }

@@ -516,6 +516,29 @@ edit of the ring's tag.
     `0x50` `met` as one input to its activity classifier (`activity_model.rs`). [open_oura-act]
   - **Real Steps (feature `0x0B`) server gating [open_oura-feat]:** real_steps is behind the server flag `activity/real_steps` (default **false**; `FeatureDefinitions.ActivityRealSteps`, Gen 3+), the same server-flag-off pattern as SpO2 (§7.1). This explains `0x7E`/`0x7F` never once appearing across the PR #960 live sessions - the ring isn't sending them, it is not a NOOP decode gap. `0x50` itself is an always-on base stream (not feature-gated), matching it appearing in every session.
 - **`0x7E`/`0x7F` real_steps_features 1/2** (18 B each): bit-packed step features merged across the paired events. **(UNVERIFIED - partial)** [ringverse]
+  - **Unpack formula ([oura-rs] - Th0rgal/open_oura `crates/oura-protocol/src/events.rs#L566`, clean-room
+    fact citation): 14 fields from the 14-byte body.** Fields 0 and 8 are genuine 9-bit values built as
+    `byte*2 + carry_bit`, where the carry bit is stolen from the MSB of a neighboring byte (byte 3's MSB
+    for field 0, byte 11's MSB for field 8) - the same byte then supplies field 3 / field 11 from its own
+    low 7 bits. Fields 1, 2, 9, 10 are a bare `byte<<1` (no carry completion). Fields 4-7 and 12-13 are
+    plain bytes. The source itself marks this decode `"_status": "unvalidated"`.
+  - **Wired into a decoder (both platforms, Tier B) and cross-correlated against a real capture**
+    (2026-07-30, 2661 real_steps pairs anchored against the already-anchored 0x50 MET corpus from the
+    SAME session): `fields[0]` and `fields[8]` - the two carry-completed 9-bit values - are the ONLY
+    fields with a consistent movement correlation (r≈+0.3 vs mean MET; effect size +1.5/+1.25
+    resting-vs-moving on the same capture). This is a real convergence between the bit-layout hint (these
+    two fields are structurally distinct from the other 12) and the empirical signal, and the current
+    leading candidate for "the step field" - but it is NOT proof: one capture, correlated against a
+    coarse 60 s MET proxy, not against a ground-truth step count. No monotonic/cumulative counter
+    signature was found in ANY of the 14 fields (all show ~50/50 increase/decrease with frequent large
+    resets), so if a step count is in here at all it reads as a per-30s-window value, not a running total.
+    Cadence is fixed: 300 ring-ticks (30 s) between consecutive pairs.
+  - Still Tier B end to end: decoded only behind `allowTierB`, logged once per session + appended to a
+    diagnostic JSONL sidecar (`oura-real-steps-<id>.jsonl`, deduped by ring-time), never folded into
+    `OuraStreamMapping`/scoring - not even from fields[0]/fields[8]. The rigorous next step is a
+    controlled-walk capture: a known step count read against the Oura app's own number, to test every
+    field against ground truth rather than a proxy. `OuraDecoders.decodeRealStepsFields` (Swift) /
+    `Decoders.decodeRealStepsFields` (Kotlin).
 
 ### 6.14 Raw PPG
 - **`0x67` raw_ppg_summary** (12–13 B): start-UTC, type, scale, session header for following data. [ringverse]

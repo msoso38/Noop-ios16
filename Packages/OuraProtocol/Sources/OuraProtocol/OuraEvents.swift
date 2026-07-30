@@ -221,6 +221,33 @@ public struct OuraActivityInfo: Equatable, Sendable, Codable {
     }
 }
 
+/// One decoded `0x7E`/`0x7F` real_steps_features record: 14 unpacked feature values from a 14-byte
+/// bit-packed body. THIRD-PARTY FORMULA ([oura-rs] - Th0rgal/open_oura `crates/oura-protocol/src/
+/// events.rs`, clean-room fact citation, no code copied; the source itself marks this decode
+/// `"_status": "unvalidated"`): two of the 14 fields (index 0 and 8) are genuine 9-bit values built as
+/// `byte*2 + carry_bit`, where the carry bit is stolen from the MSB of a neighboring byte (index 3 for
+/// field 0, index 11 for field 8); the rest are either plain bytes or a bare `byte<<1` with no carry.
+/// NOOP's OWN investigation (2026-07-30, a 2661-pair real Gen 3 capture cross-correlated against the
+/// already-anchored 0x50 MET corpus) found `fields[0]` and `fields[8]` - the two carry-completed
+/// 9-bit values - are also the ONLY fields with a consistent movement correlation (r≈+0.3 vs mean MET,
+/// effect size +1.5/+1.25 resting-vs-moving), a real convergence between the bit-layout hint and the
+/// empirical signal. Still NOT proof: one capture, correlated against a coarse MET proxy, not against a
+/// ground-truth step count - the honest read is "the leading candidate for the step field," not "the
+/// step field." Stays Tier B end to end: emitted only behind `OuraDriver.allowTierB`, and NEVER folded
+/// into `OuraStreamMapping`/scoring. `fields` holds all 14 values verbatim, in the source's own order,
+/// so a future controlled-walk capture can test every field, not just the current best guess.
+public struct OuraRealStepsFields: Equatable, Sendable, Codable {
+    /// The originating tag byte (`0x7E` realSteps1 or `0x7F` realSteps2) - both route through the same
+    /// decoder and event case, so this is what lets a consumer (or the diagnostic dump) tell which half
+    /// of the pair a given event came from.
+    public let tag: UInt8
+    public let ringTimestamp: UInt32
+    public let fields: [Int]
+    public init(tag: UInt8, ringTimestamp: UInt32, fields: [Int]) {
+        self.tag = tag; self.ringTimestamp = ringTimestamp; self.fields = fields
+    }
+}
+
 // MARK: - The emitted event union
 
 /// What OuraDriver.ingest(record:) emits. A single record can yield several events (e.g. an IBI+amp
@@ -251,11 +278,16 @@ public enum OuraEvent: Equatable, Sendable {
     /// formula, so an investigating consumer can log real MET numbers instead of hex. Same gate
     /// (`allowTierB`), same discipline (never reaches `OuraStreamMapping`).
     case activityInfo(OuraActivityInfo)
+    /// A decoded `0x7E`/`0x7F` real_steps_features record (14 unpacked fields). Still Tier-B (see
+    /// `OuraRealStepsFields` doc) - split out of the raw-bytes `.tierB` wrapper for the same reason
+    /// `.activityInfo` was: a cited third-party unpack formula worth surfacing as real numbers instead
+    /// of hex. Same gate (`allowTierB`), same discipline (never reaches `OuraStreamMapping`).
+    case realStepsFields(OuraRealStepsFields)
 
     /// True for Tier-B events, so a consumer can assert none leaked into a Tier-A-only sink.
     public var isTierB: Bool {
         switch self {
-        case .tierB, .activityInfo: return true
+        case .tierB, .activityInfo, .realStepsFields: return true
         default: return false
         }
     }
@@ -280,6 +312,7 @@ public enum OuraEvent: Equatable, Sendable {
         case .debugText(let rt, _): return rt
         case .tierB(let v): return v.ringTimestamp
         case .activityInfo(let v): return v.ringTimestamp
+        case .realStepsFields(let v): return v.ringTimestamp
         }
     }
 }

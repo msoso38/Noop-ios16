@@ -163,9 +163,12 @@ final class OuraStreamMappingTests: XCTestCase {
             // 0x50 activity/MET (PR #960): decoded but Tier-B/unvalidated - in particular it must never
             // mint a `steps` row (MET is not a step count; the per-source day-owner rules stay intact).
             .activityInfo(OuraActivityInfo(ringTimestamp: 100, state: 0x41, met: [1.8, 1.9])),
+            // 0x7E/0x7F real_steps_features: decoded but Tier-B/unvalidated - must never mint a `steps`
+            // row either, even from its leading candidate field (see OuraRealStepsFields).
+            .realStepsFields(OuraRealStepsFields(tag: 0x7E, ringTimestamp: 100, fields: Array(0..<14))),
         ], at: ts)
         XCTAssertTrue(s.isEmpty, "Tier-B and diagnostic events must not produce any durable stream row")
-        XCTAssertTrue(s.steps.isEmpty, "activity/MET must never fabricate a steps row")
+        XCTAssertTrue(s.steps.isEmpty, "activity/MET/real_steps must never fabricate a steps row")
     }
 
     // MARK: - Empty batch + multi-signal batch

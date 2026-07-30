@@ -567,6 +567,125 @@ class OuraDriverTest {
         )
     }
 
+    // MARK: - Real steps features (0x7E/0x7F, Tier B, third-party formula) - real Gen 3 capture
+    //
+    // PARITY/PROVENANCE: the two pairs below are byte-for-byte the same two CONSECUTIVE real_steps pairs
+    // pinned in the Swift OuraDriverTests (real capture, ring times 3499176-3499474 and their +1 0x7F
+    // partners). Expected fields are RECOMPUTED from the [oura-rs] unpack formula, not copied blind.
+
+    @Test
+    fun testRealStepsFieldsDecodesRealCapture0x7E() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key, allowTierB = true)
+        val rec = OuraRecord(type = OuraEventTag.REAL_STEPS_1.raw, ringTimestamp = 3_499_176,
+                             payload = bytes("6feb5e0a633e106865da4c136571"))
+        val events = d.ingest(rec)
+        assertEquals(
+            listOf<OuraEvent>(
+                OuraEvent.RealStepsFields(
+                    OuraRealStepsFields(
+                        tag = OuraEventTag.REAL_STEPS_1.raw, ringTimestamp = 3_499_176,
+                        fields = listOf(222, 470, 188, 10, 99, 62, 16, 104, 202, 436, 152, 19, 101, 113),
+                    ),
+                ),
+            ),
+            events,
+        )
+        assertTrue("realStepsFields must still report isTierB - the formula is UNVERIFIED", events[0].isTierB)
+    }
+
+    @Test
+    fun testRealStepsFieldsDecodesRealCapture0x7F() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key, allowTierB = true)
+        // The 0x7F partner of the same pair (ring time = the 0x7E record's rt + 1).
+        val rec = OuraRecord(type = OuraEventTag.REAL_STEPS_2.raw, ringTimestamp = 3_499_177,
+                             payload = bytes("24d467b25c127e3721a0a34dbde3"))
+        assertEquals(
+            listOf<OuraEvent>(
+                OuraEvent.RealStepsFields(
+                    OuraRealStepsFields(
+                        tag = OuraEventTag.REAL_STEPS_2.raw, ringTimestamp = 3_499_177,
+                        fields = listOf(73, 424, 206, 50, 92, 18, 126, 55, 66, 320, 326, 77, 189, 227),
+                    ),
+                ),
+            ),
+            d.ingest(rec),
+        )
+    }
+
+    @Test
+    fun testRealStepsFieldsDecodesSecondRealPair() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key, allowTierB = true)
+        val recE = OuraRecord(type = OuraEventTag.REAL_STEPS_1.raw, ringTimestamp = 3_499_474,
+                              payload = bytes("6b556d05356b1d6faa2c85aa2368"))
+        assertEquals(
+            listOf<OuraEvent>(
+                OuraEvent.RealStepsFields(
+                    OuraRealStepsFields(
+                        tag = OuraEventTag.REAL_STEPS_1.raw, ringTimestamp = 3_499_474,
+                        fields = listOf(214, 170, 218, 5, 53, 107, 29, 111, 341, 88, 266, 42, 35, 104),
+                    ),
+                ),
+            ),
+            d.ingest(recE),
+        )
+
+        val recF = OuraRecord(type = OuraEventTag.REAL_STEPS_2.raw, ringTimestamp = 3_499_475,
+                              payload = bytes("213590eb62a4515c22b4c381512c"))
+        assertEquals(
+            listOf<OuraEvent>(
+                OuraEvent.RealStepsFields(
+                    OuraRealStepsFields(
+                        tag = OuraEventTag.REAL_STEPS_2.raw, ringTimestamp = 3_499_475,
+                        fields = listOf(67, 106, 288, 107, 98, 164, 81, 92, 69, 360, 390, 1, 81, 44),
+                    ),
+                ),
+            ),
+            d.ingest(recF),
+        )
+    }
+
+    @Test
+    fun testRealStepsFieldsCarryBitCombinesWithNeighborByte() {
+        // Synthetic, isolating the carry-bit mechanic the [oura-rs] source documents: byte0=0xFF (all
+        // ones) with byte3's MSB SET must read field0 = 0xFF*2 + 1 = 511 (the 9-bit max), and byte3's
+        // own value (field3) must read only its low 7 bits (the MSB was consumed by field0's carry).
+        val rec = OuraRecord(
+            type = OuraEventTag.REAL_STEPS_1.raw, ringTimestamp = rt,
+            payload = intArrayOf(0xFF, 0x00, 0x00, 0x80, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x00, 0, 0),
+        )
+        val fields = OuraDecoders.decodeRealStepsFields(rec)?.fields
+        assertEquals(511, fields?.get(0))   // 0xFF<<1 | 1
+        assertEquals(0, fields?.get(3))     // byte3 = 0x80, & 0x7f = 0
+        assertEquals(0, fields?.get(8))     // byte11's MSB is clear -> no carry
+    }
+
+    @Test
+    fun testRealStepsFieldsDroppedByDefaultLikeOtherTierB() {
+        val d = OuraDriver(ringGen = OuraRingGen.GEN3, authKey = key)   // allowTierB defaults to false
+        val rec = OuraRecord(type = OuraEventTag.REAL_STEPS_1.raw, ringTimestamp = rt,
+                             payload = bytes("6feb5e0a633e106865da4c136571"))
+        assertEquals(
+            "the Tier-B gate must cover RealStepsFields too",
+            emptyList<OuraEvent>(),
+            d.ingest(rec),
+        )
+    }
+
+    @Test
+    fun testRealStepsFieldsWrongLengthDecodesToNull() {
+        // The source's own length gate: anything other than exactly 14 bytes -> honest null, never a guess.
+        assertNull(
+            OuraDecoders.decodeRealStepsFields(
+                OuraRecord(type = OuraEventTag.REAL_STEPS_1.raw, ringTimestamp = rt, payload = bytes("00")),
+            ),
+        )
+        assertNull(
+            OuraDecoders.decodeRealStepsFields(
+                OuraRecord(type = OuraEventTag.REAL_STEPS_1.raw, ringTimestamp = rt, payload = intArrayOf()),
+            ),
+        )
+    }
+
     // MARK: - Live-HR push routing + decode
 
     @Test

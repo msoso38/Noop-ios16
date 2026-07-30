@@ -464,6 +464,72 @@ final class OuraDriverTests: XCTestCase {
             OuraRecord(type: OuraEventTag.activityInfo.rawValue, ringTimestamp: rt, payload: [])))
     }
 
+    // MARK: - Real steps features (0x7E/0x7F, Tier B, third-party formula) - real Gen 3 capture
+    //
+    // PARITY/PROVENANCE: the two pairs below are byte-for-byte two CONSECUTIVE real_steps pairs from a
+    // real Gen 3 capture (2026-07-30, ring times 3499176-3499474 and their +1 0x7F partners). Expected
+    // fields are RECOMPUTED from the [oura-rs] unpack formula, not copied blind.
+
+    func testRealStepsFieldsDecodesRealCapture0x7E() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key, allowTierB: true)
+        let rec = OuraRecord(type: OuraEventTag.realSteps1.rawValue, ringTimestamp: 3_499_176,
+                             payload: bytes("6feb5e0a633e106865da4c136571"))
+        let events = d.ingest(record: rec)
+        XCTAssertEqual(events, [.realStepsFields(OuraRealStepsFields(tag: OuraEventTag.realSteps1.rawValue, ringTimestamp: 3_499_176,
+            fields: [222, 470, 188, 10, 99, 62, 16, 104, 202, 436, 152, 19, 101, 113]))])
+        XCTAssertTrue(events[0].isTierB, "realStepsFields must still report isTierB - the formula is UNVERIFIED")
+    }
+
+    func testRealStepsFieldsDecodesRealCapture0x7F() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key, allowTierB: true)
+        // The 0x7F partner of the same pair (ring time = the 0x7E record's rt + 1).
+        let rec = OuraRecord(type: OuraEventTag.realSteps2.rawValue, ringTimestamp: 3_499_177,
+                             payload: bytes("24d467b25c127e3721a0a34dbde3"))
+        XCTAssertEqual(d.ingest(record: rec), [.realStepsFields(OuraRealStepsFields(tag: OuraEventTag.realSteps2.rawValue, ringTimestamp: 3_499_177,
+            fields: [73, 424, 206, 50, 92, 18, 126, 55, 66, 320, 326, 77, 189, 227]))])
+    }
+
+    func testRealStepsFieldsDecodesSecondRealPair() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key, allowTierB: true)
+        let recE = OuraRecord(type: OuraEventTag.realSteps1.rawValue, ringTimestamp: 3_499_474,
+                              payload: bytes("6b556d05356b1d6faa2c85aa2368"))
+        XCTAssertEqual(d.ingest(record: recE), [.realStepsFields(OuraRealStepsFields(tag: OuraEventTag.realSteps1.rawValue, ringTimestamp: 3_499_474,
+            fields: [214, 170, 218, 5, 53, 107, 29, 111, 341, 88, 266, 42, 35, 104]))])
+
+        let recF = OuraRecord(type: OuraEventTag.realSteps2.rawValue, ringTimestamp: 3_499_475,
+                              payload: bytes("213590eb62a4515c22b4c381512c"))
+        XCTAssertEqual(d.ingest(record: recF), [.realStepsFields(OuraRealStepsFields(tag: OuraEventTag.realSteps2.rawValue, ringTimestamp: 3_499_475,
+            fields: [67, 106, 288, 107, 98, 164, 81, 92, 69, 360, 390, 1, 81, 44]))])
+    }
+
+    func testRealStepsFieldsCarryBitCombinesWithNeighborByte() {
+        // Synthetic, isolating the carry-bit mechanic the [oura-rs] source documents: byte0=0xFF (all
+        // ones) with byte3's MSB SET must read field0 = 0xFF*2 + 1 = 511 (the 9-bit max), and byte3's
+        // own value (field3) must read only its low 7 bits (the MSB was consumed by field0's carry).
+        let rec = OuraRecord(type: OuraEventTag.realSteps1.rawValue, ringTimestamp: rt, payload: [
+            0xFF, 0x00, 0x00, 0x80, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x00, 0, 0,
+        ])
+        let fields = OuraDecoders.decodeRealStepsFields(rec)?.fields
+        XCTAssertEqual(fields?[0], 511)   // 0xFF<<1 | 1
+        XCTAssertEqual(fields?[3], 0)     // byte3 = 0x80, & 0x7f = 0
+        XCTAssertEqual(fields?[8], 0)     // byte11's MSB is clear -> no carry
+    }
+
+    func testRealStepsFieldsDroppedByDefaultLikeOtherTierB() {
+        let d = OuraDriver(ringGen: .gen3, authKey: key)   // allowTierB defaults to false
+        let rec = OuraRecord(type: OuraEventTag.realSteps1.rawValue, ringTimestamp: rt,
+                             payload: bytes("6feb5e0a633e106865da4c136571"))
+        XCTAssertEqual(d.ingest(record: rec), [], "the Tier-B gate must cover .realStepsFields too")
+    }
+
+    func testRealStepsFieldsWrongLengthDecodesToNil() {
+        // The source's own length gate: anything other than exactly 14 bytes -> honest nil, never a guess.
+        XCTAssertNil(OuraDecoders.decodeRealStepsFields(
+            OuraRecord(type: OuraEventTag.realSteps1.rawValue, ringTimestamp: rt, payload: bytes("00"))))
+        XCTAssertNil(OuraDecoders.decodeRealStepsFields(
+            OuraRecord(type: OuraEventTag.realSteps1.rawValue, ringTimestamp: rt, payload: [])))
+    }
+
     // MARK: - Live-HR push routing + decode
 
     func testHandleSecureFrameRoutesNonceStatusAndPush() {

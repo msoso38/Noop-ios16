@@ -185,6 +185,11 @@ class OuraStreamMappingTest {
                 OuraEvent.ActivityInfo(
                     com.noop.oura.OuraActivityInfo(ringTimestamp = 100, state = 0x41, met = listOf(1.8, 1.9)),
                 ),
+                // 0x7E/0x7F real_steps_features: decoded but Tier-B/unvalidated - must never mint a
+                // `steps` row either, even from its leading candidate field.
+                OuraEvent.RealStepsFields(
+                    com.noop.oura.OuraRealStepsFields(tag = 0x7E, ringTimestamp = 100, fields = (0..13).toList()),
+                ),
             ),
             anchor,
         )

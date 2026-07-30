@@ -515,4 +515,31 @@ public enum OuraDecoders {
         }
         return OuraActivityInfo(ringTimestamp: rec.ringTimestamp, state: Int(state), met: met)
     }
+
+    // MARK: - Real steps features (0x7E/0x7F; s6.13) - Tier B, third-party formula
+
+    /// Decode a `0x7E`/`0x7F` real_steps_features record: 14 bit-packed fields from a 14-byte body.
+    /// Formula ([oura-rs] - Th0rgal/open_oura `crates/oura-protocol/src/events.rs`, clean-room fact
+    /// citation, no code copied): fields 0 and 8 are 9-bit values built as `byte*2 + carry_bit`, where
+    /// the carry bit is the MSB of a neighboring byte (byte 3's MSB for field 0, byte 11's MSB for
+    /// field 8) - the same byte then also supplies field 3 / field 11 from its own low 7 bits. Fields
+    /// 1, 2, 9, 10 are a bare `byte<<1` (no carry completion). Fields 4-7 and 12-13 are plain bytes.
+    /// Returns nil unless the body is exactly 14 bytes (the source's own length gate).
+    public static func decodeRealStepsFields(_ rec: OuraRecord) -> OuraRealStepsFields? {
+        let p = rec.payload
+        guard p.count == 14 else { return nil }
+        let fields: [Int] = [
+            (Int(p[3] >> 7)) | (Int(p[0]) << 1),
+            Int(p[1]) << 1,
+            Int(p[2]) << 1,
+            Int(p[3] & 0x7f),
+            Int(p[4]), Int(p[5]), Int(p[6]), Int(p[7]),
+            (Int(p[11] >> 7)) | (Int(p[8]) << 1),
+            Int(p[9]) << 1,
+            Int(p[10]) << 1,
+            Int(p[11] & 0x7f),
+            Int(p[12]), Int(p[13]),
+        ]
+        return OuraRealStepsFields(tag: rec.type, ringTimestamp: rec.ringTimestamp, fields: fields)
+    }
 }
