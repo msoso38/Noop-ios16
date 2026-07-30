@@ -24,6 +24,16 @@ final class CaffeineImportTests: XCTestCase {
         CaffeineIntake(at: at, mg: mg, externalId: id)
     }
 
+    /// A fixed stand-in for a HealthKit sample uuid.
+    private let sampleUUID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+
+    /// Builds an intake exactly the way `HealthKitBridge.collectCaffeine` does — the sample's own uuid
+    /// as BOTH the identity and the external marker. Kept in one place so a drift between this and the
+    /// bridge is a one-line fix rather than a silently passing test.
+    private func fromSample(uuid: UUID, at: Date, mg: Double) -> CaffeineIntake {
+        CaffeineIntake(id: uuid, at: at, mg: mg, externalId: uuid.uuidString)
+    }
+
     // MARK: - the model
 
     @MainActor
@@ -60,14 +70,52 @@ final class CaffeineImportTests: XCTestCase {
     }
 
     /// The core idempotency claim: syncing the same Health window twice leaves ONE intake, not two.
+    ///
+    /// Built from a fresh `CaffeineIntake` each time rather than reusing one value, because that is what
+    /// the bridge actually does — it rebuilds every intake from the HealthKit samples on each sync. An
+    /// earlier version of this test reused a single value and would have passed while the real path was
+    /// broken.
     @MainActor
     func testReimportingTheSameSampleDoesNotDuplicateIt() {
         let now = Date()
         let s = store(now)
-        let sample = imported(now.addingTimeInterval(-3600), mg: 95, id: "a")
-        s.replaceImported([sample])
-        s.replaceImported([sample])
+        let at = now.addingTimeInterval(-3600)
+        s.replaceImported([fromSample(uuid: sampleUUID, at: at, mg: 95)])
+        s.replaceImported([fromSample(uuid: sampleUUID, at: at, mg: 95)])
         XCTAssertEqual(s.intakes.count, 1)
+    }
+
+    /// The identity of an imported intake must come from the SAMPLE, not be freshly minted per sync.
+    ///
+    /// This is the bug the test above could not see: `CaffeineIntake.id` defaults to `UUID()`, so
+    /// building one per sync gave the same coffee a new identity every time — `replaceImported`'s
+    /// "nothing changed" guard never matched (a pointless rewrite and republish on every sync) and
+    /// `ForEach` rebuilt the whole logged list. Two intakes built from one sample must be EQUAL.
+    @MainActor
+    func testTwoIntakesBuiltFromTheSameSampleAreEqual() {
+        let at = Date().addingTimeInterval(-3600)
+        XCTAssertEqual(fromSample(uuid: sampleUUID, at: at, mg: 95),
+                       fromSample(uuid: sampleUUID, at: at, mg: 95))
+    }
+
+    /// ...and the id is the sample's, so SwiftUI sees a stable row across syncs.
+    @MainActor
+    func testImportedIntakeIdIsTheSampleId() {
+        let intake = fromSample(uuid: sampleUUID, at: Date(), mg: 95)
+        XCTAssertEqual(intake.id, sampleUUID)
+        XCTAssertEqual(intake.externalId, sampleUUID.uuidString)
+    }
+
+    /// Re-importing an unchanged window must leave the stored array untouched, identities included.
+    @MainActor
+    func testReimportingAnUnchangedWindowKeepsTheSameIds() {
+        let now = Date()
+        let s = store(now)
+        let at = now.addingTimeInterval(-3600)
+        s.replaceImported([fromSample(uuid: sampleUUID, at: at, mg: 95)])
+        let before = s.intakes.map(\.id)
+        s.replaceImported([fromSample(uuid: sampleUUID, at: at, mg: 95)])
+        XCTAssertEqual(before, s.intakes.map(\.id))
     }
 
     /// Hand-logged intakes are never touched by a sync.

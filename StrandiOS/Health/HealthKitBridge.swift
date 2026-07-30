@@ -532,8 +532,10 @@ final class HealthKitBridge: ObservableObject {
             // leaves the card exactly as quiet as it is today.
             if let caffeineStart = cal.date(byAdding: .hour,
                                             value: -Int(CaffeineLogStore.retentionHours), to: end) {
-                let imported = await collectCaffeine(start: caffeineStart, end: end)
-                CaffeineLogStore.shared.replaceImported(imported)
+                // nil means the READ failed; only an actual empty result is allowed to clear the set.
+                if let imported = await collectCaffeine(start: caffeineStart, end: end) {
+                    CaffeineLogStore.shared.replaceImported(imported)
+                }
             }
             try await writeBack(whoopStore: store)
             lastSync = Date()
@@ -1008,22 +1010,33 @@ final class HealthKitBridge: ObservableObject {
     /// Each sample keeps its HealthKit UUID as `externalId` so a re-import can tell an intake it already
     /// has from a new one. `notNoopAuthored` keeps NOOP's own samples out — we do not write caffeine
     /// today, but the predicate costs nothing and closes the loop if that ever changes.
-    private func collectCaffeine(start: Date, end: Date) async -> [CaffeineIntake] {
-        guard let type = HKQuantityType.quantityType(forIdentifier: .dietaryCaffeine) else { return [] }
+    ///
+    /// Returns nil when the read FAILED, as distinct from an empty array meaning "no caffeine logged".
+    /// The caller replaces the imported set wholesale, so collapsing those two cases would let a failed
+    /// query silently delete every imported intake.
+    private func collectCaffeine(start: Date, end: Date) async -> [CaffeineIntake]? {
+        guard let type = HKQuantityType.quantityType(forIdentifier: .dietaryCaffeine) else { return nil }
         let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),
             Self.notNoopAuthored,
         ])
-        return await withCheckedContinuation { (cont: CheckedContinuation<[CaffeineIntake], Never>) in
+        return await withCheckedContinuation { (cont: CheckedContinuation<[CaffeineIntake]?, Never>) in
             let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
             let q = HKSampleQuery(sampleType: type, predicate: predicate,
-                                  limit: HKObjectQueryNoLimit, sortDescriptors: [sort]) { _, samples, _ in
+                                  limit: HKObjectQueryNoLimit, sortDescriptors: [sort]) { _, samples, error in
+                guard error == nil, let samples else { cont.resume(returning: nil); return }
                 let out: [CaffeineIntake] = (samples as? [HKQuantitySample] ?? []).compactMap { s in
                     let mg = s.quantity.doubleValue(for: .gramUnit(with: .milli))
                     // A zero or non-finite sample carries no dose worth showing; skip it rather than log
                     // a 0 mg intake, which would pad the "intakes still active" count with nothing.
                     guard mg.isFinite, mg > 0 else { return nil }
-                    return CaffeineIntake(at: s.startDate, mg: mg, externalId: s.uuid.uuidString)
+                    // The sample's OWN uuid as the intake id, not a fresh one. `CaffeineIntake` defaults
+                    // `id` to `UUID()`, so minting one here would give the same coffee a different
+                    // identity on every sync: `replaceImported`'s no-op guard would never match (a
+                    // pointless JSON rewrite + republish each time), and `ForEach` would see the whole
+                    // logged list as new rows and rebuild it. HealthKit sample uuids are stable.
+                    return CaffeineIntake(id: s.uuid, at: s.startDate, mg: mg,
+                                          externalId: s.uuid.uuidString)
                 }
                 cont.resume(returning: out)
             }
