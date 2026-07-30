@@ -1810,4 +1810,5 @@
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">Battery saver quiets the gauges, translated Android notifications, and instant chart loads</string>
     <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">No SpO₂ import or Health value</string>
     <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Raw counts only — needs an import</string>
+    <string name="l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6">Every pattern buzzes the same on a WHOOP 5/MG — the repeat count isn\'t sent to that strap. Your choice is saved and applies to a WHOOP 4.0.</string>
 </resources>

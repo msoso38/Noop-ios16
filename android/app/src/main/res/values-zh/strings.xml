@@ -1712,4 +1712,5 @@
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">省电模式让仪表静止、Android 通知已翻译、图表秒开</string>
     <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">无 SpO₂ 导入或健康数值</string>
     <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">仅原始计数 — 需导入</string>
+    <string name="l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6">在 WHOOP 5/MG 上所有模式的震动都相同——重复次数不会发送到该手环。你的选择会被保存，并在 WHOOP 4.0 上生效。</string>
 </resources>

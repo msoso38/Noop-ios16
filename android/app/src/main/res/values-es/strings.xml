@@ -1784,4 +1784,5 @@
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">El ahorro de batería calma los indicadores, notificaciones de Android traducidas y gráficos instantáneos</string>
     <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">Sin importación de SpO₂ ni valor de Health</string>
     <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Solo valores brutos — requiere importación</string>
+    <string name="l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6">En una WHOOP 5/MG todos los patrones vibran igual: el número de repeticiones no se envía a esa correa. Tu elección se guarda y se aplica a una WHOOP 4.0.</string>
 </resources>

@@ -1784,4 +1784,5 @@
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">L\'économiseur de batterie fige les jauges, notifications Android traduites et graphiques instantanés</string>
     <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">Aucune importation SpO₂ ni valeur Santé</string>
     <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Valeurs brutes uniquement — importation requise</string>
+    <string name="l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6">Sur un WHOOP 5/MG, tous les motifs vibrent de la même façon — le nombre de répétitions n\'est pas envoyé à ce bracelet. Votre choix est enregistré et s\'applique à un WHOOP 4.0.</string>
 </resources>

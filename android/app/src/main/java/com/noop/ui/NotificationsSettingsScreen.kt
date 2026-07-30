@@ -354,6 +354,20 @@ fun NotificationsSettingsScreen(vm: AppViewModel) {
             onTest = { vm.buzz(loops = callsPattern.loops) },
         )
 
+        // #926: on a 5/MG the buzz payload is a hardcoded 12-byte literal and byte[11] (overallLoop) is
+        // 0, so the caller's repeat count never reaches the wire — every BuzzPattern produces the same
+        // buzz. The picker still offers all four because the choice is stored per app and DOES apply to a
+        // WHOOP 4.0, so hiding it would lose a real setting. Say so instead, the way SmartAlarmScreen
+        // handles its own 5/MG-unconfirmed case, rather than leaving a control that silently does nothing.
+        if (live.whoop5Detected) {
+            Text(
+                uiString(R.string.l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6),
+                style = NoopType.caption,
+                color = Palette.textSecondary,
+                modifier = Modifier.padding(horizontal = Metrics.space16, vertical = Metrics.space8),
+            )
+        }
+
         // MARK: Category cards
         activeCategories.forEach { cat ->
             CategoryCard(

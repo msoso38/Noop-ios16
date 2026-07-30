@@ -1778,4 +1778,5 @@
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">A poupança de bateria acalma os indicadores, notificações Android traduzidas e gráficos instantâneos</string>
     <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">Sem importação de SpO₂ ou valor de saúde</string>
     <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Apenas valores brutos — requer importação</string>
+    <string name="l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6">Numa WHOOP 5/MG todos os padrões vibram igual — a contagem de repetições não é enviada para essa bracelete. A tua escolha fica guardada e aplica-se a uma WHOOP 4.0.</string>
 </resources>
