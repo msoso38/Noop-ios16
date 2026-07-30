@@ -135,8 +135,8 @@ final class HealthKitBridge: ObservableObject {
     /// HealthKit never reports read authorization, and `requestAuthorization` is only called from the
     /// connect button. So a read type added in an update stays `.notDetermined` for everyone who granted
     /// access before it existed, and its queries return empty forever — indistinguishable from "you have
-    /// no water in Health", and silent. Water and caffeine would have done nothing at all for every
-    /// existing user, which is most of them.
+    /// no water in Health", and silent. Water would have done nothing at all for every existing user,
+    /// which is most of them.
     ///
     /// Comparing a stored fingerprint of the read set catches that. Re-requesting is cheap and quiet:
     /// HealthKit presents the sheet ONLY for types that are still undetermined, so a user whose set is
