@@ -736,6 +736,44 @@ final class Whoop5EcgTests: XCTestCase {
         XCTAssertTrue(text.contains("not a medical measurement or a diagnosis"))
     }
 
+    /// #896 review: nobody is told to hold the clasp. An MG measures across the wrist electrode AND the
+    /// two clasp indents, and lead state is not on the wire — so a run where the clasp was never touched
+    /// returns zero packets for a reason that has nothing to do with the firmware. #891 asks other MG
+    /// owners to run this; without the line they report "nothing happened" and the thread reads it as
+    /// evidence about the gate.
+    func testAZeroPacketRunThatAskedForDataQuestionsTheElectrodeCircuit() {
+        let steps = [
+            sent(123, arg: Whoop5Ecg.WristSelection.left.rawValue, .success, replyHex: "aabb"),
+            sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .success, replyHex: "ccdd"),
+        ]
+        let text = Whoop5EcgProbe.report(steps: steps, ecgPacketsSeen: 0,
+                                         candidateFrames: [], windowSeconds: 30)
+        XCTAssertTrue(text.contains("Were the leads closed?"))
+        XCTAssertTrue(text.contains("two indents on the clasp"))
+        XCTAssertTrue(text.contains("OTHER hand"))
+        // It must stay a QUESTION about the run. Claiming the leads WERE open would be the same
+        // manufactured-cause error as the retired device-flag wording.
+        XCTAssertTrue(text.contains("cannot tell an open circuit from a strap that ignored the command"))
+    }
+
+    /// The line is about a zero that MIGHT have a mundane cause, so it is silent when there is no zero
+    /// to explain and when the run never asked for data (that case has its own, different sentence).
+    func testTheElectrodeQuestionIsAbsentWhenPacketsArrivedOrNoDataWasAsked() {
+        let asked = [
+            sent(123, arg: Whoop5Ecg.WristSelection.left.rawValue, .success, replyHex: "aabb"),
+            sent(124, arg: Whoop5Ecg.ControlSignal.start.rawValue, .success, replyHex: "ccdd"),
+        ]
+        let withPackets = Whoop5EcgProbe.report(steps: asked, ecgPacketsSeen: 4,
+                                                candidateFrames: [], windowSeconds: 30)
+        XCTAssertFalse(withPackets.contains("Were the leads closed?"))
+
+        let wristOnly = [sent(123, arg: Whoop5Ecg.WristSelection.left.rawValue, .success, replyHex: "aabb")]
+        let noRequest = Whoop5EcgProbe.report(steps: wristOnly, ecgPacketsSeen: 0,
+                                              candidateFrames: [], windowSeconds: 30)
+        XCTAssertFalse(noRequest.contains("Were the leads closed?"))
+        XCTAssertTrue(noRequest.contains("Zero is the EXPECTED result here"))
+    }
+
     func testReportNeverPresentsAnArrhythmiaResultAsAFinding() {
         // The report is the only text the probe surfaces; it must not name a classifier verdict at all.
         let text = Whoop5EcgProbe.report(steps: [], ecgPacketsSeen: 0, candidateFrames: [], windowSeconds: 30)

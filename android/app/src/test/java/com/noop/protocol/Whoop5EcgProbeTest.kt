@@ -297,6 +297,49 @@ class Whoop5EcgProbeTest {
         assertEquals(Whoop5EcgProbe.Verdict.Inconclusive, Whoop5EcgProbe.verdict(steps, 0, 30))
     }
 
+    /**
+     * #896 review, twin of Swift `testAZeroPacketRunThatAskedForDataQuestionsTheElectrodeCircuit`.
+     * Nobody is told to hold the clasp. An MG measures across the wrist electrode AND the two clasp
+     * indents, and lead state is not on the wire — so a run where the clasp was never touched returns
+     * zero packets for a reason that has nothing to do with the firmware. #891 asks other MG owners to
+     * run this; without the line they report "nothing happened" and the thread reads it as evidence
+     * about the gate.
+     */
+    @Test
+    fun aZeroPacketRunThatAskedForDataQuestionsTheElectrodeCircuit() {
+        val steps = listOf(
+            sent(123, Whoop5Ecg.WristSelection.LEFT.raw, Whoop5EcgProbe.CommandOutcome.Success, "aabb"),
+            sent(124, Whoop5Ecg.ControlSignal.START.raw, Whoop5EcgProbe.CommandOutcome.Success, "ccdd"),
+        )
+        val text = Whoop5EcgProbe.report(steps, 0, emptyList(), 30)
+        assertTrue(text.contains("Were the leads closed?"))
+        assertTrue(text.contains("two indents on the clasp"))
+        assertTrue(text.contains("OTHER hand"))
+        // It must stay a QUESTION about the run. Claiming the leads WERE open would be the same
+        // manufactured-cause error as the retired device-flag wording.
+        assertTrue(text.contains("cannot tell an open circuit from a strap that ignored the command"))
+    }
+
+    /**
+     * The line is about a zero that MIGHT have a mundane cause, so it is silent when there is no zero to
+     * explain and when the run never asked for data (that case has its own, different sentence).
+     */
+    @Test
+    fun theElectrodeQuestionIsAbsentWhenPacketsArrivedOrNoDataWasAsked() {
+        val asked = listOf(
+            sent(123, Whoop5Ecg.WristSelection.LEFT.raw, Whoop5EcgProbe.CommandOutcome.Success, "aabb"),
+            sent(124, Whoop5Ecg.ControlSignal.START.raw, Whoop5EcgProbe.CommandOutcome.Success, "ccdd"),
+        )
+        assertFalse(Whoop5EcgProbe.report(asked, 4, emptyList(), 30).contains("Were the leads closed?"))
+
+        val wristOnly = listOf(
+            sent(123, Whoop5Ecg.WristSelection.LEFT.raw, Whoop5EcgProbe.CommandOutcome.Success, "aabb"),
+        )
+        val noRequest = Whoop5EcgProbe.report(wristOnly, 0, emptyList(), 30)
+        assertFalse(noRequest.contains("Were the leads closed?"))
+        assertTrue(noRequest.contains("Zero is the EXPECTED result here"))
+    }
+
     @Test
     fun reportCarriesTheVerdictTheOutcomesAndTheNonMedicalFraming() {
         val steps = listOf(

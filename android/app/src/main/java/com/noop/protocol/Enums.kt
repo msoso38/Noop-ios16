@@ -23,7 +23,21 @@ enum class PacketType(val rawValue: Int) {
     METADATA(49),
     CONSOLE_LOGS(50),
     REALTIME_IMU_DATA_STREAM(51),
-    HISTORICAL_IMU_DATA_STREAM(52);
+    HISTORICAL_IMU_DATA_STREAM(52),
+    // 53-56 are decode-only NAMES, added for #891: the unhandled-packet-type census renders a type through
+    // this enum, and without them an offload carrying one would report "type53" on Android and
+    // "RELATIVE_PUFFIN_EVENTS" on Apple — the same strap, two different report lines. Nothing dispatches on
+    // them.
+    //
+    // 56 is here even though both platforms ALIAS it onto METADATA on 5/MG, because the aliasing is
+    // family-aware: Swift renders a WHOOP 4.0 frame through `schema.typeName` (no alias, so PUFFIN_METADATA)
+    // and a 5/MG frame through `canonicalTypeName` (METADATA). Leaving 56 out matched Apple on 5/MG and
+    // diverged on 4.0 — where the census would have rendered "type56" — so the name has to exist and the
+    // caller has to pick the right rendering. `Framing.typeName` still aliases it, which is the 5/MG answer.
+    RELATIVE_PUFFIN_EVENTS(53),
+    PUFFIN_EVENTS_FROM_STRAP(54),
+    RELATIVE_BATTERY_PACK_CONSOLE_LOGS(55),
+    PUFFIN_METADATA(56);
 
     companion object {
         private val byRaw = entries.associateBy { it.rawValue }

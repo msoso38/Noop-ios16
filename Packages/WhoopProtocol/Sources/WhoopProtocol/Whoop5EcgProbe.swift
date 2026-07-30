@@ -268,6 +268,19 @@ public enum Whoop5EcgProbe {
         if !steps.isEmpty, !steps.contains(where: \.requestsRealtimeData) {
             sb += "Zero is the EXPECTED result here: nothing in this run asked the strap for realtime ECG data.\n"
         }
+        // The ELECTRODE CIRCUIT is the one confound this probe cannot see and the runner can. An MG's ECG
+        // needs a closed loop: the wrist electrode plus the two clasp indents held with the OPPOSITE hand.
+        // Nothing on the wire reports lead state, so a run where the clasp was never touched is
+        // indistinguishable here from a run the firmware ignored — and #891 asks other MG owners to run
+        // this, who have no reason to know that. Reported as a QUESTION about the run, never as a finding:
+        // it does not claim the leads were open, only that this report cannot rule it out.
+        if ecgPacketsSeen == 0, steps.contains(where: \.requestsRealtimeData) {
+            sb += "Were the leads closed? An MG measures across the wrist electrode AND the two indents on "
+                + "the clasp, held with the fingers of your OTHER hand for the whole window. Lead state is "
+                + "not on the wire, so this report cannot tell an open circuit from a strap that ignored "
+                + "the command — if the clasp was not held, re-run holding it before reading anything into "
+                + "the zero.\n"
+        }
         if candidateFrames.isEmpty {
             sb += "Candidate packet types: none — no frame passed the structural triage.\n"
         } else {

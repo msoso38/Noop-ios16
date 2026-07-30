@@ -66,6 +66,21 @@ data class StreamBatch(
      */
     val droppedRtcEvents: List<DroppedRtcEvent> = emptyList(),
     /**
+     * #891 diagnostic: packet types this batch carried that the decoder has no `when` branch for, keyed by
+     * the rendered type name (a byte no enum names renders `type53`), value = record count.
+     *
+     * The decode loop handles four of the schema's sixteen packet types and drops the rest at `else -> Unit`,
+     * and `rejectedHistoricalRecords` archives only type-47 — non-47 frames are excluded from it by
+     * construction. So a record type nobody has mapped was dropped twice and counted zero times, and the sync
+     * reported clean. `HISTORICAL_IMU_DATA_STREAM(52)` is a banked raw-stream type the schema already names
+     * and this funnel does not handle; every one would vanish.
+     *
+     * METADATA and CONSOLE_LOGS are excluded ([EXPECTED_UNHANDLED_HISTORICAL_TYPES]) — an offload legitimately
+     * carries both and they decode to zero rows by design, so counting them would bury the signal. Diag only
+     * (excluded from [isEmpty]); empty when nothing fell through. Mirrors Swift `Streams.unhandledPacketTypes`.
+     */
+    val unhandledPacketTypes: Map<String, Int> = emptyMap(),
+    /**
      * #520 diagnostic: a summary of `dynamic_acceleration@41` (the strap's own gravity-removed motion
      * magnitude) over this batch's v18 records. The field has been decoded on both platforms all along
      * with nothing consuming it, so there is no evidence on whether it is a usable stillness signal;
@@ -373,9 +388,19 @@ class WhoopRepository(private val dao: WhoopDao) {
     /**
      * Persist one decoded batch under [deviceId]. Returns the number of rows actually inserted
      * per stream (0 for rows that already existed). Empty sub-lists compile/run nothing.
-     * Port of WhoopStore.insert(_:deviceId:).
+     * Port of WhoopStore.insert(_:deviceId:v18AuxRetentionRows:v18AuxPruneEveryRows:).
      */
-    suspend fun insert(streams: StreamBatch, deviceId: String): InsertCounts {
+    suspend fun insert(
+        streams: StreamBatch,
+        deviceId: String,
+        // Injectable for the same reason the Swift twin takes them as parameters rather than reading the
+        // statics: once the v18-aux sweep became amortised, a test could no longer observe it at all
+        // without inserting 10 000 rows. `StreamStore.insert(_:deviceId:v18AuxRetentionRows:
+        // v18AuxPruneEveryRows:)` is the shape being mirrored. Production callers pass neither and get the
+        // shipped constants. (#888)
+        v18AuxRetentionRows: Int = V18_AUX_RETENTION_ROWS,
+        v18AuxPruneEveryRows: Int = V18_AUX_PRUNE_EVERY_ROWS,
+    ): InsertCounts {
         if (streams.isEmpty) return InsertCounts()
 
         val hrIds = if (streams.hr.isEmpty()) emptyList() else
@@ -455,8 +480,8 @@ class WhoopRepository(private val dao: WhoopDao) {
                 // Best-effort: the rows above are already committed, so a sweep failure must not surface
                 // as an insert failure and make Backfiller re-send a chunk it has already banked. Leaving
                 // the budget unspent means the next batch retries the sweep.
-                if (banked >= V18_AUX_PRUNE_EVERY_ROWS) {
-                    runCatching { dao.pruneV18Aux(deviceId, V18_AUX_RETENTION_ROWS) }
+                if (banked >= v18AuxPruneEveryRows) {
+                    runCatching { dao.pruneV18Aux(deviceId, v18AuxRetentionRows) }
                         .onSuccess { v18AuxRowsSincePrune[deviceId] = 0 }
                         // pruneV18Aux is a suspend call, so a scope cancellation arrives here as a
                         // CancellationException that runCatching would otherwise swallow — the caller would

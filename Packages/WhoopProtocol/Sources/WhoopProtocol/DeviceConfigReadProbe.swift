@@ -23,8 +23,16 @@ import Foundation
 /// (`Resources/whoop_protocol.json`, `CommandNumber`) names 121 `GET_DEVICE_CONFIG_VALUE` and 128
 /// `GET_FF_VALUE`, but a name in a table is not a served verb: opcode 96 (`enterHighFreqHistoricalMode`)
 /// is a standing example of a number the table carries that nothing in the wild sends. So the probe's
-/// PRIMARY deliverable is a clean verdict per verb — **answered**, **rejected as UNSUPPORTED**, or
-/// **silent** — and "both verbs are unimplemented" is a useful, publishable result, not a failure.
+/// PRIMARY deliverable is a clean verdict per verb — **answered**, **rejected as UNSUPPORTED**,
+/// **silent**, or **undecodable** — and "both verbs are unimplemented" is a useful, publishable result,
+/// not a failure.
+///
+/// Those four are not interchangeable, and the verdict never treats them as such. **Only UNSUPPORTED is
+/// the firmware's own answer**, so only UNSUPPORTED supports the sentence "this firmware does not serve
+/// that verb". A timeout is a fact about one run and not even proof a frame reached the strap —
+/// `BLEManager.send` returns without transmitting when there is no `cmdCharacteristic`, and again when
+/// the 5/MG allowlist does not carry the opcode — while an undecodable reply is affirmative evidence the
+/// strap DID transmit, which is the opposite of "not served". Both are reported as **unconfirmed**.
 ///
 /// Only if a verb answers does the probe go on to read values: first the sixteen key names NOOP already
 /// has (`Whoop5Config.enableR22Sequence` — their VALUES on a real strap have never been read, only
@@ -353,6 +361,9 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
     public private(set) var steps = 0
     /// Set once the walk stopped for a reason worth naming beyond "the plan ran out".
     public private(set) var stopReason: String?
+    /// Per-verb reply window, in seconds, recorded by `noteTimeout`. The verdict names the window a verb
+    /// went silent through instead of converting that silence into a claim about the firmware.
+    private var silenceWindow: [UInt8: Int] = [:]
 
     // MARK: Plan cursors
 
@@ -468,7 +479,12 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
 
     /// Record the strap answering nothing at all within the per-step window. The verb is marked silent,
     /// which retires it — one no-reply must not cost another twenty timeouts.
+    ///
+    /// The window is kept, not just printed, because the verdict has to be able to say how long nothing
+    /// came back for. Silence is not the firmware refusing; it does not even establish that a frame was
+    /// transmitted (see the header), so it can never be reported as what the firmware serves.
     public mutating func noteTimeout(for step: Step, seconds: Int) {
+        silenceWindow[step.opcode] = seconds
         setStatus(.silent, for: step.opcode)
         trace.append("\(DeviceConfigReadProbeReport.opcodeLabel(step.opcode)) key=\"\(step.key)\" → no COMMAND_RESPONSE within \(seconds)s")
     }
@@ -491,18 +507,37 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
             ? "GET_DEVICE_CONFIG_VALUE(121)" : "GET_FF_VALUE(128)"
     }
 
+    /// How one verb ended, worded to exactly the evidence behind it. See the file header for why the four
+    /// statuses are not interchangeable; the short version is that only `unsupported` is the firmware
+    /// answering, so only `unsupported` speaks for the firmware.
+    private func outcome(_ status: VerbStatus, for opcode: UInt8) -> String {
+        switch status {
+        case .untried:     return "not asked"
+        case .answered:    return "answered"
+        case .unsupported: return "refused by firmware (UNSUPPORTED)"
+        case .silent:
+            guard let seconds = silenceWindow[opcode] else { return "served no reply — unconfirmed" }
+            return "served no reply in \(seconds)s — unconfirmed"
+        case .undecodable: return "replied but the frame did not decode — unconfirmed"
+        }
+    }
+
     /// One-line summary of what the probe established.
+    ///
+    /// "not served by this firmware" is a claim about the firmware, so it is made in exactly one case: the
+    /// firmware refused BOTH verbs itself. Every other run in which nothing answered reports each verb
+    /// against the evidence that verb produced, because two timeouts, one refusal plus one timeout, and a
+    /// reply that failed to decode are three different findings that used to print as the same sentence.
     public var verdict: String {
         let answered = [featureFlagVerb, deviceConfigVerb].filter { $0 == .answered }.count
         if answered == 0 {
-            let both = "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this firmware"
-            if featureFlagVerb == .unsupported || deviceConfigVerb == .unsupported {
-                return "\(both) — rejected as UNSUPPORTED"
+            if featureFlagVerb == .unsupported && deviceConfigVerb == .unsupported {
+                return "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this "
+                    + "firmware — rejected as UNSUPPORTED"
             }
-            if featureFlagVerb == .silent && deviceConfigVerb == .silent {
-                return "\(both) — no reply to either"
-            }
-            return both
+            let ff = outcome(featureFlagVerb, for: DeviceConfigReadProbe.getFeatureFlagValueCmd)
+            let dc = outcome(deviceConfigVerb, for: DeviceConfigReadProbe.getDeviceConfigValueCmd)
+            return "no read verb answered — GET_FF_VALUE(128) \(ff); GET_DEVICE_CONFIG_VALUE(121) \(dc)"
         }
         let named = readings.filter { $0.value != nil }.count
         if named == 0 {

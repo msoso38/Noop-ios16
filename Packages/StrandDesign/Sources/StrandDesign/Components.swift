@@ -52,6 +52,9 @@ public enum NoopMetrics {
     public static let controlHeight: CGFloat = 48
     /// Fully-rounded corner radius — pills, chips, capsule buttons.
     public static let pillRadius: CGFloat = 999
+    /// Minimum desktop size for a navigation-based customization sheet.
+    public static let editorSheetMinWidth: CGFloat = 440
+    public static let editorSheetMinHeight: CGFloat = 600
 }
 
 // MARK: - Screen padding

@@ -87,22 +87,33 @@ final class Whoop4ResponseResultTests: XCTestCase {
         XCTAssertNil(f.parsed["result"])
     }
 
-    /// A counterexample to the result-byte reading itself, pinned rather than left to surprise someone.
+    /// An oddity in one `GET_BATTERY_LEVEL` fixture, pinned rather than left to surprise someone.
     ///
-    /// This is a real 4.0 `GET_BATTERY_LEVEL` reply carrying a valid 42.5% — it plainly succeeded — and its
-    /// `pay[1]` is `0x00`, which the #791 mapping renders `FAILURE(0)`. The parity corpus frame below and the
-    /// Kotlin `FramingTest` battery fixture (91.2%) both have that shape, so it is not a one-off.
+    /// The frame carries a valid 42.5% — it plainly succeeded — yet `pay[1]` is `0x00`, which the #791
+    /// mapping renders `FAILURE(0)`, and `pay[0]` is `0x00` too, so the whole `[seq][result]` prefix reads
+    /// as zero.
     ///
-    /// The #791 evidence for `pay[1] == result` was an answered `GET_DATA_RANGE` (`0x01`) against an empty
-    /// `GET_EXTENDED_BATTERY_INFO` (`0x00`), which those two frames fit and this one does not.
+    /// **How much that is worth is very little, which #900 established the slow way.** Four in-tree 4.0
+    /// battery fixtures share this shape, and three of them are declared generated in their own files:
+    /// `StreamsTests` ("Synthetic, protocol-valid frames … No real biometric capture is embedded", and
+    /// `(synthetic)` again at the fixture), `FramingTests` ("Synthetic, CRC-valid frames … (no real
+    /// capture)"), and the Kotlin `FramingTest` ("All vectors were generated independently (Python …)").
+    /// Zero bytes in a generated vector are whatever the generator emitted.
     ///
-    /// The telling detail is that `resp_seq` is `0` here too — the whole two-byte prefix is zeroed, where
-    /// every other real capture in the tree (both families) carries a plausible non-zero echo. So the likely
-    /// reading is not that `0x00` means something other than FAILURE, but that a 4.0 battery reply does not
-    /// carry a `[seq][result]` prefix at all, its value simply sitting at a fixed `pay[2..4]`. Android has
-    /// rendered this same frame as FAILURE since #791, so the question is upstream of this change rather
-    /// than introduced by it — matching the twin is the point here. Tracked in #900; asserted meanwhile so
-    /// the behaviour is deliberate and a future correction has to come past this test.
+    /// That leaves this one, from the parity corpus, which `docs/BLE_REVERSE_ENGINEERING.md` describes as
+    /// captured frames — but it shares a byte-identical header with the synthetic `StreamsTests` frame
+    /// (`aa0f00c324141a`, differing only in the value bytes), which is what one test vector derived from
+    /// another looks like, and the repo's single squashed initial commit leaves no history to check. So the
+    /// count of confirmed-real captures behind the apparent counterexample is somewhere between zero and
+    /// one.
+    ///
+    /// Meanwhile the mapping itself is supported by real captures: `GET_EXTENDED_BATTERY_INFO` answers
+    /// `SUCCESS(1)` with `resp_seq` 13 and real data in `ExtendedBatteryProbeTests.realFrame`, and
+    /// `FAILURE(0)` with `resp_seq` 34 and an empty body in the #791 capture — the same command, both
+    /// outcomes, the byte discriminating them correctly.
+    ///
+    /// So this is asserted to keep the behaviour deliberate, not as evidence against #791. #900 tracks the
+    /// one thing that would resolve it: a single 4.0 battery capture of known provenance.
     func testSuccessfulBatteryReadStillReportsResultZero() {
         let f = parseFrame(bytes("aa0f00c324141a0000a9010000000052cd1a49"))
         XCTAssertEqual(f.crcOK, true)

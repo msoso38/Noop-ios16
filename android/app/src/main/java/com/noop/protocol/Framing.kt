@@ -219,8 +219,15 @@ object Framing {
 
     // MARK: - type / enum naming
 
-    /** Canonical packet-type name, aliasing the Whoop 5.0 "puffin" types onto their base names. */
-    private fun typeName(t: Int): String = when (t) {
+    /**
+     * Canonical packet-type name, aliasing the Whoop 5.0 "puffin" types onto their base names: the enum
+     * name, or `type<N>` for a byte nothing names, exactly as Swift's `canonicalTypeName` does.
+     *
+     * Internal rather than private since #891 — the unhandled-packet-type census in `HistoricalStreams`
+     * renders through this so the two platforms report the same string for the same byte, instead of
+     * keeping a second copy of the rules that could drift.
+     */
+    internal fun typeName(t: Int): String = when (t) {
         PuffinPacketType.PUFFIN_COMMAND_RESPONSE -> "COMMAND_RESPONSE"
         PuffinPacketType.PUFFIN_METADATA -> "METADATA"
         else -> PacketType.fromRaw(t)?.name ?: "type$t"

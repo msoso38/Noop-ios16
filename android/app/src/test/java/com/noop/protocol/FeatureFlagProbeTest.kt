@@ -385,11 +385,56 @@ class FeatureFlagProbeTest {
         assertEquals(golden, report.render())
     }
 
-    @Test fun announcedCountWithNoNamesIsSaidPlainly() {
+    /**
+     * The 117 answer landed and then nothing did: `probeFeatureFlags()` sends 118, the 8s timer fires,
+     * and the report renders with zero SEND_NEXT replies. "Named none" would be a claim about the
+     * strap's key list that this run's own inputs cannot support — the list was never read. Same class
+     * as the `skipped > 0` branch beside it: never report our limitation as the strap's behaviour.
+     */
+    @Test fun announcedCountWithNo118ReplyIsInconclusiveNotBlamedOnTheStrap() {
         val report = FeatureFlagProbeReport(DeviceFamily.WHOOP5)
         val start = whoop5Response(117, payload(1, byteArrayOf(0x01, 0x05, 0x00)))
         report.noteStart(FeatureFlagProbe.parseStart(start, DeviceFamily.WHOOP5).value!!)
         report.noteTimeout(118, 8)
+
+        assertEquals("no SEND_NEXT reply was decoded", 0, report.steps)
+        val v = report.verdict
+        assertEquals(
+            "strap announced 5 flag(s); no SEND_NEXT_FF(118) reply was decoded — " +
+                "the key list was never read (inconclusive)",
+            v
+        )
+        assertFalse("must not report our own timeout as the strap serving no names", v.contains("named none"))
+    }
+
+    /**
+     * A 118 reply that DID land and carried no name is the opposite case: the strap walked its own
+     * cursor straight to the end marker, so "named none" is a fact about the strap and is said plainly.
+     */
+    @Test fun announcedCountWithARealEmptyWalkIsSaidPlainly() {
+        val report = FeatureFlagProbeReport(DeviceFamily.WHOOP5)
+        val start = whoop5Response(117, payload(1, byteArrayOf(0x01, 0x05, 0x00)))
+        report.noteStart(FeatureFlagProbe.parseStart(start, DeviceFamily.WHOOP5).value!!)
+        assertFalse(report.noteNext(FeatureFlagProbe.NextResponse(1, 1, 0xFF, false, null)))
+
+        assertEquals(1, report.steps)
+        assertTrue(report.keys.isEmpty())
+        assertEquals(0, report.skipped)
         assertEquals("strap announced 5 flag(s) but named none", report.verdict)
+    }
+
+    /**
+     * The count itself is the strap's claim, not a measurement. [FeatureFlagProbeReport.noteStart]
+     * already marks an implausible one in the trace; the verdict is the line that gets pasted into an
+     * issue, so it carries the doubt too rather than restating the number as bare fact.
+     */
+    @Test fun implausibleAnnouncedCountIsNotRestatedAsFactInTheVerdict() {
+        val report = FeatureFlagProbeReport(DeviceFamily.WHOOP5)
+        report.noteStart(FeatureFlagProbe.StartResponse(1, 1, 9999))
+        report.noteTimeout(118, 8)
+
+        val v = report.verdict
+        assertTrue(v, v.contains("an implausible 9999 flag(s)"))
+        assertTrue(v, v.contains("(inconclusive)"))
     }
 }

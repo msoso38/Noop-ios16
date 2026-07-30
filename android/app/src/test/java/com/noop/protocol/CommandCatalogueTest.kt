@@ -206,6 +206,34 @@ class CommandCatalogueTest {
     }
 
     /**
+     * A real `SELECT_WRIST(123)` pair from the same MG, one accepted and one refused (#891).
+     *
+     * The refusal is the first REAL 5/MG frame in the tree carrying `result = FAILURE(0)` — every other
+     * non-SUCCESS fixture on this family is a synthetic `GET_HELLO`, so that branch of the decode had
+     * never been exercised by bytes a strap actually sent. Together they are a success/failure pair on
+     * one opcode, the shape that made the 4.0 result mapping credible.
+     *
+     * Provenance: WHOOP 5 MG `WS50_r03`, build 215, posted with the raw frames in #891. Payload inert.
+     * The strap accepted `arg=1` and refused `arg=0` minutes apart in one session, so the refusal is not
+     * "unknown opcode"; whether it refuses a real mutation or `0` is simply invalid is open, and nothing
+     * here decides it. The Swift twin asserts these identical bytes.
+     */
+    @Test
+    fun realMgSelectWristAcceptedAndRefused() {
+        val accepted = Framing.parseFrame(bytes("aa010c000100271124d77b81010100007ce76722"), DeviceFamily.WHOOP5)
+        assertEquals(true, accepted.crcOk)
+        assertEquals("SELECT_WRIST(123)", accepted.parsed["resp_cmd"])
+        assertEquals(129, accepted.parsed["resp_seq"])
+        assertEquals("SUCCESS(1)", accepted.parsed["result"])
+
+        val refused = Framing.parseFrame(bytes("aa010c000100271124217bcc000100000213163d"), DeviceFamily.WHOOP5)
+        assertEquals(true, refused.crcOk)
+        assertEquals("SELECT_WRIST(123)", refused.parsed["resp_cmd"])
+        assertEquals(204, refused.parsed["resp_seq"])
+        assertEquals("FAILURE(0)", refused.parsed["result"])
+    }
+
+    /**
      * The toggles are not battery reads, so nothing may be claimed from the value slot.
      *
      * Byte 13 — the first response-payload byte, where `GET_BATTERY_LEVEL` returns its percent — is `0x01`
