@@ -13,6 +13,7 @@ on:
     paths:
       - 'Packages/**'
       - 'Tools/SleepBench/**'
+      - 'Tools/SleepPSG/**'
       - 'Tools/Backfill/**'
       - '.github/workflows/swift-packages.yml'
   push:
@@ -20,6 +21,7 @@ on:
     paths:
       - 'Packages/**'
       - 'Tools/SleepBench/**'
+      - 'Tools/SleepPSG/**'
       - 'Tools/Backfill/**'
       - '.github/workflows/swift-packages.yml'
   workflow_dispatch:
@@ -61,6 +63,11 @@ jobs:
   # it — and #935 added 13 tests that no job ran. A tool whose numbers decide whether a staging change
   # lands has to keep compiling against the packages it measures, or it bitrots silently and the next
   # person to reach for it finds it broken. Backfill has no tests yet, so it is build-only.
+  #
+  # SleepPSG has a second, sharper reason to be here. Its variant scores run through a knob-for-knob PORT of
+  # `SleepStagerV2`, and its test suite is what proves that port still reproduces the shipped stager
+  # label-for-label. Without this job the port drifts the first time someone edits a coefficient, and the
+  # tool keeps printing confident numbers about a recipe that no longer exists. The check needs no dataset.
   tools:
     runs-on: macos-15
     strategy:
@@ -68,6 +75,7 @@ jobs:
       matrix:
         tool:
           - SleepBench
+          - SleepPSG
           - Backfill
     steps:
       - name: Checkout

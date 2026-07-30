@@ -1,0 +1,112 @@
+import Foundation
+
+// Variants — the recipe builds this harness compares, each one a single named edit to the shipped config.
+//
+// The set is not arbitrary. PR #348 changed seven things about `SleepStagerV2` at once, PR #437 reverted all
+// seven 48 h later, and PR #987 re-litigated the revert component-by-component and restored exactly one of
+// them. That whole argument was settled on one wearer's 36 nights, against the strap's own band state —
+// an independent reference, but a proprietary black box, not truth. Each component is reproduced here as
+// its own variant so PSG can be asked the same question in the same shape.
+//
+// Every variant differs from `RecipeConfig.shipped` in the fewest fields that express it. A variant that
+// bundled two changes could not be attributed.
+
+struct Variant {
+    let name: String
+    let note: String
+    let config: RecipeConfig
+}
+
+enum Variants {
+
+    /// PR #987 (upstream, open at the time of writing): forbid wake → deep and wake → REM outright and give
+    /// the freed mass to the wake self-loop. Landed on band-state evidence — band kappa 0.105 → 0.118, wake
+    /// sensitivity 16.0 % → 17.6 %, first-REM latency MAE 53.9 → 41.6 min — and never checked against PSG.
+    static var pr987: Variant {
+        var c = RecipeConfig.shipped
+        c.transition["awake"] = ["deep": 0.0, "rem": 0.0, "light": 0.10, "awake": 0.90]
+        return Variant(name: "#987 awake-transition row",
+                       note: "wake→deep/rem forbidden; wake self-loop 0.70→0.90", config: c)
+    }
+
+    /// #348 component 1 — base priors. Measured alone on band state: healthy wake fraction 9.43 % → 17.76 %,
+    /// i.e. the #437 blow-out reproduced.
+    static var p348Priors: Variant {
+        var c = RecipeConfig.shipped
+        c.priorDeep = log(0.15); c.priorAwake = log(0.34)
+        return Variant(name: "#348-A base priors",
+                       note: "deep 0.18→0.15, awake 0.10→0.34", config: c)
+    }
+
+    /// #348 component 2 — motion gate. A second wake channel: alone, healthy wake 9.43 % → 15.92 %.
+    static var p348Motion: Variant {
+        var c = RecipeConfig.shipped
+        c.jerkFloorMoveMult = 75.0; c.jerkFloorGateMult = 35.0; c.motionGateBoost = 4.0
+        return Variant(name: "#348-B motion gate",
+                       note: "move 38→75, gate 55→35, boost 2→4", config: c)
+    }
+
+    /// #348 component 3 — emission coefficients. Alone: band kappa 0.105 → 0.094, but the closest call of
+    /// the six (it cut healthy deep 22.09 % → 15.30 % and latency MAE 53.9 → 32.1 min).
+    static var p348Emissions: Variant {
+        var c = RecipeConfig.shipped
+        c.deepZhv = -0.8; c.deepZhr = 0.5; c.deepZmv = -0.1
+        c.remZhv = 0.8; c.remZmv = -0.4; c.remZhr = 0.4
+        c.awakeZmv = 1.0; c.awakeZhv = 0.5; c.awakeZhr = 0.6
+        return Variant(name: "#348-C emission coefficients",
+                       note: "deep/rem/awake log-emission weights", config: c)
+    }
+
+    /// #348 component 4 — deep gate. Alone: healthy deep 22.09 % → 25.47 %, worsening an over-call.
+    static var p348DeepGate: Variant {
+        var c = RecipeConfig.shipped
+        c.deepGateThresh = 0.40
+        return Variant(name: "#348-D deep gate", note: "deepGateThresh 0.25→0.40", config: c)
+    }
+
+    /// #348 component 5 — awake cardiac dead-zone. Alone: band kappa 0.105 → 0.099.
+    static var p348Deadzone: Variant {
+        var c = RecipeConfig.shipped
+        c.awakeDeadzone = 0.30
+        return Variant(name: "#348-E awake dead-zone", note: "awakeDeadzone off→0.30", config: c)
+    }
+
+    /// #348 component 6 — the other three transition rows. Alone: band kappa 0.105 → 0.101, healthy REM
+    /// 29.58 % → 33.11 %.
+    static var p348OtherRows: Variant {
+        var c = RecipeConfig.shipped
+        c.transition["deep"] = ["deep": 0.76, "rem": 0.012, "light": 0.216, "awake": 0.012]
+        c.transition["rem"] = ["deep": 0.00333, "rem": 0.92, "light": 0.06667, "awake": 0.01]
+        c.transition["light"] = ["deep": 0.08, "rem": 0.08, "light": 0.80, "awake": 0.04]
+        return Variant(name: "#348-F deep/rem/light rows",
+                       note: "self-loops retuned, off-diagonals renormalised", config: c)
+    }
+
+    /// All seven together — the build #437 reverted. Reported so the component rows can be checked for
+    /// additivity rather than assumed to be.
+    static var p348All: Variant {
+        var c = p348Priors.config
+        let m = p348Motion.config, e = p348Emissions.config, d = p348Deadzone.config
+        c.jerkFloorMoveMult = m.jerkFloorMoveMult; c.jerkFloorGateMult = m.jerkFloorGateMult
+        c.motionGateBoost = m.motionGateBoost
+        c.deepZhv = e.deepZhv; c.deepZhr = e.deepZhr; c.deepZmv = e.deepZmv
+        c.remZhv = e.remZhv; c.remZmv = e.remZmv; c.remZhr = e.remZhr
+        c.awakeZmv = e.awakeZmv; c.awakeZhv = e.awakeZhv; c.awakeZhr = e.awakeZhr
+        c.deepGateThresh = p348DeepGate.config.deepGateThresh
+        c.awakeDeadzone = d.awakeDeadzone
+        c.transition = p348OtherRows.config.transition
+        c.transition["awake"] = pr987.config.transition["awake"]
+        return Variant(name: "#348 entire (as reverted by #437)",
+                       note: "all seven components at once", config: c)
+    }
+
+    /// The shipped recipe itself, so a table row exists to difference against.
+    static var incumbent: Variant {
+        Variant(name: "incumbent (shipped)", note: "SleepStagerV2 as it ships today", config: .shipped)
+    }
+
+    static var all: [Variant] {
+        [incumbent, pr987, p348Priors, p348Motion, p348Emissions, p348DeepGate,
+         p348Deadzone, p348OtherRows, p348All]
+    }
+}
