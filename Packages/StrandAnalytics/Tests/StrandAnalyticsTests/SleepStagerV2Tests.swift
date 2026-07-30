@@ -327,4 +327,20 @@ final class SleepStagerV2Tests: XCTestCase {
             XCTAssertEqual(row.values.reduce(0, +), 1.0, accuracy: 1e-9, "transition row '\(from)' must sum to 1.0")
         }
     }
+
+    /// Pin the AWAKE transition row directly, for the same reason the deep row is pinned: the end-to-end
+    /// golden is only sensitive where its own input sits near a decision boundary, and it does NOT move when
+    /// this row changes — so without this assertion the row is effectively unguarded. Twin:
+    /// `SleepStagerV2Test.wakeRowForbidsDirectDescentIntoDeepOrRem`.
+    ///
+    /// The zeros are the physiological claim: sleep onset descends through N1/N2, so wake never transitions
+    /// straight into N3 or REM. They are also why `viterbi` floors the log at 1e-9 — asserted here so the two
+    /// can never drift apart and reintroduce ln(0) = -inf.
+    func testWakeRowForbidsDirectDescentIntoDeepOrRem() {
+        XCTAssertEqual(SleepStagerV2.transition["awake"]!,
+                       ["deep": 0.0, "rem": 0.0, "light": 0.10, "awake": 0.90])
+        // A zeroed entry must reach the lattice as a large finite penalty, never -inf.
+        let lp = log(max(SleepStagerV2.transition["awake"]!["deep"]!, 1e-9))
+        XCTAssertTrue(lp.isFinite, "a zeroed transition must not produce a non-finite log-weight")
+    }
 }
