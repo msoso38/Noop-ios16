@@ -5,8 +5,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Guards the additive v18 -> v19 Room migration (the `appleStepHour` table), the Android twin of the Swift
- * WhoopStore `v31-apple-step-hour` migration (PR #369). This environment has no Robolectric / Room-testing,
+ * Guards the additive v25 -> v26 Room migration (the `appleStepHour` table), the Android twin of the Swift
+ * WhoopStore `v32-apple-step-hour` migration (PR #369). This environment has no Robolectric / Room-testing,
  * so the migration's SQL is exposed as an internal constant ([WhoopDatabase.APPLE_STEP_HOUR_MIGRATION_SQL])
  * and pinned here to Room's generated shape for [AppleStepHour]:
  *
@@ -46,9 +46,9 @@ class AppleStepHourMigrationTest {
     }
 
     @Test
-    fun migration_versionPair_is24to25() {
-        assertEquals(24, WhoopDatabase.MIGRATION_24_25.startVersion)
-        assertEquals(25, WhoopDatabase.MIGRATION_24_25.endVersion)
+    fun migration_versionPair_is25to26() {
+        assertEquals(25, WhoopDatabase.MIGRATION_25_26.startVersion)
+        assertEquals(26, WhoopDatabase.MIGRATION_25_26.endVersion)
     }
 
     /**

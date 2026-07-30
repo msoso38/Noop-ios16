@@ -17,9 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * version 2 added the v8 journal/workout/appleDaily caches. **v3 (#78)** adds the stepSample table
  * + dailyMetric.steps/activeKcalEst via a REAL additive migration (MIGRATION_2_3), NOT a destructive
  * rebuild, so a user's already-offloaded raw streams survive (the strap trims acked history and won't
- * re-send it). The destructive fallback is deliberately GONE: with exportSchema=false there's no
- * build-time schema check, so a hand-written-SQL mismatch would otherwise SILENTLY wipe that history;
- * without the fallback Room throws loudly instead, and MigrationRoundTripTest guards the SQL in CI.
+ * re-send it). The destructive fallback is deliberately GONE: a hand-written-SQL mismatch would
+ * otherwise SILENTLY wipe that history; without the fallback Room throws loudly instead, and
+ * MigrationRoundTripTest guards the SQL in CI.
  */
 @Database(
     entities = [
@@ -50,10 +50,18 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LiveSessionRow::class,
         PpgWaveformSampleEntity::class,
         RawImuSampleEntity::class,
+        V18AuxSampleEntity::class,
         AppleStepHour::class,
     ],
-    version = 25,
-    exportSchema = false,
+    version = 26,
+    // #775: ON so Room's KSP processor writes the generated schema (every table's exact `CREATE TABLE`,
+    // columns in declaration order with affinity/NOT NULL/default, PK and indices) as JSON. That export
+    // is what lets a plain JVM test — no device, no Robolectric — read Android's REAL schema and compare
+    // it to the shared Room<->GRDB `schema_oracle.json`. Written to the build directory, not the repo
+    // (see `room.schemaLocation` in app/build.gradle.kts). Enabling the export changes NO runtime
+    // behaviour: it emits a build artifact and nothing else. In particular it does NOT reinstate a
+    // destructive migration fallback — the reasoning below stands unchanged.
+    exportSchema = true,
 )
 abstract class WhoopDatabase : RoomDatabase() {
     abstract fun whoopDao(): WhoopDao
@@ -626,8 +634,67 @@ abstract class WhoopDatabase : RoomDatabase() {
         }
 
         /**
-         * v24 -> v25: ADDITIVE, adds the `appleStepHour` table, the Android twin of the Swift WhoopStore
-         * `v31-apple-step-hour` migration. Hourly Apple-Health step counts: `appleDaily.steps` flattens a
+         * Stop DISCARDING the per-second channels the 5/MG v18 decoder already produces. Twin of the
+         * Swift GRDB migration `v31-deep-capture-channels`.
+         *
+         * `extractHistoricalStreams` is a narrow funnel — a field the decoder produces but the funnel
+         * does not name is computed and dropped one line later. That drop is PERMANENT: the strap trims
+         * its banked history as soon as NOOP acks the offload, so those seconds are not re-fetchable.
+         *
+         *   gravitySample.dynAccel     `dynamic_acceleration@41` (f32 g), the strap's OWN gravity-removed
+         *                              motion magnitude, stored BESIDE the 1 Hz vector the motion spine
+         *                              actually derives stillness from.
+         *   sleepStateSample.rawByte   the WHOLE @81 flag byte. `state` remains exactly its high nibble,
+         *                              so #175 behaviour is bit-identical; this keeps b0-1 `onwrist`,
+         *                              b2-3 `wake_quality`, and the uninterpreted b6-7.
+         *   skinTempSample.aux1Raw     `temp_aux_1_raw@69` / `temp_aux_2_raw@71` (i16, °C = value/10 — a
+         *   skinTempSample.aux2Raw     DIFFERENT scale from the primary's /100).
+         *   v18AuxSample               the remaining fifteen slots as one compact blob (see [V18AuxCodec]
+         *                              for the wire format and the column-vs-blob tradeoff). Its own
+         *                              table because no existing per-second table is guaranteed present
+         *                              for a v18 record, and to keep unpinned bytes out of the tables
+         *                              analytics read.
+         *
+         * Additive only, the MIGRATION_3_4 / MIGRATION_23_24 form: no table rebuild, no row touched, no
+         * key changed. The three added columns are nullable with NO SQL DEFAULT, and `fields` is NOT NULL
+         * only because a row is written solely when at least one slot is present — absence is encoded as
+         * "no row" and, within a row, as a clear bitmap bit. Never a fabricated 0: a WHOOP 4.0 emits none
+         * of these, and history banked before this migration cannot be backfilled (the strap already
+         * trimmed it), so an absent channel must stay absent.
+         *
+         * The columns are appended by ALTER TABLE, which places them LAST — matching the entity field
+         * order (each new field is declared after the existing ones), so a migrated schema and a
+         * freshly-created one agree. The CREATE TABLE column order matches [V18AuxSampleEntity]'s field
+         * order and the GRDB schema, so a `.noopbak` round-trips.
+         *
+         * INSTRUMENTATION ONLY. Nothing reads these: no analytic, no score, no gate, no UI.
+         *
+         * Retention: `v18AuxSample` is CAPPED at [WhoopRepository.V18_AUX_RETENTION_ROWS] rolling rows per
+         * device, the same shape `rawImuSample` uses — it is the only genuinely new row growth here. The
+         * three added columns widen rows that were already being written and add no rows at all.
+         *
+         * Exposed as [DEEP_CAPTURE_MIGRATION_SQL] so a plain-JVM unit test can assert its shape without
+         * an emulator, like the migrations above.
+         */
+        internal val DEEP_CAPTURE_MIGRATION_SQL: List<String> = listOf(
+            "ALTER TABLE `gravitySample` ADD COLUMN `dynAccel` REAL",
+            "ALTER TABLE `sleepStateSample` ADD COLUMN `rawByte` INTEGER",
+            "ALTER TABLE `skinTempSample` ADD COLUMN `aux1Raw` INTEGER",
+            "ALTER TABLE `skinTempSample` ADD COLUMN `aux2Raw` INTEGER",
+            "CREATE TABLE IF NOT EXISTS `v18AuxSample` (`deviceId` TEXT NOT NULL, " +
+                "`ts` INTEGER NOT NULL, `fields` BLOB NOT NULL, " +
+                "PRIMARY KEY(`deviceId`, `ts`))",
+        )
+
+        internal val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in DEEP_CAPTURE_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
+        /**
+         * v25 -> v26: ADDITIVE, adds the `appleStepHour` table, the Android twin of the Swift WhoopStore
+         * `v32-apple-step-hour` migration. Hourly Apple-Health step counts: `appleDaily.steps` flattens a
          * whole day to one total, so a dead/absent phone for part of a day is invisible; this per-hour table
          * records exactly which hours had a recording. `ts` is the hour-bucket start (unix seconds), `steps`
          * the cumulative sum within that hour, composite PK (deviceId, ts) so the hourly upsert is idempotent.
@@ -640,16 +707,18 @@ abstract class WhoopDatabase : RoomDatabase() {
          * No destructive fallback (see the class doc). Exposed as [APPLE_STEP_HOUR_MIGRATION_SQL] so a plain-JVM
          * unit test can pin the shape without Robolectric.
          *
-         * SEQUENCING: 24 -> 25 is the next free Room slot as of this rebase (upstream is at 24 /
-         * MIGRATION_23_24). If another pending PR lands a Room migration first, whichever merges SECOND
-         * renumbers — the same caveat the `v26-efficiency-heal` doc above carries.
+         * SEQUENCING: 25 -> 26 is the next free Room slot as of this merge — upstream reached 25
+         * (MIGRATION_24_25, deep-capture, above) while this branch sat at 24 -> 25. A Room version is a bare
+         * INTEGER with no slug, so unlike a GRDB identifier it cannot be disambiguated by a declared lineage:
+         * the only resolution is to take the next free slot, and whichever PR merges SECOND renumbers again.
+         * Per the offer in the PR thread, that is THIS PR.
          */
         internal val APPLE_STEP_HOUR_MIGRATION_SQL: List<String> = listOf(
             "CREATE TABLE IF NOT EXISTS `appleStepHour` (`deviceId` TEXT NOT NULL, " +
                 "`ts` INTEGER NOT NULL, `steps` INTEGER NOT NULL, PRIMARY KEY(`deviceId`, `ts`))",
         )
 
-        internal val MIGRATION_24_25 = object : Migration(24, 25) {
+        internal val MIGRATION_25_26 = object : Migration(25, 26) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 for (stmt in APPLE_STEP_HOUR_MIGRATION_SQL) db.execSQL(stmt)
             }
@@ -671,7 +740,7 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18,
                     MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22,
-                    MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25,
+                    MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26,
                 )
                 // #1037: a FRESH install builds the schema straight at the current version and runs NO
                 // migrations, so the MIGRATION_7_8 "my-whoop" registry seed never fires and the WHOOP,

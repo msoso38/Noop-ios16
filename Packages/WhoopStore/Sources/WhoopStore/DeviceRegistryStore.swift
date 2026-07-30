@@ -107,7 +107,10 @@ public struct DeviceRegistryStore: Sendable {
         // v28-raw-imu (#423): the opt-in 5/MG raw-IMU offload capture is deviceId-keyed too — "delete all
         // of this device's data" must clear it, or the raw inertial samples survive deletion (same defect).
         "rawImuSample",
-        // v31-apple-step-hour: per-hour Apple Health step counts are deviceId-keyed (apple-health) and
+        // v31-deep-capture-channels: the banked 5/MG v18 auxiliary fields are deviceId-keyed per-second
+        // rows like every stream above, so a "delete all of this device's data" must clear them too.
+        "v18AuxSample",
+        // v32-apple-step-hour: per-hour Apple Health step counts are deviceId-keyed (apple-health) and
         // are real per-device recordings like appleDaily/stepSample, not tombstone-class bookkeeping —
         // a device-data wipe / "Remove Apple Health data" must clear them too.
         "appleStepHour",
