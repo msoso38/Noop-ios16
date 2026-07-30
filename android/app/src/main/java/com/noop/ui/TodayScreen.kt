@@ -273,6 +273,10 @@ fun TodayScreen(
     val today by viewModel.today.collectAsStateWithLifecycle()
     val alert by viewModel.healthAlert.collectAsStateWithLifecycle()
     val days by viewModel.recentDays.collectAsStateWithLifecycle()
+    val v5Signals by viewModel.v5Signals.collectAsStateWithLifecycle()
+    val cycleEnabled by viewModel.cycleTrackingEnabled.collectAsStateWithLifecycle()
+    val periodStarts by viewModel.periodStarts.collectAsStateWithLifecycle()
+    var showCycleTracker by remember { mutableStateOf(false) }
     val live by viewModel.live.collectAsStateWithLifecycle()
     // The in-flight manual workout (single source of truth, survives an app kill via rehydration), so the
     // indicator card auto-appears/clears off this alone. Null↔non-null + the start drive the card; the
@@ -1332,6 +1336,9 @@ fun TodayScreen(
                     selectedDayOffset == 0 && (liveSessionsEnabled || activeLiveSession != null)
                 TodaySection.YOUR_CARDS ->
                     selectedDayOffset == 0 && visibleDashboardCards.isNotEmpty()
+                TodaySection.MENSTRUAL_CYCLE ->
+                    selectedDayOffset == 0 &&
+                        (cycleOptInApplies(profileStore.sex) || cycleEnabled || periodStarts.isNotEmpty())
                 TodaySection.JOURNAL ->
                     selectedDayOffset == 0 && journalReminderOn
                 else -> true
@@ -1532,6 +1539,17 @@ fun TodayScreen(
                             onOpenCoupled = onOpenCoupled,
                             onCustomise = { showDashboardEditor = true },
                         )
+                        TodaySection.MENSTRUAL_CYCLE -> MenstrualCycleHomeCard(
+                            enabled = cycleEnabled,
+                            result = v5Signals?.cycle,
+                            starts = periodStarts,
+                            onSetUp = {
+                                viewModel.setCycleTrackingEnabled(true)
+                                showCycleTracker = true
+                            },
+                            onOpen = { showCycleTracker = true },
+                            onLogToday = { viewModel.logPeriodStart() },
+                        )
                         // #656: the persistent journal widget (last-7-days strip + tap-through). Now a
                         // reorderable section like the others — hold-drag or Arrange moves it. Today-only
                         // and enabled-gated at the loop level (sectionVisible) so it never leaves a blank
@@ -1571,6 +1589,19 @@ fun TodayScreen(
             PullToRefreshContainer(
                 state = pullToSyncState,
                 modifier = Modifier.align(Alignment.TopCenter),
+            )
+        }
+    }
+
+    if (showCycleTracker) {
+        v5Signals?.cycle?.let { cycle ->
+            CycleTrackerDialog(
+                result = cycle,
+                starts = periodStarts,
+                onLog = viewModel::logPeriodStart,
+                onDelete = viewModel::deletePeriodStart,
+                onDeleteAll = viewModel::deleteAllPeriodStarts,
+                onDismiss = { showCycleTracker = false },
             )
         }
     }

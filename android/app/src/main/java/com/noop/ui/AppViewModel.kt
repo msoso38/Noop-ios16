@@ -35,6 +35,7 @@ import com.noop.ble.WhoopConnectionService
 import com.noop.ble.WhoopModel
 import androidx.health.connect.client.HealthConnectClient
 import com.noop.data.DailyMetric
+import com.noop.data.CycleTrackingStore
 import com.noop.data.HrSample
 import com.noop.data.WhoopRepository
 import com.noop.data.WorkoutRow
@@ -481,6 +482,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Whether cycle-phase awareness is enabled (reads a coarse phase from nightly skin temperature). */
     val cycleTrackingEnabled: StateFlow<Boolean> = _cycleTrackingEnabled.asStateFlow()
 
+    /** User-entered period-start days under the isolated local `noop-cycle` source, oldest first. */
+    private val _periodStarts = MutableStateFlow<List<String>>(emptyList())
+    val periodStarts: StateFlow<List<String>> = _periodStarts.asStateFlow()
+
     // The v5 Health-hub skin-temp-suite engine snapshot (Cycle / Body clock / Illness heads-up), recomputed
     // from the cached merged days each analytics pass and published for HealthScreen's skin-temp section.
     // Declared BEFORE init for the same first-emission-ordering reason as the toggles above.
@@ -800,9 +805,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // signals hiccup kill the collector.
                 runCatching {
                     lastCircadianBins = circadianActivityBins()
+                    val loggedPeriodStarts = CycleTrackingStore(repository).starts()
+                    _periodStarts.value = loggedPeriodStarts
                     _v5Signals.value = V5HealthSignals.evaluate(
                         days = days,
                         cycleOptedIn = _cycleTrackingEnabled.value,
+                        loggedPeriodStarts = loggedPeriodStarts,
                         journalContext = illnessJournalContext(days),
                         activityBins = lastCircadianBins.first,
                         daysObserved = lastCircadianBins.second,
@@ -2268,11 +2276,53 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _v5Signals.value = V5HealthSignals.evaluate(
                 days = days,
                 cycleOptedIn = enabled,
+                loggedPeriodStarts = _periodStarts.value,
                 journalContext = illnessJournalContext(days),
                 activityBins = lastCircadianBins.first,
                 daysObserved = lastCircadianBins.second,
             )
         }
+    }
+
+    /** Log one local day as cycle day 1, then immediately re-run the classifier with the new anchor. */
+    fun logPeriodStart(day: String = CycleTrackingStore.todayKey()) {
+        viewModelScope.launch {
+            val store = CycleTrackingStore(repository)
+            store.logStart(day)
+            reloadPeriodStartsAndCycle(store)
+        }
+    }
+
+    /** Remove one logged start and immediately update the tracker + cycle estimate. */
+    fun deletePeriodStart(day: String) {
+        viewModelScope.launch {
+            val store = CycleTrackingStore(repository)
+            store.deleteStart(day)
+            reloadPeriodStartsAndCycle(store)
+        }
+    }
+
+    /** Delete all period-start history after the UI's explicit confirmation. */
+    fun deleteAllPeriodStarts() {
+        viewModelScope.launch {
+            val store = CycleTrackingStore(repository)
+            store.deleteAll()
+            reloadPeriodStartsAndCycle(store)
+        }
+    }
+
+    private suspend fun reloadPeriodStartsAndCycle(store: CycleTrackingStore) {
+        val starts = store.starts()
+        _periodStarts.value = starts
+        val days = recentDays.value
+        _v5Signals.value = V5HealthSignals.evaluate(
+            days = days,
+            cycleOptedIn = _cycleTrackingEnabled.value,
+            loggedPeriodStarts = starts,
+            journalContext = illnessJournalContext(days),
+            activityBins = lastCircadianBins.first,
+            daysObserved = lastCircadianBins.second,
+        )
     }
 
     /**
