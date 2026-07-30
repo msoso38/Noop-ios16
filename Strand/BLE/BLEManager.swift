@@ -1520,13 +1520,16 @@ public final class BLEManager: NSObject, ObservableObject {
                 // and the gate is the same state the command is about. Non-destructive: the strap frees
                 // records on our HISTORY_END ack, not on this, so an aborted drain re-offloads intact.
                 || (command == .abortHistoricalTransmits && backfilling)
-                // GET_DEVICE_CONFIG_VALUE (121) / GET_FF_VALUE (128) over puffin: the READ-ONLY
-                // device-config READ probe (#103) — it asks for a key's VALUE and writes none. Gated the
-                // same way as 117/118: allowed ONLY while a probe is actually in flight, and the opcode
-                // must additionally satisfy DeviceConfigReadProbe.isReadOnlyOpcode, the same predicate a
-                // unit test proves rejects SET_FF_VALUE(120) and SET_DEVICE_CONFIG_VALUE(119). Those two
-                // keep their own separate opt-in clauses below and are never sent from this path. Driven
-                // only by probeDeviceConfigValues() (user-initiated, Test Centre gated).
+                // START_DEVICE_CONFIG_KEY_EXCHANGE (115) / SEND_NEXT_DEVICE_CONFIG (116) /
+                // GET_DEVICE_CONFIG_VALUE (121) / GET_FF_VALUE (128) over puffin: the READ-ONLY config key
+                // probe (#103). 115/116 ask the strap to LIST its device-config keys (the device-config
+                // twin of the 117/118 pair above); 121/128 ask for a named key's VALUE. None of the four
+                // writes anything. Gated the same way as 117/118: allowed ONLY while a probe is actually
+                // in flight, and the opcode must additionally satisfy DeviceConfigReadProbe.isReadOnlyOpcode
+                // — the same predicate unit tests prove rejects SET_FF_VALUE(120) and
+                // SET_DEVICE_CONFIG_VALUE(119). Those two keep their own separate opt-in clauses below and
+                // are never sent from this path. Driven only by probeDeviceConfigValues() (user-initiated,
+                // Test Centre gated).
                 || (DeviceConfigReadProbe.isReadOnlyOpcode(command.rawValue) && deviceConfigReport != nil)
                 || command == .sendHistoricalData || command == .historicalDataResult
                 || command == .setClock || command == .getClock
@@ -2709,6 +2712,11 @@ public final class BLEManager: NSObject, ObservableObject {
     private var deviceConfigAwaiting: DeviceConfigReadProbeReport.Step?
     /// Monotonic step counter so a late timeout from an earlier step can't cancel a live walk.
     private var deviceConfigStep = 0
+    /// Where the next run's candidate sweep resumes in `ConfigKeySweep.catalogue`. Deliberately IN MEMORY
+    /// — no new storage, no migration, and a relaunch restarting at the top of the catalogue is the right
+    /// default. With today's catalogue smaller than `maxKeysPerRun` this stays 0 and every run tests all
+    /// of it; it exists so a catalogue grown past the budget resumes instead of re-asking the same slice.
+    private var configKeySweepCursor = 0
 
     /// #103 read-only probe: ask the strap for config VALUES — `GET_DEVICE_CONFIG_VALUE(121)` and
     /// `GET_FF_VALUE(128)`, one key per round-trip. The #761 probe asked the strap for key NAMES in the
@@ -2719,12 +2727,12 @@ public final class BLEManager: NSObject, ObservableObject {
     /// kind — this writes command frames purely to read, exactly like the Oura `spo2_status` /
     /// `realsteps_status` probes NOOP already ships (`Packages/OuraProtocol/…/Commands.swift`).
     ///
-    /// **Both target opcodes may simply be unimplemented.** The probe spends one round-trip per verb
-    /// establishing that before it does anything else, and a clean "neither verb is served" is a useful
-    /// result. Only a verb that answers goes on to read the sixteen known flag values and the short list
-    /// of guessed oxygen key names. Result goes to `LiveState.deviceConfigProbe` (the Devices dialog) and
-    /// to the strap log — no new storage. User-initiated only, Test Centre → Connection gated. Twin of
-    /// Android `probeDeviceConfigValues()`.
+    /// The plan asks the strap before it guesses: `START_DEVICE_CONFIG_KEY_EXCHANGE(115)` +
+    /// `SEND_NEXT_DEVICE_CONFIG(116)` first, and if they answer the strap has listed its own device-config
+    /// keys and the guessed-name sweep is skipped entirely. A clean "115/116 are not served" is equally
+    /// useful — it is what makes guessing the only available method. Result goes to
+    /// `LiveState.deviceConfigProbe` (the Devices dialog) and to the strap log — no new storage.
+    /// User-initiated only, Test Centre → Connection gated. Twin of Android `probeDeviceConfigValues()`.
     public func probeDeviceConfigValues() {
         guard state.connected else {
             log("Device-config read probe (#103) ignored — not connected")
@@ -2744,9 +2752,9 @@ public final class BLEManager: NSObject, ObservableObject {
             family: selectedModel.deviceFamily,
             // The flag names come from NOOP's own R22 sequence — never restated here.
             knownFlagKeys: Whoop5Config.enableR22Sequence.map(\.name),
-            candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
+            batch: ConfigKeySweep.batch(from: configKeySweepCursor))
         state.deviceConfigProbe = BLEManager.deviceConfigProbeWaiting
-        log("Device-config read probe (#103): asking for config VALUES via GET_DEVICE_CONFIG_VALUE(121) + GET_FF_VALUE(128) on family=\(selectedModel.deviceFamily); read-only (SET_FF_VALUE/120 and SET_DEVICE_CONFIG_VALUE/119 are never sent from this path)")
+        log("Config key probe (#103): enumerating device-config keys via START_DEVICE_CONFIG_KEY_EXCHANGE(115)/SEND_NEXT_DEVICE_CONFIG(116), then reading VALUES via GET_DEVICE_CONFIG_VALUE(121)/GET_FF_VALUE(128) on family=\(selectedModel.deviceFamily); read-only (SET_FF_VALUE/120 and SET_DEVICE_CONFIG_VALUE/119 are never sent from this path)")
         advanceDeviceConfigProbe()
     }
 
@@ -2767,7 +2775,12 @@ public final class BLEManager: NSObject, ObservableObject {
         deviceConfigStep &+= 1
         deviceConfigAwaiting = step
         let armed = deviceConfigStep
-        send(command, payload: DeviceConfigReadProbe.requestBody(key: step.key))
+        // The enumeration verbs carry the bare b3 byte (the strap walks its own cursor); the value verbs
+        // carry the b3 byte plus the 32-byte key-name field.
+        let payload = step.group == .enumerate
+            ? ConfigKeySweep.enumerationRequestBody
+            : DeviceConfigReadProbe.requestBody(key: step.key)
+        send(command, payload: payload)
         // BLE callbacks + this timer both run on the main queue, so the guard-then-advance is race-free:
         // a reply that already landed advanced `deviceConfigStep`, and this stale closure no-ops.
         DispatchQueue.main.asyncAfter(deadline: .now() + BLEManager.deviceConfigProbeTimeout) { [weak self] in
@@ -2787,27 +2800,56 @@ public final class BLEManager: NSObject, ObservableObject {
         guard let report = deviceConfigReport else { return }
         deviceConfigReport = nil
         deviceConfigAwaiting = nil
+        // Advance the sweep so a catalogue larger than one run's budget continues where this run stopped
+        // rather than re-asking the same slice. Wraps to 0 at the end of the catalogue.
+        configKeySweepCursor = report.batch.nextCursor
         let text = report.render()
-        log("Device-config read probe (#103):\n\(text)")
+        log("Config key probe (#103):\n\(text)")
         state.deviceConfigProbe = text
     }
 
     /// Clear the #103 probe result (Devices dialog dismissed). Twin of Android clearDeviceConfigProbe().
     public func clearDeviceConfigProbe() { state.deviceConfigProbe = nil }
 
-    /// #103: one COMMAND_RESPONSE for 121/128. Guarded on a probe being IN-FLIGHT (like #690/#761) so a
-    /// stray byte match can never surface a result. Parsing — including the CRC gate — lives in the pure
-    /// `DeviceConfigReadProbe`; a frame that fails any check retires that verb with a named reason
-    /// instead of being decoded.
+    /// #103: one COMMAND_RESPONSE for 115/116/121/128. Guarded on a probe being IN-FLIGHT (like #690/#761)
+    /// so a stray byte match can never surface a result. Parsing — including the CRC gate — lives in the
+    /// pure `DeviceConfigReadProbe` / `FeatureFlagProbe`; a frame that fails any check retires that verb
+    /// with a named reason instead of being decoded.
     private func handleDeviceConfigProbeResponse(_ frame: [UInt8], isWhoop5: Bool) {
         guard deviceConfigReport != nil, let step = deviceConfigAwaiting else { return }
         deviceConfigAwaiting = nil
         let family: DeviceFamily = isWhoop5 ? .whoop5 : .whoop4
-        switch DeviceConfigReadProbe.parse(frame: frame, family: family, expecting: step.opcode) {
-        case .success(let r): deviceConfigReport?.noteReply(r, for: step)
-        case .failure(let f): deviceConfigReport?.noteFailure(f, for: step)
+        // The enumeration replies share the 117/118 record layout, so they are decoded by that parser with
+        // the device-config opcode passed in; the value replies keep their own decoder.
+        switch step.opcode {
+        case ConfigKeySweep.startDeviceConfigKeyExchangeCmd:
+            switch FeatureFlagProbe.parseStart(frame: frame, family: family, expecting: step.opcode) {
+            case .success(let r): deviceConfigReport?.noteEnumerationStart(r)
+            case .failure(let f): deviceConfigReport?.noteFailure(configFailure(f), for: step)
+            }
+        case ConfigKeySweep.sendNextDeviceConfigCmd:
+            switch FeatureFlagProbe.parseNext(frame: frame, family: family, expecting: step.opcode) {
+            case .success(let r): deviceConfigReport?.noteEnumerationNext(r)
+            case .failure(let f): deviceConfigReport?.noteFailure(configFailure(f), for: step)
+            }
+        default:
+            switch DeviceConfigReadProbe.parse(frame: frame, family: family, expecting: step.opcode) {
+            case .success(let r): deviceConfigReport?.noteReply(r, for: step)
+            case .failure(let f): deviceConfigReport?.noteFailure(f, for: step)
+            }
         }
         advanceDeviceConfigProbe()
+    }
+
+    /// The two probes name the same four decode failures in separate enums; map one onto the other so the
+    /// enumeration half reports through the same `DeviceConfigReadProbeReport.noteFailure` path.
+    private func configFailure(_ f: FeatureFlagProbe.ParseFailure) -> DeviceConfigReadProbe.ParseFailure {
+        switch f {
+        case .crc:          return .crc
+        case .envelope:     return .envelope
+        case .wrongCommand: return .wrongCommand
+        case .truncated:    return .truncated
+        }
     }
 
     /// #761: one COMMAND_RESPONSE for 117/118. Guarded on a probe being IN-FLIGHT (like #690) so a stray

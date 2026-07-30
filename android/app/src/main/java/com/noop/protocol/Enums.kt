@@ -226,6 +226,19 @@ enum class CommandNumber(val rawValue: Int) {
     // #690: read-only body-location/status probe. Documented in the WHOOP protocol; driven only by the
     // user-triggered, Test-Centre-gated probeBodyLocationAndStatus(). Decoded to a diagnostic report only.
     GET_BODY_LOCATION_AND_STATUS(84),
+    // START_DEVICE_CONFIG_KEY_EXCHANGE (115 / 0x73) — READ-ONLY: ask the strap how many DEVICE-CONFIG keys
+    // its firmware knows. Payload [0x01]; the reply carries a count and nothing on the strap changes. The
+    // device-config twin of 117, and the half of the config surface nothing here has ever sent: the
+    // CommandNumber table names 115/116 alongside 119/121, and only 119 (write) and 121 (read one value)
+    // were implemented. If it answers, the strap lists its own device-config keys and #103 stops needing to
+    // guess names. Driven ONLY by WhoopBleClient.probeDeviceConfigValues() — user-initiated, Test Centre
+    // gated. Parsing reuses FeatureFlagProbe.parseStart on the assumed-symmetric layout. (#103)
+    START_DEVICE_CONFIG_KEY_EXCHANGE(115),
+    // SEND_NEXT_DEVICE_CONFIG (116 / 0x74) — READ-ONLY: advance the strap's own device-config cursor and
+    // report one key NAME. Names only, no values, nothing written. Payload [0x01]; a CURSOR, not an index,
+    // so the same frame is repeated to walk the list. Bounded by ConfigKeySweep.MAX_ENUMERATION_STEPS and
+    // by the strap's own end marker. Driven ONLY by WhoopBleClient.probeDeviceConfigValues(). (#103)
+    SEND_NEXT_DEVICE_CONFIG(116),
     // START_FF_KEY_EXCHANGE (117 / 0x75) — READ-ONLY: ask the strap how many feature flags its firmware
     // knows. The READ half of the flag surface NOOP has only ever written (SET_CONFIG/120): the protocol's
     // own CommandNumber table names 117/118 alongside 119/120, and only the SET pair was implemented.

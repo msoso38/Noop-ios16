@@ -37,6 +37,7 @@ import com.noop.protocol.BackfillCaptureJsonl
 import com.noop.protocol.BackfillCaptureRecord
 import com.noop.protocol.BackfillCaptureSummary
 import com.noop.protocol.CommandNumber
+import com.noop.protocol.ConfigKeySweep
 import com.noop.protocol.DeviceFamily
 import com.noop.protocol.DeviceConfigReadProbe
 import com.noop.protocol.DeviceConfigReadProbeReport
@@ -1548,6 +1549,13 @@ class WhoopBleClient(
     /** Monotonic step counter so a late timeout from an earlier step can't cancel a live walk. */
     private var deviceConfigStep = 0
 
+    /** Where the next run's candidate sweep resumes in [ConfigKeySweep.CATALOGUE]. Deliberately IN MEMORY
+     *  — no new storage, no migration, and a relaunch restarting at the top of the catalogue is the right
+     *  default. With today's catalogue smaller than [ConfigKeySweep.MAX_KEYS_PER_RUN] this stays 0 and
+     *  every run tests all of it; it exists so a catalogue grown past the budget resumes instead of
+     *  re-asking the same slice. Twin of macOS BLEManager.configKeySweepCursor. */
+    private var configKeySweepCursor = 0
+
     private val _connectedPeripheralAddress = MutableStateFlow<String?>(null)
     /** The BLE address of the strap currently connected, or null when disconnected. Twin of macOS
      *  BLEManager.connectedPeripheralUUID — drives SourceCoordinator's first-connect identity adoption. */
@@ -2853,13 +2861,16 @@ class WhoopBleClient(
                 // probeFeatureFlags() (user-initiated, Test Centre gated).
                 !((cmd == CommandNumber.START_FF_KEY_EXCHANGE || cmd == CommandNumber.SEND_NEXT_FF) &&
                     featureFlagReport != null) &&
-                // GET_DEVICE_CONFIG_VALUE (121) / GET_FF_VALUE (128) over puffin: the READ-ONLY
-                // device-config READ probe (#103) — it asks for a key's VALUE and writes none. Gated the
-                // same way as 117/118: allowed ONLY while a probe is actually in flight, and the opcode
-                // must additionally satisfy DeviceConfigReadProbe.isReadOnlyOpcode, the same predicate a
-                // unit test proves rejects SET_FF_VALUE(120) and SET_DEVICE_CONFIG_VALUE(119). Those two
-                // keep their own separate opt-in clauses below and are never sent from this path. Driven
-                // only by probeDeviceConfigValues() (user-initiated, Test Centre gated).
+                // START_DEVICE_CONFIG_KEY_EXCHANGE (115) / SEND_NEXT_DEVICE_CONFIG (116) /
+                // GET_DEVICE_CONFIG_VALUE (121) / GET_FF_VALUE (128) over puffin: the READ-ONLY config key
+                // probe (#103). 115/116 ask the strap to LIST its device-config keys (the device-config
+                // twin of the 117/118 pair above); 121/128 ask for a named key's VALUE. None of the four
+                // writes anything. Gated the same way as 117/118: allowed ONLY while a probe is actually in
+                // flight, and the opcode must additionally satisfy DeviceConfigReadProbe.isReadOnlyOpcode —
+                // the same predicate unit tests prove rejects SET_FF_VALUE(120) and
+                // SET_DEVICE_CONFIG_VALUE(119). Those two keep their own separate opt-in clauses below and
+                // are never sent from this path. Driven only by probeDeviceConfigValues() (user-initiated,
+                // Test Centre gated).
                 !(DeviceConfigReadProbe.isReadOnlyOpcode(cmd.rawValue) && deviceConfigReport != null) &&
                 // SET_CONFIG (the R22 deep-stream unlock) is allowed ONLY while the deep-data experiment
                 // is opted in — it writes a persistent feature flag to the strap, so it must never fire
@@ -3399,13 +3410,14 @@ class WhoopBleClient(
             connectedFamily,
             // The flag names come from NOOP's own R22 sequence — never restated here.
             Whoop5Config.enableR22Sequence.map { it.name },
-            DeviceConfigReadProbe.OXYGEN_CANDIDATE_KEYS,
+            ConfigKeySweep.batch(configKeySweepCursor),
         )
         _deviceConfigProbe.value = WAITING_DEVICE_CONFIG_PROBE
         log(
-            "Device-config read probe (#103): asking for config VALUES via GET_DEVICE_CONFIG_VALUE(121) + " +
-                "GET_FF_VALUE(128) on family=$connectedFamily; read-only (SET_FF_VALUE/120 and " +
-                "SET_DEVICE_CONFIG_VALUE/119 are never sent from this path)",
+            "Config key probe (#103): enumerating device-config keys via " +
+                "START_DEVICE_CONFIG_KEY_EXCHANGE(115)/SEND_NEXT_DEVICE_CONFIG(116), then reading VALUES " +
+                "via GET_DEVICE_CONFIG_VALUE(121)/GET_FF_VALUE(128) on family=$connectedFamily; read-only " +
+                "(SET_FF_VALUE/120 and SET_DEVICE_CONFIG_VALUE/119 are never sent from this path)",
         )
         advanceDeviceConfigProbe()
     }
@@ -3428,7 +3440,14 @@ class WhoopBleClient(
         deviceConfigStep += 1
         deviceConfigAwaiting = step
         val armed = deviceConfigStep
-        send(cmd, DeviceConfigReadProbe.requestBody(step.key))
+        // The enumeration verbs carry the bare b3 byte (the strap walks its own cursor); the value verbs
+        // carry the b3 byte plus the 32-byte key-name field.
+        val payload = if (step.group == DeviceConfigReadProbeReport.Group.ENUMERATE) {
+            ConfigKeySweep.ENUMERATION_REQUEST_BODY
+        } else {
+            DeviceConfigReadProbe.requestBody(step.key)
+        }
+        send(cmd, payload)
         // A reply that already landed advanced deviceConfigStep, so this stale closure no-ops.
         handler.postDelayed({
             if (deviceConfigReport != null && deviceConfigStep == armed && deviceConfigAwaiting != null) {
@@ -3446,8 +3465,11 @@ class WhoopBleClient(
         val report = deviceConfigReport ?: return
         deviceConfigReport = null
         deviceConfigAwaiting = null
+        // Advance the sweep so a catalogue larger than one run's budget continues where this run stopped
+        // rather than re-asking the same slice. Wraps to 0 at the end of the catalogue.
+        configKeySweepCursor = report.batch.nextCursor
         val text = report.render()
-        log("Device-config read probe (#103):\n$text")
+        log("Config key probe (#103):\n$text")
         _deviceConfigProbe.value = text
     }
 
@@ -3464,15 +3486,49 @@ class WhoopBleClient(
         if (deviceConfigReport == null) return
         val step = deviceConfigAwaiting ?: return
         deviceConfigAwaiting = null
-        val parsed = DeviceConfigReadProbe.parse(frame, connectedFamily, step.opcode)
-        val value = parsed.value
-        if (value != null) {
-            deviceConfigReport?.noteReply(value, step)
-        } else {
-            deviceConfigReport?.noteFailure(parsed.failure!!, step)
+        // The enumeration replies share the 117/118 record layout, so they are decoded by that parser with
+        // the device-config opcode passed in; the value replies keep their own decoder.
+        when (step.opcode) {
+            ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD -> {
+                val parsed = FeatureFlagProbe.parseStart(frame, connectedFamily, step.opcode)
+                val value = parsed.value
+                if (value != null) {
+                    deviceConfigReport?.noteEnumerationStart(value)
+                } else {
+                    deviceConfigReport?.noteFailure(configFailure(parsed.failure!!), step)
+                }
+            }
+            ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD -> {
+                val parsed = FeatureFlagProbe.parseNext(frame, connectedFamily, step.opcode)
+                val value = parsed.value
+                if (value != null) {
+                    deviceConfigReport?.noteEnumerationNext(value)
+                } else {
+                    deviceConfigReport?.noteFailure(configFailure(parsed.failure!!), step)
+                }
+            }
+            else -> {
+                val parsed = DeviceConfigReadProbe.parse(frame, connectedFamily, step.opcode)
+                val value = parsed.value
+                if (value != null) {
+                    deviceConfigReport?.noteReply(value, step)
+                } else {
+                    deviceConfigReport?.noteFailure(parsed.failure!!, step)
+                }
+            }
         }
         advanceDeviceConfigProbe()
     }
+
+    /** The two probes name the same four decode failures in separate enums; map one onto the other so the
+     *  enumeration half reports through the same [DeviceConfigReadProbeReport.noteFailure] path. */
+    private fun configFailure(f: FeatureFlagProbe.ParseFailure): DeviceConfigReadProbe.ParseFailure =
+        when (f) {
+            FeatureFlagProbe.ParseFailure.CRC -> DeviceConfigReadProbe.ParseFailure.CRC
+            FeatureFlagProbe.ParseFailure.ENVELOPE -> DeviceConfigReadProbe.ParseFailure.ENVELOPE
+            FeatureFlagProbe.ParseFailure.WRONG_COMMAND -> DeviceConfigReadProbe.ParseFailure.WRONG_COMMAND
+            FeatureFlagProbe.ParseFailure.TRUNCATED -> DeviceConfigReadProbe.ParseFailure.TRUNCATED
+        }
 
     /**
      * #761: one COMMAND_RESPONSE for 117/118. Guarded on a probe being IN-FLIGHT (like #690) so a stray
