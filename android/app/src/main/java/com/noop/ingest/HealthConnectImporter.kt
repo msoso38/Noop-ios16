@@ -9,6 +9,7 @@ import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.HydrationRecord
 import androidx.health.connect.client.records.LeanBodyMassRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.Record
@@ -22,6 +23,7 @@ import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import com.noop.analytics.FitnessAgeEngine
+import com.noop.analytics.HydrationStore
 import com.noop.data.AppleDaily
 import com.noop.data.DailyMetric
 import com.noop.data.ImportSummary
@@ -29,6 +31,7 @@ import com.noop.data.MetricSeriesRow
 import com.noop.data.SleepSession
 import com.noop.data.WhoopRepository
 import com.noop.data.WorkoutRow
+import com.noop.ui.NoopPrefs
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -105,7 +108,19 @@ object HealthConnectImporter {
         LeanBodyMassRecord::class,
         ExerciseSessionRecord::class,
         DistanceRecord::class,
+        HydrationRecord::class,
     )
+
+    /**
+     * Hydration import window, in days (#949) — deliberately much shorter than [WINDOW_YEARS].
+     *
+     * Imported water is stored as one REPLACED row per day, and every day in the window is written
+     * (0.0 included) so a drink deleted in the source app disappears here too. Over the 10-year window
+     * that zero-fill would be ~3,650 rows on every import to back a screen that shows today plus a
+     * 7-day bar chart. 30 days covers it, and matches the iOS sync window exactly so the two platforms
+     * import the same span.
+     */
+    private const val HYDRATION_WINDOW_DAYS = 30L
 
     /**
      * The set of Health Connect read-permission strings the UI must request before calling
@@ -179,6 +194,10 @@ object HealthConnectImporter {
         val acc = HashMap<String, DayAcc>()
         fun dayOf(instant: Instant): String = LocalDate.ofInstant(instant, zone).toString()
         fun bucket(day: String): DayAcc = acc.getOrPut(day) { DayAcc() }
+
+        // #949: imported water, ml per local day. Separate from `acc` because it is written to the
+        // hydration source (HydrationStore), not the health-connect aggregates.
+        val hydrationMl = HashMap<String, Double>()
 
         val workouts = ArrayList<WorkoutRow>()
         // (startEpochS, endEpochS, kcal) of every active-calorie record, so an imported exercise
@@ -438,8 +457,45 @@ object HealthConnectImporter {
                     workouts[i] = w.copy(distanceM = round1(meters))
                 }
             }
+            // --- Water (#949) ---
+            // Its own short window (see HYDRATION_WINDOW_DAYS) and its own accumulator, because this
+            // lands in the hydration source rather than the health-connect aggregates below.
+            //
+            // SUMMED across sources, unlike steps/calories which take the max (#589). That rule exists
+            // because a phone and a watch both measure THE SAME walk; two apps writing water are logging
+            // DIFFERENT drinks — a smart bottle and a manual entry are two real glasses, not one counted
+            // twice. Taking the max here would silently drop whichever app logged less.
+            val hydrationStart = LocalDate.now(zone).minusDays(HYDRATION_WINDOW_DAYS - 1)
+                .atStartOfDay(zone).toInstant()
+            readAll(client, HydrationRecord::class, TimeRangeFilter.between(hydrationStart, end), selfPackage) { r ->
+                val day = dayOf(r.startTime)
+                hydrationMl[day] = (hydrationMl[day] ?: 0.0) + r.volume.inMilliliters
+            }
         } catch (e: Exception) {
             return ImportSummary.failure(SOURCE, "Health Connect read failed: ${e.message}")
+        }
+
+        // Zero-fill the whole hydration window and write it, BEFORE the "nothing found" bail below:
+        // `acc` holds only the aggregate types, so a user whose Health Connect has water and nothing
+        // else would otherwise return early and never see a drop of it. Writing the zeros is what makes
+        // a deletion in the source app propagate (see HydrationStore.KEY_IMPORTED).
+        // Only when water is actually granted (#150 partial permissions). Without this check a user who
+        // declined the water scope would get the whole window written as zeros on every import — thirty
+        // pointless rows, and worse, it would erase legitimately imported water the moment the scope was
+        // revoked rather than simply leaving it be.
+        // Hydration tracking is opt-in and default OFF, so an import must not quietly populate a feature
+        // the user has turned off — and skipping it saves writing a window of rows nothing will read.
+        if (HealthPermission.getReadPermission(HydrationRecord::class) in granted &&
+            NoopPrefs.hydrationTracking(context)
+        ) {
+            val today = LocalDate.now(zone)
+            val windowDays = (0 until HYDRATION_WINDOW_DAYS.toInt())
+                .map { today.minusDays(it.toLong()).toString() }
+            try {
+                HydrationStore.setImported(repo, HydrationStore.importWindow(windowDays, hydrationMl))
+            } catch (_: Exception) {
+                // Best-effort: a hydration write failure must not sink an otherwise good import.
+            }
         }
 
         if (acc.isEmpty() && workouts.isEmpty()) {

@@ -333,6 +333,7 @@
     <string name="l10n_hydration_screen_kotlin_math_min_100_fraction_100_72f2dfde">%1$s%% de l\'objectif actuel</string>
     <string name="l10n_hydration_screen_log_8bf95ea3">Journal</string>
     <string name="l10n_hydration_screen_logged_today_0071a46c">Enregistré aujourd\'hui</string>
+    <string name="l10n_hydration_screen_from_health_connect_4ad037a3">Depuis Health Connect</string>
     <string name="l10n_hydration_screen_millilitres_ml_0fb0d2a4">Millilitres (ml)</string>
     <string name="l10n_hydration_screen_no_drinks_logged_yet_tap_sip_cc0d2f72">Aucune boisson enregistrée pour l\'instant. Touchez Gorgée, Tasse ou Bouteille pour commencer.</string>
     <string name="l10n_hydration_screen_no_history_yet_933f417e">Aucun historique pour l\'instant.</string>

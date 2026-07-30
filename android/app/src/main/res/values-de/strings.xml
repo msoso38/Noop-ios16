@@ -503,6 +503,7 @@
     <string name="l10n_hydration_screen_kotlin_math_min_100_fraction_100_72f2dfde">%1$s%% des heutigen Ziels</string>
     <string name="l10n_hydration_screen_log_8bf95ea3">Protokoll</string>
     <string name="l10n_hydration_screen_logged_today_0071a46c">Heute erfasst</string>
+    <string name="l10n_hydration_screen_from_health_connect_4ad037a3">Aus Health Connect</string>
     <string name="l10n_hydration_screen_millilitres_ml_0fb0d2a4">Milliliter (ml)</string>
     <string name="l10n_hydration_screen_no_drinks_logged_yet_tap_sip_cc0d2f72">Noch keine Getränke erfasst. Tippe auf Schluck, Tasse oder Flasche, um zu starten.</string>
     <string name="l10n_hydration_screen_no_history_yet_933f417e">Noch kein Verlauf.</string>

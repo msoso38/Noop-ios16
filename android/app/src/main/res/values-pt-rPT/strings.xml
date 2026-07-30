@@ -486,6 +486,7 @@
     <string name="l10n_hydration_screen_kotlin_math_min_100_fraction_100_72f2dfde">%1$s%% da meta de hoje</string>
     <string name="l10n_hydration_screen_log_8bf95ea3">Registo</string>
     <string name="l10n_hydration_screen_logged_today_0071a46c">Registado hoje</string>
+    <string name="l10n_hydration_screen_from_health_connect_4ad037a3">Do Health Connect</string>
     <string name="l10n_hydration_screen_millilitres_ml_0fb0d2a4">Mililitros (ml)</string>
     <string name="l10n_hydration_screen_no_drinks_logged_yet_tap_sip_cc0d2f72">Nenhuma bebida registada ainda. Toque em Sip, Cup ou Bottle para começar.</string>
     <string name="l10n_hydration_screen_no_history_yet_933f417e">Ainda não há histórico.</string>

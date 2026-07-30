@@ -473,6 +473,7 @@
     <string name="l10n_hydration_screen_kotlin_math_min_100_fraction_100_72f2dfde">完成今日目标的 %1$s%%</string>
     <string name="l10n_hydration_screen_log_8bf95ea3">记录</string>
     <string name="l10n_hydration_screen_logged_today_0071a46c">今日已喝</string>
+    <string name="l10n_hydration_screen_from_health_connect_4ad037a3">来自 Health Connect</string>
     <string name="l10n_hydration_screen_millilitres_ml_0fb0d2a4">毫升 (ml)</string>
     <string name="l10n_hydration_screen_no_drinks_logged_yet_tap_sip_cc0d2f72">今天还没喝水哦。点击下方的一口、水杯或水壶来记录一下吧。</string>
     <string name="l10n_hydration_screen_no_history_yet_933f417e">暂无记录。</string>

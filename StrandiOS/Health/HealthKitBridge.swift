@@ -99,7 +99,11 @@ final class HealthKitBridge: ObservableObject {
         .basalEnergyBurned, .vo2Max,
         // Body composition — READ-ONLY (#20). Imported under the apple-health source like the file
         // importer already ingests; deliberately NOT in quantityWriteIds (we never write these back).
-        .bodyMass, .bodyFatPercentage, .leanBodyMass, .bodyMassIndex
+        .bodyMass, .bodyFatPercentage, .leanBodyMass, .bodyMassIndex,
+        // Water — READ-ONLY (#949), so drinks logged in a dedicated hydration app (or by a smart bottle)
+        // show up without being typed in twice. Lands in the hydration source rather than apple-health,
+        // because the hydration screen is what consumes it. Never written back.
+        .dietaryWater
     ]
     private static let quantityWriteIds: [HKQuantityTypeIdentifier] = [
         .restingHeartRate, .heartRateVariabilitySDNN, .oxygenSaturation, .respiratoryRate
@@ -363,6 +367,14 @@ final class HealthKitBridge: ObservableObject {
             var a = agg(day); a.bmi = v; byDay[day] = a
         }
 
+        // Water logged in other apps (#949). A cumulative day SUM, like steps — HealthKit re-adds every
+        // sample in the day on each sync, so the figure this produces is a full replacement rather than a
+        // delta, which is exactly what `setImportedHydration` wants. `notNoopAuthored` (applied inside
+        // `collect`) keeps NOOP's own drinks out, so a tap in NOOP can never come back as an import.
+        await collect(.dietaryWater, unit: .literUnit(with: .milli), start: start, end: end, op: .cumulativeSum) { day, v in
+            var a = agg(day); a.waterMl = v; byDay[day] = a
+        }
+
         // Sleep minutes per day (asleep stages summed; attributed to wake day).
         await collectSleep(start: start, end: end) { day, asleepMin, deepMin, remMin, coreMin in
             var a = agg(day)
@@ -433,6 +445,26 @@ final class HealthKitBridge: ObservableObject {
             try await store.upsertDailyMetrics(dmRows, deviceId: appleDeviceId)
             try await store.upsertMetricSeries(points, deviceId: appleDeviceId)
             if !workoutRows.isEmpty { try await store.upsertWorkouts(workoutRows, deviceId: appleDeviceId) }
+            // Imported water (#949) goes to the hydration source, not apple-health, because the hydration
+            // screen is what reads it. Every day in the window is written — including the ones with no
+            // water at all, as 0 — so deleting a drink in the source app takes it away here on the next
+            // sync instead of stranding the old figure. `byDay` only holds days that had SOME metric, so
+            // the zero-fill has to come from the date range rather than from its keys.
+            //
+            // Gated on the hydration toggle, which is opt-in and default OFF: an import must not quietly
+            // populate a feature the user has turned off, and skipping it avoids writing a window of rows
+            // nothing will read.
+            if UserDefaults.standard.bool(forKey: HydrationStore.enabledKey) {
+                var waterByDay: [String: Double] = [:]
+                var cursor = cal.startOfDay(for: start)
+                while cursor <= end {
+                    waterByDay[HealthKitBridge.dayString(cursor)] = 0
+                    guard let next = cal.date(byAdding: .day, value: 1, to: cursor) else { break }
+                    cursor = next
+                }
+                for (day, a) in byDay { if let ml = a.waterMl { waterByDay[day] = ml } }
+                await repo.setImportedHydration(waterByDay)
+            }
             try await writeBack(whoopStore: store)
             lastSync = Date()
             lastError = nil
@@ -800,6 +832,7 @@ final class HealthKitBridge: ObservableObject {
         var activeKcal: Double?; var basalKcal: Double?; var vo2max: Double?
         var weightKg: Double?; var bodyFatPct: Double?; var leanMassKg: Double?; var bmi: Double?
         var asleepMin: Double?; var deepMin: Double?; var remMin: Double?; var coreMin: Double?
+        var waterMl: Double?
     }
 
     /// Excludes NOOP's own write-back samples from reads, so the two-way sync never reads its own
