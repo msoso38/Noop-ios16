@@ -1410,6 +1410,9 @@
     <string name="l10n_settings_screen_export_csv_6bce63a3">导出 CSV 文件…</string>
     <string name="l10n_settings_screen_export_raw_log_matched_pair_d65390bf">导出原始数据 + 日志 (配对打包)</string>
     <string name="l10n_settings_screen_export_raw_sensor_data_csv_a171b81e">导出传感器原始数据 (CSV)</string>
+    <string name="l10n_settings_screen_export_raw_capture_and_log_776a7530">要导出原始数据与日志吗？</string>
+    <string name="l10n_settings_screen_includes_raw_biometric_frames_9ef537b6">包含原始生物特征数据帧（心率、R-R、皮肤温度、运动）以及手环的控制台文本，还有你的连接日志。标识符会自动进行脱敏处理——仅在你认可的情况下分享。</string>
+    <string name="l10n_settings_screen_export_37b7828c">导出</string>
     <string name="l10n_settings_screen_extends_the_sky_behind_the_whole_39bb82cc">让“天空”背景延伸到整个“今日”屏幕，这样降低“卡片透明度”后，背景就能透过每张卡片透视出来。需要先开启上方的“日夜交替背景”功能。</string>
     <string name="l10n_settings_screen_feel_the_current_time_as_a_8ca41db1">通过一阵连续的震动组合来“感知”当前时间 (#460)。仅在手环保持连接时有效。</string>
     <string name="l10n_settings_screen_flags_accepted_but_the_enable_sequence_542b2595">配置指令已接受，但启用序列并未成功建立单独的实时数据流。不过深度数据记录会作为常规历史同步的一部分到达 (#494)。</string>

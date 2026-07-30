@@ -1457,6 +1457,9 @@
     <string name="l10n_settings_screen_export_csv_6bce63a3">Export CSV…</string>
     <string name="l10n_settings_screen_export_raw_log_matched_pair_d65390bf">Export raw + log (matched pair)</string>
     <string name="l10n_settings_screen_export_raw_sensor_data_csv_a171b81e">Export raw sensor data (CSV)</string>
+    <string name="l10n_settings_screen_export_raw_capture_and_log_776a7530">Export raw capture and log?</string>
+    <string name="l10n_settings_screen_includes_raw_biometric_frames_9ef537b6">Includes raw biometric frames (heart rate, R-R, skin temp, motion) and the strap\'s console text, plus your connection log. Identifiers are redacted automatically — share only if you\'re comfortable with that.</string>
+    <string name="l10n_settings_screen_export_37b7828c">Export</string>
     <string name="l10n_settings_screen_extends_the_sky_behind_the_whole_39bb82cc">Extends the sky behind the whole Today screen, so lowering Card transparency lets it show through every card. Needs the day-cycle background on.</string>
     <string name="l10n_settings_screen_feel_the_current_time_as_a_8ca41db1">Feel the current time as a sequence of buzzes (#460). Does nothing unless your strap is connected.</string>
     <string name="l10n_settings_screen_flags_accepted_but_the_enable_sequence_542b2595">Flags accepted, but the enable sequence doesn\'t start a separate live stream. The deep records arrive as part of the normal history sync (#494).</string>

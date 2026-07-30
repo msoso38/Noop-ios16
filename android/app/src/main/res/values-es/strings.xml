@@ -1278,6 +1278,9 @@
     <string name="l10n_settings_screen_export_csv_6bce63a3">Exportar CSV…</string>
     <string name="l10n_settings_screen_export_raw_log_matched_pair_d65390bf">Exportar crudo + tronco (palabra empaquetada)</string>
     <string name="l10n_settings_screen_export_raw_sensor_data_csv_a171b81e">Exportar datos en bruto del sensor (CSV)</string>
+    <string name="l10n_settings_screen_export_raw_capture_and_log_776a7530">¿Exportar captura sin procesar y registro?</string>
+    <string name="l10n_settings_screen_includes_raw_biometric_frames_9ef537b6">Incluye fotogramas biométricos sin procesar (frecuencia cardíaca, R-R, temperatura de la piel, movimiento) y el texto de consola de la pulsera, además de tu registro de conexión. Los identificadores se ocultan automáticamente; compártelo solo si estás de acuerdo.</string>
+    <string name="l10n_settings_screen_export_37b7828c">Exportar</string>
     <string name="l10n_settings_screen_extends_the_sky_behind_the_whole_39bb82cc">Extiende el cielo detrás de toda la pantalla Hoy, de modo que al reducir la Transparencia de las tarjetas se vea a través de cada tarjeta. Requiere que el fondo según el ciclo del día esté activado.</string>
     <string name="l10n_settings_screen_feel_the_current_time_as_a_8ca41db1">Siente el tiempo actual como una secuencia de zumbidos (#460). No hace nada a menos que su correa esté conectada.</string>
     <string name="l10n_settings_screen_flags_accepted_but_the_enable_sequence_542b2595">Indicadores aceptados, pero la secuencia de activación no inicia una transmisión en vivo separada. Los registros profundos llegan como parte de la sincronización normal del historial (#494).</string>

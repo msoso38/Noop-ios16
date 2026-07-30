@@ -1448,6 +1448,9 @@
     <string name="l10n_settings_screen_export_csv_6bce63a3">CSV exportieren…</string>
     <string name="l10n_settings_screen_export_raw_log_matched_pair_d65390bf">Roh- und Logarithmusexport (übereinstimmendes Paar)</string>
     <string name="l10n_settings_screen_export_raw_sensor_data_csv_a171b81e">Rohe Sensordaten exportieren (CSV)</string>
+    <string name="l10n_settings_screen_export_raw_capture_and_log_776a7530">Rohdatenerfassung und Protokoll exportieren?</string>
+    <string name="l10n_settings_screen_includes_raw_biometric_frames_9ef537b6">Enthält rohe biometrische Frames (Herzfrequenz, R-R, Hauttemperatur, Bewegung) und den Konsolentext des Trackers sowie dein Verbindungsprotokoll. Kennungen werden automatisch geschwärzt – teile es nur, wenn du damit einverstanden bist.</string>
+    <string name="l10n_settings_screen_export_37b7828c">Exportieren</string>
     <string name="l10n_settings_screen_extends_the_sky_behind_the_whole_39bb82cc">Erweitert den Himmel hinter dem gesamten Heute-Bildschirm, sodass er bei geringerer Kartentransparenz durch jede Karte hindurchscheint. Erfordert aktivierten Tageszyklus-Hintergrund.</string>
     <string name="l10n_settings_screen_feel_the_current_time_as_a_8ca41db1">Fühlen Sie die aktuelle Zeit als eine Folge von Summen (#460). Tut nichts, es sei denn, Ihr Gurt ist angeschlossen.</string>
     <string name="l10n_settings_screen_flags_accepted_but_the_enable_sequence_542b2595">Flags akzeptiert, aber die Aktivierungssequenz startet keinen separaten Live-Stream. Die Deep-Datensätze kommen als Teil der normalen Verlaufssynchronisierung an (#494).</string>
