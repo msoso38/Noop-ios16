@@ -9,6 +9,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.PI
+import kotlin.math.ln
 import kotlin.math.sin
 import kotlin.math.roundToInt
 
@@ -356,5 +357,25 @@ class SleepStagerV2Test {
         for ((from, row) in SleepStagerV2.transition) {
             assertEquals("transition row '$from' must sum to 1.0", 1.0, row.values.sum(), 1e-9)
         }
+    }
+
+    /**
+     * Pin the AWAKE transition row directly, for the same reason the deep row is pinned: the end-to-end golden
+     * is only sensitive where its own input sits near a decision boundary, and it does NOT move when this row
+     * changes — so without this assertion the row is effectively unguarded. Twin:
+     * `SleepStagerV2Tests.testWakeRowForbidsDirectDescentIntoDeepOrRem`.
+     *
+     * The zeros are the physiological claim: sleep onset descends through N1/N2, so wake never transitions
+     * straight into N3 or REM. They are also why [SleepStagerV2.viterbi] floors the log at 1e-9 — asserted here
+     * so the two can never drift apart and reintroduce ln(0) = -Inf.
+     */
+    @Test
+    fun wakeRowForbidsDirectDescentIntoDeepOrRem() {
+        assertEquals(
+            mapOf("deep" to 0.0, "rem" to 0.0, "light" to 0.10, "awake" to 0.90),
+            SleepStagerV2.transition["awake"])
+        // A zeroed entry must reach the lattice as a large finite penalty, never -Inf.
+        val lp = ln(maxOf(SleepStagerV2.transition["awake"]!!["deep"]!!, 1e-9))
+        assertTrue("a zeroed transition must not produce a non-finite log-weight", lp.isFinite())
     }
 }
