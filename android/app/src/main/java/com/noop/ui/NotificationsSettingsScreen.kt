@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.noop.ble.WhoopModel
 import com.noop.notif.CallAlertController
 import com.noop.notif.CallAlertSource
 import java.util.Calendar
@@ -359,7 +360,15 @@ fun NotificationsSettingsScreen(vm: AppViewModel) {
         // buzz. The picker still offers all four because the choice is stored per app and DOES apply to a
         // WHOOP 4.0, so hiding it would lose a real setting. Say so instead, the way SmartAlarmScreen
         // handles its own 5/MG-unconfirmed case, rather than leaving a control that silently does nothing.
-        if (live.whoop5Detected) {
+        // Match the Settings #22 gate (SettingsScreen showFiveMGControls, mirrored in TestCentreScreen:87):
+        // the stored model OR a live-detected 5/MG this session. `live.whoop5Detected` alone is reset on
+        // every scan and disconnect, so keying on it would hide this note whenever the strap is offline —
+        // which is exactly when someone browses notification settings. The Apple side reads `selectedModel`,
+        // which persists, so gating on live detection here would also make the two platforms disagree.
+        val fiveMgSelected = remember {
+            NoopPrefs.of(context).getString("noop.selectedWhoopModel", null) == WhoopModel.WHOOP5_MG.name
+        }
+        if (fiveMgSelected || live.whoop5Detected) {
             Text(
                 uiString(R.string.l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6),
                 style = NoopType.caption,
