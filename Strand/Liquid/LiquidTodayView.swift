@@ -111,9 +111,6 @@ struct LiquidTodayView: View {
     private let liquidPurple = Color(.sRGB, red: 0x9b / 255, green: 0x7b / 255, blue: 0xff / 255, opacity: 1)
     /// The liquid heart pink (matches LiquidThread's default + the mockup #ff6b81).
     private let liquidHeart = Color(.sRGB, red: 1, green: 107 / 255, blue: 129 / 255, opacity: 1)
-    /// The original translucent near-black hero is retained in Dark appearance. Light appearance uses
-    /// the shared raised surface instead of pinning a dark card onto the pale day-cycle sky.
-    private let darkHeroFill = Color(.sRGB, red: 13 / 255, green: 14 / 255, blue: 20 / 255, opacity: 0.80)
     private var skyPrimary: Color {
         colorScheme == .dark ? StrandPalette.onDarkPrimary : StrandPalette.textPrimary
     }
@@ -121,25 +118,25 @@ struct LiquidTodayView: View {
         colorScheme == .dark ? StrandPalette.onDarkSecondary : StrandPalette.textSecondary
     }
     private var skyControlFill: Color {
-        colorScheme == .dark ? .white.opacity(0.16) : StrandPalette.surfaceRaised.opacity(0.92)
+        StrandPalette.surfaceRaised.opacity(0.92)
     }
     private var skyControlBorder: Color {
-        colorScheme == .dark ? .white.opacity(0.08) : StrandPalette.hairline
+        StrandPalette.hairline
     }
     private var heroSurfaceFill: Color {
-        colorScheme == .dark ? darkHeroFill : StrandPalette.surfaceRaised
+        StrandPalette.surfaceRaised
     }
     private var heroBorder: Color {
-        colorScheme == .dark ? .white.opacity(0.11) : StrandPalette.hairline
+        StrandPalette.hairline
     }
     private var heroPrimary: Color {
-        colorScheme == .dark ? StrandPalette.onDarkPrimary : StrandPalette.textPrimary
+        StrandPalette.textPrimary
     }
     private var heroSecondary: Color {
-        colorScheme == .dark ? StrandPalette.onDarkSecondary : StrandPalette.textSecondary
+        StrandPalette.textSecondary
     }
     private var heroTertiary: Color {
-        colorScheme == .dark ? StrandPalette.onDarkTertiary : StrandPalette.textTertiary
+        StrandPalette.textTertiary
     }
     /// "Card transparency" (0–100, default 100): fades every liquid card surface here — the hero, the
     /// session-start row, the metric tiles and the `card` helper — in lockstep with the frosted cards.
@@ -517,12 +514,8 @@ struct LiquidTodayView: View {
                     .font(StrandFont.overlineScaled(8.5)).tracking(1.2)
                     .foregroundStyle(heroSecondary)
                     .padding(.horizontal, 8).padding(.vertical, 2.5)
-                    .background(Capsule().fill(
-                        colorScheme == .dark ? .white.opacity(0.05) : StrandPalette.surfaceInset
-                    ).overlay(Capsule().strokeBorder(
-                        colorScheme == .dark ? .white.opacity(0.18) : StrandPalette.hairline,
-                        lineWidth: 1
-                    )))
+                    .background(Capsule().fill(StrandPalette.surfaceInset)
+                        .overlay(Capsule().strokeBorder(StrandPalette.hairline, lineWidth: 1)))
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(heroTertiary)
@@ -580,9 +573,9 @@ struct LiquidTodayView: View {
                 .fill(heroSurfaceFill)
                 .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .strokeBorder(heroBorder, lineWidth: 1))
-                .shadow(color: colorScheme == .dark ? .black.opacity(0.32) : .black.opacity(0.08),
-                        radius: colorScheme == .dark ? 20 : 8,
-                        y: colorScheme == .dark ? 8 : 3)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.16 : 0.08),
+                        radius: colorScheme == .dark ? 12 : 8,
+                        y: colorScheme == .dark ? 4 : 3)
                 .opacity(cardOpacity)
         )
     }
@@ -1647,24 +1640,16 @@ private struct LiquidRefreshIndicator: View {
 
 private struct LiquidAddButton: View {
     @EnvironmentObject var router: NavRouter
-    @Environment(\.colorScheme) private var colorScheme
     var body: some View {
         Button { router.requestQuickActions() } label: {
             Image(systemName: "plus")
                 .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(colorScheme == .dark
-                    ? StrandPalette.onDarkPrimary
-                    : StrandPalette.textPrimary)
+                .foregroundStyle(StrandPalette.textPrimary)
                 .frame(width: 34, height: 34)
                 .background {
                     Circle()
-                        .fill(colorScheme == .dark
-                            ? .white.opacity(0.16)
-                            : StrandPalette.surfaceRaised.opacity(0.92))
-                        .overlay(Circle().strokeBorder(
-                            colorScheme == .dark ? .white.opacity(0.08) : StrandPalette.hairline,
-                            lineWidth: 1
-                        ))
+                        .fill(StrandPalette.surfaceRaised.opacity(0.92))
+                        .overlay(Circle().strokeBorder(StrandPalette.hairline, lineWidth: 1))
                 }
         }
         .buttonStyle(LiquidPressStyle())
@@ -1889,13 +1874,8 @@ private struct LiquidBatteryButton: View {
     var body: some View {
         Button { router.openDevices() } label: {
             ZStack {
-                Circle().fill(colorScheme == .dark
-                    ? Color(.sRGB, red: 10 / 255, green: 11 / 255, blue: 16 / 255, opacity: 0.5)
-                    : StrandPalette.surfaceRaised.opacity(0.92))
-                Circle().strokeBorder(
-                    colorScheme == .dark ? .white.opacity(0.15) : StrandPalette.hairline,
-                    lineWidth: 1
-                )
+                Circle().fill(StrandPalette.surfaceRaised.opacity(0.92))
+                Circle().strokeBorder(StrandPalette.hairline, lineWidth: 1)
                 switch display {
                 case .charge(let pct, let charging):
                     Circle()
@@ -1972,7 +1952,6 @@ private struct LiquidBatteryButton: View {
 /// `SyncStatusChip`'s light-surface chrome, which would read poorly over the photo/gradient hero.
 private struct LiquidSyncChip: View {
     @EnvironmentObject var live: LiveState
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         switch SyncChipState.resolve(live: live) {
@@ -1995,20 +1974,13 @@ private struct LiquidSyncChip: View {
             Image(systemName: system).font(.system(size: 11, weight: .bold))
             Text(text).font(.system(size: 12, weight: .bold))
         }
-        .foregroundStyle(colorScheme == .dark
-            ? StrandPalette.onDarkPrimary
-            : StrandPalette.textPrimary)
+        .foregroundStyle(StrandPalette.textPrimary)
         .padding(.horizontal, 10)
         .frame(height: 34)
         .background {
             Capsule()
-                .fill(colorScheme == .dark
-                    ? .white.opacity(0.16)
-                    : StrandPalette.surfaceRaised.opacity(0.92))
-                .overlay(Capsule().strokeBorder(
-                    colorScheme == .dark ? .white.opacity(0.08) : StrandPalette.hairline,
-                    lineWidth: 1
-                ))
+                .fill(StrandPalette.surfaceRaised.opacity(0.92))
+                .overlay(Capsule().strokeBorder(StrandPalette.hairline, lineWidth: 1))
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(a11y))

@@ -280,8 +280,12 @@ struct LiquidTube: View {
     var animated: Bool = true
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var power = LiquidPowerMonitor.shared
     @State private var sim = LiquidSim(target: 0)
+    private var trackColor: Color {
+        colorScheme == .dark ? StrandPalette.surfaceOverlay : StrandPalette.surfaceInset
+    }
 
     var body: some View {
         if animated && !reduceMotion && !power.isLowPower { liveTube } else { staticTube }
@@ -293,7 +297,7 @@ struct LiquidTube: View {
             Canvas { context, size in
                 sim.step(now: now, tilt: LiquidMotion.shared.tilt, target: frac)
                 LiquidRender.tube(context, size, sim, now: now, frac: max(0, min(1, frac)),
-                                  tint: tint, track: StrandPalette.surfaceInset, rim: StrandPalette.hairline)
+                                  tint: tint, track: trackColor, rim: StrandPalette.hairline)
             }
         }
         .frame(height: height)
@@ -305,7 +309,7 @@ struct LiquidTube: View {
         Canvas { context, size in
             LiquidRender.tube(context, size, LiquidSim.posed(frac), now: 0,
                               frac: max(0, min(1, frac)), tint: tint,
-                              track: StrandPalette.surfaceInset, rim: StrandPalette.hairline)
+                              track: trackColor, rim: StrandPalette.hairline)
         }
         .frame(height: height)
     }
