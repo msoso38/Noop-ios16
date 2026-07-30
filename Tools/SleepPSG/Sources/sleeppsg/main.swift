@@ -265,6 +265,33 @@ if want("baseline") {
       mean            \(f(mean(sh.latencyPred), 10, 1))\(f(mean(sh.latencyTruth), 10, 1))  min
       MAE (paired)    \(f(mae(zip(sh.latencyPairsPred, sh.latencyPairsTruth).map { $0 - $1 }), 10, 1))            min  (n = \(sh.latencyPairsPred.count))
     """)
+
+    // A harness that replaces a deleted one has to say whether it is the same instrument. These are the
+    // figures the previous harness reported on this dataset. They are printed as a self-check, NOT as a
+    // target: nothing in this tool is tuned to hit them, and where they disagree the disagreement is the
+    // finding. See `Variants.preNine30Guard` for what explains the prediction-side gap.
+    let ref: [(String, Double, Double, Int)] = [
+        ("subjects", Double(subjects.count), 31, 0),
+        ("PSG-scored epochs", Double(sh.conf.total), 26773, 0),
+        ("kappa (4-class)", sh.kappa, 0.349, 3),
+        ("REM F1", sh.conf.prf("rem").f1, 0.515, 3),
+        ("REM % of night", sh.predPct["rem"]!, 20.8, 2),
+        ("deep % predicted", sh.predPct["deep"]!, 19.25, 2),
+        ("deep % truth", sh.truthPct["deep"]!, 14.76, 2),
+        ("first-REM predicted, min", median(sh.latencyPred), 142.0, 1),
+        ("first-REM truth, min", median(sh.latencyTruth), 88.5, 1),
+    ]
+    print("""
+
+    SELF-CHECK against the previous harness's reported figures
+    Printed to expose disagreement, not to be matched. Nothing here is tuned to these numbers. Stage
+    fractions use the per-subject-mean convention, which is the one those figures were reported on.
+
+    quantity                        measured   previously      delta
+    """)
+    for (name, got, want, dp) in ref {
+        print("      \(name.padding(toLength: 28, withPad: " ", startingAt: 0))\(f(got, 9, dp))\(f(want, 13, dp))\(f(got - want, 11, dp))")
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -412,9 +439,14 @@ if want("variants") {
     `wake bias` and `deep bias` are predicted minus truth in percentage points — the #437 guard, which
     kappa does not carry.
     """)
-    var csvLines = ["variant,epochs,kappa,accuracy,rem_f1,deep_f1,wake_f1,wake_pct,wake_bias_pp,deep_pct,deep_bias_pp,rem_pct,rem_bias_pp,median_rem_latency_min,rem_latency_mae_min"]
-    var base: (kappa: Double, remF1: Double, wakeBias: Double, deepBias: Double, latMae: Double)?
-    print("    variant                          kappa     Δκ   REM F1   wake%  bias   deep%  bias    REM%  bias   latMAE")
+    var csvLines = [(["variant", "epochs", "kappa", "accuracy"]
+        + stageOrder.flatMap { ["\($0)_precision", "\($0)_recall", "\($0)_f1", "\($0)_pct", "\($0)_bias_pp"] }
+        + ["median_rem_latency_min", "rem_latency_mae_min"]).joined(separator: ",")]
+    var base: (kappa: Double, remF1: Double, wakeSens: Double)?
+    // Wake SENSITIVITY is in the table beside kappa because it is the quantity #987 was landed on against
+    // the strap's band state (16.0 % → 17.6 %). Printing it here is what makes that claim checkable against
+    // truth rather than merely restated.
+    print("    variant                          kappa     Δκ   REM F1  wakeSens   wake%  bias   deep%  bias    REM%  bias   latMAE")
     for v in Variants.all {
         let rows = v.name.hasPrefix("incumbent")
             ? shipped
@@ -422,17 +454,17 @@ if want("variants") {
         let s = summarise(rows)
         let p = pooledPct(rows) { $0.pred }, t = pooledPct(rows) { $0.truth }
         let latMae = mae(zip(s.latencyPairsPred, s.latencyPairsTruth).map { $0 - $1 })
-        if base == nil {
-            base = (s.kappa, s.conf.prf("rem").f1, p["wake"]! - t["wake"]!, p["deep"]! - t["deep"]!, latMae)
-        }
+        let wakeSens = s.conf.prf("wake").recall * 100
+        if base == nil { base = (s.kappa, s.conf.prf("rem").f1, wakeSens) }
         let b = base!
-        print("    \(v.name.padding(toLength: 32, withPad: " ", startingAt: 0))\(f(s.kappa, 6, 3)) \(f(s.kappa - b.kappa, 6, 3))   \(f(s.conf.prf("rem").f1, 6, 3))  \(f(p["wake"]!, 6, 2))\(f(p["wake"]! - t["wake"]!, 6, 2))  \(f(p["deep"]!, 6, 2))\(f(p["deep"]! - t["deep"]!, 6, 2))  \(f(p["rem"]!, 6, 2))\(f(p["rem"]! - t["rem"]!, 6, 2))  \(f(latMae, 6, 1))")
-        csvLines.append([v.name, "\(s.conf.total)", "\(s.kappa)", "\(s.accuracy)",
-                         "\(s.conf.prf("rem").f1)", "\(s.conf.prf("deep").f1)", "\(s.conf.prf("wake").f1)",
-                         "\(p["wake"]!)", "\(p["wake"]! - t["wake"]!)",
-                         "\(p["deep"]!)", "\(p["deep"]! - t["deep"]!)",
-                         "\(p["rem"]!)", "\(p["rem"]! - t["rem"]!)",
-                         "\(median(s.latencyPred))", "\(latMae)"].joined(separator: ","))
+        print("    \(v.name.padding(toLength: 32, withPad: " ", startingAt: 0))\(f(s.kappa, 6, 3)) \(f(s.kappa - b.kappa, 6, 3))   \(f(s.conf.prf("rem").f1, 6, 3))  \(f(wakeSens, 6, 2))\(f(wakeSens - b.wakeSens, 6, 2))  \(f(p["wake"]!, 6, 2))\(f(p["wake"]! - t["wake"]!, 6, 2))  \(f(p["deep"]!, 6, 2))\(f(p["deep"]! - t["deep"]!, 6, 2))  \(f(p["rem"]!, 6, 2))\(f(p["rem"]! - t["rem"]!, 6, 2))  \(f(latMae, 6, 1))")
+        var row = [v.name, "\(s.conf.total)", "\(s.kappa)", "\(s.accuracy)"]
+        for st in stageOrder {
+            let m = s.conf.prf(st)
+            row += ["\(m.precision)", "\(m.recall)", "\(m.f1)", "\(p[st]!)", "\(p[st]! - t[st]!)"]
+        }
+        row += ["\(median(s.latencyPred))", "\(latMae)"]
+        csvLines.append(row.joined(separator: ","))
     }
     print("""
 

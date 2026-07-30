@@ -89,13 +89,16 @@ final class SleepAccelTests: XCTestCase {
     /// the recipe's `((start + 29) / 30) * 30` truncates toward zero, which is only the intended floor on
     /// non-negative input.
     func testPreRecordingSamplesStayPositive() throws {
+        // t = −300.5 is before lights-out but still inside the recipe's read window (−330 onward), so it
+        // survives clipping and exercises the negative-time path. Floor puts it in second −301.
         let root = try makeFixture(labels: "0 0\n30 2\n",
-                                   heartRate: "-600.0,70\n0.0,60\n",
-                                   motion: "-600.0 0.0 0.0 1.0\n0.0 0.0 0.0 1.0\n")
+                                   heartRate: "-300.5,70\n0.0,60\n",
+                                   motion: "-300.5 0.0 0.0 1.0\n0.0 0.0 0.0 1.0\n")
         let s = try XCTUnwrap(SleepAccel.load(root: root, id: "9001"))
         XCTAssertTrue(s.hr.allSatisfy { $0.ts > 0 })
         XCTAssertTrue(s.grav.allSatisfy { $0.ts > 0 })
-        XCTAssertEqual(s.hr.first?.ts, SleepAccel.timeBase - 600)
+        XCTAssertEqual(s.hr.first?.ts, SleepAccel.timeBase - 301)
+        XCTAssertEqual(s.grav.first?.ts, SleepAccel.timeBase - 301)
     }
 
     /// The byte-level row parser: mixed separators, blank lines, a trailing line with no newline, and a
@@ -217,6 +220,31 @@ final class VariantsTests: XCTestCase {
         XCTAssertEqual(o.transition["awake"]!, s.transition["awake"]!, "the awake row is #987's, not this one's")
         o.transition = s.transition
         XCTAssertEqual(o, s)
+
+        var g = Variants.preNine30Guard.config
+        XCTAssertEqual(g.remLatencyMode, .preNine30FractionStep)
+        g.remLatencyMode = s.remLatencyMode
+        XCTAssertEqual(g, s, "the provenance variant must change nothing but the guard's shape")
+    }
+
+    /// The shipped mode is the graded one, and the pre-#930 step must actually reach the lattice — a
+    /// provenance variant that staged identically to the incumbent would explain nothing about the gap it
+    /// is there to explain.
+    func testPreNine30GuardActuallyChangesTheHypnogram() {
+        XCTAssertEqual(RecipeConfig.shipped.remLatencyMode, .gradedFromOnset)
+        var differed = false
+        for n in PortValidation.corpus().prefix(6) {
+            let a = V2Recipe.stageSession(start: n.start, end: n.end, grav: n.grav, hr: n.hr,
+                                          rr: n.rr, resp: n.resp, cfg: .shipped)
+            let b = V2Recipe.stageSession(start: n.start, end: n.end, grav: n.grav, hr: n.hr,
+                                          rr: n.rr, resp: n.resp, cfg: Variants.preNine30Guard.config)
+            XCTAssertFalse(a.isEmpty)
+            if epochLabels(a, start: n.start, end: n.end) != epochLabels(b, start: n.start, end: n.end) {
+                differed = true
+                break
+            }
+        }
+        XCTAssertTrue(differed, "the pre-#930 guard staged identically on every night — mode is not wired")
     }
 
     /// The shipped dead-zone is off, and `dz` must then be the identity — that is what makes

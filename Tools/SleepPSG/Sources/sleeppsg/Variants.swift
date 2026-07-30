@@ -100,6 +100,27 @@ enum Variants {
                        note: "all seven components at once", config: c)
     }
 
+    /// NOT a candidate — a provenance check, and the reason it is here is worth stating.
+    ///
+    /// This harness was rebuilt to reproduce a set of numbers a previous, deleted harness measured on this
+    /// same dataset: kappa 0.349, REM F1 0.515, REM 20.8 % of night, median first-REM latency 142.0 min.
+    /// The rebuild reproduces every TRUTH-side figure exactly (26 773 scored epochs, deep 14.76 % of night,
+    /// truth first-REM 88.5 min) but lands the prediction side elsewhere — more REM, arriving earlier.
+    ///
+    /// One mechanism explains that whole pattern, and it is dated rather than mysterious: PR #930 replaced a
+    /// hard `c < 0.12 ? 3.0 : 0.0` step in the SESSION-FRACTION domain with a graded penalty measured in
+    /// MINUTES from sleep onset. Averaged over the epochs it covers, the graded guard is the weaker one, so
+    /// after #930 the recipe admits REM earlier and admits more of it. The old numbers were measured while
+    /// #930 was the CANDIDATE — so the incumbent they describe is the recipe as it stood BEFORE it.
+    ///
+    /// This variant runs that pre-#930 guard so the claim is checked rather than asserted.
+    static var preNine30Guard: Variant {
+        var c = RecipeConfig.shipped
+        c.remLatencyMode = .preNine30FractionStep
+        return Variant(name: "pre-#930 REM guard (provenance)",
+                       note: "c<0.12 step in the fraction domain, single Viterbi pass", config: c)
+    }
+
     /// The shipped recipe itself, so a table row exists to difference against.
     static var incumbent: Variant {
         Variant(name: "incumbent (shipped)", note: "SleepStagerV2 as it ships today", config: .shipped)
@@ -107,6 +128,6 @@ enum Variants {
 
     static var all: [Variant] {
         [incumbent, pr987, p348Priors, p348Motion, p348Emissions, p348DeepGate,
-         p348Deadzone, p348OtherRows, p348All]
+         p348Deadzone, p348OtherRows, p348All, preNine30Guard]
     }
 }

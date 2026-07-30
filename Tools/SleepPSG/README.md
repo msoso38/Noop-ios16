@@ -135,6 +135,44 @@ Each row is the shipped recipe with **one** named change: PR #987's awake-transi
 fraction biases, because a component is an improvement only if it wins the first without wrecking the
 second.
 
+The last row is not a candidate. `pre-#930 REM guard (provenance)` runs the REM-latency guard as it stood
+before PR #930 — a hard `c < 0.12 ? 3.0 : 0.0` step in the session-fraction domain — and exists to explain
+the self-check below.
+
+---
+
+## The self-check, and what it found
+
+This tool replaces one that was deleted. Section 3 prints its measured values beside the figures that
+harness reported on this same dataset, so anyone can see at a glance whether the rebuild is the same
+instrument. **Nothing here is tuned to those numbers**, and where they disagree the disagreement is
+reported rather than closed.
+
+Every **truth-side** figure reproduces exactly: 31 subjects, **26 773** PSG-scored epochs, deep **14.76 %**
+of night, truth median first-REM latency **88.5 min**. Predicted deep lands at **19.24 %** against a
+reported 19.25 %, and four-class kappa at **0.356** against a reported 0.349.
+
+The prediction side of REM does not match: more REM (27.0 % vs 20.8 %), REM F1 0.569 vs 0.515, and a first
+REM period arriving much earlier (median 91.5 min vs 142.0).
+
+**The obvious explanation was tested and is wrong.** PR #930 replaced a fraction-domain `c < 0.12 ? 3.0 : 0`
+step with a graded penalty measured in minutes from sleep onset, and the old figures were reported while
+#930 was the candidate — so the incumbent they describe is the recipe *before* it. That predicts exactly
+this pattern. The `pre-#930` variant runs that guard, and it moves nothing: kappa 0.356 → 0.356, REM F1
+0.569 → 0.569, REM 27.02 % → 26.97 %. On 8-hour lab nights the guard barely binds either way. The
+hypothesis is falsified, and it is recorded here rather than deleted because the variant is what falsified
+it.
+
+What the residual is remains **unresolved**, and the tool is not tuned to close it. Two constraints on any
+future explanation, both from the table above:
+
+- It cannot be the session window. `clock` drives the deep prior and the REM ramp alike; predicted deep
+  reproduces to 0.01 pp, so `clock` is the same quantity in both harnesses.
+- It is REM-specific and it is not the latency guard, which the variant just ruled out.
+
+One suggestive coincidence, offered as an observation and not a conclusion: the previously reported "REM
+F1 0.515" is exactly this harness's measured REM **precision** (0.515), against a measured F1 of 0.569.
+
 ---
 
 ## What this benchmark is not entitled to claim

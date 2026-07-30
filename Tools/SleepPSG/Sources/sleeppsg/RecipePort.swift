@@ -33,6 +33,17 @@ import WhoopProtocol
 /// The defaults are DUPLICATED from the shipped file rather than read from it, because `SleepStagerV2`
 /// keeps them internal to `StrandAnalytics`. Duplication that can drift is normally a defect; here it is
 /// pinned by `PortValidation`, which fails the build the moment the two disagree on any label.
+/// How the REM emission is held back around sleep onset.
+enum RemLatencyMode: Equatable {
+    /// #930, shipped: a penalty of `remLatencyPenalty` log-odds at sleep ONSET, decaying linearly to zero
+    /// `remLatencyMinutes` later. Onset is itself a staging output, so the recipe runs Viterbi twice — once
+    /// with the guard off to find onset, once with it re-based on that onset.
+    case gradedFromOnset
+    /// What #930 replaced: a hard step `c < 0.12 ? penalty : 0`, in the FRACTION domain and measured from
+    /// the window start rather than from sleep onset, with a single Viterbi pass.
+    case preNine30FractionStep
+}
+
 struct RecipeConfig: Equatable {
     // Population base rates, as log-priors.
     var priorLight: Double
@@ -69,6 +80,11 @@ struct RecipeConfig: Equatable {
     var remLatencyMinutes: Double
     var onsetSustainedEpochs: Int
 
+    /// Which REM-latency guard the recipe runs. Shipped is `.gradedFromOnset` (#930). The pre-#930 step is
+    /// kept because the reference numbers this harness was rebuilt to reproduce were measured against it —
+    /// see `Variants.preNine30Guard`. It is a diagnostic, not a candidate.
+    var remLatencyMode: RemLatencyMode = .gradedFromOnset
+
     /// The shipped recipe, as of `Packages/StrandAnalytics/Sources/StrandAnalytics/SleepStagerV2.swift`.
     static let shipped = RecipeConfig(
         priorLight: log(0.50), priorDeep: log(0.18), priorRem: log(0.22), priorAwake: log(0.10),
@@ -85,7 +101,8 @@ struct RecipeConfig: Equatable {
             "light": ["deep": 0.06, "rem": 0.06, "light": 0.85, "awake": 0.03],
             "awake": ["deep": 0.01, "rem": 0.02, "light": 0.27, "awake": 0.70],
         ],
-        remLatencyPenalty: 3.0, remLatencyMinutes: 60.0, onsetSustainedEpochs: 10)
+        remLatencyPenalty: 3.0, remLatencyMinutes: 60.0, onsetSustainedEpochs: 10,
+        remLatencyMode: .gradedFromOnset)
 
     var baseLogPrior: [String: Double] {
         ["light": priorLight, "deep": priorDeep, "rem": priorRem, "awake": priorAwake]
@@ -429,12 +446,25 @@ enum V2Recipe {
                 "light": prior["light"]!,
                 "awake": cfg.awakeZmv * zmvv + awakeCardiac + prior["awake"]!,
             ]
-            let pr = cyclePrior(f.clock, .infinity, cfg)
+            // In `.gradedFromOnset` the guard is DISABLED here (`.infinity` ⇒ guard = 0) and added by pass 2
+            // once onset is known. In `.preNine30FractionStep` there is no onset to wait for — the step is
+            // a function of the session fraction alone — so it goes in now and there is no second pass.
+            let pr: [String: Double]
+            switch cfg.remLatencyMode {
+            case .gradedFromOnset:
+                pr = cyclePrior(f.clock, .infinity, cfg)
+            case .preNine30FractionStep:
+                pr = ["deep": 1.2 * max(0.0, 1.0 - f.clock / 0.55),
+                      "rem": 1.0 * f.clock - (f.clock < 0.12 ? cfg.remLatencyPenalty : 0.0),
+                      "light": 0.0, "awake": 0.0]
+            }
             for s in stageNames { em[s]! += pr[s]! }
             if f.jerkMax > f.jerkScale * cfg.jerkFloorGateMult { em["awake"]! += cfg.motionGateBoost }
             if let rg = f.respReg { let z = zrg(rg); em["deep"]! += cfg.respWeight * z; em["rem"]! -= cfg.respWeight * z }
             seq.append(em)
         }
+
+        if cfg.remLatencyMode == .preNine30FractionStep { return viterbi(seq, cfg) }
 
         let provisional = viterbi(seq, cfg)
         let originMin = sustainedSleepOnset(provisional, cfg).map { feats[$0].minutesSinceOnset } ?? 0.0
