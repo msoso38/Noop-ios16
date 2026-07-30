@@ -445,6 +445,13 @@ fun SettingsScreen(
     // Fixes a baseline poisoned by a bad first week (worn sick, or early nights that anchored too high).
     var showRecalibrateConfirm by remember { mutableStateOf(false) }
 
+    // "Export raw + log" confirm dialog (#641): the matched-pair export includes the raw 5/MG biometric
+    // capture, so — like the Test Centre bundle's review-before-share step — the tap now opens a
+    // confirmation naming what's included instead of firing the share sheet immediately. The export
+    // itself (LogExport.shareRawAndLog) already routes every entry through the Test Centre's redaction
+    // + size-cap pass; this dialog is the review gate on top of that.
+    var showRawExportConfirm by remember { mutableStateOf(false) }
+
     // Steps-estimate calibration screen (WHOOP 4.0), reached from the Profile card's "Steps estimate"
     // tap-through. Mirrors the macOS StepsCalibrationSheet: honest explainer + current fit + a recent
     // estimated-vs-phone table + a manual coefficient override. Full-screen Dialog like the guide above.
@@ -1976,7 +1983,7 @@ fun SettingsScreen(
                     leadingIcon = Icons.Filled.IosShare,
                     kind = NoopButtonKind.Secondary,
                     fullWidth = true,
-                    onClick = { scope.launch { LogExport.shareRawAndLog(context, vm.ble.exportLogText(), live.whoop5Detected) } },
+                    onClick = { showRawExportConfirm = true },
                 )
             }
         }
@@ -2342,6 +2349,39 @@ fun SettingsScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { showRecalibrateConfirm = false }) {
+                        Text(uiString(R.string.l10n_settings_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+                    }
+                },
+            )
+        }
+
+        if (showRawExportConfirm) {
+            // Review-before-share gate for the raw+log matched-pair export (#641): names exactly what's
+            // shared (raw biometric frames, R-R, skin temp, motion, the strap's console text, plus the
+            // connection log) before the share sheet fires, mirroring the Test Centre's own
+            // "review before sharing" step. LogExport.shareRawAndLog already redacts + caps every entry
+            // through TestBundleAssembler; this dialog is the confirmation step on top of that.
+            AlertDialog(
+                onDismissRequest = { showRawExportConfirm = false },
+                containerColor = Palette.surfaceOverlay,
+                title = { Text(uiString(R.string.l10n_settings_screen_export_raw_capture_and_log_776a7530), style = NoopType.title2, color = Palette.textPrimary) },
+                text = {
+                    Text(
+                        uiString(R.string.l10n_settings_screen_includes_raw_biometric_frames_9ef537b6),
+                        style = NoopType.subhead,
+                        color = Palette.textSecondary,
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showRawExportConfirm = false
+                            scope.launch { LogExport.shareRawAndLog(context, vm.ble.exportLogText(), live.whoop5Detected) }
+                        },
+                    ) { Text(uiString(R.string.l10n_settings_screen_export_37b7828c), style = NoopType.body, color = Palette.accent) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRawExportConfirm = false }) {
                         Text(uiString(R.string.l10n_settings_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
                     }
                 },

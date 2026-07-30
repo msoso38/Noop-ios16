@@ -154,6 +154,13 @@ struct SettingsView: View {
     /// Confirm gate for the "Recalibrate Charge baseline" action (it re-learns the HRV anchor from tonight).
     @State private var showRecalibrateConfirm = false
 
+    /// Review-before-share gate for the raw+log matched-pair export (#641): the matched pair includes the
+    /// raw 5/MG biometric capture, so — mirroring the Test Centre bundle's own review-before-share step —
+    /// the tap opens a confirmation naming what's included instead of firing the share sheet immediately.
+    /// `exportRawAndLog()` itself already routes every entry through `TestBundleAssembler`'s redaction +
+    /// size-cap pass; this dialog is the confirmation step on top of that.
+    @State private var showRawExportConfirm = false
+
     /// "What's New" changelog sheet, reachable any time from About.
     @State private var showWhatsNew = false
 
@@ -239,6 +246,13 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays. Use it if a bad first week, like wearing it while sick, set your baseline off.")
+        }
+        .confirmationDialog("Export raw capture and log?",
+                            isPresented: $showRawExportConfirm, titleVisibility: .visible) {
+            Button("Export") { exportRawAndLog() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Includes raw biometric frames (heart rate, R-R, skin temp, motion) and the strap's console text, plus your connection log. Identifiers are redacted automatically — share only if you're comfortable with that.")
         }
         .confirmationDialog("Mark optical experiment phase",
                             isPresented: $showOpticalPhasePicker, titleVisibility: .visible) {
@@ -1562,7 +1576,7 @@ struct SettingsView: View {
                     // and the strap log together (timestamped, same minute) so a protocol-mapping issue
                     // arrives with the frames AND the context that produced them.
                     NoopButton("Export raw + log", systemImage: "square.and.arrow.up.on.square", kind: .secondary) {
-                        exportRawAndLog()
+                        showRawExportConfirm = true
                     }
                     Text("Saves the raw capture and the strap log together as a matched pair. Attach both to a protocol-mapping issue.")
                         .font(StrandFont.caption)
@@ -1729,10 +1743,17 @@ struct SettingsView: View {
             suggestedName: FileExport.timestampedName("noop-whoop5-optical-experiment", ext: "jsonl"))
     }
 
-    /// One-tap matched-pair export (#510): export the raw puffin capture AND the strap log together,
-    /// both stamped with the same `yyMMdd-HHmm` minute so they're obviously a pair. Reuses the existing
-    /// export utilities — `FileExport.exportPair` shares both files in one iOS share sheet, and saves
-    /// each via its own NSSavePanel on macOS (no new file plumbing).
+    /// One-tap matched-pair export (#510): export the raw puffin capture AND the strap log together as one
+    /// zip, gated behind the `showRawExportConfirm` review dialog.
+    ///
+    /// #641: this used to hand `capture`'s bytes straight to `FileExport.exportPair`, bypassing the Test
+    /// Centre bundle's redaction — a serial embedded in the strap's raw console text (only scrubbed at the
+    /// live log sink, which the raw capture file never passes through) would have shipped unredacted.
+    /// Every entry now goes through `TestBundleAssembler.redactEntries` (the same scrub pass the Test
+    /// Centre report uses) and `capEntries` (the same 20 MB cap); the entries are named to match
+    /// `TestBundleAssembler.trimmableNames` so an oversized capture is trimmed exactly like it would be in
+    /// a Test Centre bundle. The caller gates the tap behind a confirm dialog naming what's included,
+    /// mirroring the Test Centre's own review-before-share step.
     private func exportRawAndLog() {
         model.ble.flushPuffinCaptures()
         guard let capture = live.puffinCaptureURL else {
@@ -1741,10 +1762,16 @@ struct SettingsView: View {
             showBackupAlert = true
             return
         }
+        var entries: [FileExport.BundleEntry] = [
+            FileExport.BundleEntry(name: "report.txt", data: Data(live.exportableLogText().utf8)),
+        ]
+        if let captureData = try? Data(contentsOf: capture) {
+            entries.insert(FileExport.BundleEntry(name: "raw-capture.jsonl", data: captureData), at: 0)
+        }
+        let redacted = TestBundleAssembler.redactEntries(entries)
+        let (capped, _) = TestBundleAssembler.capEntries(redacted)
         let stamp = FileExport.timestamp()
-        FileExport.exportPair(
-            file: capture, fileSuggestedName: "noop-raw-capture-\(stamp).json",
-            text: live.exportableLogText(), textSuggestedName: "noop-strap-log-\(stamp).txt")
+        FileExport.exportBundle(entries: capped, suggestedName: "noop-export-\(stamp).zip")
     }
 
     #if os(macOS)

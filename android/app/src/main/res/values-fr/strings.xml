@@ -1272,6 +1272,9 @@
     <string name="l10n_settings_screen_export_csv_6bce63a3">Exporter en CSV…</string>
     <string name="l10n_settings_screen_export_raw_log_matched_pair_d65390bf">Exportation brute + log (paire correspondante)</string>
     <string name="l10n_settings_screen_export_raw_sensor_data_csv_a171b81e">Exporter les données brutes du capteur (CSV)</string>
+    <string name="l10n_settings_screen_export_raw_capture_and_log_776a7530">Exporter la capture brute et le journal ?</string>
+    <string name="l10n_settings_screen_includes_raw_biometric_frames_9ef537b6">Comprend des trames biométriques brutes (fréquence cardiaque, R-R, température cutanée, mouvement) et le texte console du bracelet, ainsi que votre journal de connexion. Les identifiants sont automatiquement masqués — ne partagez que si cela vous convient.</string>
+    <string name="l10n_settings_screen_export_37b7828c">Exporter</string>
     <string name="l10n_settings_screen_extends_the_sky_behind_the_whole_39bb82cc">Étend le ciel derrière tout l\'écran Aujourd\'hui, de sorte qu\'en réduisant la Transparence des cartes, il apparaît à travers chaque carte. Nécessite que le fond du cycle journalier soit activé.</string>
     <string name="l10n_settings_screen_feel_the_current_time_as_a_8ca41db1">Sentez l\'heure actuelle comme une séquence de buzzs (#460). Ne fait rien sauf si votre bracelet est connecté.</string>
     <string name="l10n_settings_screen_flags_accepted_but_the_enable_sequence_542b2595">Indicateurs acceptés, mais la séquence d\'activation ne démarre pas de flux en direct séparé. Les enregistrements détaillés arrivent dans le cadre de la synchronisation normale de l\'historique (#494).</string>

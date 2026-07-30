@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.core.content.FileProvider
 import com.noop.BuildConfig
 import com.noop.ble.PuffinExperiment
+import com.noop.testcentre.TestBundleAssembler
 import java.io.File
 
 /**
@@ -276,8 +277,15 @@ object LogExport {
      * One-tap matched-pair export (#510): share BOTH the raw 5/MG capture AND the strap log together. Now
      * a 2-entry case of [exportBundle] so the pair rides in one `.zip` (mobile GitHub can attach a zip,
      * not loose .txt files). If there's no capture yet, falls back to just the log so the tap isn't a dead
-     * end. Reuses the same file-builders the single-share paths use; both entries are already redacted by
-     * their writers.
+     * end. Reuses the same file-builders the single-share paths use.
+     *
+     * #641: this quick path used to hand `capture.readBytes()` straight to the zip, bypassing the Test
+     * Centre bundle's redaction — a serial embedded in the strap's raw console text (only scrubbed at the
+     * live log() sink, which raw-capture.jsonl never passes through) would have shipped unredacted. Every
+     * entry now goes through [TestBundleAssembler.redactEntries] (the same scrub pass the Test Centre
+     * report uses) and [TestBundleAssembler.capEntries] (the same 20 MB cap), so this quick export can't
+     * drift from the reviewed bundle pipeline. The caller (SettingsScreen) gates the tap behind a
+     * confirm dialog naming what's included, mirroring the Test Centre's review-before-share step.
      */
     suspend fun shareRawAndLog(context: Context, logText: String, whoop5Connected: Boolean) {
         runCatching {
@@ -289,8 +297,10 @@ object LogExport {
             } else {
                 entries.add(0, "raw-capture.jsonl" to capture.readBytes())
             }
+            val redacted = TestBundleAssembler.redactEntries(entries)
+            val (capped, _) = TestBundleAssembler.capEntries(redacted)
             val name = "noop-export-${timestamp()}.zip"
-            exportBundle(context, entries, name)
+            exportBundle(context, capped, name)
         }.onFailure {
             Toast.makeText(context, "Couldn't export the pair: ${it.message}", Toast.LENGTH_LONG).show()
         }

@@ -1423,6 +1423,9 @@
     <string name="l10n_settings_screen_export_csv_6bce63a3">Exportar CSV…</string>
     <string name="l10n_settings_screen_export_raw_log_matched_pair_d65390bf">Exportar dados brutos + registo (par correspondente)</string>
     <string name="l10n_settings_screen_export_raw_sensor_data_csv_a171b81e">Exportar dados brutos do sensor (CSV)</string>
+    <string name="l10n_settings_screen_export_raw_capture_and_log_776a7530">Exportar captura em bruto e registo?</string>
+    <string name="l10n_settings_screen_includes_raw_biometric_frames_9ef537b6">Inclui frames biométricos em bruto (frequência cardíaca, R-R, temperatura da pele, movimento) e o texto de consola da pulseira, além do registo de ligação. Os identificadores são ocultados automaticamente — partilha apenas se estiveres confortável com isso.</string>
+    <string name="l10n_settings_screen_export_37b7828c">Exportar</string>
     <string name="l10n_settings_screen_extends_the_sky_behind_the_whole_39bb82cc">Estende o céu por trás de todo o ecrã Hoje, pelo que reduzir a transparência do cartão permite que este seja apresentado em todos os cartões. Necessita do histórico do ciclo diário ativado.</string>
     <string name="l10n_settings_screen_feel_the_current_time_as_a_8ca41db1">Sinta a hora atual como uma sequência de zumbidos (#460). Não faz nada a menos que a tua bracelete esteja ligada.</string>
     <string name="l10n_settings_screen_flags_accepted_but_the_enable_sequence_542b2595">Sinalizadores aceites, mas a sequência de ativação não inicia uma transmissão em direto separada. Os registos profundos chegam como parte da sincronização normal do histórico (#494).</string>
