@@ -33,6 +33,8 @@ import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -174,6 +176,10 @@ fun DataSourcesScreen(vm: AppViewModel) {
     var busy by remember { mutableStateOf(false) }
     // ah-delete (#616): drives the "Remove Apple Health imported data" confirm dialog.
     var confirmDeleteApple by remember { mutableStateOf(false) }
+    // #645: drives the Health Connect category picker — shown before the FIRST permission request
+    // (so a new user picks a scope instead of one all-or-nothing prompt) and reachable again any
+    // time via "Choose data types" to grant an additional category later.
+    var showHcCategoryPicker by remember { mutableStateOf(false) }
 
     // Run an importer off the main thread, refresh the counts, then toast the result.
     fun runImport(block: suspend () -> ImportSummary) {
@@ -295,7 +301,17 @@ fun DataSourcesScreen(vm: AppViewModel) {
     // where it's install-time) the VM starts the HR peripheral.
     val requestAdvertise = rememberRequestAdvertise(onGranted = { vm.setHrBroadcast(true) })
 
-    // Import directly if permissions already granted, otherwise request them first.
+    // #645: request permissions for ONLY the chosen categories, not the whole PERMISSIONS union —
+    // the actual read (HealthConnectImporter.import) already tolerates a partial grant, so scoping
+    // the ask is the whole fix: nothing else about the import path changes.
+    fun requestHcCategories(categories: Set<HealthConnectImporter.HealthDataCategory>) {
+        if (categories.isEmpty()) return
+        hcPermissionLauncher.launch(HealthConnectImporter.permissionsFor(categories))
+    }
+
+    // Import directly if something is already granted (partial-grant import, #150), otherwise show
+    // the category picker so the user chooses what to share BEFORE any Health Connect prompt fires
+    // (#645) instead of one bundled all-types request.
     fun startHealthConnect() {
         scope.launch {
             val granted = runCatching {
@@ -304,7 +320,7 @@ fun DataSourcesScreen(vm: AppViewModel) {
             if (granted.any { it in HealthConnectImporter.PERMISSIONS }) {
                 runImport { HealthConnectImporter.import(context, vm.repo, ProfileStore.from(context).heightCm) }
             } else {
-                hcPermissionLauncher.launch(HealthConnectImporter.PERMISSIONS)
+                showHcCategoryPicker = true
             }
         }
     }
@@ -444,6 +460,18 @@ fun DataSourcesScreen(vm: AppViewModel) {
                     enabled = !busy,
                     modifier = Modifier.fillMaxWidth(),
                 ) { startHealthConnect() }
+
+                // #645: reachable any time (not just on first connect) so a user who granted only
+                // "Core recovery" can come back later and add "Activity" or "Body composition"
+                // without NOOP ever bundling a category the user didn't ask to extend.
+                Text(
+                    uiString(R.string.l10n_data_sources_screen_choose_data_types_9c3a2f18),
+                    style = NoopType.footnote,
+                    color = Palette.accent,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !busy) { showHcCategoryPicker = true },
+                )
 
                 // Auto-sync: pull new Health Connect data when you open NOOP, if it's been longer than
                 // the chosen interval — no manual taps. On-open only (no background worker): it avoids a
@@ -834,6 +862,19 @@ fun DataSourcesScreen(vm: AppViewModel) {
 
     }
 
+    // #645: the Health Connect category picker — shown before the FIRST permission request (so a
+    // new user chooses a scope instead of one bundled all-types prompt) and reachable again later
+    // via "Choose data types" to extend to another category.
+    if (showHcCategoryPicker) {
+        HealthConnectCategoryDialog(
+            onDismiss = { showHcCategoryPicker = false },
+            onConfirm = { categories ->
+                showHcCategoryPicker = false
+                requestHcCategories(categories)
+            },
+        )
+    }
+
     // ah-delete (#616): strongly-worded confirm before purging the "apple-health" source. On confirm,
     // deletes every Apple-Health-sourced row (deviceId-keyed tables) in one transaction via the registry,
     // re-counts so the card flips back to "Nothing imported", and toasts the result.
@@ -933,6 +974,99 @@ private fun CountLine(primary: String, secondary: String) {
 @Composable
 private fun RoadmapNote(text: String) {
     Text(text, style = NoopType.footnote, color = Palette.textTertiary)
+}
+
+// MARK: - Health Connect category picker (#645)
+
+/**
+ * Lets the user choose which Health Connect data category (or categories) NOOP may ask for,
+ * BEFORE any system permission sheet appears — the whole point being that "Core recovery" and
+ * "Body composition" are separate asks the user can accept independently instead of one bundled
+ * all-types prompt. Defaults to every category selected, so accepting immediately matches the old
+ * single "grant everything" behaviour; the user narrows it by unchecking a row. Confirm is
+ * disabled with nothing selected (that would launch an empty, no-op permission request).
+ */
+@Composable
+private fun HealthConnectCategoryDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (Set<HealthConnectImporter.HealthDataCategory>) -> Unit,
+) {
+    var selected by remember {
+        mutableStateOf(HealthConnectImporter.HealthDataCategory.entries.toSet())
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surfaceOverlay,
+        title = {
+            Text(
+                uiString(R.string.l10n_data_sources_screen_choose_what_to_share_5a1d8e07),
+                style = NoopType.title2,
+                color = Palette.textPrimary,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    uiString(R.string.l10n_data_sources_screen_health_connect_asks_once_per_af6c1b90),
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                )
+                Spacer(Modifier.height(8.dp))
+                HealthConnectImporter.HealthDataCategory.entries.forEach { category ->
+                    val checked = category in selected
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selected = if (checked) selected - category else selected + category }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Checkbox(
+                            checked = checked,
+                            onCheckedChange = { on -> selected = if (on) selected + category else selected - category },
+                            colors = CheckboxDefaults.colors(checkedColor = Palette.accent),
+                        )
+                        Column {
+                            Text(healthCategoryLabel(category), style = NoopType.subhead, color = Palette.textPrimary)
+                            Text(healthCategoryDescription(category), style = NoopType.footnote, color = Palette.textTertiary)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = selected.isNotEmpty(), onClick = { onConfirm(selected) }) {
+                Text(
+                    uiString(R.string.l10n_data_sources_screen_grant_access_1f5c9a02),
+                    style = NoopType.body,
+                    color = if (selected.isNotEmpty()) Palette.accent else Palette.textTertiary,
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(uiString(R.string.l10n_data_sources_screen_cancel_77dfd213), style = NoopType.body, color = Palette.textSecondary)
+            }
+        },
+    )
+}
+
+@Composable
+private fun healthCategoryLabel(category: HealthConnectImporter.HealthDataCategory): String = when (category) {
+    HealthConnectImporter.HealthDataCategory.CORE_RECOVERY -> uiString(R.string.l10n_data_sources_screen_core_recovery_7d4e1a39)
+    HealthConnectImporter.HealthDataCategory.ACTIVITY -> uiString(R.string.l10n_data_sources_screen_activity_3b9f6c21)
+    HealthConnectImporter.HealthDataCategory.BODY_COMPOSITION -> uiString(R.string.l10n_data_sources_screen_body_composition_2e8a4d17)
+}
+
+@Composable
+private fun healthCategoryDescription(category: HealthConnectImporter.HealthDataCategory): String = when (category) {
+    HealthConnectImporter.HealthDataCategory.CORE_RECOVERY ->
+        uiString(R.string.l10n_data_sources_screen_heart_rate_resting_hr_hrv_sleep_c4b7f902)
+    HealthConnectImporter.HealthDataCategory.ACTIVITY ->
+        uiString(R.string.l10n_data_sources_screen_steps_calories_exercise_sessions_9a6d3e58)
+    HealthConnectImporter.HealthDataCategory.BODY_COMPOSITION ->
+        uiString(R.string.l10n_data_sources_screen_weight_body_fat_and_lean_body_e1f4a86c)
 }
 
 // MARK: - Backup action button (matches the accent fill used by CoachPrimaryButton)
