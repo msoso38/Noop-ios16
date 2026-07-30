@@ -7,6 +7,7 @@
 //  one shared tilt source. Colours come from StrandDesign tokens at the call site.
 
 import SwiftUI
+import StrandDesign
 
 // MARK: - Renderers (pure GraphicsContext drawing)
 
@@ -144,12 +145,15 @@ enum LiquidRender {
     }
 
     /// A horizontal capsule tube filled to `frac`; tilt pushes the liquid along it.
-    static func tube(_ base: GraphicsContext, _ size: CGSize, _ sim: LiquidSim, now: Double, frac: Double, tint: Color) {
+    static func tube(_ base: GraphicsContext, _ size: CGSize, _ sim: LiquidSim, now: Double,
+                     frac: Double, tint: Color, track: Color, rim: Color) {
         let w = size.width, h = size.height, r = h / 2
         let outline = Path(roundedRect: CGRect(x: 0.5, y: 0.5, width: w - 1, height: h - 1), cornerRadius: r)
-        var ctx = base
-        ctx.fill(outline, with: .color(Color(.sRGB, red: 14/255, green: 14/255, blue: 18/255, opacity: 1)))
-        ctx.stroke(outline, with: .color(.white.opacity(0.07)), lineWidth: 1)
+        let ctx = base
+        // A fixed near-black track made every Light-appearance metric look like a black pill. The shared
+        // inset/hairline tokens keep the unfilled portion quiet on light cards and distinct on dark ones.
+        ctx.fill(outline, with: .color(track))
+        ctx.stroke(outline, with: .color(rim), lineWidth: 1)
 
         var clip = ctx
         clip.clip(to: outline)
@@ -288,7 +292,8 @@ struct LiquidTube: View {
             let now = liquidSeconds(tl.date)
             Canvas { context, size in
                 sim.step(now: now, tilt: LiquidMotion.shared.tilt, target: frac)
-                LiquidRender.tube(context, size, sim, now: now, frac: max(0, min(1, frac)), tint: tint)
+                LiquidRender.tube(context, size, sim, now: now, frac: max(0, min(1, frac)),
+                                  tint: tint, track: StrandPalette.surfaceInset, rim: StrandPalette.hairline)
             }
         }
         .frame(height: height)
@@ -299,7 +304,8 @@ struct LiquidTube: View {
     private var staticTube: some View {
         Canvas { context, size in
             LiquidRender.tube(context, size, LiquidSim.posed(frac), now: 0,
-                              frac: max(0, min(1, frac)), tint: tint)
+                              frac: max(0, min(1, frac)), tint: tint,
+                              track: StrandPalette.surfaceInset, rim: StrandPalette.hairline)
         }
         .frame(height: height)
     }
