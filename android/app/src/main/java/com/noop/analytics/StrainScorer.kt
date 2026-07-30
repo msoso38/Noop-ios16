@@ -175,8 +175,9 @@ object StrainScorer {
      * Infer per-sample duration (minutes) from the first two timestamps. Falls
      * back to 1 s when fewer than two samples or coincident timestamps.
      *
-     * Kept for callers that genuinely want one representative figure. TRIMP no longer uses it — see
-     * [sampleDurationsMinutes] and #950.
+     * No production caller remains — TRIMP uses [sampleDurationsMinutes] (#950). Kept ONLY so the
+     * uniform-identity regression test can compare the new accumulation against the SHIPPED old formula
+     * rather than a reimplementation of it. Delete it if that test ever goes.
      */
     fun sampleDurationMinutes(hr: List<HrSample>): Double {
         if (hr.size < 2) return fallbackSampleMin
