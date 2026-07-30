@@ -584,6 +584,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val today: StateFlow<DailyMetric?> = _today.asStateFlow()
 
     /**
+     * The wearer's MEASURED resting HR for a workout scored right now (#983), or the documented default
+     * when today's row has none yet.
+     *
+     * The %HRR denominator is `maxHR - restingHR`, so falling back to a hardcoded 60 for someone whose
+     * real resting is (say) 50 moves every zone boundary and quietly changes the score. The daily Effort
+     * on Today already threads the measured value, and #972 threaded it into the manual rescore — these
+     * live/manual workout paths were the ones left on the default, so a session's live Effort and the
+     * same session rescored later did not agree.
+     */
+    private val workoutRestingHR: Double
+        get() = _today.value?.restingHr?.toDouble() ?: StrainScorer.defaultRestingHR
+
+    /**
      * #849: Today's heavy history-wide reload guard. The Today screen runs a couple of expensive
      * history-wide passes (the workouts/sources footer, which derives HR per imported workout from raw strap
      * samples, and the pinned Stress / Fitness-age / Vitality reads over the whole metric history). Those run
@@ -1350,7 +1363,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val avg = if (samples.isNotEmpty()) samples.sumOf { it.bpm } / samples.size else null
         val peak = if (samples.isNotEmpty()) samples.maxOf { it.bpm } else null
         val strain = if (samples.size >= 2)
-            StrainScorer.strain(samples, maxHR = profileStore.hrMax.toDouble(), sex = profileStore.sex) else null
+            StrainScorer.strain(samples, maxHR = profileStore.hrMax.toDouble(),
+                restingHR = workoutRestingHR, sex = profileStore.sex) else null
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         val energyKcal = if (samples.size >= 2)
@@ -1404,7 +1418,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         @Suppress("UNNECESSARY_SAFE_CALL")
         val w = _activeWorkout?.value ?: return
         val s = w.samples + HrSample(deviceId = deviceId, ts = System.currentTimeMillis() / 1000, bpm = bpm)
-        val strain = StrainScorer.strain(s, maxHR = profileStore.hrMax.toDouble(), sex = profileStore.sex) ?: 0.0
+        val strain = StrainScorer.strain(s, maxHR = profileStore.hrMax.toDouble(),
+            restingHR = workoutRestingHR, sex = profileStore.sex) ?: 0.0
         val updated = w.copy(
             samples = s, avgHr = s.sumOf { it.bpm } / s.size, peakHr = s.maxOf { it.bpm }, liveStrain = strain,
         )

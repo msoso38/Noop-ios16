@@ -49,6 +49,18 @@ final class AppModel: ObservableObject {
     let ble: BLEManager
     /// Read model over the on-device store (dashboard + detail screens).
     let repo: Repository
+
+    /// The wearer's MEASURED resting HR for a workout scored right now (#983), or the documented default
+    /// when today's row has none yet.
+    ///
+    /// The %HRR denominator is `maxHR - restingHR`, so falling back to a hardcoded 60 for someone whose
+    /// real resting is (say) 50 moves every zone boundary and quietly changes the score. Today's Effort
+    /// already threads the measured value and #972 threaded it into the manual rescore; these live/manual
+    /// workout paths were the ones left on the default, so a session's live Effort and the same session
+    /// rescored later did not agree. Byte-parity twin of Kotlin `AppViewModel.workoutRestingHR`.
+    var workoutRestingHR: Double {
+        repo.today?.restingHr.map(Double.init) ?? StrainScorer.defaultRestingHR
+    }
     /// User profile (age/sex/body/HR-max) for zones, calories, baselines.
     let profile = ProfileStore()
     /// Behaviour settings: double-tap action, wear automation, zone coaching, smart alarm, illness watch.
@@ -718,7 +730,8 @@ final class AppModel: ObservableObject {
             : Int((Double(samples.map(\.bpm).reduce(0, +)) / Double(samples.count)).rounded())
         let peak = samples.map(\.bpm).max()
         let strain = samples.count >= 2
-            ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax), sex: profile.sex) : nil
+            ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax),
+                                  restingHR: workoutRestingHR, sex: profile.sex) : nil
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         let up = UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
@@ -765,7 +778,8 @@ final class AppModel: ObservableObject {
         w.samples.append(HRSample(ts: Int(Date().timeIntervalSince1970), bpm: hr))
         w.peakHr = max(w.peakHr, hr)
         w.avgHr = Int((Double(w.samples.map(\.bpm).reduce(0, +)) / Double(w.samples.count)).rounded())
-        w.liveStrain = StrainScorer.strain(w.samples, maxHR: Double(profile.hrMax), sex: profile.sex) ?? 0
+        w.liveStrain = StrainScorer.strain(w.samples, maxHR: Double(profile.hrMax),
+                                           restingHR: workoutRestingHR, sex: profile.sex) ?? 0
         activeWorkout = w
         // Re-snapshot the durable session so a kill keeps the latest accumulated HR window (#529).
         persistActiveWorkout()
