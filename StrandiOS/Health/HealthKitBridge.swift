@@ -371,7 +371,11 @@ final class HealthKitBridge: ObservableObject {
         // sample in the day on each sync, so the figure this produces is a full replacement rather than a
         // delta, which is exactly what `setImportedHydration` wants. `notNoopAuthored` (applied inside
         // `collect`) keeps NOOP's own drinks out, so a tap in NOOP can never come back as an import.
-        await collect(.dietaryWater, unit: .literUnit(with: .milli), start: start, end: end, op: .cumulativeSum) { day, v in
+        //
+        // The result is KEPT here, unlike every aggregate above: the write below replaces the stored
+        // figure, so a failed query must not be mistaken for an authoritative zero and wipe the window.
+        let waterReadOk = await collect(.dietaryWater, unit: .literUnit(with: .milli),
+                                        start: start, end: end, op: .cumulativeSum) { day, v in
             var a = agg(day); a.waterMl = v; byDay[day] = a
         }
 
@@ -454,7 +458,7 @@ final class HealthKitBridge: ObservableObject {
             // Gated on the hydration toggle, which is opt-in and default OFF: an import must not quietly
             // populate a feature the user has turned off, and skipping it avoids writing a window of rows
             // nothing will read.
-            if UserDefaults.standard.bool(forKey: HydrationStore.enabledKey) {
+            if waterReadOk, UserDefaults.standard.bool(forKey: HydrationStore.enabledKey) {
                 var waterByDay: [String: Double] = [:]
                 var cursor = cal.startOfDay(for: start)
                 while cursor <= end {
@@ -843,21 +847,33 @@ final class HealthKitBridge: ObservableObject {
         NSCompoundPredicate(notPredicateWithSubpredicate: HKQuery.predicateForObjects(from: [HKSource.default()]))
     }
 
+    /// Returns TRUE when the query completed, FALSE when HealthKit handed back an error.
+    ///
+    /// Every aggregate caller ignores this: a failed type simply contributes nothing to `DayAgg` and the
+    /// affected fields stay nil, so no row is written for them. It matters only for a caller whose write
+    /// REPLACES rather than adds (#949 imported water), where "read nothing" and "there is nothing" are
+    /// the same empty result — and treating a failed query as an authoritative zero would wipe the
+    /// stored figure for the whole window.
+    @discardableResult
     private func collect(_ id: HKQuantityTypeIdentifier, unit: HKUnit, start: Date, end: Date,
-                         op: HKStatisticsOptions, sink: @escaping (String, Double) -> Void) async {
-        guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return }
+                         op: HKStatisticsOptions, sink: @escaping (String, Double) -> Void) async -> Bool {
+        guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return false }
         let cal = Calendar.current
         let anchor = cal.startOfDay(for: start)
         let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),
             Self.notNoopAuthored,
         ])
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             let q = HKStatisticsCollectionQuery(quantityType: type, quantitySamplePredicate: predicate,
                                                 options: op, anchorDate: anchor,
                                                 intervalComponents: DateComponents(day: 1))
-            q.initialResultsHandler = { _, results, _ in
-                results?.enumerateStatistics(from: start, to: end) { stats, _ in
+            q.initialResultsHandler = { _, results, error in
+                // A nil `results` with an error is a FAILED read, not an empty one — see the note on
+                // the return value. Both are reported as false so the caller can tell them apart from
+                // a query that genuinely found nothing.
+                guard error == nil, let results else { cont.resume(returning: false); return }
+                results.enumerateStatistics(from: start, to: end) { stats, _ in
                     let q: HKQuantity?
                     switch op {
                     case .cumulativeSum:     q = stats.sumQuantity()
@@ -868,7 +884,7 @@ final class HealthKitBridge: ObservableObject {
                     }
                     if let q { sink(HealthKitBridge.dayString(stats.startDate), q.doubleValue(for: unit)) }
                 }
-                cont.resume()
+                cont.resume(returning: true)
             }
             store.execute(q)
         }

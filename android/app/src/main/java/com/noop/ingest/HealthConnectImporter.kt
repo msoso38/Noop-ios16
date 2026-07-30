@@ -198,6 +198,10 @@ object HealthConnectImporter {
         // #949: imported water, ml per local day. Separate from `acc` because it is written to the
         // hydration source (HydrationStore), not the health-connect aggregates.
         val hydrationMl = HashMap<String, Double>()
+        // Whether the water read actually COMPLETED. Distinct from "found nothing": the write below
+        // replaces the stored figure, so a swallowed read error must not be mistaken for an authoritative
+        // zero and wipe 30 days of imported water.
+        var hydrationReadOk = false
 
         val workouts = ArrayList<WorkoutRow>()
         // (startEpochS, endEpochS, kcal) of every active-calorie record, so an imported exercise
@@ -467,7 +471,9 @@ object HealthConnectImporter {
             // twice. Taking the max here would silently drop whichever app logged less.
             val hydrationStart = LocalDate.now(zone).minusDays(HYDRATION_WINDOW_DAYS - 1)
                 .atStartOfDay(zone).toInstant()
-            readAll(client, HydrationRecord::class, TimeRangeFilter.between(hydrationStart, end), selfPackage) { r ->
+            hydrationReadOk = readAll(
+                client, HydrationRecord::class, TimeRangeFilter.between(hydrationStart, end), selfPackage,
+            ) { r ->
                 val day = dayOf(r.startTime)
                 hydrationMl[day] = (hydrationMl[day] ?: 0.0) + r.volume.inMilliliters
             }
@@ -485,7 +491,8 @@ object HealthConnectImporter {
         // revoked rather than simply leaving it be.
         // Hydration tracking is opt-in and default OFF, so an import must not quietly populate a feature
         // the user has turned off — and skipping it saves writing a window of rows nothing will read.
-        if (HealthPermission.getReadPermission(HydrationRecord::class) in granted &&
+        if (hydrationReadOk &&
+            HealthPermission.getReadPermission(HydrationRecord::class) in granted &&
             NoopPrefs.hydrationTracking(context)
         ) {
             val today = LocalDate.now(zone)
@@ -721,6 +728,12 @@ object HealthConnectImporter {
     /**
      * Read every page of [type] within [filter], invoking [onRecord] for each record.
      * Loops on the response page token so we never miss records past the first page.
+     *
+     * Returns TRUE when the type was read to completion, FALSE when it was skipped by the catch below.
+     * Every accumulating caller ignores this: for them a failed type is simply absent, which costs that
+     * type's contribution and nothing else. It matters for a caller whose write REPLACES rather than adds
+     * (#949 hydration), because there "read nothing" and "there is nothing" are the same empty map — and
+     * treating a swallowed error as an authoritative zero would wipe the stored figure.
      */
     private suspend fun <T : Record> readAll(
         client: HealthConnectClient,
@@ -728,7 +741,7 @@ object HealthConnectImporter {
         filter: TimeRangeFilter,
         selfPackage: String = "",
         onRecord: (T) -> Unit,
-    ) {
+    ): Boolean {
         var pageToken: String? = null
         try {
             do {
@@ -754,7 +767,9 @@ object HealthConnectImporter {
             // keep whatever was read, so every other data type still comes in (issue #34). The reads
             // accumulate into shared buckets, so a partial type is simply absent, never corrupt.
             android.util.Log.w("HealthConnect", "read of ${type.simpleName} failed; skipping: ${e.message}")
+            return false
         }
+        return true
     }
 
     // MARK: - strap-coverage helpers
