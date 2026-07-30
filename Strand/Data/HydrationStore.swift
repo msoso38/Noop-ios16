@@ -143,14 +143,52 @@ extension Repository {
     /// (#949). Called by the Apple Health sync; the Android twin is `HydrationStore.setImported`.
     ///
     /// REPLACES rather than adds, which is the whole reason this is idempotent — see `importedKey`. Days
-    /// the health store has no water for are written as 0 rather than skipped, so water deleted in the
-    /// source app disappears here too instead of lingering as a stale row.
+    /// the health store has no water for resolve to 0, so water deleted in the source app disappears here
+    /// too instead of lingering as a stale row.
+    ///
+    /// Only days whose value actually MOVED are written. The caller hands over its whole window (31 days
+    /// on iOS) on every sync, and `sync` is driven by six hourly `HKObserverQuery` wakes — so writing it
+    /// wholesale meant ~31 upserts plus a `hydrationSeq` bump, repeatedly through the day, to store
+    /// numbers that were already there. Thirty of those days are historical and immutable; the usual
+    /// honest answer is "nothing changed". One ranged read replaces the write burst.
+    ///
+    /// A day with NO row and a value of 0 is skipped rather than written, because an absent row already
+    /// reads as 0 (`hydrationImportedTotal`). That is what keeps a user with no water in Health from
+    /// accumulating a wall of zero rows. A day that HAS a row and is now 0 is still written — that is the
+    /// deletion propagating, and it must not be mistaken for the no-op case.
     func setImportedHydration(_ mlByDay: [String: Double]) async {
         guard !mlByDay.isEmpty, let store = await storeHandle() else { return }
-        let points = mlByDay.map { MetricPoint(day: $0.key, key: HydrationStore.importedKey,
-                                               value: max(0, $0.value)) }
-        _ = try? await store.upsertMetricSeries(points, deviceId: HydrationStore.sourceId)
-        // Same reason as logHydration: hydration writes never bump refreshSeq.
+        let days = mlByDay.keys.sorted()
+        guard let from = days.first, let to = days.last else { return }
+
+        // No `?? []` here: a FAILED read must not look like "there are no rows". If it did, a day whose
+        // water was just deleted would resolve to the skip-a-zero case below and its stale non-zero row
+        // would survive. Bail instead and let the next sync do it properly — the health store is the
+        // source of truth, so nothing is lost by waiting.
+        guard let existing = try? await store.metricSeries(deviceId: HydrationStore.sourceId,
+                                                           key: HydrationStore.importedKey,
+                                                           from: from, to: to) else { return }
+        var stored: [String: Double] = [:]
+        for p in existing { stored[p.day] = p.value }
+
+        let changed: [MetricPoint] = mlByDay.compactMap { day, ml in
+            let value = max(0, ml)
+            guard let current = stored[day] else {
+                // No row yet: only worth creating one if there is actually something to record.
+                return value == 0 ? nil : MetricPoint(day: day, key: HydrationStore.importedKey, value: value)
+            }
+            // Epsilon rather than ==: the same samples re-summed give the same Double, but a value that
+            // ever drifted by a float hair would otherwise re-write every sync forever and quietly undo
+            // the point of this. Well below a millilitre, so no real change is swallowed.
+            guard abs(current - value) > 1e-9 else { return nil }
+            return MetricPoint(day: day, key: HydrationStore.importedKey, value: value)
+        }
+        guard !changed.isEmpty else { return }
+
+        _ = try? await store.upsertMetricSeries(changed, deviceId: HydrationStore.sourceId)
+        // Only on a real change — this bump re-reads the Today card, and firing it on every sync made the
+        // card redo its hydration read for nothing. Same reason as logHydration: hydration writes never
+        // bump refreshSeq, so the card has no other signal.
         noteHydrationChanged()
     }
 

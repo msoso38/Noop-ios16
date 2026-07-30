@@ -3897,7 +3897,8 @@ struct TodayView: View {
 
     /// #989: today's hydration total + goal, re-read wherever staleness could show: the history-wide load,
     /// the same-seq cache restore, a hydration mutation (`repo.hydrationSeq`), and the feature toggle.
-    /// One metricSeries row + a UserDefaults read, cheap enough to run on every pass.
+    /// Two metricSeries rows (hand-logged + imported, #949) and a UserDefaults read — still cheap
+    /// enough to run on every pass.
     private func reloadHydration() async {
         if hydrationEnabled {
             hydrationTotalML = await repo.hydrationTotal(day: Repository.localDayKey(Date()))
