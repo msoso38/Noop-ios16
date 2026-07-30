@@ -427,7 +427,10 @@ struct SettingsView: View {
         let hasAvatar = profile.hasAvatar
         return VStack(alignment: .leading, spacing: NoopMetrics.space2) {
             HStack(spacing: NoopMetrics.space3) {
-                ProfileAvatarView(imageData: profile.avatarImageData, size: 44)
+                ProfileAvatarView(
+                    imageData: profile.avatarImageData,
+                    size: NoopMetrics.profileAvatarDiameter
+                )
                     .accessibilityLabel(hasAvatar ? "Your profile photo" : "No profile photo set")
 
                 PhotosPicker(selection: $avatarPickerItem, matching: .images) {
@@ -481,11 +484,11 @@ struct SettingsView: View {
                               range: ClosedRange<Double>, step: Double,
                               format: String, accessibility: String) -> some View {
         HStack(spacing: NoopMetrics.space2) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space1) {
                 Text(String(format: format, value.wrappedValue))
                     .font(StrandFont.bodyNumber)
                     .foregroundStyle(StrandPalette.textPrimary)
-                    .frame(width: 48, alignment: .center)
+                    .frame(width: NoopMetrics.formValueColumnWidth, alignment: .center)
                 Text(unit)
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -507,11 +510,11 @@ struct SettingsView: View {
             set: { weightKg.wrappedValue = $0 / UnitFormatter.poundsPerKilogram }
         )
         return HStack(spacing: NoopMetrics.space2) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space1) {
                 Text(String(format: "%.0f", lb.wrappedValue))
                     .font(StrandFont.bodyNumber)
                     .foregroundStyle(StrandPalette.textPrimary)
-                    .frame(width: 48, alignment: .center)
+                    .frame(width: NoopMetrics.formValueColumnWidth, alignment: .center)
                 Text("lb")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -537,7 +540,7 @@ struct SettingsView: View {
             Text("\(parts.feet)′ \(parts.inches)″")
                 .font(StrandFont.bodyNumber)
                 .foregroundStyle(StrandPalette.textPrimary)
-                .frame(width: 64, alignment: .center)
+                .frame(width: NoopMetrics.formWideValueColumnWidth, alignment: .center)
             Stepper("Height in inches", value: inches, in: 47...91, step: 1)
                 .labelsHidden()
                 .accessibilityLabel("Height, \(parts.feet) feet \(parts.inches) inches")
@@ -551,11 +554,11 @@ struct SettingsView: View {
     private func waistCentimetresField(waistCm: Binding<Double>) -> some View {
         let set = waistCm.wrappedValue > 0
         return HStack(spacing: NoopMetrics.space2) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space1) {
                 Text(set ? String(format: "%.0f", waistCm.wrappedValue) : String(localized: "Not set"))
                     .font(StrandFont.bodyNumber)
                     .foregroundStyle(set ? StrandPalette.textPrimary : StrandPalette.textTertiary)
-                    .frame(minWidth: 48, alignment: .center)
+                    .frame(minWidth: NoopMetrics.formValueColumnWidth, alignment: .center)
                 if set {
                     Text("cm")
                         .font(StrandFont.caption)
@@ -584,11 +587,11 @@ struct SettingsView: View {
         let set = waistCm.wrappedValue > 0
         let inches = set ? UnitFormatter.cmToInches(waistCm.wrappedValue).rounded() : 0
         return HStack(spacing: NoopMetrics.space2) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space1) {
                 Text(set ? "\(Int(inches))" : "Not set")
                     .font(StrandFont.bodyNumber)
                     .foregroundStyle(set ? StrandPalette.textPrimary : StrandPalette.textTertiary)
-                    .frame(minWidth: 48, alignment: .center)
+                    .frame(minWidth: NoopMetrics.formValueColumnWidth, alignment: .center)
                 if set {
                     Text("in")
                         .font(StrandFont.caption)
@@ -614,13 +617,13 @@ struct SettingsView: View {
     /// HR-max override: 0 = auto. Shown as a compact tabular value with a stepper.
     private var hrMaxField: some View {
         HStack(spacing: NoopMetrics.space2) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space1) {
                 Text(profile.hrMaxOverride > 0 ? "\(profile.hrMaxOverride)" : "Auto")
                     .font(StrandFont.bodyNumber)
                     .foregroundStyle(profile.hrMaxOverride > 0
                                      ? StrandPalette.textPrimary
                                      : StrandPalette.textTertiary)
-                    .frame(width: 44, alignment: .center)
+                    .frame(width: NoopMetrics.formValueColumnWidth, alignment: .center)
                 Text("bpm")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
@@ -2434,7 +2437,7 @@ private struct SettingsSection<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        StrandCard(padding: 20) {
+        StrandCard(padding: NoopMetrics.space5) {
             VStack(alignment: .leading, spacing: NoopMetrics.space4) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Settings").strandOverline()

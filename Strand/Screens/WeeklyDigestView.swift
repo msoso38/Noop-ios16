@@ -170,10 +170,13 @@ struct WeeklyDigestContent: View {
                 .fill(StrandPalette.surfaceRaised)
                 .overlay {
                     RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous)
-                        .strokeBorder(StrandPalette.hairline, lineWidth: 1)
+                        .strokeBorder(
+                            StrandPalette.hairline,
+                            lineWidth: NoopMetrics.hairlineWidth
+                        )
                 }
             HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
                     Text("Week in review").strandOverline()
                     Text(weekRangeLabel)
                         .font(StrandFont.title2)

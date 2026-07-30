@@ -434,13 +434,23 @@ struct LiquidTodayView: View {
                         Text(dayTitle)
                             .font(StrandFont.rounded(28))
                             .foregroundStyle(skyPrimary)
-                            .shadow(color: colorScheme == .dark ? .black.opacity(0.4) : .clear,
-                                    radius: 10, y: 1)
+                            .shadow(
+                                color: StrandPalette.surfaceShadow.opacity(
+                                    colorScheme == .dark ? 0.4 : 0
+                                ),
+                                radius: NoopMetrics.shadowRadiusTitle,
+                                y: NoopMetrics.shadowOffsetMinimal
+                            )
                         Text(dateLine)
                             .font(StrandFont.caption)
                             .foregroundStyle(skySecondary)
-                            .shadow(color: colorScheme == .dark ? .black.opacity(0.35) : .clear,
-                                    radius: 8, y: 1)
+                            .shadow(
+                                color: StrandPalette.surfaceShadow.opacity(
+                                    colorScheme == .dark ? 0.35 : 0
+                                ),
+                                radius: NoopMetrics.shadowRadiusMedium,
+                                y: NoopMetrics.shadowOffsetMinimal
+                            )
                     }
                     .contentShape(Rectangle())
                 }
@@ -480,7 +490,12 @@ struct LiquidTodayView: View {
                             .background {
                                 Circle()
                                     .fill(skyControlFill)
-                                    .overlay(Circle().strokeBorder(skyControlBorder, lineWidth: 1))
+                                    .overlay(
+                                        Circle().strokeBorder(
+                                            skyControlBorder,
+                                            lineWidth: NoopMetrics.hairlineWidth
+                                        )
+                                    )
                             }
                     }
                     .buttonStyle(LiquidPressStyle())
@@ -515,7 +530,10 @@ struct LiquidTodayView: View {
                     .foregroundStyle(heroSecondary)
                     .padding(.horizontal, 8).padding(.vertical, 2.5)
                     .background(Capsule().fill(StrandPalette.surfaceInset)
-                        .overlay(Capsule().strokeBorder(StrandPalette.hairline, lineWidth: 1)))
+                        .overlay(Capsule().strokeBorder(
+                            StrandPalette.hairline,
+                            lineWidth: NoopMetrics.hairlineWidth
+                        )))
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(heroTertiary)
@@ -526,7 +544,7 @@ struct LiquidTodayView: View {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(heroSurfaceFill)
                     .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(heroBorder, lineWidth: 1))
+                        .strokeBorder(heroBorder, lineWidth: NoopMetrics.hairlineWidth))
                     .opacity(cardOpacity)
             )
         }
@@ -572,10 +590,18 @@ struct LiquidTodayView: View {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .fill(heroSurfaceFill)
                 .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .strokeBorder(heroBorder, lineWidth: 1))
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.16 : 0.08),
-                        radius: colorScheme == .dark ? 12 : 8,
-                        y: colorScheme == .dark ? 4 : 3)
+                    .strokeBorder(heroBorder, lineWidth: NoopMetrics.hairlineWidth))
+                .shadow(
+                    color: StrandPalette.surfaceShadow.opacity(
+                        colorScheme == .dark ? 0.16 : 0.08
+                    ),
+                    radius: colorScheme == .dark
+                        ? NoopMetrics.shadowRadiusLarge
+                        : NoopMetrics.shadowRadiusMedium,
+                    y: colorScheme == .dark
+                        ? NoopMetrics.shadowOffsetMedium
+                        : NoopMetrics.shadowOffsetSmall
+                )
                 .opacity(cardOpacity)
         )
     }
@@ -720,7 +746,10 @@ struct LiquidTodayView: View {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .fill(StrandPalette.surfaceRaised)
                     .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                        .strokeBorder(
+                            StrandPalette.hairline,
+                            lineWidth: NoopMetrics.hairlineWidth
+                        ))
                     .opacity(cardOpacity)
             )
         }
@@ -1459,7 +1488,11 @@ private struct LiquidWordmark: View {
                         : StrandPalette.textTertiary)
             }
         }
-        .shadow(color: colorScheme == .dark ? .black.opacity(0.25) : .clear, radius: 6, y: 1)
+        .shadow(
+            color: StrandPalette.surfaceShadow.opacity(colorScheme == .dark ? 0.25 : 0),
+            radius: NoopMetrics.shadowRadiusSmall,
+            y: NoopMetrics.shadowOffsetMinimal
+        )
         .rotationEffect(.degrees(rot))
         .scaleEffect(x: scaleX, y: scaleY)
         .offset(x: dx)
@@ -1649,7 +1682,12 @@ private struct LiquidAddButton: View {
                 .background {
                     Circle()
                         .fill(StrandPalette.surfaceRaised.opacity(0.92))
-                        .overlay(Circle().strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                        .overlay(
+                            Circle().strokeBorder(
+                                StrandPalette.hairline,
+                                lineWidth: NoopMetrics.hairlineWidth
+                            )
+                        )
                 }
         }
         .buttonStyle(LiquidPressStyle())
@@ -1875,7 +1913,10 @@ private struct LiquidBatteryButton: View {
         Button { router.openDevices() } label: {
             ZStack {
                 Circle().fill(StrandPalette.surfaceRaised.opacity(0.92))
-                Circle().strokeBorder(StrandPalette.hairline, lineWidth: 1)
+                Circle().strokeBorder(
+                    StrandPalette.hairline,
+                    lineWidth: NoopMetrics.hairlineWidth
+                )
                 switch display {
                 case .charge(let pct, let charging):
                     Circle()
@@ -1980,7 +2021,12 @@ private struct LiquidSyncChip: View {
         .background {
             Capsule()
                 .fill(StrandPalette.surfaceRaised.opacity(0.92))
-                .overlay(Capsule().strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                .overlay(
+                    Capsule().strokeBorder(
+                        StrandPalette.hairline,
+                        lineWidth: NoopMetrics.hairlineWidth
+                    )
+                )
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(a11y))

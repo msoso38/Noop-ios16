@@ -153,7 +153,7 @@ enum LiquidRender {
         // A fixed near-black track made every Light-appearance metric look like a black pill. The shared
         // inset/hairline tokens keep the unfilled portion quiet on light cards and distinct on dark ones.
         ctx.fill(outline, with: .color(track))
-        ctx.stroke(outline, with: .color(rim), lineWidth: 1)
+        ctx.stroke(outline, with: .color(rim), lineWidth: NoopMetrics.hairlineWidth)
 
         var clip = ctx
         clip.clip(to: outline)

@@ -74,6 +74,7 @@ public enum StrandPalette {
     public static let surfaceInset   = Color(light: "#E9E9EE", dark: "#1C1C1E")
     public static let hairline       = Color(light: "#C7C7CC", dark: "#3A3A3C")
     public static let hairlineStrong = Color(light: "#8E8E93", dark: "#545458")
+    public static let surfaceShadow  = Color(light: "#1A2230", dark: "#000000")
 
     // MARK: Text — deep navy-ink on paper / cool off-white on navy
     public static let textPrimary    = Color(light: "#1A2230", dark: "#F4F6F8")
