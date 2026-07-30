@@ -32,6 +32,18 @@ final class HealthKitBridge: ObservableObject {
     /// here so an Apple Health auth revoke, quota hit, or invalid sample is visible instead of silent.
     @Published private(set) var lastError: String?
 
+    /// Whether the user has opted into the body-composition READ import (#653). Unlike the write-back
+    /// stages below, HealthKit never reveals read-grant status, so there is no live signal to check —
+    /// NOOP tracks its own "the user asked for this" bit and gates `sync()`'s body-composition reads on
+    /// it, so a category the user never turned on is neither requested from HealthKit nor read even if
+    /// (somehow) already authorized. See `isHeartRateWritebackAuthorized` / `isWorkoutWritebackAuthorized`
+    /// for the two write-back stages, whose granted state IS observable and so needs no persisted flag.
+    @Published private(set) var bodyCompositionEnabled: Bool
+    /// Bumped after every staged `request*Authorization` call so SwiftUI re-evaluates the two live
+    /// `is*WritebackAuthorized` computed properties below (they read `store.authorizationStatus`
+    /// directly, which isn't itself `@Published` and so wouldn't otherwise trigger a re-render).
+    @Published private(set) var authRefreshTick = 0
+
     private let store = HKHealthStore()
     private let repo: Repository
     /// Source id imported HealthKit data lands under (matches `AppModel.appleDeviceId`).
@@ -48,6 +60,25 @@ final class HealthKitBridge: ObservableObject {
         self.repo = repo
         self.appleDeviceId = appleDeviceId
         self.noopDeviceId = noopDeviceId
+
+        // #653 migration: a pre-existing install that already completed the OLD bundled "Enable Apple
+        // Health" flow (which requested body-composition reads together with everything else, in one
+        // sheet) keeps seeing that data instead of it silently vanishing behind a new, unset toggle. A
+        // genuinely new install has nothing granted yet, so it defaults OFF like every other new staged
+        // toggle here — matching the explicit-opt-in spirit of #653 rather than assuming consent.
+        // Detected via the SAME legacy write-status signal `refreshAuthIfPreviouslyGranted` resumes off
+        // of (HealthKit exposes share/write status reliably; it never exposes read status at all, which
+        // is exactly why this needs its own persisted flag instead of a live check like the write-back
+        // stages below).
+        let bodyCompKey = HealthKitBridge.bodyCompositionDefaultsKey
+        if let stored = UserDefaults.standard.object(forKey: bodyCompKey) as? Bool {
+            self.bodyCompositionEnabled = stored
+        } else {
+            let migrated = HealthKitBridge.nightlyVitalsWriteTypesGranted(store: HKHealthStore())
+            self.bodyCompositionEnabled = migrated
+            UserDefaults.standard.set(migrated, forKey: bodyCompKey)
+        }
+
         // Order matters: a free-signed build with no HealthKit entitlement is dead in the water even
         // where the hardware supports Health, so surface that first. `.unavailable` (no HealthKit at
         // all, e.g. iPad without the framework) still wins where it applies because we only reach the
@@ -59,57 +90,168 @@ final class HealthKitBridge: ObservableObject {
         }
     }
 
-    // MARK: - Types
+    // MARK: - Types (#653: staged consent — see the enum + read/write accessors below)
 
-    private var readTypes: Set<HKObjectType> {
-        var s = Set<HKObjectType>()
-        for id in HealthKitBridge.quantityReadIds { if let t = HKObjectType.quantityType(forIdentifier: id) { s.insert(t) } }
-        if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { s.insert(sleep) }
-        s.insert(HKObjectType.workoutType())
-        return s
+    /// One independently-consented Apple Health scope. Splitting the single "Enable Apple Health"
+    /// prompt — which used to ask for every read AND write type NOOP touches, in one system sheet —
+    /// into stages the user opts into individually, each explicit about what it reads/writes BEFORE its
+    /// own HealthKit prompt fires. `coreRead` + `nightlyVitalsWriteback` are still requested together as
+    /// the primary "Enable Apple Health" action (`requestAuthorization()`, unchanged in name/signature so
+    /// both existing call sites keep compiling) — that pairing is what already fed Charge/Rest/Effort
+    /// scores before this change, so it stays the one-tap default. `bodyComposition`,
+    /// `heartRateWriteback`, and `workoutWriteback` are additional, narrower asks a user opts into
+    /// separately once connected. Every existing PER-FEATURE authorization guard (`writeVitals` checking
+    /// each vital's own share status, `writeHeartRate` / `writeWorkouts` checking theirs) is UNCHANGED —
+    /// staging only changes what gets requested and when, never what's checked before a write.
+    private enum ConsentStage {
+        case coreRead, bodyComposition, nightlyVitalsWriteback, heartRateWriteback, workoutWriteback
     }
 
-    private var writeTypes: Set<HKSampleType> {
-        var s = Set<HKSampleType>()
-        for id in HealthKitBridge.quantityWriteIds + HealthKitBridge.highResQuantityWriteIds {
-            if let t = HKObjectType.quantityType(forIdentifier: id) { s.insert(t) }
-        }
-        if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { s.insert(sleep) }
-        s.insert(HKObjectType.workoutType())
-        return s
-    }
-
-    /// The write set as it existed before the high-res write-back (4 nightly vitals + sleep). A
-    /// returning user granted THIS set; `refreshAuthIfPreviouslyGranted` must resume off it — checking
-    /// the full `writeTypes` would leave every pre-existing grant stuck at `.unknown` after the update
-    /// because the new types are still `.notDetermined`.
-    private var legacyCoreWriteTypes: Set<HKSampleType> {
-        var s = Set<HKSampleType>()
-        for id in HealthKitBridge.quantityWriteIds { if let t = HKObjectType.quantityType(forIdentifier: id) { s.insert(t) } }
-        if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { s.insert(sleep) }
-        return s
-    }
-
-    // Every id here ends up in the HealthKit permission dialog. Only request what `sync` actually
-    // aggregates into `DayAgg`; adding read scopes the app never consumes makes the consent prompt
-    // noisier and surfaces a privacy ask we don't honour.
-    private static let quantityReadIds: [HKQuantityTypeIdentifier] = [
+    // Every id here ends up in the HealthKit permission dialog for its stage. Only request what `sync`
+    // actually aggregates into `DayAgg` (coreRead) / what each write-back feature actually writes; adding
+    // scopes a feature never consumes makes the consent prompt noisier and surfaces a privacy ask we
+    // don't honour.
+    private static let coreReadIds: [HKQuantityTypeIdentifier] = [
         .heartRate, .restingHeartRate, .heartRateVariabilitySDNN, .oxygenSaturation,
         .respiratoryRate, .bodyTemperature, .stepCount, .activeEnergyBurned,
         .basalEnergyBurned, .vo2Max,
-        // Body composition — READ-ONLY (#20). Imported under the apple-health source like the file
-        // importer already ingests; deliberately NOT in quantityWriteIds (we never write these back).
+    ]
+    /// Body composition — READ-ONLY (#20), and its own opt-in stage (#653): imported under the
+    /// apple-health source like the file importer already ingests, but never in any write-type set.
+    private static let bodyCompositionReadIds: [HKQuantityTypeIdentifier] = [
         .bodyMass, .bodyFatPercentage, .leanBodyMass, .bodyMassIndex
     ]
-    private static let quantityWriteIds: [HKQuantityTypeIdentifier] = [
+    /// The nightly vitals write-back set (#653's "core nightly vitals writeback" stage). Identical to
+    /// the set pre-#653 installs already granted under the old bundled flow, so
+    /// `refreshAuthIfPreviouslyGranted` / the init-time body-composition migration above can both resume
+    /// off it unchanged.
+    private static let nightlyVitalsWriteIds: [HKQuantityTypeIdentifier] = [
         .restingHeartRate, .heartRateVariabilitySDNN, .oxygenSaturation, .respiratoryRate
     ]
-    // High-res write-back shares: the continuous 1-minute HR stream, and the energy/distance samples
-    // attached to written workouts. Kept out of `quantityWriteIds` so `legacyCoreWriteTypes` (the
-    // auth-resume set) stays exactly what pre-update users granted.
-    private static let highResQuantityWriteIds: [HKQuantityTypeIdentifier] = [
-        .heartRate, .activeEnergyBurned, .distanceWalkingRunning, .distanceCycling
+    /// The continuous 1-minute heart-rate stream write-back — its own opt-in stage (#653).
+    private static let heartRateWriteId: HKQuantityTypeIdentifier = .heartRate
+    /// The energy/distance samples attached to written workouts — bundled with the workout write-back
+    /// stage (#653), since neither means anything without the workout it's attached to.
+    private static let workoutEnergyDistanceWriteIds: [HKQuantityTypeIdentifier] = [
+        .activeEnergyBurned, .distanceWalkingRunning, .distanceCycling
     ]
+
+    /// The read types HealthKit should be asked for on behalf of `stage`; empty for a write-only stage.
+    private func readTypes(for stage: ConsentStage) -> Set<HKObjectType> {
+        switch stage {
+        case .coreRead:
+            var s = Set<HKObjectType>()
+            for id in HealthKitBridge.coreReadIds { if let t = HKObjectType.quantityType(forIdentifier: id) { s.insert(t) } }
+            if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { s.insert(sleep) }
+            s.insert(HKObjectType.workoutType())
+            return s
+        case .bodyComposition:
+            var s = Set<HKObjectType>()
+            for id in HealthKitBridge.bodyCompositionReadIds { if let t = HKObjectType.quantityType(forIdentifier: id) { s.insert(t) } }
+            return s
+        case .nightlyVitalsWriteback, .heartRateWriteback, .workoutWriteback:
+            return []
+        }
+    }
+
+    /// The share (write) types HealthKit should be asked for on behalf of `stage`; empty for a
+    /// read-only stage.
+    private func writeTypes(for stage: ConsentStage) -> Set<HKSampleType> {
+        switch stage {
+        case .coreRead, .bodyComposition:
+            return []
+        case .nightlyVitalsWriteback:
+            var s = Set<HKSampleType>()
+            for id in HealthKitBridge.nightlyVitalsWriteIds { if let t = HKObjectType.quantityType(forIdentifier: id) { s.insert(t) } }
+            if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { s.insert(sleep) }
+            return s
+        case .heartRateWriteback:
+            var s = Set<HKSampleType>()
+            if let t = HKObjectType.quantityType(forIdentifier: HealthKitBridge.heartRateWriteId) { s.insert(t) }
+            return s
+        case .workoutWriteback:
+            var s = Set<HKSampleType>()
+            for id in HealthKitBridge.workoutEnergyDistanceWriteIds {
+                if let t = HKObjectType.quantityType(forIdentifier: id) { s.insert(t) }
+            }
+            s.insert(HKObjectType.workoutType())
+            return s
+        }
+    }
+
+    /// Self-free helper (usable from `init`, before every stored property is set) for whether the
+    /// nightly-vitals write types are ALL already `.sharingAuthorized` — the one signal HealthKit gives
+    /// us reliably, and the same one `refreshAuthIfPreviouslyGranted` resumes `auth` off of.
+    private static func nightlyVitalsWriteTypesGranted(store: HKHealthStore) -> Bool {
+        var s = Set<HKSampleType>()
+        for id in nightlyVitalsWriteIds { if let t = HKObjectType.quantityType(forIdentifier: id) { s.insert(t) } }
+        if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { s.insert(sleep) }
+        return s.allSatisfy { store.authorizationStatus(for: $0) == .sharingAuthorized }
+    }
+
+    /// UserDefaults key for the persisted body-composition read opt-in (#653).
+    private static let bodyCompositionDefaultsKey = "hkBodyCompositionReadEnabled.v1"
+
+    /// Live HealthKit signal for whether the continuous-HR write-back stage is granted. No persisted
+    /// flag needed — unlike the two read-only stages, HealthKit reliably reports SHARE status, and the
+    /// existing `writeHeartRate` guard already checks this exact type before ever writing.
+    var isHeartRateWritebackAuthorized: Bool {
+        _ = authRefreshTick   // re-evaluated whenever a staged request completes; see the property's doc.
+        guard let type = HKQuantityType.quantityType(forIdentifier: HealthKitBridge.heartRateWriteId) else { return false }
+        return store.authorizationStatus(for: type) == .sharingAuthorized
+    }
+
+    /// Live HealthKit signal for whether the workout write-back stage is granted (workout share type
+    /// specifically — the same one `writeWorkouts` already gates on before ever writing).
+    var isWorkoutWritebackAuthorized: Bool {
+        _ = authRefreshTick
+        return store.authorizationStatus(for: .workoutType()) == .sharingAuthorized
+    }
+
+    /// Turn the body-composition READ stage on (requesting HealthKit access if needed) or off (just the
+    /// local flag — HealthKit has no API to revoke a granted read type from inside the app, so "off"
+    /// here means "NOOP stops asking for/using it going forward", not "access is rescinded").
+    func setBodyCompositionEnabled(_ enabled: Bool) {
+        if enabled {
+            Task { await requestBodyCompositionAuthorization() }
+        } else {
+            bodyCompositionEnabled = false
+            UserDefaults.standard.set(false, forKey: HealthKitBridge.bodyCompositionDefaultsKey)
+        }
+    }
+
+    /// Request the body-composition read stage (#653). Requires the core stage to already be enabled —
+    /// this is presented as an "extra" once connected, not a standalone first step. A successful request
+    /// (sheet shown, regardless of what the user then picks — HealthKit never reveals read decisions,
+    /// same philosophy as `requestAuthorization()`) flips the persisted flag on so `sync()` starts
+    /// reading these types.
+    func requestBodyCompositionAuthorization() async {
+        guard auth == .authorized else { return }
+        do {
+            try await store.requestAuthorization(toShare: writeTypes(for: .bodyComposition), read: readTypes(for: .bodyComposition))
+            bodyCompositionEnabled = true
+            UserDefaults.standard.set(true, forKey: HealthKitBridge.bodyCompositionDefaultsKey)
+        } catch {
+            // Leave the flag as it was — a thrown request here means a genuine system-level failure
+            // (see `requestAuthorization()`'s doc), not a user decline, so there's nothing to roll back.
+        }
+    }
+
+    /// Request the continuous heart-rate write-back stage (#653). `writeHeartRate` already checks this
+    /// exact type's share status before writing, so nothing else needs to change once granted.
+    func requestHeartRateWriteback() async {
+        guard auth == .authorized else { return }
+        try? await store.requestAuthorization(toShare: writeTypes(for: .heartRateWriteback), read: [])
+        authRefreshTick += 1
+    }
+
+    /// Request the workout (+ energy/distance) write-back stage (#653). `writeWorkouts` already checks
+    /// the workout type's share status before writing, so nothing else needs to change once granted.
+    func requestWorkoutWriteback() async {
+        guard auth == .authorized else { return }
+        try? await store.requestAuthorization(toShare: writeTypes(for: .workoutWriteback), read: [])
+        authRefreshTick += 1
+    }
 
     // MARK: - Authorization
 
@@ -125,7 +267,12 @@ final class HealthKitBridge: ObservableObject {
         // can never appear). Detect via the embedded provisioning profile up front (#348).
         guard HealthKitBridge.hasHealthKitEntitlement else { auth = .entitlementMissing; return }
         do {
-            try await store.requestAuthorization(toShare: writeTypes, read: readTypes)
+            // #653: the primary "Enable Apple Health" ask is narrowed to core reads + the nightly
+            // vitals write-back — the pairing that already fed Charge/Rest/Effort scores. Continuous
+            // heart rate, workouts, and body composition are separate, narrower asks (see
+            // `requestHeartRateWriteback` / `requestWorkoutWriteback` / `requestBodyCompositionAuthorization`)
+            // a user opts into afterward, each explicit about its own scope before its own prompt fires.
+            try await store.requestAuthorization(toShare: writeTypes(for: .nightlyVitalsWriteback), read: readTypes(for: .coreRead))
             // The entitlement is present (the guard above proved it via the embedded profile, or there's
             // no profile = App Store build), so a successful request means the bridge is usable. We do
             // NOT reclassify to `.entitlementMissing` off the post-request `.notDetermined` heuristic
@@ -156,30 +303,26 @@ final class HealthKitBridge: ObservableObject {
     /// status, so no system permission sheet is shown.
     func refreshAuthIfPreviouslyGranted() {
         guard auth == .unknown, HKHealthStore.isHealthDataAvailable() else { return }
-        let granted = legacyCoreWriteTypes.allSatisfy { store.authorizationStatus(for: $0) == .sharingAuthorized }
+        let granted = HealthKitBridge.nightlyVitalsWriteTypesGranted(store: store)
         if granted {
             auth = .authorized
             // A returning user who already granted access should get the live stream re-armed for this
             // process. enableLiveDelivery is idempotent (HealthKit dedups observers + background
             // delivery per type), so calling it here as well as after a fresh requestAuthorization is safe.
             enableLiveDelivery()
-            // The high-res write-back added share types (HR stream, workouts, energy/distance) that a
-            // pre-update grant has as `.notDetermined`. Re-request once: HealthKit shows a single sheet
-            // listing ONLY the new types, and each write feature independently guards on its own type's
-            // share status, so declining any checkbox just skips that feature.
-            // Raw request, NOT requestAuthorization(): that method reclassifies a thrown error as
-            // `.denied`, which must never demote a bridge that just resumed a valid legacy grant.
-            let newTypesPending = writeTypes.contains { store.authorizationStatus(for: $0) == .notDetermined }
-            if newTypesPending {
-                Task { try? await store.requestAuthorization(toShare: writeTypes, read: readTypes) }
-            }
+            // #653: no more silent auto-reprompt for newly-added share types here. Continuous heart
+            // rate and workout write-back are now their own explicit, user-initiated toggles
+            // (`requestHeartRateWriteback` / `requestWorkoutWriteback`) — a returning user who already
+            // granted those under the old bundled flow keeps them (HealthKit's grant is untouched by
+            // this change; `writeHeartRate` / `writeWorkouts` still gate on the live share status), but
+            // nothing here asks HealthKit for anything new on their behalf without a tap.
         }
     }
 
     // MARK: - Live delivery (continuous ingestion)
 
     /// The scored read types we want a live observer + hourly background delivery on. This is the
-    /// subset of `quantityReadIds` (plus sleep) that actually feeds Charge/Rest/Effort/Fitness Age, so
+    /// subset of `coreReadIds` (plus sleep) that actually feeds Charge/Rest/Effort/Fitness Age, so
     /// a watch-only user's numbers refresh on their own rather than only when the app is foregrounded.
     /// We deliberately do NOT observe the body-composition reads (weight/BMI/etc.) — those don't move a
     /// score and a manual weigh-in shouldn't wake the app every hour.
@@ -347,20 +490,25 @@ final class HealthKitBridge: ObservableObject {
             var a = agg(day); a.vo2max = v; byDay[day] = a
         }
 
-        // Body composition — READ-ONLY import under the apple-health source (#20). Weight, lean mass
-        // and BMI are point-in-time readings, so take the latest-of-day; body-fat reads fine as a
-        // daily average. Body-fat HealthKit gives a 0…1 fraction, scaled to percent like spo2 above.
-        await collect(.bodyMass, unit: .gramUnit(with: .kilo), start: start, end: end, op: .discreteMostRecent) { day, v in
-            var a = agg(day); a.weightKg = v; byDay[day] = a
-        }
-        await collect(.bodyFatPercentage, unit: .percent(), start: start, end: end, op: .discreteAverage) { day, v in
-            var a = agg(day); a.bodyFatPct = v * 100; byDay[day] = a   // 0…1 → percent
-        }
-        await collect(.leanBodyMass, unit: .gramUnit(with: .kilo), start: start, end: end, op: .discreteMostRecent) { day, v in
-            var a = agg(day); a.leanMassKg = v; byDay[day] = a
-        }
-        await collect(.bodyMassIndex, unit: .count(), start: start, end: end, op: .discreteMostRecent) { day, v in
-            var a = agg(day); a.bmi = v; byDay[day] = a
+        // Body composition — READ-ONLY import under the apple-health source (#20), and its own opt-in
+        // stage (#653): gated on `bodyCompositionEnabled` so a user who never turned this stage on gets
+        // no reads here even if some stray grant existed — the toggle, not HealthKit's opaque read
+        // status, is the source of truth for whether this runs. Weight, lean mass and BMI are
+        // point-in-time readings, so take the latest-of-day; body-fat reads fine as a daily average.
+        // Body-fat HealthKit gives a 0…1 fraction, scaled to percent like spo2 above.
+        if bodyCompositionEnabled {
+            await collect(.bodyMass, unit: .gramUnit(with: .kilo), start: start, end: end, op: .discreteMostRecent) { day, v in
+                var a = agg(day); a.weightKg = v; byDay[day] = a
+            }
+            await collect(.bodyFatPercentage, unit: .percent(), start: start, end: end, op: .discreteAverage) { day, v in
+                var a = agg(day); a.bodyFatPct = v * 100; byDay[day] = a   // 0…1 → percent
+            }
+            await collect(.leanBodyMass, unit: .gramUnit(with: .kilo), start: start, end: end, op: .discreteMostRecent) { day, v in
+                var a = agg(day); a.leanMassKg = v; byDay[day] = a
+            }
+            await collect(.bodyMassIndex, unit: .count(), start: start, end: end, op: .discreteMostRecent) { day, v in
+                var a = agg(day); a.bmi = v; byDay[day] = a
+            }
         }
 
         // Sleep minutes per day (asleep stages summed; attributed to wake day).

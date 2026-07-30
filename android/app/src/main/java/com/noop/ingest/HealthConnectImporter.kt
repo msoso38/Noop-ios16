@@ -88,31 +88,71 @@ object HealthConnectImporter {
      *  clipping keeps a neighbouring activity inside this window from over-counting. */
     private const val DISTANCE_MATCH_BUFFER_S = 300L
 
-    /** The record types this importer reads, in one place so PERMISSIONS stays in sync. */
-    private val READ_RECORDS: List<KClass<out Record>> = listOf(
-        StepsRecord::class,
-        TotalCaloriesBurnedRecord::class,
-        ActiveCaloriesBurnedRecord::class,
+    /**
+     * Privacy categories the Data Sources UI lets the user grant independently (#645): rather
+     * than one all-or-nothing Health Connect permission request covering every record type this
+     * importer knows how to read, the user picks which category (or categories) NOOP may ask
+     * Health Connect for. [import] itself is unchanged — it already tolerates a partial grant,
+     * reading whichever types Health Connect reports as granted and skipping the rest — so
+     * narrowing what's REQUESTED narrows what ever gets read, without touching the read/aggregate
+     * logic at all.
+     */
+    enum class HealthDataCategory {
+        /** Heart rate, resting HR, HRV, sleep, respiratory rate, SpO₂ — the autonomic/recovery signals. */
+        CORE_RECOVERY,
+        /** Steps, calories, exercise sessions, distance, VO2 max. */
+        ACTIVITY,
+        /** Weight, body fat, lean body mass. */
+        BODY_COMPOSITION,
+    }
+
+    private val CORE_RECOVERY_RECORDS: List<KClass<out Record>> = listOf(
         HeartRateRecord::class,
         RestingHeartRateRecord::class,
         HeartRateVariabilityRmssdRecord::class,
         SleepSessionRecord::class,
-        OxygenSaturationRecord::class,
         RespiratoryRateRecord::class,
+        OxygenSaturationRecord::class,
+    )
+    private val ACTIVITY_RECORDS: List<KClass<out Record>> = listOf(
+        StepsRecord::class,
+        TotalCaloriesBurnedRecord::class,
+        ActiveCaloriesBurnedRecord::class,
+        ExerciseSessionRecord::class,
+        DistanceRecord::class,
         Vo2MaxRecord::class,
+    )
+    private val BODY_COMPOSITION_RECORDS: List<KClass<out Record>> = listOf(
         WeightRecord::class,
         BodyFatRecord::class,
         LeanBodyMassRecord::class,
-        ExerciseSessionRecord::class,
-        DistanceRecord::class,
     )
+
+    /** Category -> its record types, in the same declared order [HealthDataCategory] lists them. */
+    private val RECORDS_BY_CATEGORY: Map<HealthDataCategory, List<KClass<out Record>>> = mapOf(
+        HealthDataCategory.CORE_RECOVERY to CORE_RECOVERY_RECORDS,
+        HealthDataCategory.ACTIVITY to ACTIVITY_RECORDS,
+        HealthDataCategory.BODY_COMPOSITION to BODY_COMPOSITION_RECORDS,
+    )
+
+    /** The record types this importer reads, in one place so PERMISSIONS stays in sync. */
+    private val READ_RECORDS: List<KClass<out Record>> =
+        CORE_RECOVERY_RECORDS + ACTIVITY_RECORDS + BODY_COMPOSITION_RECORDS
 
     /**
      * The set of Health Connect read-permission strings the UI must request before calling
-     * [import]. One `READ_*` permission per record type in [READ_RECORDS].
+     * [import]. One `READ_*` permission per record type in [READ_RECORDS]. Kept as the full union
+     * for callers (e.g. Onboarding) that still offer a single "grant everything" step; the Data
+     * Sources category picker instead requests [permissionsFor] a chosen subset (#645).
      */
     val PERMISSIONS: Set<String> =
         READ_RECORDS.map { HealthPermission.getReadPermission(it) }.toSet()
+
+    /** The Health Connect read-permission strings for just [categories] (#645). */
+    fun permissionsFor(categories: Set<HealthDataCategory>): Set<String> =
+        categories.flatMap { RECORDS_BY_CATEGORY.getValue(it) }
+            .map { HealthPermission.getReadPermission(it) }
+            .toSet()
 
     /**
      * Whether Health Connect is installed/available on this device.
