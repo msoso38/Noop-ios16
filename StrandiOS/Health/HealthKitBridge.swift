@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import HealthKit
+import UIKit
 import WhoopStore
 import StrandAnalytics
 import StrandImport
@@ -142,7 +143,11 @@ final class HealthKitBridge: ObservableObject {
     /// unchanged sees no UI, and a returning user is asked about exactly the new ones. The signature is
     /// stored only on success, so a failed request is retried rather than silently swallowed.
     private func requestNewReadTypesIfNeeded() async {
+        // FOREGROUND only. `sync` is also driven by background observer wakes, and asking there would
+        // spend the one request we get where no sheet can be presented — if that call reported success
+        // without showing anything, the signature would be stored and the user never asked at all.
         guard auth == .authorized,
+              UIApplication.shared.applicationState == .active,
               UserDefaults.standard.string(forKey: HealthKitBridge.readTypeSignatureKey)
                   != HealthKitBridge.readTypeSignature
         else { return }
