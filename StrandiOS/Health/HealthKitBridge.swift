@@ -117,6 +117,44 @@ final class HealthKitBridge: ObservableObject {
 
     // MARK: - Authorization
 
+    /// UserDefaults key holding the read set the user was last asked about.
+    private static let readTypeSignatureKey = "noop.health.readTypeSignature"
+
+    /// A stable fingerprint of the read types currently requested.
+    private static var readTypeSignature: String {
+        quantityReadIds.map(\.rawValue).sorted().joined(separator: ",")
+    }
+
+    private static func persistReadTypeSignature() {
+        UserDefaults.standard.set(readTypeSignature, forKey: readTypeSignatureKey)
+    }
+
+    /// Re-request authorization when the app has STARTED reading a type it never used to (#949).
+    ///
+    /// HealthKit never reports read authorization, and `requestAuthorization` is only called from the
+    /// connect button. So a read type added in an update stays `.notDetermined` for everyone who granted
+    /// access before it existed, and its queries return empty forever — indistinguishable from "you have
+    /// no water in Health", and silent. Water and caffeine would have done nothing at all for every
+    /// existing user, which is most of them.
+    ///
+    /// Comparing a stored fingerprint of the read set catches that. Re-requesting is cheap and quiet:
+    /// HealthKit presents the sheet ONLY for types that are still undetermined, so a user whose set is
+    /// unchanged sees no UI, and a returning user is asked about exactly the new ones. The signature is
+    /// stored only on success, so a failed request is retried rather than silently swallowed.
+    private func requestNewReadTypesIfNeeded() async {
+        guard auth == .authorized,
+              UserDefaults.standard.string(forKey: HealthKitBridge.readTypeSignatureKey)
+                  != HealthKitBridge.readTypeSignature
+        else { return }
+        do {
+            try await store.requestAuthorization(toShare: writeTypes, read: readTypes)
+            HealthKitBridge.persistReadTypeSignature()
+        } catch {
+            // Leave the signature unset so the next sync tries again. Not surfaced in `lastError`: the
+            // user did not ask for this, and the rest of the sync is unaffected.
+        }
+    }
+
     /// Request read + write permission. HealthKit never reveals whether *read* was granted, so we
     /// treat a successful request as `.authorized` and let queries return empty if the user declined.
     func requestAuthorization() async {
@@ -139,6 +177,8 @@ final class HealthKitBridge: ObservableObject {
             // the authoritative signal; the `.notDetermined` fallback only matters when that check can't
             // run, which on iOS means an App Store build that by definition has the entitlement.
             auth = .authorized
+            // This grant covered the CURRENT read set, so record it — see `requestNewReadTypesIfNeeded`.
+            HealthKitBridge.persistReadTypeSignature()
         } catch {
             // A thrown error here is on a build that carries the entitlement (guarded above), so it's a
             // genuine denial / request failure — keep the normal `.denied` "enable in Settings" path,
@@ -310,6 +350,9 @@ final class HealthKitBridge: ObservableObject {
         guard auth == .authorized, !syncing else { return }
         syncing = true
         defer { syncing = false }
+        // Before reading: pick up any read type this version added that the user was never asked about
+        // (#949). No-op once the stored signature matches, which is every sync after the first.
+        await requestNewReadTypesIfNeeded()
         guard let store = await repo.storeHandle() else { return }
 
         let cal = Calendar.current

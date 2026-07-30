@@ -130,6 +130,34 @@ object HealthConnectImporter {
         READ_RECORDS.map { HealthPermission.getReadPermission(it) }.toSet()
 
     /**
+     * Whether the user has been asked about the CURRENT permission set (#949).
+     *
+     * The import gate is `granted.any { ... }` by design (#150): partial grants are legitimate, so
+     * having any one permission is enough to import. But that also means a permission ADDED in an
+     * update is never requested — an existing user goes straight to importing and the new type reads
+     * as empty forever, indistinguishable from "you have no water logged". Water would have done
+     * nothing at all for every existing Android user.
+     *
+     * Comparing a stored fingerprint of [PERMISSIONS] catches that: when the set grows, the caller
+     * launches the request once so the user is asked about the new type, then marks it asked. It is
+     * asked ONCE — declining is remembered, so this never becomes a nag.
+     */
+    fun hasUnaskedPermissions(context: Context): Boolean =
+        prefs(context).getString(PERMISSION_SIGNATURE_KEY, null) != permissionSignature
+
+    /** Record that the user has now been asked about the current [PERMISSIONS] set. */
+    fun markPermissionsAsked(context: Context) {
+        prefs(context).edit().putString(PERMISSION_SIGNATURE_KEY, permissionSignature).apply()
+    }
+
+    private const val PERMISSION_SIGNATURE_KEY = "noop.hc.permissionSignature"
+
+    private val permissionSignature: String get() = PERMISSIONS.sorted().joinToString(",")
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences(NoopPrefs.NAME, Context.MODE_PRIVATE)
+
+    /**
      * Whether Health Connect is installed/available on this device.
      * One of [HealthConnectClient.SDK_AVAILABLE],
      * [HealthConnectClient.SDK_UNAVAILABLE],
