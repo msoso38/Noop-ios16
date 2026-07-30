@@ -1019,11 +1019,6 @@ final class AppModel: ObservableObject {
         ble.buzzStrapOnce()
     }
 
-    /// Fire a specific preset haptic pattern (patternId 0–6 on Harvard; loops sets length).
-    /// Used by the notification-pattern picker and coaching features.
-    func buzz(pattern: UInt8, loops: UInt8 = 1) {
-        ble.send(.runHapticsPattern, payload: [pattern, loops, 0, 0, 0])
-    }
 
     /// Tell the strap to STOP an in-progress haptic pattern (#769). The biofeedback layers (Breathe /
     /// "Calm me" / resonance) schedule a stream of buzzes; cancelling the app-side DispatchWorkItems stops

@@ -120,8 +120,8 @@ object BatteryAlertNotifier {
             val label = com.noop.analytics.BatteryEstimator.label(remainingHours)
             val n = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_heart)
-                .setContentTitle("Strap battery low")
-                .setContentText("$label left on your WHOOP — recharge tonight.")
+                .setContentTitle(context.getString(R.string.battery_runtime_title))
+                .setContentText(context.getString(R.string.battery_runtime_body, label))
                 .setContentIntent(openAppIntent(context))
                 .setAutoCancel(true)
                 .setCategory(NotificationCompat.CATEGORY_STATUS)
@@ -148,8 +148,8 @@ object BatteryAlertNotifier {
             if (decision.fireLow) {
                 val n = NotificationCompat.Builder(context, CHANNEL_ID)
                     .setSmallIcon(R.drawable.ic_stat_heart)
-                    .setContentTitle("Low battery")
-                    .setContentText("Recharge your WHOOP before tonight.")
+                    .setContentTitle(context.getString(R.string.battery_low_title))
+                    .setContentText(context.getString(R.string.battery_low_body))
                     .setContentIntent(openAppIntent(context))
                     .setAutoCancel(true)
                     .setCategory(NotificationCompat.CATEGORY_STATUS)
@@ -160,8 +160,8 @@ object BatteryAlertNotifier {
             if (decision.fireFull) {
                 val n = NotificationCompat.Builder(context, CHANNEL_ID)
                     .setSmallIcon(R.drawable.ic_stat_heart)
-                    .setContentTitle("Strap fully charged")
-                    .setContentText("Your WHOOP is at 100%.")
+                    .setContentTitle(context.getString(R.string.battery_full_title))
+                    .setContentText(context.getString(R.string.battery_full_body))
                     .setContentIntent(openAppIntent(context))
                     .setAutoCancel(true)
                     .setCategory(NotificationCompat.CATEGORY_STATUS)
@@ -303,13 +303,18 @@ object BatteryAlertNotifier {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         runCatching {
             val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (mgr.getNotificationChannel(CHANNEL_ID) != null) return
+            // No early return when the channel exists: createNotificationChannel is idempotent and
+            // updating an existing channel is the only way its name/description follow a language
+            // change. Both are user-visible in system Settings and were otherwise fixed in the
+            // install-time language forever. Every caller sits behind the persisted once-per-crossing
+            // gates (and #886's (SoC, charging) key), so this runs when an alert is actually posted,
+            // not on the ~1 Hz live-state tick.
             mgr.createNotificationChannel(
                 NotificationChannel(
-                    CHANNEL_ID, "Battery alerts",
+                    CHANNEL_ID, context.getString(R.string.battery_channel_name),
                     NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
-                    description = "Alerts when the strap battery is low or fully charged."
+                    description = context.getString(R.string.battery_channel_desc)
                 },
             )
         }

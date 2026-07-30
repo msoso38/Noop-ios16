@@ -741,7 +741,10 @@ as the 4.0 `event` post-hook fail closed.
 ## 6. Haptic preset discovery (GET_ALL_HAPTICS_PATTERN)
 
 The strap has a built-in table of haptic waveforms. `GET_ALL_HAPTICS_PATTERN` (command **80**) reports
-the device's preset patterns — **7 presets on the WHOOP 4.0 (Harvard)**, indexed `0–6`. They are fired
+the device's preset patterns — **7 presets on the WHOOP 4.0 (Harvard)**, indexed `0–6`. That count is
+a claim about the STRAP's own table, not about NOOP: it would be read with `GET_ALL_HAPTICS_PATTERN`
+(80), and neither platform has ever sent that command, so we have never enumerated it (#926). What the
+app exposes is four `BuzzPattern` choices, all sharing patternId 2. They are fired
 with `RUN_HAPTICS_PATTERN` (command **79**):
 
 ```text
@@ -860,6 +863,27 @@ output in `Tests/WhoopProtocolTests/Resources/` (`frames.json`, `golden.json`,
 `historical_golden.json`, `biometric_streams_golden.json`, …); the parity tests assert the Swift
 decoder reproduces them byte-for-byte. Prefer real captures over invented offsets — unmapped regions
 are kept raw and labelled rather than guessed.
+
+**Check where a fixture came from before citing it as evidence.** A generated vector and a real
+capture are interchangeable for testing a decoder and are *not* interchangeable as evidence about
+firmware — once committed they look identical, and a CRC-valid synthetic frame is as convincing as a
+captured one.
+
+Provenance is generally declared, but **at the top of the file, not at each fixture**: `StreamsTests`
+and `FramingTests` both open by saying their frames are synthetic and that no real capture is
+embedded, the Kotlin `FramingTest` says its vectors were generated independently in Python, and
+`ExtendedBatteryProbeTests.realFrame` names the device it came off. Read that header before quoting a
+frame in an issue.
+
+This is not bookkeeping. #900 was filed against a decode that four in-tree fixtures appeared to
+contradict; three of the four declare themselves generated in exactly those headers, and the fourth
+shares a byte-identical envelope with one of them — a vector derived from another vector keeps its
+header, so a synthetic frame can read as corroboration of the original it was copied from. The issue
+went through two rounds of correction before anyone opened the files.
+
+Two habits follow: state provenance for a new fixture, at the fixture when the frame is the kind
+likely to be quoted outside its own file; and when a decode looks contradicted, check what the
+contradicting bytes actually are before changing the decoder.
 
 ### A note on whoop5 offsets
 

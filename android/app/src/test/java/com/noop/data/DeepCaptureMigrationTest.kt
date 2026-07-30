@@ -112,11 +112,84 @@ class DeepCaptureMigrationTest {
         WhoopRepository(dao).insert(
             StreamBatch(v18Aux = listOf(V18AuxRow(ts = 1_780_916_150L, statusWord = 1_792L))),
             "my-whoop",
+            // Threshold 1 so a single row crosses it. Before #888 the sweep ran on every batch and this
+            // test passed without saying anything about the threshold; once the sweep became amortised at
+            // 10 000 rows, one row could no longer trigger it and this assertion could not hold. The Swift
+            // twin was given injectable parameters in that PR and this one was not, so it has been failing
+            // on main ever since — invisibly, because android.yml is disabled.
+            v18AuxPruneEveryRows = 1,
         )
 
         assertEquals(1, inserted!!.size)
         assertEquals("my-whoop", prunedDevice)
         assertEquals(WhoopRepository.V18_AUX_RETENTION_ROWS, prunedKeep)
+    }
+
+    /**
+     * Under the threshold the sweep must NOT run — overshoot is the whole point of amortising it, and a
+     * sweep per batch is the cost #888 removed. Twin of Swift's
+     * `testRetentionSweepIsDeferredBelowTheThreshold`.
+     */
+    @Test
+    fun repositoryInsertV18Aux_defersSweepBelowTheThreshold(): Unit = runBlocking {
+        var pruneCalls = 0
+        val dao = Proxy.newProxyInstance(
+            WhoopDao::class.java.classLoader,
+            arrayOf(WhoopDao::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "insertV18Aux" -> listOf(1L)
+                "pruneV18Aux" -> { pruneCalls++; Unit }
+                else -> throw UnsupportedOperationException("v18-aux insert must not call ${method.name}")
+            }
+        } as WhoopDao
+
+        val repo = WhoopRepository(dao)
+        repeat(3) { i ->
+            repo.insert(
+                StreamBatch(v18Aux = listOf(V18AuxRow(ts = 1_780_916_150L + i, statusWord = 1_792L))),
+                "my-whoop",
+                v18AuxPruneEveryRows = 5_000,
+            )
+        }
+        assertEquals("three rows must not reach a 5 000-row budget", 0, pruneCalls)
+    }
+
+    /**
+     * Once the banked count crosses the threshold the sweep runs, and the counter resets so the next
+     * window has to earn its own sweep. Twin of Swift's `testRetentionSweepRunsOnceTheThresholdIsCrossed`
+     * and `testTheAmortisationCounterResetsAfterEachSweep`.
+     */
+    @Test
+    fun repositoryInsertV18Aux_sweepsOnThresholdThenResets(): Unit = runBlocking {
+        var pruneCalls = 0
+        val dao = Proxy.newProxyInstance(
+            WhoopDao::class.java.classLoader,
+            arrayOf(WhoopDao::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "insertV18Aux" -> listOf(1L)
+                "pruneV18Aux" -> { pruneCalls++; Unit }
+                else -> throw UnsupportedOperationException("v18-aux insert must not call ${method.name}")
+            }
+        } as WhoopDao
+
+        val repo = WhoopRepository(dao)
+        // Two rows per batch against a budget of 3: after batch 1 banked=2 (no sweep), after batch 2
+        // banked=4 (sweep, reset to 0), after batch 3 banked=2 (no second sweep).
+        repeat(3) { i ->
+            repo.insert(
+                StreamBatch(
+                    v18Aux = listOf(
+                        V18AuxRow(ts = 1_780_916_150L + i * 2, statusWord = 1_792L),
+                        V18AuxRow(ts = 1_780_916_151L + i * 2, statusWord = 1_792L),
+                    ),
+                ),
+                "my-whoop",
+                v18AuxPruneEveryRows = 3,
+            )
+        }
+        assertEquals("exactly one sweep — the counter must reset after it", 1, pruneCalls)
     }
 
     /** A batch whose aux rows all pack to nothing writes no row, so it must not sweep either. */

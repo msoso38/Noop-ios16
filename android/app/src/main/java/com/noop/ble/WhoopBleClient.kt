@@ -1299,7 +1299,7 @@ class WhoopBleClient(
                     sb.append("Δ vs previous capture: first capture — probe again in another position to diff")
                 }
             } else {
-                sb.append("\nNo payload beyond the command byte (bare stub) — no body-location data on this firmware")
+                sb.append("\nNo payload beyond the command byte (bare stub) — this reply carried no body-location data, which is not the same as the firmware having none (see the Verdict above)")
             }
             return sb.toString() to payloadHex
         }
@@ -2041,9 +2041,11 @@ class WhoopBleClient(
                         // the night MEAN (the other app's number) — from the post-backfill scoring pass, not
                         // only the UI's 15-min loop. log() PII-scrubs at the sink. Best-effort + logging only.
                         diag = { s -> log(s) },
-                        // Opt-in experimental sleep staging (V2): stage this post-backfill pass with the same
+                        // Experimental sleep staging (V2): stage this post-backfill pass with the same
                         // engine the user chose in Settings, read off SharedPreferences here (the analytics
-                        // layer is Context-free). Default off → V1. (V7 Pillar 3b)
+                        // layer is Context-free). The stored preference is default TRUE
+                        // (getBoolean(KEY, true)), so this normally passes V2 — turning the Settings toggle
+                        // off is what falls back to V1. (V7 Pillar 3b)
                         useExperimentalSleepV2 = PuffinExperiment.from(context).experimentalSleepV2,
                         // Opt-in motion-aware wake refinement (#364 follow-up) — same Context-free threading.
                         useMotionAwareWake = PuffinExperiment.from(context).motionAwareWake,
@@ -5129,8 +5131,23 @@ class WhoopBleClient(
                 }
                 // Surface non-success command results in the strap log — a result=UNSUPPORTED line
                 // here is how the MG haptics rejection (#48) would have shown itself in-app.
+                //
+                // A reply that DELIVERED ITS VALUE is annotated rather than reported as a bare failure.
+                // The 4.0 GET_BATTERY_LEVEL replies on record carry a zeroed [seq][result] prefix, so a
+                // battery read that returned a perfectly good percentage logs as
+                // "FAILURE(0)" — and a log line saying a battery read failed, next to a battery gauge
+                // showing 42%, is the kind of artefact that gets quoted in an issue as evidence of a
+                // fault that is not there. That is how #900 started. The line still prints, because
+                // hiding it would hide the anomaly itself; it just no longer reads as a failure.
                 if (result != null && !result.startsWith("SUCCESS")) {
-                    log("Command response: ${respCmd ?: "?"} → $result")
+                    val decodedValue = doubleValue(parsed.parsed["battery_pct"])
+                    val note = if (decodedValue != null) {
+                        " (the reply still carried a value: battery ${"%.1f".format(decodedValue)}%" +
+                            " — the result byte on this reply is not established, see #900)"
+                    } else {
+                        ""
+                    }
+                    log("Command response: ${respCmd ?: "?"} → $result$note")
                 }
                 // Arm-readback diagnostic (#401 close-out): armStrapAlarm follows every WHOOP 4.0 arm
                 // with GET_ALARM_TIME (67) so the log proves what the STRAP believes is armed, not just
