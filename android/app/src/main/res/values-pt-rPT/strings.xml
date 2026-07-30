@@ -247,6 +247,7 @@
     <string name="l10n_backup_sync_screen_restore_3cbe6d6b">Descansoaurar</string>
     <string name="l10n_backup_sync_screen_restore_from_a_backup_c28917c6">Descansoaurar a partir de um cópia de segurança…</string>
     <string name="l10n_backup_sync_screen_roughly_when_the_daily_backup_runs_71de04e1">Aproximadamente quando o cópia de segurança diário é executado (melhor esforço - o sistema pode deslizar um pouco).</string>
+    <string name="l10n_backup_sync_screen_these_backups_are_unencrypted_too_if_53e70fe8">Estas cópias de segurança também não estão encriptadas. Se esta pasta sincronizar com o Drive, o Dropbox ou o iCloud, o ficheiro legível também vai parar lá — aponta apenas para um serviço de confiança.</string>
     <string name="l10n_backup_sync_screen_tip_a_desktop_drive_dropbox_app_2eaff1e3">Dica: uma aplicação Drive/Dropbox para desktop sincroniza automaticamente uma pasta escolhida. No telefone, guarde num </string>
     <string name="l10n_backup_sync_screen_writes_a_fresh_dated_backup_to_bd964fc5">Grava um novo cópia de segurança datado na tua pasta uma vez por dia no horário abaixo, mantendo </string>
     <string name="l10n_breathe_screen_a_relaxation_rhythm_not_cardiac_control_5c2f10a8">Um ritmo de relaxamento, não de controlo cardíaco. Nunca anda abaixo de uma taxa segura e pode parar a qualquer momento. Se a tua frequência cardíaca não acalmar, diremos isso claramente.</string>
@@ -1499,6 +1500,7 @@
     <string name="l10n_settings_screen_temperature_0a9062a9">Temperatura</string>
     <string name="l10n_settings_screen_test_centre_37b36828">Centro de testes</string>
     <string name="l10n_settings_screen_theme_a797e309">Tema</string>
+    <string name="l10n_settings_screen_this_is_a_plain_unencrypted_archive_b0dfe63d">É um arquivo simples, não encriptado — quem tiver o ficheiro pode abri-lo com qualquer ferramenta zip. Guarda-o num sítio de confiança.</string>
     <string name="l10n_settings_screen_this_restarts_the_roughly_4_night_c610a93d">Isto reinicia a acumulação de aproximadamente 4 noites para a Carga e a tua linha de base de HRV. A tua histórico permanece. Usa-o se uma má primeira semana, como usá-lo durante uma doença, definir a tua linha de base.</string>
     <string name="l10n_settings_screen_trend_charts_19085c81">Gráficos de tendências</string>
     <string name="l10n_settings_screen_try_whoop_5_mg_protocol_probes_1d584653">Experimente as sondagens de protocolo WHOOP 5/MG</string>

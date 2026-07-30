@@ -94,6 +94,7 @@
     <string name="l10n_backup_sync_screen_restore_3cbe6d6b">Restaurar</string>
     <string name="l10n_backup_sync_screen_restore_from_a_backup_c28917c6">Restaurar desde una copia de seguridad…</string>
     <string name="l10n_backup_sync_screen_roughly_when_the_daily_backup_runs_71de04e1">Roughly cuando la copia de seguridad diaria funciona (mejor esfuerzo - el sistema puede deslizarlo un poco).</string>
+    <string name="l10n_backup_sync_screen_these_backups_are_unencrypted_too_if_53e70fe8">Estas copias de seguridad tampoco están cifradas. Si esta carpeta se sincroniza con Drive, Dropbox o iCloud, el archivo legible también llegará allí: apunte solo a un servicio de confianza.</string>
     <string name="l10n_backup_sync_screen_tip_a_desktop_drive_dropbox_app_2eaff1e3">Consejo: una aplicación de escritorio Drive / Dropbox auto-syncs una carpeta elegida. Por teléfono, ahorre a un</string>
     <string name="l10n_backup_sync_screen_writes_a_fresh_dated_backup_to_bd964fc5">Escribe una copia de seguridad de fecha nueva en tu carpeta una vez al día en el momento siguiente, manteniendo</string>
     <string name="l10n_breathe_screen_a_relaxation_rhythm_not_cardiac_control_5c2f10a8">Un ritmo de relajación, no un control cardíaco. Nunca marca un ritmo por debajo de un nivel seguro y puedes parar cuando quieras. Si tu frecuencia cardíaca no se calma, te lo diremos claramente.</string>
@@ -1348,6 +1349,7 @@
     <string name="l10n_settings_screen_temperature_0a9062a9">Temperatura</string>
     <string name="l10n_settings_screen_test_centre_37b36828">Centro de pruebas</string>
     <string name="l10n_settings_screen_theme_a797e309">Tema</string>
+    <string name="l10n_settings_screen_this_is_a_plain_unencrypted_archive_b0dfe63d">Es un archivo sencillo y sin cifrar: cualquiera que consiga el archivo puede abrirlo con cualquier herramienta zip. Guárdelo en un lugar de confianza.</string>
     <string name="l10n_settings_screen_this_restarts_the_roughly_4_night_c610a93d">Esto reinicia el período de unas 4 noches de construcción de la Carga y tu línea base de VFC. Tu historial se conserva. Úsalo si una mala primera semana, como usarla estando enfermo, desvió tu línea base.</string>
     <string name="l10n_settings_screen_trend_charts_19085c81">Gráficos de tendencias</string>
     <string name="l10n_settings_screen_try_whoop_5_mg_protocol_probes_1d584653">Prueba las sondas del protocolo WHOOP 5/MG</string>

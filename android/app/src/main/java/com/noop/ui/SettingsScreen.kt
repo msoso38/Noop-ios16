@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Vibration
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.AlertDialog
@@ -2415,6 +2416,29 @@ fun SettingsScreen(
                     text = uiString(R.string.l10n_settings_screen_importing_overwrites_everything_currently_on_this_297b76ae) +
                         "Export CSV writes a WHOOP-format zip of your days, sleeps, workouts and journal that re-imports into NOOP on Android or Mac. On-device computed rows are marked APPROXIMATE in its Source column; the .noopbak backup stays the lossless restore path.",
                 )
+
+                // #644: .noopbak is a plain ZIP, not an encrypted container — anyone who gets the file
+                // can open it in any archive tool. Surface that plainly, right next to the Export
+                // button, rather than let people assume the file itself is protected once it leaves
+                // the device (e.g. dropped into a cloud-synced folder).
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics(mergeDescendants = true) {},
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = null,
+                        tint = Palette.statusWarning,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        uiString(R.string.l10n_settings_screen_this_is_a_plain_unencrypted_archive_b0dfe63d),
+                        style = NoopType.caption,
+                        color = Palette.statusWarning,
+                    )
+                }
             }
         }
 

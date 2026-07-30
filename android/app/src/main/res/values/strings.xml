@@ -273,6 +273,7 @@
     <string name="l10n_backup_sync_screen_restore_3cbe6d6b">Restore</string>
     <string name="l10n_backup_sync_screen_restore_from_a_backup_c28917c6">Restore from a backup…</string>
     <string name="l10n_backup_sync_screen_roughly_when_the_daily_backup_runs_71de04e1">Roughly when the daily backup runs (best-effort — the system may slide it a little).</string>
+    <string name="l10n_backup_sync_screen_these_backups_are_unencrypted_too_if_53e70fe8">These backups are unencrypted too. If this folder syncs to Drive, Dropbox or iCloud, the readable file goes there as well — only point it at a service you trust.</string>
     <string name="l10n_backup_sync_screen_tip_a_desktop_drive_dropbox_app_2eaff1e3">Tip: a desktop Drive / Dropbox app auto-syncs a chosen folder. On the phone, save to a </string>
     <string name="l10n_backup_sync_screen_writes_a_fresh_dated_backup_to_bd964fc5">Writes a fresh dated backup to your folder once a day at the time below, keeping </string>
     <string name="l10n_breathe_screen_a_relaxation_rhythm_not_cardiac_control_5c2f10a8">A relaxation rhythm, not cardiac control. It never paces below a safe rate and you can stop anytime. If your heart rate doesn\'t settle, we\'ll say so plainly.</string>
@@ -1527,6 +1528,7 @@
     <string name="l10n_settings_screen_temperature_0a9062a9">Temperature</string>
     <string name="l10n_settings_screen_test_centre_37b36828">Test Centre</string>
     <string name="l10n_settings_screen_theme_a797e309">Theme</string>
+    <string name="l10n_settings_screen_this_is_a_plain_unencrypted_archive_b0dfe63d">This is a plain, unencrypted archive — anyone who gets the file can open it with any zip tool. Store it somewhere you trust.</string>
     <string name="l10n_settings_screen_this_restarts_the_roughly_4_night_c610a93d">This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays. Use it if a bad first week, like wearing it while sick, set your baseline off.</string>
     <string name="l10n_settings_screen_trend_charts_19085c81">Trend charts</string>
     <string name="l10n_settings_screen_try_whoop_5_mg_protocol_probes_1d584653">Try WHOOP 5/MG protocol probes</string>

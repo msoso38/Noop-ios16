@@ -264,6 +264,7 @@
     <string name="l10n_backup_sync_screen_restore_3cbe6d6b">Wiederherstellen</string>
     <string name="l10n_backup_sync_screen_restore_from_a_backup_c28917c6">Aus einer Sicherung wiederherstellen…</string>
     <string name="l10n_backup_sync_screen_roughly_when_the_daily_backup_runs_71de04e1">Etwa wenn das tägliche Backup läuft (Best-Effort - das System kann es ein wenig rutschen).</string>
+    <string name="l10n_backup_sync_screen_these_backups_are_unencrypted_too_if_53e70fe8">Auch diese Sicherungen sind unverschlüsselt. Wenn dieser Ordner mit Drive, Dropbox oder iCloud synchronisiert wird, landet die lesbare Datei auch dort — zeigen Sie nur auf einen Dienst, dem Sie vertrauen.</string>
     <string name="l10n_backup_sync_screen_tip_a_desktop_drive_dropbox_app_2eaff1e3">Tipp: Eine Desktop Drive / Dropbox App synchronisiert einen ausgewählten Ordner automatisch. Am Telefon speichern Sie eine</string>
     <string name="l10n_backup_sync_screen_writes_a_fresh_dated_backup_to_bd964fc5">Schreibt ein neues datiertes Backup in Ihren Ordner einmal am Tag zu der Zeit unten, halten</string>
     <string name="l10n_breathe_screen_a_relaxation_rhythm_not_cardiac_control_5c2f10a8">Ein Entspannungsrhythmus, keine Herzsteuerung. Er taktet nie unter eine sichere Rate, und du kannst jederzeit aufhören. Wenn sich deine Herzfrequenz nicht beruhigt, sagen wir es klar.</string>
@@ -1518,6 +1519,7 @@
     <string name="l10n_settings_screen_temperature_0a9062a9">Temperatur</string>
     <string name="l10n_settings_screen_test_centre_37b36828">Testzentrum</string>
     <string name="l10n_settings_screen_theme_a797e309">Design</string>
+    <string name="l10n_settings_screen_this_is_a_plain_unencrypted_archive_b0dfe63d">Das ist ein einfaches, unverschlüsseltes Archiv — wer die Datei bekommt, kann sie mit jedem Zip-Programm öffnen. Bewahren Sie sie an einem Ort auf, dem Sie vertrauen.</string>
     <string name="l10n_settings_screen_this_restarts_the_roughly_4_night_c610a93d">Das startet den etwa 4-nächtigen Aufbau für Ladung und deine HRV-Basislinie neu. Dein Verlauf bleibt. Nutze es, wenn eine schlechte erste Woche, etwa krank getragen, deine Basislinie verzerrt hat.</string>
     <string name="l10n_settings_screen_trend_charts_19085c81">Trenddiagramme</string>
     <string name="l10n_settings_screen_try_whoop_5_mg_protocol_probes_1d584653">WHOOP 5/MG-Protokolltests ausprobieren</string>

@@ -1815,6 +1815,21 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                // #644: .noopbak is a plain ZIP, not an encrypted container — anyone who gets the file
+                // can open it in any archive tool. Say so plainly next to the Export button, rather than
+                // let people assume the file itself is protected once it leaves the device (e.g. dropped
+                // into a cloud-synced folder).
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(StrandPalette.statusWarning)
+                        .font(.system(size: 13))
+                        .accessibilityHidden(true)
+                    Text("This is a plain, unencrypted archive — anyone who gets the file can open it with any zip tool. Store it somewhere you trust.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.statusWarning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 // Reach the scheduled / folder-based Backup & Sync screen (back up to a chosen folder on
                 // demand or about once a day, restore from a snapshot in that folder).
                 NavigationLink {
