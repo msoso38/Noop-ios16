@@ -299,6 +299,11 @@ final class HealthKitBridge: ObservableObject {
 
     // MARK: - Read → store
 
+    /// UserDefaults key gating the one-time 90-day hourly-step backfill (see the hourly collection
+    /// below). Set once the first hourly-step HealthKit query completes; every later `sync()` only
+    /// walks the same window the daily collectors already use.
+    private static let hourlyStepsBackfilledKey = "applehealth.hourlySteps.backfilled"
+
     /// Pull the last `days` of Apple Health into the on-device store under the `apple-health` source,
     /// then write NOOP's own computed metrics back into Health. Safe to call repeatedly (idempotent
     /// upserts keyed by day).
@@ -370,6 +375,16 @@ final class HealthKitBridge: ObservableObject {
             byDay[day] = a
         }
 
+        // Hourly step counts: `appleDaily.steps` above flattens a whole day to one total, so a
+        // dead/absent phone for part of a day (e.g. the phone died mid-hike) is invisible. Walk the
+        // same window at HOURLY granularity into `appleStepHour` so a UI can show exactly which hours
+        // were recorded. First run ever (UserDefaults flag unset) widens the window to 90 days back —
+        // HealthKit retains hourly statistics historically, so this answers PAST days retroactively;
+        // every later sync only re-covers the normal start...end window like the daily collectors above.
+        let hourlyStepsBackfilled = UserDefaults.standard.bool(forKey: HealthKitBridge.hourlyStepsBackfilledKey)
+        let hourlyStepsStart: Date = hourlyStepsBackfilled ? start
+            : (cal.date(byAdding: .day, value: -90, to: cal.startOfDay(for: end)) ?? start)
+
         // Build + upsert the store rows under the apple-health source.
         let appleRows = byDay.map { (day, a) in
             AppleDaily(day: day, steps: a.steps.map { Int($0) },
@@ -429,10 +444,25 @@ final class HealthKitBridge: ObservableObject {
         // lastSync — a false "success", and the next delta sync skipped the window. (Reimplemented
         // from @vulnix0x4's PR #375.)
         do {
+            // Collect hourly steps here (not before) so a transient HealthKit error throws to the
+            // catch block and prevents the backfill flag from permanently locking out the 90-day window.
+            let hourlySteps = try await collectHourlySteps(start: hourlyStepsStart, end: end)
+
             try await store.upsertAppleDaily(appleRows, deviceId: appleDeviceId)
             try await store.upsertDailyMetrics(dmRows, deviceId: appleDeviceId)
             try await store.upsertMetricSeries(points, deviceId: appleDeviceId)
             if !workoutRows.isEmpty { try await store.upsertWorkouts(workoutRows, deviceId: appleDeviceId) }
+            // Only mark the backfill done once hourly data actually lands. HealthKit returns EMPTY
+            // (not an error) when step read-access is denied, and users grant Health scopes
+            // incrementally — so gating on non-empty, not just no-throw, stops a deny-then-grant
+            // sequence from burning the one-time 90-day widen before the user ever authorizes steps.
+            // A genuinely step-less window just re-scans next sync: cheap, bounded, self-healing.
+            if !hourlySteps.isEmpty {
+                try await store.upsertAppleStepHours(hourlySteps, deviceId: appleDeviceId)
+                if !hourlyStepsBackfilled {
+                    UserDefaults.standard.set(true, forKey: HealthKitBridge.hourlyStepsBackfilledKey)
+                }
+            }
             try await writeBack(whoopStore: store)
             lastSync = Date()
             lastError = nil
@@ -870,6 +900,43 @@ final class HealthKitBridge: ObservableObject {
                     sink(day, asleep[day], deep[day], rem[day], core[day])
                 }
                 cont.resume()
+            }
+            store.execute(q)
+        }
+    }
+
+    /// Hourly cumulative step counts over `[start, end)`, mirroring `collect()`'s
+    /// `HKStatisticsCollectionQuery` shape but bucketed by HOUR instead of day so a backfill can show
+    /// exactly which hours the phone was recording. `anchorDate` is local midnight — same anchor
+    /// `collect()` uses for its daily buckets — so hour buckets fall on local-clock hour boundaries,
+    /// not UTC ones. Throws on a HealthKit query error (distinguished from a genuinely-empty 90-day
+    /// window, which returns zero rows); a transient error will propagate to the sync's existing
+    /// `catch` block, preventing the backfill flag from permanently locking out the 90-day window.
+    private func collectHourlySteps(start: Date, end: Date) async throws -> [(ts: Int, steps: Int)] {
+        guard let type = HKQuantityType.quantityType(forIdentifier: .stepCount) else { return [] }
+        let cal = Calendar.current
+        let anchor = cal.startOfDay(for: start)
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate),
+            Self.notNoopAuthored,
+        ])
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[(ts: Int, steps: Int)], Error>) in
+            let q = HKStatisticsCollectionQuery(quantityType: type, quantitySamplePredicate: predicate,
+                                                options: .cumulativeSum, anchorDate: anchor,
+                                                intervalComponents: DateComponents(hour: 1))
+            q.initialResultsHandler = { _, results, error in
+                if let error {
+                    cont.resume(throwing: error)
+                    return
+                }
+                var rows: [(ts: Int, steps: Int)] = []
+                results?.enumerateStatistics(from: start, to: end) { stats, _ in
+                    if let sum = stats.sumQuantity() {
+                        let steps = Int(sum.doubleValue(for: .count()).rounded())
+                        rows.append((ts: Int(stats.startDate.timeIntervalSince1970), steps: steps))
+                    }
+                }
+                cont.resume(returning: rows)
             }
             store.execute(q)
         }

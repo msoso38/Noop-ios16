@@ -51,8 +51,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PpgWaveformSampleEntity::class,
         RawImuSampleEntity::class,
         V18AuxSampleEntity::class,
+        AppleStepHour::class,
     ],
-    version = 25,
+    version = 26,
     // #775: ON so Room's KSP processor writes the generated schema (every table's exact `CREATE TABLE`,
     // columns in declaration order with affinity/NOT NULL/default, PK and indices) as JSON. That export
     // is what lets a plain JVM test — no device, no Robolectric — read Android's REAL schema and compare
@@ -691,6 +692,38 @@ abstract class WhoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v25 -> v26: ADDITIVE, adds the `appleStepHour` table, the Android twin of the Swift WhoopStore
+         * `v32-apple-step-hour` migration. Hourly Apple-Health step counts: `appleDaily.steps` flattens a
+         * whole day to one total, so a dead/absent phone for part of a day is invisible; this per-hour table
+         * records exactly which hours had a recording. `ts` is the hour-bucket start (unix seconds), `steps`
+         * the cumulative sum within that hour, composite PK (deviceId, ts) so the hourly upsert is idempotent.
+         *
+         * CREATE TABLE only (no existing data touched), so already-offloaded raw streams survive. The SQL MUST
+         * match Room's generated schema for [AppleStepHour] exactly: deviceId TEXT NOT NULL, ts INTEGER NOT NULL,
+         * steps INTEGER NOT NULL (all Kotlin non-null, no SQL DEFAULT), composite PRIMARY KEY (deviceId, ts) in
+         * declaration order. SCHEMA-ONLY twin: the Apple-Health IMPORT that fills it is iOS-only (HealthKit has
+         * no Android analogue), so Android carries the table for .noopbak byte-parity but no importer writes it.
+         * No destructive fallback (see the class doc). Exposed as [APPLE_STEP_HOUR_MIGRATION_SQL] so a plain-JVM
+         * unit test can pin the shape without Robolectric.
+         *
+         * SEQUENCING: 25 -> 26 is the next free Room slot as of this merge — upstream reached 25
+         * (MIGRATION_24_25, deep-capture, above) while this branch sat at 24 -> 25. A Room version is a bare
+         * INTEGER with no slug, so unlike a GRDB identifier it cannot be disambiguated by a declared lineage:
+         * the only resolution is to take the next free slot, and whichever PR merges SECOND renumbers again.
+         * Per the offer in the PR thread, that is THIS PR.
+         */
+        internal val APPLE_STEP_HOUR_MIGRATION_SQL: List<String> = listOf(
+            "CREATE TABLE IF NOT EXISTS `appleStepHour` (`deviceId` TEXT NOT NULL, " +
+                "`ts` INTEGER NOT NULL, `steps` INTEGER NOT NULL, PRIMARY KEY(`deviceId`, `ts`))",
+        )
+
+        internal val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (stmt in APPLE_STEP_HOUR_MIGRATION_SQL) db.execSQL(stmt)
+            }
+        }
+
         private fun build(appContext: Context): WhoopDatabase =
             Room.databaseBuilder(appContext, WhoopDatabase::class.java, DB_NAME)
                 // #1014: replace ONLY the corruption handling of the default open-helper. The
@@ -707,7 +740,7 @@ abstract class WhoopDatabase : RoomDatabase() {
                     MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18,
                     MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22,
-                    MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25,
+                    MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26,
                 )
                 // #1037: a FRESH install builds the schema straight at the current version and runs NO
                 // migrations, so the MIGRATION_7_8 "my-whoop" registry seed never fires and the WHOOP,

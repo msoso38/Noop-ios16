@@ -710,6 +710,35 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "ts"])
             }
         }
+
+        // v32-apple-step-hour: hourly Apple Health step counts. The daily `collect(.stepCount, …)` path
+        // in HealthKitBridge flattens a whole day to one `appleDaily.steps` total, so a dead/absent phone
+        // for part of a day (e.g. the phone died mid-hike) is invisible — steps just read low for the
+        // WHOLE day instead of showing exactly which hours had no recording. HealthKit retains hourly
+        // statistics historically, so this table lets a one-time backfill answer PAST days
+        // retroactively, not just from the day this migration ships. `ts` is the hour-BUCKET START
+        // (unix seconds), aligned to local-clock hour boundaries by the `HKStatisticsCollectionQuery`
+        // anchored at local midnight (see HealthKitBridge); `steps` is the cumulative sum within that
+        // hour. PK (deviceId, ts) mirrors every other per-sample table (hrSample, stepSample, …) and
+        // makes the hourly upsert idempotent. Additive only — a NEW table, no existing row touched, old
+        // readers unaffected.
+        //
+        // Numbered v32, not the v31 this branch previously claimed: upstream took v31
+        // (`v31-deep-capture-channels`) after this branch was opened. #475 is the other v31 claimant and
+        // has moved to `v32-daily-avg-sdnn`; the strict v1...vN baseline check means "next" is a SINGLE
+        // slot, so the two cannot both be green at v32 and v33 at once. Per the offer in this thread,
+        // THIS is the PR that moves again: whichever of the two lands first, this one is renumbered to
+        // v33 (and Room to 26 -> 27) rather than asking the other to.
+        migrator.registerMigration("v32-apple-step-hour") { db in
+            // ifNotExists: forks/sideloads that already carry this table under a different migration
+            // identifier converge cleanly instead of failing the migrator.
+            try db.create(table: "appleStepHour", options: [.ifNotExists]) { t in
+                t.column("deviceId", .text).notNull()   // "apple-health"
+                t.column("ts", .integer).notNull()      // hour-start unix seconds (local-hour aligned by HK)
+                t.column("steps", .integer).notNull()
+                t.primaryKey(["deviceId", "ts"])
+            }
+        }
         return migrator
     }
 }

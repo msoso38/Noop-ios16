@@ -606,6 +606,27 @@ data class RawImuSampleEntity(
 }
 
 /**
+ * Cached hourly Apple-Health step count (v31 / MIGRATION_24_25). Swift `appleStepHour`
+ * (WhoopStore Database.swift v31-apple-step-hour migration). `ts` is the hour-BUCKET START
+ * (wall-clock unix seconds, local-hour aligned by the HealthKit collection query); `steps` is the
+ * cumulative step sum within that hour. Natural key (deviceId, ts) mirrors every other per-sample
+ * table so the hourly upsert is idempotent. `appleDaily.steps` answers "how many steps that day";
+ * this table answers "which HOURS were recorded", so a dead/absent phone for part of a day is
+ * visible instead of a single flattened daily total.
+ *
+ * Fields are declared in the SAME order as the Swift GRDB schema (deviceId, ts, steps) so the
+ * migration's CREATE TABLE column order matches Room's generated shape. The Apple-Health IMPORT that
+ * populates it is iOS-only (HealthKit has no Android analogue), so Android carries the SCHEMA for
+ * .noopbak byte-parity but no importer writes to it.
+ */
+@Entity(tableName = "appleStepHour", primaryKeys = ["deviceId", "ts"])
+data class AppleStepHour(
+    val deviceId: String,
+    val ts: Long,
+    val steps: Int,
+)
+
+/**
  * One Live Session (silent guardian) record (v22 / MIGRATION_15_16). Natural key (deviceId, startTs).
  * `endTs` is null while the session is still in progress. Fields are declared in the SAME order as the
  * Swift WhoopStore `liveSession` schema so the migration SQL matches Room's generated shape. Twin of the
