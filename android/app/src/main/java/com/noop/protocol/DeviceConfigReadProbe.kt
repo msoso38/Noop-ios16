@@ -25,23 +25,23 @@ package com.noop.protocol
  *
  * ## What this establishes, and the honest failure case
  *
- * **Both target opcodes may simply not be implemented in firmware.** The repo's own protocol table
- * (`whoop_protocol.json`, [CommandNumber]) names 121 `GET_DEVICE_CONFIG_VALUE` and 128 `GET_FF_VALUE`,
- * but a name in a table is not a served verb: opcode 96 (`ENTER_HIGH_FREQ_HISTORICAL_MODE`) is a
- * standing example of a number the table carries that nothing in the wild sends. So the probe's PRIMARY
- * deliverable is a clean verdict per verb — **answered**, **rejected as UNSUPPORTED**, **silent**, or
- * **undecodable** — and "both verbs are unimplemented" is a useful, publishable result, not a failure.
+ * Both read verbs answered on a real WHOOP 5 MG (WS50_r03), and the reply turned out to be an
+ * **existence oracle**: `SUCCESS(1)` for a key name the firmware has, `FAILURE(0)` for one it does not.
+ * That is what makes a key-name search possible at all, and [ConfigKeySweep] is where it lives.
  *
- * Those four are not interchangeable, and the verdict never treats them as such. **Only UNSUPPORTED is
- * the firmware's own answer**, so only UNSUPPORTED supports the sentence "this firmware does not serve
- * that verb". A timeout is a fact about one run and not even proof a frame reached the strap — the send
- * path returns without transmitting when the command characteristic is missing, and again when the 5/MG
- * allowlist does not carry the opcode — while an undecodable reply is affirmative evidence the strap DID
- * transmit, which is the opposite of "not served". Both are reported as **unconfirmed**.
+ * The probe now runs a plan built around one principle: **ask the strap before guessing.** It opens with
+ * the DEVICE-CONFIG ENUMERATION pair `START_DEVICE_CONFIG_KEY_EXCHANGE` (115) and
+ * `SEND_NEXT_DEVICE_CONFIG` (116) — named in the repo's own `CommandNumber` table, never sent by anything
+ * here, and the structural twin of the 117/118 feature-flag pair #872 shipped and a strap answered. If
+ * 115/116 answer, the strap lists its own device-config keys and no name needs guessing at all; the
+ * candidate sweep is skipped and the report says so. A clean "115/116 are not served" is equally useful
+ * and publishable — it is what promotes the guessing fallback from a shortcut to the only available
+ * method.
  *
- * Only if a verb answers does the probe go on to read values: first the sixteen key names NOOP already
- * has (their VALUES on a real strap have never been read, only written), then a short list of GUESSED
- * oxygen-related key names against the device-config namespace.
+ * After enumeration the probe reads the values of keys already known to exist (the sixteen in
+ * [Whoop5Config.enableR22Sequence], plus anything enumeration returned), spends two round-trips
+ * establishing whether the two namespaces are actually separate, and only then — and only when
+ * enumeration produced nothing — asks the guessed names in [ConfigKeySweep.CATALOGUE].
  *
  * ## Read-only by construction
  *
@@ -83,9 +83,17 @@ object DeviceConfigReadProbe {
     /** `SET_FF_VALUE` (120 / 0x78). Named ONLY so the allowlist can name what it excludes. */
     const val SET_FEATURE_FLAG_VALUE_CMD = 120
 
-    /** The complete set of opcodes this probe may put on the wire. The BLE send path admits these two
-     *  and only these two while a probe is in flight; [isReadOnlyOpcode] is the predicate it asks. */
-    val READ_ONLY_OPCODES = setOf(GET_DEVICE_CONFIG_VALUE_CMD, GET_FEATURE_FLAG_VALUE_CMD)
+    /** The complete set of opcodes this probe may put on the wire: the two VALUE reads above, plus the
+     *  two DEVICE-CONFIG ENUMERATION verbs the probe now tries first ([ConfigKeySweep], 115/116 — the
+     *  structural twins of the 117/118 pair #872 shipped and a real strap answered read-only). The BLE
+     *  send path admits these four and only these four while a probe is in flight; [isReadOnlyOpcode] is
+     *  the predicate it asks, and unit tests prove it rejects 119, 120 and every other opcode. */
+    val READ_ONLY_OPCODES = setOf(
+        GET_DEVICE_CONFIG_VALUE_CMD,
+        GET_FEATURE_FLAG_VALUE_CMD,
+        ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD,
+        ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD,
+    )
 
     /** The config WRITE verbs, which this probe must never emit. Kept as a named set so the read-only
      *  contract is testable as a property of the allowlist rather than as a claim in a comment. */
@@ -97,36 +105,21 @@ object DeviceConfigReadProbe {
     /** Width of the key-name field in the SET bodies (both NUL-pad the name to 32 bytes). */
     const val NAME_FIELD_BYTES = 32
 
-    /** Hard ceiling on round-trips in one probe, independent of how many keys the plan holds. */
-    const val MAX_STEPS = 64
+    /** Hard ceiling on round-trips in one probe, independent of how many keys the plan holds. The plan is
+     *  1 enumerate-start + up to [ConfigKeySweep.MAX_ENUMERATION_STEPS] enumerate-next + 2 discovery + 2
+     *  cross-namespace + 16 known flags, plus up to [ConfigKeySweep.MAX_ENUMERATED_VALUE_READS] value
+     *  reads when enumeration produced a list, and — when the sweep runs — every candidate name asked
+     *  through EVERY answering verb.
+     *
+     *  Raised from 128 when that per-verb fan-out landed: 2 × the catalogue on top of the rest passes 128,
+     *  and the cap would have truncated the walk. It still says "safety cap reached", but a short sweep
+     *  presented as a finished one is exactly the failure this number exists to prevent. */
+    const val MAX_STEPS = 320
 
     /** The one device-config key NOOP already knows a real strap accepts: the Broadcast-HR flag written
      *  via SET_DEVICE_CONFIG_VALUE and hardware-validated in #181. Used as the discovery key for opcode
      *  121 precisely because it is known-good — a FAILURE on this key is evidence about the verb. */
     const val DEVICE_CONFIG_DISCOVERY_KEY = "whoop_live_hr_in_adv_ind_pkt"
-
-    /**
-     * **GUESSES.** Candidate oxygen-related key names to try against the device-config namespace. None of
-     * these has been observed on a wire, in a capture, or in any protocol table — they are constructed
-     * from the naming conventions the *known* keys follow (`enable_…`, `…_enable`, snake_case, and the
-     * `whoop_…` prefix the one known device-config key uses). They are reported as guesses everywhere
-     * they appear.
-     *
-     * This list is the one place to extend. Adding a name here adds a probe step and nothing else — the
-     * same pattern would let a future run try, say, `enable_sig13` (the undocumented `enable_sig11…` /
-     * `enable_sig12` series continued) without touching any other code. Keep in lockstep with the Swift
-     * `DeviceConfigReadProbe.oxygenCandidateKeys`.
-     */
-    val OXYGEN_CANDIDATE_KEYS: List<String> = listOf(
-        "enable_spo2",
-        "enable_spo2_packets",
-        "spo2_enable",
-        "enable_blood_oxygen",
-        "blood_oxygen_enable",
-        "enable_pulse_ox",
-        "enable_oxygen_packets",
-        "spo2_subscription_enabled",
-    )
 
     /** COMMAND_RESPONSE packet type (36 / 0x24). */
     private const val COMMAND_RESPONSE_TYPE = 36
@@ -162,6 +155,12 @@ object DeviceConfigReadProbe {
 
         /** The firmware answered but reported failure: the verb exists, the request did not satisfy it. */
         val isFailure: Boolean get() = resultCode == 0
+
+        /** What this reply says about whether the key NAME exists, per the oracle a real WHOOP 5 MG
+         *  established: `SUCCESS(1)` = the firmware has this key, `FAILURE(0)` = it does not, anything else
+         *  (and WHOOP 4.0, where the result byte's meaning is not pinned here) = inconclusive.
+         *  Deliberately reads the RESULT CODE and nothing else — no inference from the record bytes. */
+        val existence: ConfigKeySweep.Existence get() = ConfigKeySweep.existence(resultCode)
 
         /** Raw record bytes as lowercase space-separated hex; always reported, whatever else decodes. */
         val recordHex: String get() = hex(record)
@@ -201,6 +200,34 @@ object DeviceConfigReadProbe {
             val valueIndex = off + NAME_FIELD_BYTES
             if (valueIndex >= record.size) return null
             return record[valueIndex].toInt() and 0xFF
+        }
+
+        /**
+         * The value as the strap actually stores it — the WHOLE NUL-terminated ASCII string after the
+         * echoed name field, not just its first byte.
+         *
+         * Device-config values are **not** all single characters. A WHOOP 5 MG's own 115/116 enumeration
+         * listed `max_collection_backlog`, whose value reads `"0.0"` — three characters. [valueFor] would
+         * report that as `'0'` and quietly lose the rest, which is fine for a flag and wrong for anything
+         * else, so any caller comparing a value against what it asked for must use this.
+         *
+         * Stops at the first NUL, which is what keeps the puffin envelope's 4-byte-boundary padding out of
+         * the answer. Returns null — "no value claimed", never "empty" — when the key was not echoed, when
+         * nothing follows the name field, or when what follows is not printable ASCII.
+         * Keep in lockstep with the Swift `ValueResponse.stringValue(for:)`.
+         */
+        fun stringValueFor(key: String): String? {
+            val off = echoOffset(key) ?: return null
+            val start = off + NAME_FIELD_BYTES
+            if (start >= record.size) return null
+            val out = StringBuilder()
+            for (i in start until record.size) {
+                val b = record[i].toInt() and 0xFF
+                if (b == 0) break
+                if (b < 0x20 || b > 0x7E) return null
+                out.append(b.toChar())
+            }
+            return if (out.isEmpty()) null else out.toString()
         }
 
         // ByteArray fields need explicit equals/hashCode for a data class to compare by content.
@@ -256,35 +283,74 @@ object DeviceConfigReadProbe {
 }
 
 /**
- * The running result of one device-config read probe: the plan it walks, the per-verb verdict it
- * reaches, the values it manages to read, and the copyable transcript. Pure and order-dependent
- * (`nextStep` → `note…` → `nextStep` → …). Twin of Swift `DeviceConfigReadProbeReport`; [render] is
- * byte-identical across platforms.
+ * The running result of one config probe: the strap's own device-config key list when it will give one,
+ * the per-verb verdict, the values read, the candidate sweep when guessing is still necessary, and the
+ * copyable transcript. Pure and order-dependent (`nextStep` → `note…` → `nextStep` → …). Twin of Swift
+ * `DeviceConfigReadProbeReport`; [render] is byte-identical across platforms.
+ *
+ * The plan is ordered so the cheapest decisive question is asked first:
+ *
+ * 1. **ENUMERATE** — 115 then repeated 116. If the strap answers, it has just listed its own
+ *    device-config keys and no name needs guessing.
+ * 2. **DISCOVERY** — one 128 read and one 121 read, each against a key that verb should know.
+ * 3. **CROSS_NAMESPACE** — ask each verb for the OTHER namespace's known key. Settles in two round-trips
+ *    whether the namespaces are really separate.
+ * 4. **KNOWN_KEY** — read the values of the sixteen flags NOOP writes, plus anything enumeration produced.
+ * 5. **CANDIDATE** — the guessed-name sweep, and **only when enumeration produced no list**.
  */
 class DeviceConfigReadProbeReport(
     private val family: DeviceFamily,
     /** The flag names whose values to read — supplied by the caller from [Whoop5Config.enableR22Sequence]
      *  so this file never restates them. */
     private val knownFlagKeys: List<String>,
-    /** The guessed oxygen key names — supplied by the caller from [DeviceConfigReadProbe]. */
-    private val candidateKeys: List<String>,
+    /** This run's slice of the candidate catalogue, and the cursor to hand the next run. */
+    val batch: ConfigKeySweep.Batch,
+    /** Run the candidate sweep EVEN IF enumeration succeeded. Default false — see [runsCandidateSweep]. */
+    val forceCandidateSweep: Boolean = false,
 ) {
 
+    /**
+     * Whether this run will ask the guessed names at all.
+     *
+     * By default the sweep is a FALLBACK: a strap that enumerated its own device-config keys has already
+     * answered the question guessing was for, so the sweep is skipped.
+     *
+     * That default is right for the device-config namespace and **incomplete as a general claim**, which
+     * is why [forceCandidateSweep] exists. Enumeration reports the keys the firmware holds; a key it would
+     * accept but has never been given a value for need not be among them, and the oracle cannot separate
+     * that case from "no such key" because both answer `FAILURE(0)`. A successful enumeration is therefore
+     * evidence about what the strap HAS, not proof of what it would ACCEPT — and it says nothing at all
+     * about the FEATURE-FLAG namespace, which is where most of the catalogue is aimed.
+     *
+     * So the forced run stays available, and stays explicit: it costs one round-trip per catalogue name,
+     * which is not something to spend by default.
+     */
+    val runsCandidateSweep: Boolean get() = forceCandidateSweep || _enumeratedKeys.isEmpty()
+
     /** Which part of the plan a step belongs to. Drives both the ordering and the report's sections. */
-    enum class Group { DISCOVERY, KNOWN_FLAG, CANDIDATE }
+    enum class Group { ENUMERATE, DISCOVERY, CROSS_NAMESPACE, KNOWN_KEY, CANDIDATE }
 
-    /** One planned round-trip. */
-    data class Step(val opcode: Int, val key: String, val group: Group)
+    /** One planned round-trip. [derivation] is set only for candidate steps. */
+    data class Step(
+        val opcode: Int,
+        val key: String,
+        val group: Group,
+        val derivation: ConfigKeySweep.Derivation? = null,
+    )
 
-    /** What one verb has been shown to do. `UNTRIED` until its discovery step resolves. */
+    /** What one verb has been shown to do. `UNTRIED` until its first step resolves. */
     enum class VerbStatus(val label: String) {
         UNTRIED("untried"),
+
         /** A decodable COMMAND_RESPONSE came back and was not an explicit UNSUPPORTED. */
         ANSWERED("answered"),
+
         /** The firmware refused the opcode (5/MG result code 3). */
         UNSUPPORTED("unsupported"),
+
         /** No reply inside the probe's per-step window. */
         SILENT("silent"),
+
         /** A reply arrived but could not be decoded (CRC, envelope, or a short record). */
         UNDECODABLE("undecodable"),
     }
@@ -298,7 +364,11 @@ class DeviceConfigReadProbeReport(
         val value: Int?,
         val resultCode: Int?,
         val recordHex: String,
-    )
+        val derivation: ConfigKeySweep.Derivation? = null,
+    ) {
+        /** The oracle's verdict on whether this key NAME exists. */
+        val existence: ConfigKeySweep.Existence get() = ConfigKeySweep.existence(resultCode)
+    }
 
     /** Status of `GET_FF_VALUE` (128). */
     var featureFlagVerb: VerbStatus = VerbStatus.UNTRIED
@@ -308,12 +378,42 @@ class DeviceConfigReadProbeReport(
     var deviceConfigVerb: VerbStatus = VerbStatus.UNTRIED
         private set
 
+    /** Status of the device-config ENUMERATION pair (115/116), taken as one verb: 116 cannot be asked
+     *  without 115 having answered, so a single verdict describes the pair. */
+    var enumerationVerb: VerbStatus = VerbStatus.UNTRIED
+        private set
+
+    private val _enumeratedKeys = mutableListOf<String>()
+
+    /** Device-config key names the strap listed for itself. The headline result when it is non-empty. */
+    val enumeratedKeys: List<String> get() = _enumeratedKeys
+
+    /** The key count `START_DEVICE_CONFIG_KEY_EXCHANGE` announced, when it answered. */
+    var enumeratedCount: Int? = null
+        private set
+
+    /** Entries the strap called real keys whose NAME did not decode, stepped over rather than trusted as a
+     *  terminator (the discipline #874 established for the 117/118 walk). */
+    var enumerationSkipped: Int = 0
+        private set
+
+    /** `GET_FF_VALUE(128)` asked for the known DEVICE-CONFIG key: does the flag verb see that namespace? */
+    var featureFlagVerbOnDeviceConfigKey: ConfigKeySweep.Existence? = null
+        private set
+
+    /** `GET_DEVICE_CONFIG_VALUE(121)` asked for a known FLAG key: does that verb see the other namespace? */
+    var deviceConfigVerbOnFlagKey: ConfigKeySweep.Existence? = null
+        private set
+
     private val _readings = mutableListOf<Reading>()
+
     /** Every reading, in the order the strap served it. */
     val readings: List<Reading> get() = _readings
 
     private val _trace = mutableListOf<String>()
-    /** Trace lines: one per round-trip plus any failure notes. */
+
+    /** Trace lines. Candidate round-trips are summarised in their own section rather than repeated here,
+     *  EXCEPT the ones that are not a plain `unknown` — a hit or an odd reply always appears in full. */
     val trace: List<String> get() = _trace
 
     /** Round-trips attempted. Bounds the walk against [DeviceConfigReadProbe.MAX_STEPS]. */
@@ -324,15 +424,12 @@ class DeviceConfigReadProbeReport(
     var stopReason: String? = null
         private set
 
-    /**
-     * Per-verb reply window, in seconds, recorded by [noteTimeout]. The verdict names the window a verb
-     * went silent through instead of converting that silence into a claim about the firmware.
-     */
-    private val silenceWindow = mutableMapOf<Int, Int>()
-
-    private var phase = 0            // 0 discovery, 1 known flags, 2 candidates, 3 done
+    private var phase = 0        // 0 enumerate, 1 discovery, 2 cross, 3 known keys, 4 candidates, 5 done
     private var cursor = 0
-    /** `"opcode:key"` pairs already attempted, so discovery's key is not re-read in a later phase. */
+    private var enumPhase = 0    // 0 send 115, 1 send 116 repeatedly, 2 done
+    private var enumSteps = 0
+
+    /** `"opcode:key"` pairs already attempted, so an earlier phase's key is not re-read in a later one. */
     private val attempted = mutableSetOf<String>()
 
     /**
@@ -344,16 +441,20 @@ class DeviceConfigReadProbeReport(
             if (stopReason == null) {
                 stopReason = "safety cap of ${DeviceConfigReadProbe.MAX_STEPS} round-trips reached"
             }
-            phase = 3
+            phase = 5
             return null
         }
-        while (phase < 3) {
+        while (phase < 5) {
             val step = stepInCurrentPhase()
             if (step != null) {
                 cursor += 1
-                val id = "${step.opcode}:${step.key}"
-                if (attempted.contains(id)) continue
-                attempted.add(id)
+                // Enumeration deliberately repeats one (opcode, key) pair — the strap walks its own
+                // cursor — so it is the one group the de-duplicator must not police.
+                if (step.group != Group.ENUMERATE) {
+                    val id = "${step.opcode}:${step.key}"
+                    if (attempted.contains(id)) continue
+                    attempted.add(id)
+                }
                 steps += 1
                 return step
             }
@@ -363,11 +464,29 @@ class DeviceConfigReadProbeReport(
         return null
     }
 
-    /** One candidate step from the current phase, or null when that phase is exhausted. */
+    /** One step from the current phase, or null when that phase is exhausted. */
     private fun stepInCurrentPhase(): Step? = when (phase) {
-        0 -> {
-            // Discovery: one round-trip per verb, each against a key that verb has a reason to know.
-            // 128 gets a flag NOOP writes; 121 gets the Broadcast-HR key, hardware-validated in #181.
+        0 -> when (enumPhase) {
+            // Ask the strap to list its own device-config keys. 115 once; then 116 until the strap says
+            // stop, exactly as the 117/118 walk does.
+            0 -> Step(ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD, "", Group.ENUMERATE)
+            1 -> if (enumSteps >= ConfigKeySweep.MAX_ENUMERATION_STEPS) {
+                if (stopReason == null) {
+                    stopReason = "device-config enumeration hit its cap of " +
+                        "${ConfigKeySweep.MAX_ENUMERATION_STEPS} entries; the rest of the plan still ran"
+                }
+                enumPhase = 2
+                null
+            } else {
+                enumSteps += 1
+                Step(ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD, "", Group.ENUMERATE)
+            }
+            else -> null
+        }
+        1 -> {
+            // Discovery: one round-trip per VALUE verb, each against a key that verb has a reason to know.
+            // 128 gets a flag NOOP writes; 121 gets the Broadcast-HR key NOOP has written since #181, so a
+            // FAILURE there is evidence about the VERB, not about the key.
             val plan = listOf(
                 Step(
                     DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD,
@@ -382,53 +501,197 @@ class DeviceConfigReadProbeReport(
             )
             if (cursor < plan.size) plan[cursor] else null
         }
-        1 -> {
-            // Known flag values, through whichever verb answered — 128 by preference (it owns the
-            // feature-flag namespace), 121 as a fallback worth one look if only it survived.
-            val verb = verbForFlags()
-            if (verb != null && cursor < knownFlagKeys.size) {
-                Step(verb, knownFlagKeys[cursor], Group.KNOWN_FLAG)
-            } else {
-                null
-            }
-        }
         2 -> {
-            // Guessed oxygen keys, through the device-config verb by preference — that namespace is the
-            // one this probe exists to reach.
-            val verb = verbForCandidates()
-            if (verb != null && cursor < candidateKeys.size) {
-                Step(verb, candidateKeys[cursor], Group.CANDIDATE)
-            } else {
+            // Cross-namespace: each answering verb asked for the OTHER namespace's known-good key. Two
+            // round-trips that settle whether the namespaces are actually separate.
+            val plan = mutableListOf<Step>()
+            if (featureFlagVerb == VerbStatus.ANSWERED) {
+                plan.add(
+                    Step(
+                        DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD,
+                        DeviceConfigReadProbe.DEVICE_CONFIG_DISCOVERY_KEY,
+                        Group.CROSS_NAMESPACE,
+                    ),
+                )
+            }
+            val flag = knownFlagKeys.firstOrNull()
+            if (deviceConfigVerb == VerbStatus.ANSWERED && flag != null) {
+                plan.add(
+                    Step(DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD, flag, Group.CROSS_NAMESPACE),
+                )
+            }
+            if (cursor < plan.size) plan[cursor] else null
+        }
+        3 -> {
+            val plan = knownKeyPlan()
+            if (cursor >= plan.size) {
                 null
+            } else {
+                val entry = plan[cursor]
+                val verb = verbFor(entry.second)
+                if (verb == null) null else Step(verb, entry.first, Group.KNOWN_KEY)
+            }
+        }
+        4 -> {
+            // Guessing is the FALLBACK. If the strap enumerated its own device-config keys there is
+            // nothing to guess at in that namespace, so the sweep is skipped and said so in the report —
+            // unless this run was explicitly asked to sweep anyway (see [runsCandidateSweep] for why a
+            // successful enumeration does not close the question).
+            //
+            // EVERY candidate goes through EVERY answering verb, not through the one its `namespace`
+            // field guesses. That field is an author's expectation, and the namespaces are now PROVEN
+            // SEPARATE on hardware: 128 asked for a device-config key answers FAILURE, and 121 asked for a
+            // feature-flag key answers FAILURE. So a candidate that really is a device-config key, asked
+            // only through 128, comes back FAILURE and is indistinguishable from "no such key" — which
+            // would have made a negative sweep worthless for exactly the names it most needed to settle.
+            // Asking both costs one extra round-trip per name and is what lets a negative be called clean.
+            val verbs = candidateVerbs()
+            if (!runsCandidateSweep || verbs.isEmpty()) {
+                null
+            } else {
+                val idx = cursor / verbs.size
+                if (idx >= batch.candidates.size) {
+                    null
+                } else {
+                    val candidate = batch.candidates[idx]
+                    Step(verbs[cursor % verbs.size], candidate.key, Group.CANDIDATE, candidate.derivation)
+                }
             }
         }
         else -> null
     }
 
-    /** The verb to read feature-flag values through, or null when neither answered. */
-    private fun verbForFlags(): Int? = when {
-        featureFlagVerb == VerbStatus.ANSWERED -> DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD
-        deviceConfigVerb == VerbStatus.ANSWERED -> DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD
-        else -> null
+    /**
+     * The VALUE verbs a candidate name is asked through — every one that answered, in a stable order
+     * (121 before 128) so the plan is deterministic. Empty when neither answered, which retires the sweep.
+     */
+    private fun candidateVerbs(): List<Int> {
+        val verbs = mutableListOf<Int>()
+        if (deviceConfigVerb == VerbStatus.ANSWERED) {
+            verbs.add(DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD)
+        }
+        if (featureFlagVerb == VerbStatus.ANSWERED) {
+            verbs.add(DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD)
+        }
+        return verbs
     }
 
-    /** The verb to try guessed device-config keys through, or null when neither answered. */
-    private fun verbForCandidates(): Int? = when {
-        deviceConfigVerb == VerbStatus.ANSWERED -> DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD
-        featureFlagVerb == VerbStatus.ANSWERED -> DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD
-        else -> null
+    /**
+     * The keys whose values are worth reading because they are already known to exist: the sixteen flags
+     * NOOP writes, then whatever the strap enumerated for itself (capped, and never re-listing a flag).
+     */
+    private fun knownKeyPlan(): List<Pair<String, ConfigKeySweep.Namespace>> {
+        val plan = knownFlagKeys.map { it to ConfigKeySweep.Namespace.FEATURE_FLAG }.toMutableList()
+        for (key in _enumeratedKeys.take(ConfigKeySweep.MAX_ENUMERATED_VALUE_READS)) {
+            if (!knownFlagKeys.contains(key)) plan.add(key to ConfigKeySweep.Namespace.DEVICE_CONFIG)
+        }
+        return plan
     }
 
-    /** Record one decoded reply. */
+    /**
+     * The verb to ask a key of, or null when neither VALUE verb answered.
+     *
+     * A verb SHOWN in this same run to serve the other namespace too is preferred for everything — fewer
+     * moving parts, and the evidence is from this run rather than an assumption. Otherwise each namespace
+     * uses its own verb, falling back to the other one as a look worth taking.
+     */
+    private fun verbFor(namespace: ConfigKeySweep.Namespace): Int? {
+        if (deviceConfigVerbOnFlagKey == ConfigKeySweep.Existence.EXISTS &&
+            deviceConfigVerb == VerbStatus.ANSWERED
+        ) {
+            return DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD
+        }
+        if (featureFlagVerbOnDeviceConfigKey == ConfigKeySweep.Existence.EXISTS &&
+            featureFlagVerb == VerbStatus.ANSWERED
+        ) {
+            return DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD
+        }
+        val ff = if (featureFlagVerb == VerbStatus.ANSWERED) {
+            DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD
+        } else {
+            null
+        }
+        val dc = if (deviceConfigVerb == VerbStatus.ANSWERED) {
+            DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD
+        } else {
+            null
+        }
+        return if (namespace == ConfigKeySweep.Namespace.FEATURE_FLAG) ff ?: dc else dc ?: ff
+    }
+
+    /**
+     * Record the `START_DEVICE_CONFIG_KEY_EXCHANGE` reply. An implausible count is reported but never
+     * trusted as a loop bound — the walk is bounded by [ConfigKeySweep.MAX_ENUMERATION_STEPS] and by the
+     * strap's own end marker.
+     */
+    fun noteEnumerationStart(r: FeatureFlagProbe.StartResponse) {
+        enumeratedCount = r.count
+        if (r.resultCode == 3) {
+            enumerationVerb = VerbStatus.UNSUPPORTED
+            enumPhase = 2
+            _trace.add(
+                "START_DEVICE_CONFIG_KEY_EXCHANGE(115) → result=UNSUPPORTED(3) — " +
+                    "the firmware does not serve this verb",
+            )
+            return
+        }
+        enumerationVerb = VerbStatus.ANSWERED
+        enumPhase = 1
+        var line = "START_DEVICE_CONFIG_KEY_EXCHANGE(115) →"
+        val code = r.resultCode
+        if (code != null) line += " result=${FeatureFlagProbe.resultLabel(code)}($code)"
+        line += " revision=${r.revision} count=${r.count}"
+        if (!r.countIsPlausible) line += " (implausible — walked to the strap's own end marker instead)"
+        _trace.add(line)
+    }
+
+    /**
+     * Record one `SEND_NEXT_DEVICE_CONFIG` reply. Returns true when the walk should continue.
+     *
+     * Mirrors the #874 discipline on the 117/118 walk: the strap's own end marker terminates the walk, but
+     * a name OUR parser declines ([FeatureFlagProbe.NextResponse.isSkippable]) is counted and stepped over
+     * — one undecodable entry must not throw away every key after it.
+     */
+    fun noteEnumerationNext(r: FeatureFlagProbe.NextResponse): Boolean {
+        if (r.isExhausted) {
+            enumPhase = 2
+            _trace.add("SEND_NEXT_DEVICE_CONFIG(116) → end of list (index=${r.index} validKey=${r.validKey})")
+            return false
+        }
+        if (r.isSkippable) {
+            enumerationSkipped += 1
+            _trace.add("SEND_NEXT_DEVICE_CONFIG(116) → index=${r.index} name did not decode — stepped over")
+            return true
+        }
+        val key = r.key
+        if (key != null) {
+            _enumeratedKeys.add(key)
+            _trace.add("SEND_NEXT_DEVICE_CONFIG(116) → index=${r.index} key=\"$key\"")
+        }
+        return true
+    }
+
+    /** Record one decoded VALUE reply. */
     fun noteReply(r: DeviceConfigReadProbe.ValueResponse, step: Step) {
         setStatus(if (r.isUnsupported) VerbStatus.UNSUPPORTED else VerbStatus.ANSWERED, step.opcode)
+        if (step.group == Group.CROSS_NAMESPACE) {
+            if (step.opcode == DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD) {
+                featureFlagVerbOnDeviceConfigKey = r.existence
+            } else if (step.opcode == DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD) {
+                deviceConfigVerbOnFlagKey = r.existence
+            }
+        }
         val value = r.valueFor(step.key)
         _readings.add(
-            Reading(step.group, step.opcode, step.key, value, r.resultCode, r.recordHex),
+            Reading(step.group, step.opcode, step.key, value, r.resultCode, r.recordHex, step.derivation),
         )
+        // The candidate section lists every name it asked, so repeating a plain "unknown" in the
+        // transcript would double the report for no information. Anything else is always traced.
+        if (step.group == Group.CANDIDATE && r.existence == ConfigKeySweep.Existence.UNKNOWN) return
         var line = "${opcodeLabel(step.opcode)} key=\"${step.key}\""
         val code = r.resultCode
         line += if (code != null) " → result=${FeatureFlagProbe.resultLabel(code)}($code)" else " →"
+        line += " ${r.existence.label}"
         if (value != null) line += " value=${DeviceConfigReadProbe.valueLabel(value)}"
         line += " record=[${r.recordHex}]"
         _trace.add(line)
@@ -450,13 +713,8 @@ class DeviceConfigReadProbeReport(
     /**
      * Record the strap answering nothing at all within the per-step window. The verb is marked silent,
      * which retires it — one no-reply must not cost another twenty timeouts.
-     *
-     * The window is kept, not just printed, because the verdict has to be able to say how long nothing
-     * came back for. Silence is not the firmware refusing; it does not even establish that a frame was
-     * transmitted (see the header), so it can never be reported as what the firmware serves.
      */
     fun noteTimeout(step: Step, seconds: Int) {
-        silenceWindow[step.opcode] = seconds
         setStatus(VerbStatus.SILENT, step.opcode)
         _trace.add("${opcodeLabel(step.opcode)} key=\"${step.key}\" → no COMMAND_RESPONSE within ${seconds}s")
     }
@@ -466,108 +724,269 @@ class DeviceConfigReadProbeReport(
      * so one lucky reply after an UNSUPPORTED cannot rewrite the headline.
      */
     private fun setStatus(s: VerbStatus, opcode: Int) {
-        if (opcode == DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD) {
-            if (featureFlagVerb == VerbStatus.UNTRIED || featureFlagVerb == VerbStatus.ANSWERED) {
-                featureFlagVerb = s
+        when (opcode) {
+            DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD ->
+                if (featureFlagVerb == VerbStatus.UNTRIED || featureFlagVerb == VerbStatus.ANSWERED) {
+                    featureFlagVerb = s
+                }
+            DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD ->
+                if (deviceConfigVerb == VerbStatus.UNTRIED || deviceConfigVerb == VerbStatus.ANSWERED) {
+                    deviceConfigVerb = s
+                }
+            ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD,
+            ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD,
+            -> {
+                if (enumerationVerb == VerbStatus.UNTRIED || enumerationVerb == VerbStatus.ANSWERED) {
+                    enumerationVerb = s
+                }
+                if (s != VerbStatus.ANSWERED) enumPhase = 2
             }
-        } else if (opcode == DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD) {
-            if (deviceConfigVerb == VerbStatus.UNTRIED || deviceConfigVerb == VerbStatus.ANSWERED) {
-                deviceConfigVerb = s
-            }
+            else -> Unit
         }
     }
 
     /** Short opcode label used in the transcript. */
-    private fun opcodeLabel(opcode: Int): String =
-        if (opcode == DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD) {
-            "GET_DEVICE_CONFIG_VALUE(121)"
-        } else {
-            "GET_FF_VALUE(128)"
-        }
-
-    /**
-     * How one verb ended, worded to exactly the evidence behind it. See the file header for why the four
-     * statuses are not interchangeable; the short version is that only UNSUPPORTED is the firmware
-     * answering, so only UNSUPPORTED speaks for the firmware.
-     */
-    private fun outcome(status: VerbStatus, opcode: Int): String = when (status) {
-        VerbStatus.UNTRIED -> "not asked"
-        VerbStatus.ANSWERED -> "answered"
-        VerbStatus.UNSUPPORTED -> "refused by firmware (UNSUPPORTED)"
-        VerbStatus.SILENT -> silenceWindow[opcode]
-            ?.let { "served no reply in ${it}s — unconfirmed" }
-            ?: "served no reply — unconfirmed"
-        VerbStatus.UNDECODABLE -> "replied but the frame did not decode — unconfirmed"
+    private fun opcodeLabel(opcode: Int): String = when (opcode) {
+        DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD -> "GET_DEVICE_CONFIG_VALUE(121)"
+        ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD -> "START_DEVICE_CONFIG_KEY_EXCHANGE(115)"
+        ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD -> "SEND_NEXT_DEVICE_CONFIG(116)"
+        else -> "GET_FF_VALUE(128)"
     }
 
+    /** Candidate readings only. */
+    private val candidateReadings: List<Reading> get() = _readings.filter { it.group == Group.CANDIDATE }
+
     /**
-     * One-line summary of what the probe established.
-     *
-     * "not served by this firmware" is a claim about the firmware, so it is made in exactly one case: the
-     * firmware refused BOTH verbs itself. Every other run in which nothing answered reports each verb
-     * against the evidence that verb produced, because two timeouts, one refusal plus one timeout, and a
-     * reply that failed to decode are three different findings that used to print as the same sentence.
+     * Every key name this run proved EXISTS that NOOP did not already have — the whole point of the
+     * exercise. Enumerated names count; so does any candidate the oracle confirmed.
      */
+    val newKeysFound: List<String>
+        get() {
+            val out = _enumeratedKeys.filter {
+                !knownFlagKeys.contains(it) && it != DeviceConfigReadProbe.DEVICE_CONFIG_DISCOVERY_KEY
+            }.toMutableList()
+            for (r in candidateReadings) {
+                if (r.existence == ConfigKeySweep.Existence.EXISTS && !out.contains(r.key)) out.add(r.key)
+            }
+            return out
+        }
+
+    /** One-line summary of what the probe established. */
     val verdict: String
         get() {
+            val found = newKeysFound
+            if (found.isNotEmpty()) {
+                return "${found.size} config key name(s) found that NOOP did not have: ${found.joinToString(", ")}"
+            }
+            // Only claim "enumeration settled it" when enumeration was in fact the whole run. A forced
+            // sweep asked dozens of names as well, and its clean negative is the more informative headline.
+            if (enumerationVerb == VerbStatus.ANSWERED && candidateReadings.isEmpty()) {
+                return "the strap enumerated its device-config namespace and returned no key NOOP did not already have"
+            }
             val answered = listOf(featureFlagVerb, deviceConfigVerb).count { it == VerbStatus.ANSWERED }
             if (answered == 0) {
-                if (featureFlagVerb == VerbStatus.UNSUPPORTED && deviceConfigVerb == VerbStatus.UNSUPPORTED) {
-                    return "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this " +
-                        "firmware — rejected as UNSUPPORTED"
+                val both =
+                    "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this firmware"
+                if (featureFlagVerb == VerbStatus.UNSUPPORTED || deviceConfigVerb == VerbStatus.UNSUPPORTED) {
+                    return "$both — rejected as UNSUPPORTED"
                 }
-                val ff = outcome(featureFlagVerb, DeviceConfigReadProbe.GET_FEATURE_FLAG_VALUE_CMD)
-                val dc = outcome(deviceConfigVerb, DeviceConfigReadProbe.GET_DEVICE_CONFIG_VALUE_CMD)
-                return "no read verb answered — GET_FF_VALUE(128) $ff; GET_DEVICE_CONFIG_VALUE(121) $dc"
+                if (featureFlagVerb == VerbStatus.SILENT && deviceConfigVerb == VerbStatus.SILENT) {
+                    return "$both — no reply to either"
+                }
+                return both
             }
-            val named = _readings.count { it.value != null }
-            if (named == 0) {
-                return "$answered of 2 read verbs answered, but no reply echoed its key so no value is claimed"
+            // Counted in NAMES, not round-trips: each name is asked through every answering verb, so the
+            // headline would otherwise double. A name only counts as "does not exist" when EVERY verb that
+            // asked it said so.
+            val names = candidateReadings.map { it.key }.distinct()
+            val asked = names.size
+            if (asked == 0) {
+                return "$answered of 2 read verbs answered; no candidate name was asked"
             }
-            return "$answered of 2 read verbs answered; read $named config value(s)"
+            val unknown = names.count { key ->
+                val rows = candidateReadings.filter { it.key == key }
+                rows.isNotEmpty() && rows.all { it.existence == ConfigKeySweep.Existence.UNKNOWN }
+            }
+            if (unknown == asked) {
+                // A fully-negative sweep is worth more when enumeration ALSO answered: the device-config
+                // namespace is then fully listed and the guessed names are all refused, which is a much
+                // stronger negative than a sweep run against a strap that never listed anything.
+                return if (enumerationVerb == VerbStatus.ANSWERED) {
+                    "asked $asked candidate key name(s); this firmware has none of them, and its device-config namespace enumerated in full (a clean negative)"
+                } else {
+                    "asked $asked candidate key name(s); this firmware has none of them (a clean negative)"
+                }
+            }
+            return "asked $asked candidate key name(s); $unknown do not exist, ${asked - unknown} inconclusive"
         }
 
     /** The full copyable report (byte-identical to the Swift `render()`). */
     fun render(): String {
         val fam = if (family == DeviceFamily.WHOOP5) "WHOOP 5/MG" else "WHOOP 4.0"
         val sb = StringBuilder()
-        sb.append("#103 DEVICE-CONFIG READ PROBE — $fam\n")
-        sb.append("Read-only: GET_DEVICE_CONFIG_VALUE(121) + GET_FF_VALUE(128). No value is written; ")
-        sb.append("SET_DEVICE_CONFIG_VALUE(119) and SET_FF_VALUE(120) are never sent from this path.\n")
-        sb.append("Follow-up to the #761 enumeration probe: that one asked for key NAMES, this asks for VALUES.\n")
+        sb.append("#103 CONFIG KEY PROBE — $fam\n")
+        sb.append("Read-only: START_DEVICE_CONFIG_KEY_EXCHANGE(115), SEND_NEXT_DEVICE_CONFIG(116), ")
+        sb.append("GET_DEVICE_CONFIG_VALUE(121), GET_FF_VALUE(128).\n")
+        sb.append(
+            "No value is written; SET_DEVICE_CONFIG_VALUE(119) and SET_FF_VALUE(120) are never sent from this path.\n",
+        )
+        sb.append(
+            "Oracle: result=SUCCESS(1) means the key NAME exists; result=FAILURE(0) means the firmware has no such key.\n",
+        )
         sb.append("\nVerdict: $verdict\n")
         stopReason?.let { sb.append("Stopped: $it\n") }
 
-        sb.append("\nRead verbs:\n")
-        sb.append("  ").append(DeviceConfigReadProbe.padded("GET_FF_VALUE(128)", 30))
+        sb.append("\nVerbs:\n")
+        sb.append("  ").append(DeviceConfigReadProbe.padded("device-config enumerate(115/116)", 34))
+            .append(enumerationVerb.label).append("\n")
+        sb.append("  ").append(DeviceConfigReadProbe.padded("GET_FF_VALUE(128)", 34))
             .append(featureFlagVerb.label).append("\n")
-        sb.append("  ").append(DeviceConfigReadProbe.padded("GET_DEVICE_CONFIG_VALUE(121)", 30))
+        sb.append("  ").append(DeviceConfigReadProbe.padded("GET_DEVICE_CONFIG_VALUE(121)", 34))
             .append(deviceConfigVerb.label).append("\n")
 
+        sb.append(enumerationSection())
+        sb.append(namespaceSection())
         sb.append(
             section(
                 Group.DISCOVERY,
-                "Discovery — one round-trip per verb against a key it should know",
+                "Discovery — one round-trip per value verb against a key it should know",
                 "(none — no reply was decoded)",
             ),
         )
         sb.append(
             section(
-                Group.KNOWN_FLAG,
-                "Known feature-flag values (names NOOP already writes; values never read before)",
-                "(none — the verb that would carry them did not answer)",
+                Group.KNOWN_KEY,
+                "Known key values (the flags NOOP writes, plus anything enumeration returned)",
+                "(none — no value verb answered)",
             ),
         )
-        sb.append(
-            section(
-                Group.CANDIDATE,
-                "Candidate oxygen keys — GUESSES, never observed on a wire or in any table",
-                "(none — the verb that would carry them did not answer)",
-            ),
-        )
+        sb.append(candidateSection())
 
         sb.append("\nExchange:\n")
         for (line in _trace) sb.append("  ").append(line).append("\n")
+        return sb.toString()
+    }
+
+    /** The strap's own device-config key list — the result that makes guessing unnecessary. */
+    private fun enumerationSection(): String {
+        val sb = StringBuilder()
+        sb.append("\nDevice-config keys the strap listed for itself (115/116) (${_enumeratedKeys.size}):\n")
+        if (_enumeratedKeys.isEmpty()) {
+            sb.append(
+                when (enumerationVerb) {
+                    VerbStatus.UNSUPPORTED -> "  (none — the firmware refused 115 as UNSUPPORTED)\n"
+                    VerbStatus.SILENT -> "  (none — no reply to 115)\n"
+                    VerbStatus.UNDECODABLE -> "  (none — the reply did not decode)\n"
+                    VerbStatus.ANSWERED -> "  (none — 115 answered but the walk produced no names)\n"
+                    VerbStatus.UNTRIED -> "  (none — not reached)\n"
+                },
+            )
+            return sb.toString()
+        }
+        _enumeratedKeys.forEachIndexed { i, key ->
+            sb.append("  %2d. ".format(i + 1)).append(key).append("\n")
+        }
+        if (enumerationSkipped > 0) {
+            sb.append(
+                "  ($enumerationSkipped further entr(ies) the strap called real but whose name did not decode)\n",
+            )
+        }
+        val announced = enumeratedCount
+        if (announced != null && announced != _enumeratedKeys.size + enumerationSkipped) {
+            sb.append(
+                "  (the strap announced $announced; the walk served ${_enumeratedKeys.size + enumerationSkipped})\n",
+            )
+        }
+        return sb.toString()
+    }
+
+    /** Whether the two namespaces are really separate — two round-trips that shape every future sweep. */
+    private fun namespaceSection(): String {
+        val sb = StringBuilder()
+        sb.append("\nNamespace separation:\n")
+        val ffLabel = featureFlagVerbOnDeviceConfigKey?.label ?: "not asked"
+        val dcLabel = deviceConfigVerbOnFlagKey?.label ?: "not asked"
+        sb.append("  ").append(DeviceConfigReadProbe.padded("128 asked for a device-config key", 38))
+            .append(ffLabel).append("\n")
+        sb.append("  ").append(DeviceConfigReadProbe.padded("121 asked for a feature-flag key", 38))
+            .append(dcLabel).append("\n")
+        sb.append(
+            when {
+                featureFlagVerbOnDeviceConfigKey == ConfigKeySweep.Existence.EXISTS ->
+                    "  ⇒ GET_FF_VALUE(128) serves BOTH namespaces.\n"
+                deviceConfigVerbOnFlagKey == ConfigKeySweep.Existence.EXISTS ->
+                    "  ⇒ GET_DEVICE_CONFIG_VALUE(121) serves BOTH namespaces.\n"
+                featureFlagVerbOnDeviceConfigKey == ConfigKeySweep.Existence.UNKNOWN &&
+                    deviceConfigVerbOnFlagKey == ConfigKeySweep.Existence.UNKNOWN ->
+                    "  ⇒ the namespaces are separate: neither verb sees the other's keys.\n"
+                else -> "  ⇒ inconclusive.\n"
+            },
+        )
+        return sb.toString()
+    }
+
+    /** The candidate sweep, grouped by derivation, with the tested/untested arithmetic spelled out. */
+    private fun candidateSection(): String {
+        val rows = candidateReadings
+        // NAMES, not round-trips: each name is now asked through every answering verb, so counting rows
+        // would report "108 asked of 54 in the catalogue". The arithmetic has to stay in the same units
+        // the catalogue is measured in or the untested figure goes negative and stops meaning anything.
+        val seen = rows.map { it.key }.distinct()
+        val tested = seen.size
+        val total = ConfigKeySweep.CATALOGUE.size
+        val untested = total - batch.start - tested
+        val sb = StringBuilder()
+        sb.append("\nCandidate key names — GUESSES, never observed on a wire or in any table")
+        if (forceCandidateSweep) sb.append(" [FULL SWEEP: asked even though enumeration succeeded]")
+        sb.append(" ($tested asked of $total in the catalogue")
+        sb.append(if (untested > 0) "; $untested untested" else "; none untested")
+        sb.append("):\n")
+        if (rows.isEmpty()) {
+            sb.append(
+                when {
+                    _enumeratedKeys.isNotEmpty() && !forceCandidateSweep ->
+                        "  (skipped — the strap enumerated its own device-config keys, so nothing needs guessing.\n" +
+                            "   Enumeration lists what the firmware HOLDS, not everything it would ACCEPT, and says\n" +
+                            "   nothing about the feature-flag namespace: re-run with the full name sweep to ask anyway.)\n"
+                    featureFlagVerb != VerbStatus.ANSWERED && deviceConfigVerb != VerbStatus.ANSWERED ->
+                        "  (none — no value verb answered, so no name could be asked)\n"
+                    else -> "  (none asked)\n"
+                },
+            )
+            return sb.toString()
+        }
+        // A NAME exists if ANY verb said so, and is only "does not exist" when EVERY verb that asked said
+        // so — the whole reason both verbs are asked.
+        val exists = seen.count { key ->
+            rows.any { it.key == key && it.existence == ConfigKeySweep.Existence.EXISTS }
+        }
+        val unknown = seen.count { key ->
+            val asked = rows.filter { it.key == key }
+            asked.isNotEmpty() && asked.all { it.existence == ConfigKeySweep.Existence.UNKNOWN }
+        }
+        sb.append("  $exists exist · $unknown do not · ${tested - exists - unknown} inconclusive")
+        sb.append("  (each name asked through ${candidateVerbs().size} verb(s))\n")
+        for (derivation in ConfigKeySweep.Derivation.entries) {
+            val names = seen.filter { key -> rows.any { it.key == key && it.derivation == derivation } }
+            if (names.isEmpty()) continue
+            sb.append("\n  ${derivation.title} (${names.size}):\n")
+            names.forEachIndexed { i, key ->
+                sb.append("   %2d. ".format(i + 1)).append(DeviceConfigReadProbe.padded(key, 32))
+                // Per-verb, so a name that answered differently on 121 and 128 is visible rather than
+                // collapsed into one word.
+                sb.append(
+                    rows.filter { it.key == key }.joinToString(" · ") { r ->
+                        val v = r.value
+                        "${r.opcode}=${r.existence.label}" +
+                            if (v != null) "(${DeviceConfigReadProbe.valueLabel(v)})" else ""
+                    },
+                )
+                sb.append("\n")
+            }
+        }
+        if (untested > 0) {
+            sb.append("\n  Run the probe again to continue from catalogue entry ${batch.nextCursor + 1}.\n")
+        }
         return sb.toString()
     }
 

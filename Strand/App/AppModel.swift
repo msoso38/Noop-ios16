@@ -850,7 +850,9 @@ final class AppModel: ObservableObject {
     // #103: READ-ONLY device-config READ probe (121/128) — asks the strap for a key's VALUE, the
     // follow-up to #761's key-NAME enumeration. Writes nothing. User-initiated, Test-Centre-gated in
     // DevicesView.
-    func probeDeviceConfigValues() { ble.probeDeviceConfigValues() }
+    func probeDeviceConfigValues(forceCandidateSweep: Bool = false) {
+        ble.probeDeviceConfigValues(forceCandidateSweep: forceCandidateSweep)
+    }
     func clearDeviceConfigProbe() { ble.clearDeviceConfigProbe() }
 
     /// Drop the current strap and clear bond state so a newly-picked strap model connects fresh

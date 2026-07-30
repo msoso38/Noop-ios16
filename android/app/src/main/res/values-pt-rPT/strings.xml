@@ -1775,6 +1775,11 @@
     <string name="smart_alarm_body">O teu alarme inteligente acabou de tocar.</string>
     <string name="battery_channel_name">Alertas de bateria</string>
     <string name="battery_channel_desc">Avisos quando a bateria da correia está fraca ou totalmente carregada.</string>
+    <string name="l10n_settings_screen_ecg_raw_data_gate_whoop_mg_only">Bloqueio de dados ECG em bruto (apenas WHOOP MG)</string>
+    <string name="l10n_settings_screen_ecg_gate_blurb">A sua pulseira listou as suas próprias chaves de configuração, e uma delas é enable_raw_data_w_ecg. Num MG sem subscrição de ECG lê \'0\' — enquanto os três comandos de ECG respondem SUCCESS e não enviam dados nenhuns (#891). Esta é a principal hipótese para o que mantém o ECG fechado. Ninguém sabe se mudá-la produz mesmo dados de ECG: descobrir é o objetivo, e «continua sem nada» é uma resposta útil que vale a pena publicar em #891.</string>
+    <string name="l10n_settings_screen_ecg_gate_persistent_warning">Isto escreve uma definição que FICA NA SUA PULSEIRA até a repor — não é uma preferência da aplicação e fechar o NOOP não a desfaz. «Desativar bloqueio» volta a escrever \'0\' com um só toque. Só esta chave é escrita; as outras seis que a sua pulseira listou nunca são tocadas.</string>
+    <string name="l10n_settings_screen_ecg_gate_turn_on">Ativar bloqueio (escrever \'1\')</string>
+    <string name="l10n_settings_screen_ecg_gate_turn_off">Desativar bloqueio (escrever \'0\')</string>
     <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">A poupança de bateria acalma os indicadores, notificações Android traduzidas e gráficos instantâneos</string>
     <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">Sem importação de SpO₂ ou valor de saúde</string>
     <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Apenas valores brutos — requer importação</string>

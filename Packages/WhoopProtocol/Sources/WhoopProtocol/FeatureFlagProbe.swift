@@ -148,8 +148,15 @@ public enum FeatureFlagProbe {
 
     /// Decode a `START_FF_KEY_EXCHANGE` COMMAND_RESPONSE. CRC-gated: a frame whose checksums fail is
     /// rejected before any field is read.
-    public static func parseStart(frame: [UInt8], family: DeviceFamily) -> Result<StartResponse, ParseFailure> {
-        switch record(frame: frame, family: family, expecting: startKeyExchangeCmd) {
+    ///
+    /// `expecting` defaults to 117 and exists so #103's sweep can reuse this decoder for the DEVICE-CONFIG
+    /// twin `START_DEVICE_CONFIG_KEY_EXCHANGE` (115). That reuse ASSUMES the two share a record layout — an
+    /// inference from the naming symmetry in this repo's own `CommandNumber` table, not an observation. It
+    /// fails closed: a mismatch surfaces as `.truncated` or as a count `countIsPlausible` rejects.
+    public static func parseStart(frame: [UInt8], family: DeviceFamily,
+                                  expecting: UInt8 = startKeyExchangeCmd)
+        -> Result<StartResponse, ParseFailure> {
+        switch record(frame: frame, family: family, expecting: expecting) {
         case .failure(let f): return .failure(f)
         case .success(let r):
             guard r.record.count >= 3 else { return .failure(.truncated) }
@@ -159,8 +166,12 @@ public enum FeatureFlagProbe {
     }
 
     /// Decode a `SEND_NEXT_FF` COMMAND_RESPONSE. CRC-gated like `parseStart`.
-    public static func parseNext(frame: [UInt8], family: DeviceFamily) -> Result<NextResponse, ParseFailure> {
-        switch record(frame: frame, family: family, expecting: sendNextFlagCmd) {
+    /// `expecting` defaults to 118 and carries the same reuse contract documented on `parseStart`: #103's
+    /// sweep passes 116 (`SEND_NEXT_DEVICE_CONFIG`) to walk the device-config namespace.
+    public static func parseNext(frame: [UInt8], family: DeviceFamily,
+                                 expecting: UInt8 = sendNextFlagCmd)
+        -> Result<NextResponse, ParseFailure> {
+        switch record(frame: frame, family: family, expecting: expecting) {
         case .failure(let f): return .failure(f)
         case .success(let r):
             // revision + index are the minimum: the 0xFF end marker arrives with nothing after it.

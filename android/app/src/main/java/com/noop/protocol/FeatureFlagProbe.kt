@@ -113,9 +113,20 @@ object FeatureFlagProbe {
     /** One decode outcome: exactly one of [value] / [failure] is non-null. */
     data class Parsed<T>(val value: T?, val failure: ParseFailure?)
 
-    /** Decode a `START_FF_KEY_EXCHANGE` COMMAND_RESPONSE. CRC-gated. */
-    fun parseStart(frame: ByteArray, family: DeviceFamily): Parsed<StartResponse> {
-        val e = extract(frame, family, START_KEY_EXCHANGE_CMD)
+    /**
+     * Decode a `START_FF_KEY_EXCHANGE` COMMAND_RESPONSE. CRC-gated.
+     *
+     * [expecting] defaults to 117 and exists so #103's sweep can reuse this decoder for the DEVICE-CONFIG
+     * twin `START_DEVICE_CONFIG_KEY_EXCHANGE` (115). That reuse ASSUMES the two share a record layout — an
+     * inference from the naming symmetry in this repo's own `CommandNumber` table, not an observation. It
+     * fails closed: a mismatch surfaces as TRUNCATED or as a count [StartResponse.countIsPlausible] rejects.
+     */
+    fun parseStart(
+        frame: ByteArray,
+        family: DeviceFamily,
+        expecting: Int = START_KEY_EXCHANGE_CMD,
+    ): Parsed<StartResponse> {
+        val e = extract(frame, family, expecting)
         e.failure?.let { return Parsed(null, it) }
         val r = e.value!!
         if (r.record.size < 3) return Parsed(null, ParseFailure.TRUNCATED)
@@ -123,9 +134,17 @@ object FeatureFlagProbe {
         return Parsed(StartResponse(r.resultCode, r.record[0].toInt() and 0xFF, count), null)
     }
 
-    /** Decode a `SEND_NEXT_FF` COMMAND_RESPONSE. CRC-gated like [parseStart]. */
-    fun parseNext(frame: ByteArray, family: DeviceFamily): Parsed<NextResponse> {
-        val e = extract(frame, family, SEND_NEXT_FLAG_CMD)
+    /**
+     * Decode a `SEND_NEXT_FF` COMMAND_RESPONSE. CRC-gated like [parseStart]. [expecting] defaults to 118
+     * and carries the same reuse contract documented on [parseStart]: #103's sweep passes 116
+     * (`SEND_NEXT_DEVICE_CONFIG`) to walk the device-config namespace.
+     */
+    fun parseNext(
+        frame: ByteArray,
+        family: DeviceFamily,
+        expecting: Int = SEND_NEXT_FLAG_CMD,
+    ): Parsed<NextResponse> {
+        val e = extract(frame, family, expecting)
         e.failure?.let { return Parsed(null, it) }
         val r = e.value!!
         // revision + index are the minimum: the 0xFF end marker arrives with nothing after it.

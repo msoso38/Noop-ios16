@@ -256,6 +256,18 @@ public final class LiveState: ObservableObject {
     /// sentinel while the walk runs. Nothing is written to the strap to produce it. Cleared on disconnect
     /// and on dialog dismiss. Twin of the Android WhoopBleClient.deviceConfigProbe flow.
     @Published public var deviceConfigProbe: String? = nil
+
+    /// #891: the result of the last `enable_raw_data_w_ecg` write, AFTER its mandatory
+    /// `GET_DEVICE_CONFIG_VALUE(121)` read-back — the write's own ack is never reported as the outcome.
+    /// nil until a write is attempted; cleared on disconnect. Twin of the Android
+    /// WhoopBleClient.ecgRawDataGate flow.
+    @Published public var ecgRawDataGate: EcgRawDataGateReport? = nil
+
+    /// #520/#891: which WHOOP 5-generation hardware the connected strap attested itself over the Device
+    /// Information Service. `.unknown` until the DIS strings land — and `.unknown` is NOT MG, so an
+    /// MG-only action stays refused until the hardware actually says so. Reset on disconnect.
+    @Published public var whoop5Variant: Whoop5Variant = .unknown
+
     /// Wrist-wear state from WRIST_ON/WRIST_OFF events. Defaults true so wear-gated features work
     /// before the first event arrives; flipped by FrameRouter on a real event.
     @Published public var worn: Bool = true

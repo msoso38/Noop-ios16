@@ -1193,8 +1193,16 @@ private struct DeviceConfigProbeSheets: ViewModifier {
                                 titleVisibility: .visible,
                                 presenting: target) { _ in
                 Button("Send probe (read-only)") { model.probeDeviceConfigValues(); target = nil }
+                // The forced sweep is its own explicit choice, never a fallback the probe takes on its
+                // own: it spends one round-trip per catalogue name, and a strap that enumerated cleanly
+                // would otherwise skip all of them. Still read-only — same two verbs, same allowlist.
+                Button("Send probe + full name sweep (read-only, slower)") {
+                    model.probeDeviceConfigValues(forceCandidateSweep: true); target = nil
+                }
                 Button("Cancel", role: .cancel) { target = nil }
             } message: { _ in
+                // Unchanged copy: editing it would orphan its existing translations in every locale, and
+                // what the full sweep adds is already carried by the button label + the report header.
                 Text("Asks the strap for config VALUES: GET_DEVICE_CONFIG_VALUE (0x79) and GET_FF_VALUE (0x80), one key per round-trip. Both commands may simply not exist in this firmware — finding that out is the point. Read-only — no value is written, and the SET commands are never sent from this probe. The result is shown here and written to the strap log.")
             }
             .sheet(isPresented: Binding(get: { live.deviceConfigProbe != nil },

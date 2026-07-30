@@ -53,12 +53,15 @@ final class DeviceConfigReadProbeTests: XCTestCase {
 
     // MARK: - The read-only allowlist (the hard safety constraint)
 
-    func testAllowlistAdmitsOnlyTheTwoReadVerbs() {
-        XCTAssertEqual(DeviceConfigReadProbe.getDeviceConfigValueCmd, 121)   // 0x79
-        XCTAssertEqual(DeviceConfigReadProbe.getFeatureFlagValueCmd, 128)    // 0x80
-        XCTAssertEqual(DeviceConfigReadProbe.readOnlyOpcodes, [121, 128])
-        XCTAssertTrue(DeviceConfigReadProbe.isReadOnlyOpcode(121))
-        XCTAssertTrue(DeviceConfigReadProbe.isReadOnlyOpcode(128))
+    func testAllowlistAdmitsOnlyTheFourReadVerbs() {
+        XCTAssertEqual(DeviceConfigReadProbe.getDeviceConfigValueCmd, 121)                // 0x79
+        XCTAssertEqual(DeviceConfigReadProbe.getFeatureFlagValueCmd, 128)                 // 0x80
+        XCTAssertEqual(ConfigKeySweep.startDeviceConfigKeyExchangeCmd, 115)               // 0x73
+        XCTAssertEqual(ConfigKeySweep.sendNextDeviceConfigCmd, 116)                       // 0x74
+        XCTAssertEqual(DeviceConfigReadProbe.readOnlyOpcodes, [115, 116, 121, 128])
+        for op in DeviceConfigReadProbe.readOnlyOpcodes {
+            XCTAssertTrue(DeviceConfigReadProbe.isReadOnlyOpcode(op))
+        }
     }
 
     /// The load-bearing safety test: the two config WRITE verbs must be rejected by the same predicate
@@ -76,16 +79,21 @@ final class DeviceConfigReadProbeTests: XCTestCase {
         XCTAssertTrue(DeviceConfigReadProbe.readOnlyOpcodes.isDisjoint(with: DeviceConfigReadProbe.writeOpcodes))
     }
 
-    /// Nothing outside the pair passes either — including the enumerate verbs #761 owns and the
-    /// destructive opcodes that must never come near this path.
+    /// Nothing outside the four passes either — including the feature-flag enumerate verbs #872 owns
+    /// (they have their own probe and their own gate) and the destructive opcodes that must never come
+    /// near this path.
     func testAllowlistRejectsEveryOtherOpcode() {
+        var rejected = 0
         for op in UInt8.min...UInt8.max where !DeviceConfigReadProbe.readOnlyOpcodes.contains(op) {
             XCTAssertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(op), "opcode \(op) must not pass")
+            rejected += 1
         }
+        XCTAssertEqual(rejected, 252, "four admitted, every other opcode rejected")
         XCTAssertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(FeatureFlagProbe.startKeyExchangeCmd))
         XCTAssertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(FeatureFlagProbe.sendNextFlagCmd))
         XCTAssertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(25))   // FORCE_TRIM
         XCTAssertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(29))   // REBOOT_STRAP
+        XCTAssertFalse(DeviceConfigReadProbe.isReadOnlyOpcode(32))   // POWER_CYCLE_STRAP
     }
 
     // MARK: - Request body
@@ -213,296 +221,489 @@ final class DeviceConfigReadProbeTests: XCTestCase {
                        .failure(.truncated))
     }
 
-    // MARK: - The plan
 
-    func testDiscoveryTriesEachVerbOnceBeforeAnythingElse() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys,
-                                                 candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
-        guard let first = report.nextStep() else { return XCTFail("expected a first step") }
-        XCTAssertEqual(first.opcode, 128)
-        XCTAssertEqual(first.key, "enable_r22_packets", "128 is discovered against a flag NOOP writes")
-        XCTAssertEqual(first.group, .discovery)
+    // MARK: - Enumeration frame builders (the 117/118 record layouts, reused for 115/116)
 
-        // Nothing is known yet, so the second step is the other verb, not a value read.
-        guard let second = report.nextStep() else { return XCTFail("expected a second step") }
-        XCTAssertEqual(second.opcode, 121)
-        XCTAssertEqual(second.key, DeviceConfigReadProbe.deviceConfigDiscoveryKey)
-        XCTAssertEqual(second.group, .discovery)
+    /// `START_DEVICE_CONFIG_KEY_EXCHANGE` reply: record = [revision][count u16 LE].
+    private func enumStart(result: UInt8, revision: UInt8, count: UInt16) -> [UInt8] {
+        whoop5Response(cmd: ConfigKeySweep.startDeviceConfigKeyExchangeCmd,
+                       payload: payload(result: result,
+                                        record: [revision, UInt8(count & 0xFF), UInt8(count >> 8)]))
     }
 
-    func testBothVerbsUnsupportedEndsTheProbeAfterTwoRoundTrips() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys,
-                                                 candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
-        for _ in 0..<2 {
-            guard let step = report.nextStep() else { return XCTFail("expected a discovery step") }
-            let frame = whoop5Response(cmd: step.opcode, payload: payload(result: 3, record: [0x00, 0x00, 0x00]))
-            guard case .success(let r) = DeviceConfigReadProbe.parse(frame: frame, family: .whoop5,
-                                                                     expecting: step.opcode) else {
-                return XCTFail("parse")
-            }
-            report.noteReply(r, for: step)
-        }
-        XCTAssertNil(report.nextStep(), "a refused verb must not drive sixteen more round-trips")
-        XCTAssertEqual(report.steps, 2)
-        XCTAssertEqual(report.featureFlagVerb, .unsupported)
-        XCTAssertEqual(report.deviceConfigVerb, .unsupported)
-        // The one run that supports the strong sentence: the firmware itself refused both verbs.
-        XCTAssertEqual(report.verdict,
-                       "neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121) is served by this "
-                       + "firmware — rejected as UNSUPPORTED")
-        XCTAssertTrue(report.render().contains("neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121)"))
+    /// `SEND_NEXT_DEVICE_CONFIG` reply: record = [revision][index][validKey][key ASCII NUL-terminated].
+    private func enumNext(index: UInt8, key: String?, validKey: Bool = true,
+                          result: UInt8 = 1) -> [UInt8] {
+        var record: [UInt8] = [0x0A, index, validKey ? 1 : 0]
+        if let key { record += Array(key.utf8) + [0] }
+        return whoop5Response(cmd: ConfigKeySweep.sendNextDeviceConfigCmd,
+                              payload: payload(result: result, record: record))
     }
 
-    /// Two timeouts are two timeouts. `BLEManager.send` returns without transmitting when there is no
-    /// `cmdCharacteristic` and again when the 5/MG allowlist does not carry the opcode, so a run in which
-    /// nothing reached the strap must not print a claim about what the firmware serves.
-    func testSilentVerbsEndTheProbeAndAreSaidPlainly() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys,
-                                                 candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
-        for _ in 0..<2 {
-            guard let step = report.nextStep() else { return XCTFail("expected a discovery step") }
-            report.noteTimeout(for: step, seconds: 8)
+    private func startReply(_ frame: [UInt8]) -> FeatureFlagProbe.StartResponse {
+        guard case .success(let r) = FeatureFlagProbe.parseStart(
+            frame: frame, family: .whoop5,
+            expecting: ConfigKeySweep.startDeviceConfigKeyExchangeCmd) else {
+            fatalError("fixture did not decode")
         }
-        XCTAssertNil(report.nextStep())
-        XCTAssertEqual(report.featureFlagVerb, .silent)
-        XCTAssertEqual(report.deviceConfigVerb, .silent)
-        XCTAssertEqual(report.verdict,
-                       "no read verb answered — GET_FF_VALUE(128) served no reply in 8s — unconfirmed; "
-                       + "GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed")
+        return r
+    }
+
+    private func nextReply(_ frame: [UInt8]) -> FeatureFlagProbe.NextResponse {
+        guard case .success(let r) = FeatureFlagProbe.parseNext(
+            frame: frame, family: .whoop5,
+            expecting: ConfigKeySweep.sendNextDeviceConfigCmd) else {
+            fatalError("fixture did not decode")
+        }
+        return r
+    }
+
+    /// A two-flag report with a two-name candidate slice — small enough to drive step by step.
+    private func smallReport(limit: Int = 2) -> DeviceConfigReadProbeReport {
+        DeviceConfigReadProbeReport(family: .whoop5,
+                                    knownFlagKeys: ["enable_r22_packets", "hr_ch_switching"],
+                                    batch: ConfigKeySweep.batch(from: 0, limit: limit))
+    }
+
+    // MARK: - The plan: enumerate first, guess last
+
+    /// The whole point of the restructure: nothing is guessed until the strap has been asked to list its
+    /// own keys.
+    func testTheProbeAsksTheStrapToEnumerateBeforeItGuessesAnything() {
+        var report = smallReport()
+        guard let first = report.nextStep() else { return XCTFail("no first step") }
+        XCTAssertEqual(first.opcode, ConfigKeySweep.startDeviceConfigKeyExchangeCmd)
+        XCTAssertEqual(first.group, .enumerate)
+        XCTAssertNil(first.derivation)
+    }
+
+    /// If the strap lists its own device-config keys there is nothing left to guess, so the sweep is
+    /// skipped entirely rather than spending round-trips on names the answer already covers.
+    func testAnAnsweringEnumerationSkipsTheGuessedSweepEntirely() {
+        var report = smallReport()
+        guard let s1 = report.nextStep() else { return XCTFail("s1") }
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 2)))
+        XCTAssertEqual(s1.opcode, 115)
+
+        guard let s2 = report.nextStep() else { return XCTFail("s2") }
+        XCTAssertEqual(s2.opcode, ConfigKeySweep.sendNextDeviceConfigCmd)
+        XCTAssertTrue(report.noteEnumerationNext(nextReply(enumNext(index: 1, key: "whoop_live_hr_in_adv_ind_pkt"))))
+
+        guard report.nextStep() != nil else { return XCTFail("s3") }
+        XCTAssertTrue(report.noteEnumerationNext(nextReply(enumNext(index: 2, key: "whoop_sleep_coach_enabled"))))
+
+        guard report.nextStep() != nil else { return XCTFail("s4") }
+        XCTAssertFalse(report.noteEnumerationNext(nextReply(enumNext(index: 0xFF, key: nil, validKey: false))))
+
+        XCTAssertEqual(report.enumeratedKeys, ["whoop_live_hr_in_adv_ind_pkt", "whoop_sleep_coach_enabled"])
+        XCTAssertEqual(report.enumerationVerb, .answered)
+        // The Broadcast-HR key is one NOOP already writes, so only the second name is NEW.
+
+        // Drive the rest of the plan; nothing may ever be a candidate step.
+        var guard_ = 0
+        while let step = report.nextStep(), guard_ < 200 {
+            guard_ += 1
+            XCTAssertNotEqual(step.group, .candidate, "the sweep must not run once enumeration answered")
+            report.noteReply(.init(resultCode: 1, record: echoRecord(step.key, value: 0x32)), for: step)
+        }
+        XCTAssertTrue(report.render().contains("skipped — the strap enumerated its own device-config keys"))
+        XCTAssertEqual(report.newKeysFound, ["whoop_sleep_coach_enabled"])
+        XCTAssertTrue(report.verdict.hasPrefix("1 config key name(s) found that NOOP did not have"))
+    }
+
+    /// A successful enumeration is evidence about what the firmware HOLDS, not proof of what it would
+    /// ACCEPT — and it says nothing at all about the feature-flag namespace, where most of the catalogue
+    /// is aimed. So a run can be asked to sweep anyway, and then the candidate steps must actually happen.
+    func testAForcedSweepAsksTheCandidatesEvenAfterEnumerationSucceeds() {
+        var report = DeviceConfigReadProbeReport(
+            family: .whoop5,
+            knownFlagKeys: ["enable_r22_packets", "hr_ch_switching"],
+            batch: ConfigKeySweep.batch(from: 0, limit: 2),
+            forceCandidateSweep: true)
+        XCTAssertTrue(report.runsCandidateSweep)
+
+        guard report.nextStep() != nil else { return XCTFail("s1") }
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 1)))
+        guard report.nextStep() != nil else { return XCTFail("s2") }
+        // The Broadcast-HR key: enumerated, and one NOOP already had — so `newKeysFound` stays empty and
+        // the headline is free to report what the sweep established rather than what enumeration found.
+        XCTAssertTrue(report.noteEnumerationNext(
+            nextReply(enumNext(index: 1, key: "whoop_live_hr_in_adv_ind_pkt"))))
+        guard report.nextStep() != nil else { return XCTFail("s3") }
+        XCTAssertFalse(report.noteEnumerationNext(nextReply(enumNext(index: 0xFF, key: nil, validKey: false))))
+        XCTAssertEqual(report.enumerationVerb, .answered)
+        XCTAssertFalse(report.enumeratedKeys.isEmpty)
+
+        var candidates: [String] = []
+        var guard_ = 0
+        while let step = report.nextStep(), guard_ < 200 {
+            guard_ += 1
+            if step.group == .candidate { candidates.append(step.key) }
+            // Every candidate answers FAILURE(0) — "the firmware has no key by this name".
+            let code = step.group == .candidate ? 0 : 1
+            report.noteReply(.init(resultCode: code, record: echoRecord(step.key, value: 0x30)), for: step)
+        }
+        // Both verbs answered in this fixture, so each name appears once per verb.
+        var distinct: [String] = []
+        for k in candidates where !distinct.contains(k) { distinct.append(k) }
+        XCTAssertEqual(distinct, ConfigKeySweep.batch(from: 0, limit: 2).candidates.map(\.key))
+        // The report must SAY the sweep was forced, and must not claim enumeration settled the question.
         let text = report.render()
-        XCTAssertFalse(text.contains("served by this firmware"),
-                       "silence is not the firmware answering — it is not even proof a frame was sent")
-        XCTAssertFalse(text.contains("UNSUPPORTED"), "nothing was refused; nothing replied at all")
-        XCTAssertTrue(text.contains("no COMMAND_RESPONSE within 8s"))
-        XCTAssertTrue(text.contains("(none — the verb that would carry them did not answer)"))
+        XCTAssertTrue(text.contains("FULL SWEEP: asked even though enumeration succeeded"))
+        XCTAssertFalse(text.contains("skipped — the strap enumerated its own device-config keys"))
+        // A fully-negative forced sweep against a fully-enumerated strap is the strong clean negative.
+        XCTAssertTrue(report.verdict.contains("clean negative"), report.verdict)
+        XCTAssertTrue(report.verdict.contains("enumerated in full"), report.verdict)
     }
 
-    /// One verb refused and the other timed out: the refusal belongs to the verb that was refused. The
-    /// old `||` printed "neither … is served by this firmware — rejected as UNSUPPORTED" over a 121 that
-    /// was never refused, only never heard from.
-    func testOneRefusalIsNotGeneralisedToTheVerbThatWasNeverHeardFrom() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys,
-                                                 candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
-        guard let s128 = report.nextStep() else { return XCTFail("128") }
-        XCTAssertEqual(s128.opcode, 128)
-        report.noteReply(.init(resultCode: 3, record: [0x00]), for: s128)
-        guard let s121 = report.nextStep() else { return XCTFail("121") }
-        XCTAssertEqual(s121.opcode, 121)
-        report.noteTimeout(for: s121, seconds: 8)
+    /// The default is unchanged: forcing is opt-in, so an ordinary run still skips the sweep and still
+    /// tells the reader that a forced run is available.
+    func testTheSweepStaysAFallbackByDefaultAndSaysAForcedRunExists() {
+        var report = smallReport()
+        XCTAssertTrue(report.runsCandidateSweep, "with nothing enumerated yet the sweep is still on the table")
+        guard report.nextStep() != nil else { return XCTFail("s1") }
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 1)))
+        guard report.nextStep() != nil else { return XCTFail("s2") }
+        XCTAssertTrue(report.noteEnumerationNext(nextReply(enumNext(index: 1, key: "enable_rfid"))))
+        guard report.nextStep() != nil else { return XCTFail("s3") }
+        XCTAssertFalse(report.noteEnumerationNext(nextReply(enumNext(index: 0xFF, key: nil, validKey: false))))
+        XCTAssertFalse(report.runsCandidateSweep, "an enumerated namespace turns the fallback off")
 
-        XCTAssertNil(report.nextStep())
-        XCTAssertEqual(report.featureFlagVerb, .unsupported)
-        XCTAssertEqual(report.deviceConfigVerb, .silent)
-        XCTAssertEqual(report.verdict,
-                       "no read verb answered — GET_FF_VALUE(128) refused by firmware (UNSUPPORTED); "
-                       + "GET_DEVICE_CONFIG_VALUE(121) served no reply in 8s — unconfirmed")
-        XCTAssertFalse(report.render().contains("neither GET_FF_VALUE(128) nor GET_DEVICE_CONFIG_VALUE(121)"),
-                       "one refusal does not speak for the other verb")
-    }
-
-    /// An undecodable reply is affirmative evidence the strap DID transmit, so "not served by this
-    /// firmware" states the opposite of what the run observed.
-    func testAnUndecodableReplyIsNotReportedAsUnserved() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys, candidateKeys: [])
-        guard let s128 = report.nextStep() else { return XCTFail("128") }
-        report.noteFailure(.crc, for: s128)
-        guard let s121 = report.nextStep() else { return XCTFail("121") }
-        report.noteFailure(.envelope, for: s121)
-
-        XCTAssertEqual(report.featureFlagVerb, .undecodable)
-        XCTAssertEqual(report.deviceConfigVerb, .undecodable)
-        XCTAssertEqual(report.verdict,
-                       "no read verb answered — "
-                       + "GET_FF_VALUE(128) replied but the frame did not decode — unconfirmed; "
-                       + "GET_DEVICE_CONFIG_VALUE(121) replied but the frame did not decode — unconfirmed")
-        XCTAssertFalse(report.render().contains("served by this firmware"))
-    }
-
-    /// A probe that ended before either verb went out says so, rather than reporting an empty run as a
-    /// finding about the firmware.
-    func testAProbeThatAskedNothingClaimsNothing() {
-        let report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys, candidateKeys: [])
-        XCTAssertEqual(report.featureFlagVerb, .untried)
-        XCTAssertEqual(report.deviceConfigVerb, .untried)
-        XCTAssertEqual(report.verdict,
-                       "no read verb answered — GET_FF_VALUE(128) not asked; "
-                       + "GET_DEVICE_CONFIG_VALUE(121) not asked")
-    }
-
-    func testAnAnsweringFeatureFlagVerbWalksTheFifteenRemainingKnownFlags() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys,
-                                                 candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
-        // 128 answers; 121 is refused.
-        guard let s128 = report.nextStep() else { return XCTFail("128") }
-        report.noteReply(.init(resultCode: 1, record: echoRecord(s128.key, value: 0x32, lead: [0x01])), for: s128)
-        guard let s121 = report.nextStep() else { return XCTFail("121") }
-        report.noteReply(.init(resultCode: 3, record: [0x00]), for: s121)
-
-        var flagSteps: [String] = []
-        var candidateSteps: [String] = []
-        while let step = report.nextStep() {
-            XCTAssertEqual(step.opcode, 128, "the refused verb must never be sent again")
-            switch step.group {
-            case .knownFlag: flagSteps.append(step.key)
-            case .candidate: candidateSteps.append(step.key)
-            case .discovery: XCTFail("discovery is over")
-            }
-            report.noteReply(.init(resultCode: 1, record: echoRecord(step.key, value: 0x31, lead: [0x01])), for: step)
+        var guard_ = 0
+        while let step = report.nextStep(), guard_ < 200 {
+            guard_ += 1
+            XCTAssertNotEqual(step.group, .candidate)
+            report.noteReply(.init(resultCode: 1, record: echoRecord(step.key, value: 0x32)), for: step)
         }
-        XCTAssertEqual(flagSteps, Array(flagKeys.dropFirst()),
-                       "the discovery key is not read twice; every other flag is")
-        XCTAssertEqual(candidateSteps, DeviceConfigReadProbe.oxygenCandidateKeys,
-                       "candidates fall back to the surviving verb")
-        XCTAssertEqual(report.steps, 2 + 15 + DeviceConfigReadProbe.oxygenCandidateKeys.count)
+        let text = report.render()
+        XCTAssertTrue(text.contains("skipped — the strap enumerated its own device-config keys"))
+        XCTAssertTrue(text.contains("re-run with the full name sweep"))
+        XCTAssertFalse(text.contains("FULL SWEEP"))
     }
 
-    func testCandidatesPreferTheDeviceConfigVerbWhenBothAnswer() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: ["only_flag"],
-                                                 candidateKeys: ["enable_spo2"])
-        guard let a = report.nextStep() else { return XCTFail("128") }
-        report.noteReply(.init(resultCode: 1, record: echoRecord(a.key, value: 0x32)), for: a)
-        guard let b = report.nextStep() else { return XCTFail("121") }
-        report.noteReply(.init(resultCode: 1, record: echoRecord(b.key, value: 0x31)), for: b)
-
-        // The only known flag was already read during discovery, so the next step is the candidate.
-        guard let c = report.nextStep() else { return XCTFail("candidate") }
-        XCTAssertEqual(c.group, .candidate)
-        XCTAssertEqual(c.opcode, 121, "the device-config namespace is the one this probe exists to reach")
-        XCTAssertEqual(c.key, "enable_spo2")
+    /// The `sig<N>` line is the family the forced sweep exists to reach: it lives in the FEATURE-FLAG
+    /// namespace, which the device-config enumeration never covers.
+    func testTheCatalogueStillLeadsWithTheSigSeriesInTheFeatureFlagNamespace() {
+        let sig = ConfigKeySweep.catalogue.filter { $0.derivation == .sigSeries }
+        XCTAssertFalse(sig.isEmpty)
+        XCTAssertTrue(sig.allSatisfy { $0.namespace == .featureFlag })
+        XCTAssertEqual(ConfigKeySweep.catalogue.first?.derivation, .sigSeries)
     }
 
-    func testThePlanIsCappedEvenWithAnAbsurdKeyList() {
-        let many = (0..<500).map { "key_\($0)" }
-        var report = DeviceConfigReadProbeReport(family: .whoop4, knownFlagKeys: many, candidateKeys: many)
-        var seen = 0
-        while let step = report.nextStep() {
-            seen += 1
-            XCTAssertLessThanOrEqual(seen, DeviceConfigReadProbe.maxSteps + 1, "the plan must terminate")
-            report.noteReply(.init(resultCode: nil, record: echoRecord(step.key, value: 0x31)), for: step)
-        }
-        XCTAssertEqual(seen, DeviceConfigReadProbe.maxSteps)
-        XCTAssertEqual(report.stopReason, "safety cap of 64 round-trips reached")
+    /// The #874 discipline, inherited: the strap's own end marker stops the walk, but a name OUR parser
+    /// declines is counted and stepped over — one bad entry must not throw away every key after it.
+    func testAnUndecodableNameIsSteppedOverRatherThanEndingTheWalk() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 3)))
+        _ = report.nextStep()
+        // validKey = 1 but the name bytes are not printable ASCII, so `key` is nil: skippable, not the end.
+        XCTAssertTrue(report.noteEnumerationNext(
+            FeatureFlagProbe.NextResponse(resultCode: 1, revision: 10, index: 1, validKey: true, key: nil)))
+        _ = report.nextStep()
+        XCTAssertTrue(report.noteEnumerationNext(nextReply(enumNext(index: 2, key: "whoop_after_the_bad_one"))))
+        XCTAssertEqual(report.enumeratedKeys, ["whoop_after_the_bad_one"])
+        XCTAssertEqual(report.enumerationSkipped, 1)
     }
 
-    func testAnUndecodableReplyRetiresTheVerb() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys, candidateKeys: [])
-        guard let step = report.nextStep() else { return XCTFail("first") }
-        report.noteFailure(.crc, for: step)
-        XCTAssertEqual(report.featureFlagVerb, .undecodable)
-        guard let next = report.nextStep() else { return XCTFail("second") }
-        XCTAssertEqual(next.opcode, 121, "the undecodable verb is not retried")
-        report.noteTimeout(for: next, seconds: 8)
-        XCTAssertNil(report.nextStep())
+    /// A refused enumeration is the case the guessing fallback exists for — and it must cost exactly one
+    /// round-trip, not one per key.
+    func testAnUnsupportedEnumerationCostsOneRoundTripAndOpensTheFallback() {
+        var report = smallReport()
+        guard let s1 = report.nextStep() else { return XCTFail("s1") }
+        XCTAssertEqual(s1.opcode, 115)
+        report.noteEnumerationStart(startReply(enumStart(result: 3, revision: 0, count: 0)))
+        XCTAssertEqual(report.enumerationVerb, .unsupported)
+
+        guard let s2 = report.nextStep() else { return XCTFail("s2") }
+        XCTAssertEqual(s2.opcode, DeviceConfigReadProbe.getFeatureFlagValueCmd,
+                       "116 must not be asked once 115 refused")
+        XCTAssertEqual(s2.group, .discovery)
+    }
+
+    /// A silent enumeration retires the pair after ONE timeout rather than one per entry.
+    func testASilentEnumerationRetiresAfterOneTimeout() {
+        var report = smallReport()
+        guard let s1 = report.nextStep() else { return XCTFail("s1") }
+        report.noteTimeout(for: s1, seconds: 8)
+        XCTAssertEqual(report.enumerationVerb, .silent)
+        guard let s2 = report.nextStep() else { return XCTFail("s2") }
+        XCTAssertEqual(s2.group, .discovery)
+        XCTAssertTrue(report.render().contains("(none — no reply to 115)"))
+    }
+
+    func testAnUndecodableEnumerationReplyRetiresIt() {
+        var report = smallReport()
+        guard let s1 = report.nextStep() else { return XCTFail("s1") }
+        report.noteFailure(.crc, for: s1)
+        XCTAssertEqual(report.enumerationVerb, .undecodable)
+        guard let s2 = report.nextStep() else { return XCTFail("s2") }
+        XCTAssertEqual(s2.group, .discovery)
         XCTAssertEqual(report.stopReason, "CRC failed — frame rejected (never decoded)")
     }
 
-    func testAVerdictAlreadyReachedIsNotRewrittenByALaterReply() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: ["a", "b"], candidateKeys: [])
-        guard let first = report.nextStep() else { return XCTFail("first") }
-        report.noteReply(.init(resultCode: 1, record: echoRecord("a", value: 0x31)), for: first)
-        XCTAssertEqual(report.featureFlagVerb, .answered)
-        // A later UNSUPPORTED on the same verb sticks; a later SUCCESS after that does not undo it.
-        guard let second = report.nextStep() else { return XCTFail("second") }
-        report.noteReply(.init(resultCode: 3, record: [0x00]), for: second)
-        XCTAssertEqual(report.deviceConfigVerb, .unsupported)
-        report.noteReply(.init(resultCode: 1, record: [0x00]), for: second)
-        XCTAssertEqual(report.deviceConfigVerb, .unsupported, "a refusal is not upgraded away")
+    // MARK: - Cross-namespace
+
+    /// Two round-trips that settle whether the namespaces are separate — the result shapes every later
+    /// sweep, so it is asked of each verb that answered.
+    func testCrossNamespaceIsAskedOfEachAnsweringVerb() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 3, revision: 0, count: 0)))
+
+        guard let d1 = report.nextStep() else { return XCTFail("d1") }
+        report.noteReply(.init(resultCode: 1, record: echoRecord(d1.key, value: 0x32)), for: d1)
+        guard let d2 = report.nextStep() else { return XCTFail("d2") }
+        report.noteReply(.init(resultCode: 1, record: echoRecord(d2.key, value: 0x30)), for: d2)
+
+        guard let x1 = report.nextStep() else { return XCTFail("x1") }
+        XCTAssertEqual(x1.group, .crossNamespace)
+        XCTAssertEqual(x1.opcode, DeviceConfigReadProbe.getFeatureFlagValueCmd)
+        XCTAssertEqual(x1.key, DeviceConfigReadProbe.deviceConfigDiscoveryKey)
+        report.noteReply(.init(resultCode: 0, record: []), for: x1)
+
+        guard let x2 = report.nextStep() else { return XCTFail("x2") }
+        XCTAssertEqual(x2.group, .crossNamespace)
+        XCTAssertEqual(x2.opcode, DeviceConfigReadProbe.getDeviceConfigValueCmd)
+        XCTAssertEqual(x2.key, "enable_r22_packets")
+        report.noteReply(.init(resultCode: 0, record: []), for: x2)
+
+        XCTAssertEqual(report.featureFlagVerbOnDeviceConfigKey, .unknown)
+        XCTAssertEqual(report.deviceConfigVerbOnFlagKey, .unknown)
+        XCTAssertTrue(report.render().contains("the namespaces are separate"))
+    }
+
+    /// If one verb turns out to serve both namespaces, everything afterwards goes through it — halving
+    /// the work every future sweep needs, on evidence gathered in the same run.
+    func testAVerbShownToServeBothNamespacesCarriesEverythingAfterwards() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 3, revision: 0, count: 0)))
+        guard let d1 = report.nextStep() else { return XCTFail("d1") }
+        report.noteReply(.init(resultCode: 1, record: echoRecord(d1.key, value: 0x32)), for: d1)
+        guard let d2 = report.nextStep() else { return XCTFail("d2") }
+        report.noteReply(.init(resultCode: 1, record: echoRecord(d2.key, value: 0x30)), for: d2)
+        guard let x1 = report.nextStep() else { return XCTFail("x1") }
+        report.noteReply(.init(resultCode: 0, record: []), for: x1)
+        guard let x2 = report.nextStep() else { return XCTFail("x2") }
+        // 121 DOES see a feature-flag key.
+        report.noteReply(.init(resultCode: 1, record: echoRecord(x2.key, value: 0x32)), for: x2)
+        XCTAssertEqual(report.deviceConfigVerbOnFlagKey, .exists)
+
+        guard let k1 = report.nextStep() else { return XCTFail("k1") }
+        XCTAssertEqual(k1.opcode, DeviceConfigReadProbe.getDeviceConfigValueCmd,
+                       "the verb proved to serve both namespaces carries the rest of the plan")
+        XCTAssertTrue(report.render().contains("GET_DEVICE_CONFIG_VALUE(121) serves BOTH namespaces."))
+    }
+
+    // MARK: - The sweep
+
+    /// A fully-negative sweep is a RESULT, and the verdict must say so rather than reading like a failure.
+    func testAFullyNegativeSweepIsACleanNegativeVerdict() {
+        var (report, first) = driveToCandidates(limit: 2)
+        guard var step: DeviceConfigReadProbeReport.Step = first else { return XCTFail("no candidate") }
+        var asked: [String] = []
+        while true {
+            XCTAssertEqual(step.group, .candidate)
+            asked.append(step.key)
+            report.noteReply(.init(resultCode: 0, record: []), for: step)
+            guard let next = report.nextStep() else { break }
+            step = next
+        }
+        // Each NAME is asked through every verb that answered — here both, so each appears twice. That is
+        // the point: a name asked only through the verb its namespace guess named would answer FAILURE
+        // from the wrong namespace and be indistinguishable from "no such key".
+        XCTAssertEqual(asked, ["enable_sig1", "enable_sig1", "enable_sig2", "enable_sig2"])
+        XCTAssertEqual(Set(asked.map { $0 }).count, 2)
+        // The verdict counts NAMES, not round-trips.
+        XCTAssertEqual(report.verdict,
+                       "asked 2 candidate key name(s); this firmware has none of them (a clean negative)")
+        XCTAssertTrue(report.newKeysFound.isEmpty)
+    }
+
+    /// The routing fix itself: every candidate is asked through BOTH value verbs when both answered, and
+    /// through only the survivor when one is dead.
+    func testEveryCandidateIsAskedThroughEveryAnsweringVerb() {
+        var (report, first) = driveToCandidates(limit: 2)
+        guard var step: DeviceConfigReadProbeReport.Step = first else { return XCTFail("no candidate") }
+        var byKey: [String: [UInt8]] = [:]
+        while true {
+            byKey[step.key, default: []].append(step.opcode)
+            report.noteReply(.init(resultCode: 0, record: []), for: step)
+            guard let next = report.nextStep() else { break }
+            step = next
+        }
+        for (key, opcodes) in byKey {
+            XCTAssertEqual(Set(opcodes), [121, 128], "\(key) must be asked through both verbs")
+        }
+        // And the per-name rendering shows which verb said what, rather than collapsing them.
+        let text = report.render()
+        XCTAssertTrue(text.contains("121=unknown · 128=unknown"), text)
+        XCTAssertTrue(text.contains("each name asked through 2 verb(s)"), text)
+    }
+
+    /// And a hit is the headline, named in the verdict so a strap log's first line carries the finding.
+    func testACandidateThatExistsBecomesTheHeadline() {
+        var (report, first) = driveToCandidates(limit: 2)
+        guard let c1 = first else { return XCTFail("c1") }
+        report.noteReply(.init(resultCode: 1, record: echoRecord(c1.key, value: 0x31)), for: c1)
+        guard let c2 = report.nextStep() else { return XCTFail("c2") }
+        report.noteReply(.init(resultCode: 0, record: []), for: c2)
+        XCTAssertEqual(report.newKeysFound, ["enable_sig1"])
+        XCTAssertEqual(report.verdict,
+                       "1 config key name(s) found that NOOP did not have: enable_sig1")
+        // A hit is always traced in full, unlike a plain "unknown".
+        XCTAssertTrue(report.trace.contains { $0.contains("enable_sig1") && $0.contains("exists") })
+        XCTAssertFalse(report.trace.contains { $0.contains("enable_sig2") })
+    }
+
+    /// No silent truncation: the report states how many names it asked, how many the catalogue holds, and
+    /// how many remain untested, plus where the next run resumes.
+    func testTheReportStatesTestedAndUntestedCountsAndWhereToResume() {
+        var (report, first) = driveToCandidates(limit: 2)
+        var step = first
+        while let s = step {
+            report.noteReply(.init(resultCode: 0, record: []), for: s)
+            step = report.nextStep()
+        }
+        let text = report.render()
+        let total = ConfigKeySweep.catalogue.count
+        XCTAssertTrue(text.contains("(2 asked of \(total) in the catalogue; \(total - 2) untested)"), text)
+        XCTAssertTrue(text.contains("Run the probe again to continue from catalogue entry 3."), text)
+    }
+
+    /// The default catalogue is smaller than one run's budget, so a real run reports nothing untested.
+    func testAFullRunOfTodaysCatalogueLeavesNothingUntested() {
+        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: flagKeys,
+                                                 batch: ConfigKeySweep.batch(from: 0))
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 3, revision: 0, count: 0)))
+        var candidates = 0
+        var steps = 0
+        while let step = report.nextStep(), steps < DeviceConfigReadProbe.maxSteps {
+            steps += 1
+            if step.group == .candidate { candidates += 1 }
+            report.noteReply(.init(resultCode: step.group == .candidate ? 0 : 1,
+                                   record: echoRecord(step.key, value: 0x32)), for: step)
+        }
+        // One round-trip per (name × answering verb) — both verbs answered here, so the whole catalogue
+        // costs twice its length. This is also the case that proves the safety cap was raised enough:
+        // the old cap of 128 would have truncated this run and reported it as "cap reached".
+        XCTAssertEqual(candidates, ConfigKeySweep.catalogue.count * 2)
+        XCTAssertNil(report.stopReason, "a full default run must not hit the safety cap")
+        XCTAssertTrue(report.render().contains("none untested"))
+    }
+
+    /// The safety cap still binds, whatever the plan holds.
+    func testThePlanIsCappedEvenWhenTheStrapEnumeratesForever() {
+        var report = smallReport()
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 1, revision: 10, count: 9999)))
+        var seen = 0
+        while let step = report.nextStep(), seen < 500 {
+            seen += 1
+            if step.group == .enumerate {
+                // A firmware whose cursor never advances: always a valid entry, never the end marker.
+                _ = report.noteEnumerationNext(nextReply(enumNext(index: 1, key: "whoop_stuck")))
+            } else {
+                report.noteReply(.init(resultCode: 0, record: []), for: step)
+            }
+        }
+        XCTAssertLessThanOrEqual(report.steps, DeviceConfigReadProbe.maxSteps)
+        XCTAssertNotNil(report.stopReason)
+    }
+
+    /// Drive the plan with enumeration refused, stopping at the FIRST candidate step and handing it back
+    /// alongside the report (a pulled step cannot be pushed back, so the helper must not swallow it).
+    private func driveToCandidates(limit: Int)
+        -> (report: DeviceConfigReadProbeReport, first: DeviceConfigReadProbeReport.Step?) {
+        var report = smallReport(limit: limit)
+        _ = report.nextStep()
+        report.noteEnumerationStart(startReply(enumStart(result: 3, revision: 0, count: 0)))
+        while let step = report.nextStep() {
+            if step.group == .candidate { return (report, step) }
+            report.noteReply(.init(resultCode: 1, record: echoRecord(step.key, value: 0x32)), for: step)
+        }
+        return (report, nil)
     }
 
     // MARK: - Report
 
-    func testCandidateKeysAreLabelledAsGuesses() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: ["f"],
-                                                 candidateKeys: ["enable_spo2"])
-        guard let a = report.nextStep() else { return XCTFail("a") }
-        report.noteReply(.init(resultCode: 1, record: echoRecord("f", value: 0x32)), for: a)
-        guard let b = report.nextStep() else { return XCTFail("b") }
-        report.noteReply(.init(resultCode: 1, record: echoRecord(b.key, value: 0x31)), for: b)
-        guard let c = report.nextStep() else { return XCTFail("c") }
-        report.noteReply(.init(resultCode: 0, record: [0x00]), for: c)
-        let text = report.render()
-        XCTAssertTrue(text.contains("Candidate oxygen keys — GUESSES, never observed on a wire or in any table"))
-        XCTAssertTrue(text.contains("enable_spo2"))
-        XCTAssertTrue(text.contains("no value (result=FAILURE(0))"))
-    }
-
-    func testOxygenCandidateListIsShortAndOxygenNamed() {
-        let keys = DeviceConfigReadProbe.oxygenCandidateKeys
-        XCTAssertFalse(keys.isEmpty)
-        XCTAssertLessThanOrEqual(keys.count, 12, "keep the guess list short — it is a guess list")
-        XCTAssertEqual(Set(keys).count, keys.count, "no duplicates")
-        for k in keys {
-            XCTAssertTrue(k.contains("spo2") || k.contains("oxygen") || k.contains("pulse_ox"),
-                          "\(k) does not read as oxygen-related")
-            XCTAssertLessThanOrEqual(k.utf8.count, DeviceConfigReadProbe.nameFieldBytes,
-                                     "\(k) would be truncated by the 32-byte name field")
-        }
-    }
-
-    /// GOLDEN: the exact rendered report, byte-for-byte. Its Kotlin twin
-    /// (`DeviceConfigReadProbeTest.goldenReportIsByteIdenticalAcrossPlatforms`) asserts the SAME literal,
-    /// so a strap log reads identically on either platform — a whitespace or wording drift on one side
-    /// fails there rather than in a user's log.
-    ///
-    /// The first record's trailing `00`, and the seven-byte UNSUPPORTED record, are the puffin envelope's
-    /// 4-byte inner padding showing through — which is exactly why the value is read as "the byte after
-    /// the echoed name field" and not "the last byte of the record".
+    /// Byte-for-byte golden, asserted identically by the Kotlin twin, so a shared strap log reads the same
+    /// either side and a wording drift fails here rather than in a user's log.
     func testGoldenReportIsByteIdenticalAcrossPlatforms() {
-        var report = DeviceConfigReadProbeReport(family: .whoop5,
-                                                 knownFlagKeys: ["enable_r22_packets", "hr_ch_switching"],
-                                                 candidateKeys: ["enable_spo2"])
-        // 128 answers with a value; 121 is refused; the remaining flag reads through 128; the guessed
-        // candidate falls back to 128 and comes back FAILURE.
+        var report = smallReport()
         guard let s1 = report.nextStep() else { return XCTFail("s1") }
-        let f1 = whoop5Response(cmd: 128, payload: payload(result: 1,
-                                                           record: echoRecord("enable_r22_packets", value: 0x32, lead: [0x01])))
-        guard case .success(let r1) = DeviceConfigReadProbe.parse(frame: f1, family: .whoop5, expecting: 128) else {
-            return XCTFail("parse s1")
-        }
-        report.noteReply(r1, for: s1)
+        XCTAssertEqual(s1.opcode, 115)
+        report.noteEnumerationStart(startReply(enumStart(result: 3, revision: 0, count: 0)))
 
         guard let s2 = report.nextStep() else { return XCTFail("s2") }
-        let f2 = whoop5Response(cmd: 121, payload: payload(result: 3, record: [0x00, 0x00, 0x00, 0x00]))
-        guard case .success(let r2) = DeviceConfigReadProbe.parse(frame: f2, family: .whoop5, expecting: 121) else {
-            return XCTFail("parse s2")
-        }
-        report.noteReply(r2, for: s2)
-
+        report.noteReply(.init(resultCode: 1, record: echoRecord("enable_r22_packets", value: 0x32)), for: s2)
         guard let s3 = report.nextStep() else { return XCTFail("s3") }
-        report.noteReply(.init(resultCode: 1, record: echoRecord("hr_ch_switching", value: 0x32, lead: [0x01])), for: s3)
-
+        report.noteReply(.init(resultCode: 1,
+                               record: echoRecord(DeviceConfigReadProbe.deviceConfigDiscoveryKey,
+                                                  value: 0x30)), for: s3)
         guard let s4 = report.nextStep() else { return XCTFail("s4") }
         report.noteReply(.init(resultCode: 0, record: [0x01, 0x00]), for: s4)
+        guard let s5 = report.nextStep() else { return XCTFail("s5") }
+        report.noteReply(.init(resultCode: 0, record: [0x01, 0x00]), for: s5)
+        guard let s6 = report.nextStep() else { return XCTFail("s6") }
+        report.noteReply(.init(resultCode: 1, record: echoRecord("hr_ch_switching", value: 0x32)), for: s6)
+        // Two names × two answering verbs = four candidate round-trips.
+        for label in ["c1", "c2", "c3", "c4"] {
+            guard let c = report.nextStep() else { return XCTFail(label) }
+            XCTAssertEqual(c.group, .candidate)
+            report.noteReply(.init(resultCode: 0, record: [0x01, 0x00]), for: c)
+        }
         XCTAssertNil(report.nextStep())
 
-        let golden = """
-        #103 DEVICE-CONFIG READ PROBE — WHOOP 5/MG
-        Read-only: GET_DEVICE_CONFIG_VALUE(121) + GET_FF_VALUE(128). No value is written; SET_DEVICE_CONFIG_VALUE(119) and SET_FF_VALUE(120) are never sent from this path.
-        Follow-up to the #761 enumeration probe: that one asked for key NAMES, this asks for VALUES.
-
-        Verdict: 1 of 2 read verbs answered; read 2 config value(s)
-
-        Read verbs:
-          GET_FF_VALUE(128)             answered
-          GET_DEVICE_CONFIG_VALUE(121)  unsupported
-
-        Discovery — one round-trip per verb against a key it should know (2):
-           1. enable_r22_packets              = '2' (0x32)
-           2. whoop_live_hr_in_adv_ind_pkt    — no value (result=UNSUPPORTED(3))
-
-        Known feature-flag values (names NOOP already writes; values never read before) (1):
-           1. hr_ch_switching                 = '2' (0x32)
-
-        Candidate oxygen keys — GUESSES, never observed on a wire or in any table (1):
-           1. enable_spo2                     — no value (result=FAILURE(0))
-
-        Exchange:
-          GET_FF_VALUE(128) key="enable_r22_packets" → result=SUCCESS(1) value='2' (0x32) record=[01 65 6e 61 62 6c 65 5f 72 32 32 5f 70 61 63 6b 65 74 73 00 00 00 00 00 00 00 00 00 00 00 00 00 00 32 00]
-          GET_DEVICE_CONFIG_VALUE(121) key="whoop_live_hr_in_adv_ind_pkt" → result=UNSUPPORTED(3) record=[00 00 00 00 00 00 00]
-          GET_FF_VALUE(128) key="hr_ch_switching" → result=SUCCESS(1) value='2' (0x32) record=[01 68 72 5f 63 68 5f 73 77 69 74 63 68 69 6e 67 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 32]
-          GET_FF_VALUE(128) key="enable_spo2" → result=FAILURE(0) record=[01 00]
-
-        """
-        XCTAssertEqual(report.render(), golden)
+        XCTAssertEqual(report.render(), DeviceConfigReadProbeTests.goldenReport)
     }
+
+    static let goldenReport = """
+#103 CONFIG KEY PROBE — WHOOP 5/MG
+Read-only: START_DEVICE_CONFIG_KEY_EXCHANGE(115), SEND_NEXT_DEVICE_CONFIG(116), GET_DEVICE_CONFIG_VALUE(121), GET_FF_VALUE(128).
+No value is written; SET_DEVICE_CONFIG_VALUE(119) and SET_FF_VALUE(120) are never sent from this path.
+Oracle: result=SUCCESS(1) means the key NAME exists; result=FAILURE(0) means the firmware has no such key.
+
+Verdict: asked 2 candidate key name(s); this firmware has none of them (a clean negative)
+
+Verbs:
+  device-config enumerate(115/116)  unsupported
+  GET_FF_VALUE(128)                 answered
+  GET_DEVICE_CONFIG_VALUE(121)      answered
+
+Device-config keys the strap listed for itself (115/116) (0):
+  (none — the firmware refused 115 as UNSUPPORTED)
+
+Namespace separation:
+  128 asked for a device-config key     unknown
+  121 asked for a feature-flag key      unknown
+  ⇒ the namespaces are separate: neither verb sees the other's keys.
+
+Discovery — one round-trip per value verb against a key it should know (2):
+   1. enable_r22_packets              = '2' (0x32)
+   2. whoop_live_hr_in_adv_ind_pkt    = '0' (0x30)
+
+Known key values (the flags NOOP writes, plus anything enumeration returned) (1):
+   1. hr_ch_switching                 = '2' (0x32)
+
+Candidate key names — GUESSES, never observed on a wire or in any table (2 asked of 54 in the catalogue; 52 untested):
+  0 exist · 2 do not · 0 inconclusive  (each name asked through 2 verb(s))
+
+  sig<N> series (T8) — the firmware numbers its signal chains; sig11/sig12 are the two we have (2):
+    1. enable_sig1                     121=unknown · 128=unknown
+    2. enable_sig2                     121=unknown · 128=unknown
+
+  Run the probe again to continue from catalogue entry 3.
+
+Exchange:
+  START_DEVICE_CONFIG_KEY_EXCHANGE(115) → result=UNSUPPORTED(3) — the firmware does not serve this verb
+  GET_FF_VALUE(128) key="enable_r22_packets" → result=SUCCESS(1) exists value='2' (0x32) record=[65 6e 61 62 6c 65 5f 72 32 32 5f 70 61 63 6b 65 74 73 00 00 00 00 00 00 00 00 00 00 00 00 00 00 32]
+  GET_DEVICE_CONFIG_VALUE(121) key="whoop_live_hr_in_adv_ind_pkt" → result=SUCCESS(1) exists value='0' (0x30) record=[77 68 6f 6f 70 5f 6c 69 76 65 5f 68 72 5f 69 6e 5f 61 64 76 5f 69 6e 64 5f 70 6b 74 00 00 00 00 30]
+  GET_FF_VALUE(128) key="whoop_live_hr_in_adv_ind_pkt" → result=FAILURE(0) unknown record=[01 00]
+  GET_DEVICE_CONFIG_VALUE(121) key="enable_r22_packets" → result=FAILURE(0) unknown record=[01 00]
+  GET_FF_VALUE(128) key="hr_ch_switching" → result=SUCCESS(1) exists value='2' (0x32) record=[68 72 5f 63 68 5f 73 77 69 74 63 68 69 6e 67 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 32]
+
+"""
 }

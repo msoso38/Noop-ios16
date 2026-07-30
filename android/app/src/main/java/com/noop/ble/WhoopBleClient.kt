@@ -37,9 +37,12 @@ import com.noop.protocol.BackfillCaptureJsonl
 import com.noop.protocol.BackfillCaptureRecord
 import com.noop.protocol.BackfillCaptureSummary
 import com.noop.protocol.CommandNumber
+import com.noop.protocol.ConfigKeySweep
 import com.noop.protocol.DeviceFamily
 import com.noop.protocol.DeviceConfigReadProbe
 import com.noop.protocol.DeviceConfigReadProbeReport
+import com.noop.protocol.DeviceConfigWriteGate
+import com.noop.protocol.EcgRawDataGateReport
 import com.noop.protocol.FeatureFlagProbe
 import com.noop.protocol.FeatureFlagProbeReport
 import com.noop.protocol.Framing
@@ -1215,6 +1218,14 @@ class WhoopBleClient(
          *  out), so this bounds one round-trip, not the whole plan. */
         const val DEVICE_CONFIG_PROBE_TIMEOUT_MS = 8_000L
 
+        /** #891: settle before the ECG gate's read-back. Same order the R22 sequence spaces its writes at;
+         *  the strap has to have committed the value before a read can prove anything. */
+        const val ECG_GATE_SETTLE_MS = 200L
+
+        /** #891: reply window for the ECG gate's read-back. One round-trip, so this bounds the whole
+         *  verification. */
+        const val ECG_GATE_READ_BACK_TIMEOUT_MS = 8_000L
+
         /**
          * #690: format a GET_BODY_LOCATION_AND_STATUS (0x54) COMMAND_RESPONSE into a clean, readable,
          * copyable report — verdict, full raw hex, an offset-labelled payload grid, the four decoded fields
@@ -1540,6 +1551,26 @@ class WhoopBleClient(
     private val _deviceConfigProbe = MutableStateFlow<String?>(null)
     val deviceConfigProbe: StateFlow<String?> = _deviceConfigProbe.asStateFlow()
 
+    /** #891: the result of the last `enable_raw_data_w_ecg` write, AFTER its mandatory
+     *  GET_DEVICE_CONFIG_VALUE(121) read-back — the write's own ack is never reported as the outcome.
+     *  null until a write is attempted; cleared on disconnect. Twin of the Swift
+     *  `LiveState.ecgRawDataGate`. */
+    private val _ecgRawDataGate = MutableStateFlow<EcgRawDataGateReport?>(null)
+    val ecgRawDataGate: StateFlow<EcgRawDataGateReport?> = _ecgRawDataGate.asStateFlow()
+
+    /** #520/#891: which WHOOP 5-generation hardware the connected strap attested over DIS. UNKNOWN until
+     *  the strings land — and UNKNOWN is NOT MG, so an MG-only action stays refused until the hardware
+     *  actually says so. Reset on disconnect. */
+    private val _whoop5Variant = MutableStateFlow(Whoop5Variant.UNKNOWN)
+    val whoop5VariantFlow: StateFlow<Whoop5Variant> = _whoop5Variant.asStateFlow()
+
+    /** The in-flight #891 write+verify report; null when none is running. Doubles as the [send] allowlist's
+     *  in-flight gate — 121 cannot leave the app from this path unless this is non-null. */
+    private var ecgGateReport: EcgRawDataGateReport? = null
+
+    /** Monotonic step counter so a late timeout can't cancel a newer verification. */
+    private var ecgGateStep = 0
+
     /** The in-flight #103 report; null when no probe is running. Doubles as the [send] allowlist's
      *  in-flight gate — 121/128 cannot leave the app unless this is non-null. */
     private var deviceConfigReport: DeviceConfigReadProbeReport? = null
@@ -1547,6 +1578,13 @@ class WhoopBleClient(
     private var deviceConfigAwaiting: DeviceConfigReadProbeReport.Step? = null
     /** Monotonic step counter so a late timeout from an earlier step can't cancel a live walk. */
     private var deviceConfigStep = 0
+
+    /** Where the next run's candidate sweep resumes in [ConfigKeySweep.CATALOGUE]. Deliberately IN MEMORY
+     *  — no new storage, no migration, and a relaunch restarting at the top of the catalogue is the right
+     *  default. With today's catalogue smaller than [ConfigKeySweep.MAX_KEYS_PER_RUN] this stays 0 and
+     *  every run tests all of it; it exists so a catalogue grown past the budget resumes instead of
+     *  re-asking the same slice. Twin of macOS BLEManager.configKeySweepCursor. */
+    private var configKeySweepCursor = 0
 
     private val _connectedPeripheralAddress = MutableStateFlow<String?>(null)
     /** The BLE address of the strap currently connected, or null when disconnected. Twin of macOS
@@ -2853,21 +2891,45 @@ class WhoopBleClient(
                 // probeFeatureFlags() (user-initiated, Test Centre gated).
                 !((cmd == CommandNumber.START_FF_KEY_EXCHANGE || cmd == CommandNumber.SEND_NEXT_FF) &&
                     featureFlagReport != null) &&
-                // GET_DEVICE_CONFIG_VALUE (121) / GET_FF_VALUE (128) over puffin: the READ-ONLY
-                // device-config READ probe (#103) — it asks for a key's VALUE and writes none. Gated the
-                // same way as 117/118: allowed ONLY while a probe is actually in flight, and the opcode
-                // must additionally satisfy DeviceConfigReadProbe.isReadOnlyOpcode, the same predicate a
-                // unit test proves rejects SET_FF_VALUE(120) and SET_DEVICE_CONFIG_VALUE(119). Those two
-                // keep their own separate opt-in clauses below and are never sent from this path. Driven
-                // only by probeDeviceConfigValues() (user-initiated, Test Centre gated).
+                // START_DEVICE_CONFIG_KEY_EXCHANGE (115) / SEND_NEXT_DEVICE_CONFIG (116) /
+                // GET_DEVICE_CONFIG_VALUE (121) / GET_FF_VALUE (128) over puffin: the READ-ONLY config key
+                // probe (#103). 115/116 ask the strap to LIST its device-config keys (the device-config
+                // twin of the 117/118 pair above); 121/128 ask for a named key's VALUE. None of the four
+                // writes anything. Gated the same way as 117/118: allowed ONLY while a probe is actually in
+                // flight, and the opcode must additionally satisfy DeviceConfigReadProbe.isReadOnlyOpcode —
+                // the same predicate unit tests prove rejects SET_FF_VALUE(120) and
+                // SET_DEVICE_CONFIG_VALUE(119). Those two keep their own separate opt-in clauses below and
+                // are never sent from this path. Driven only by probeDeviceConfigValues() (user-initiated,
+                // Test Centre gated).
                 !(DeviceConfigReadProbe.isReadOnlyOpcode(cmd.rawValue) && deviceConfigReport != null) &&
                 // SET_CONFIG (the R22 deep-stream unlock) is allowed ONLY while the deep-data experiment
                 // is opted in — it writes a persistent feature flag to the strap, so it must never fire
                 // on a default install. Reversible; driven only by enableWhoop5DeepData(). (#174)
                 !(cmd == CommandNumber.SET_CONFIG && puffinExperiment.isDeepDataEnabled) &&
-                // SET_DEVICE_CONFIG (the Broadcast-HR flag) is allowed ONLY while that opt-in is on.
-                // Reversible; driven only by setBroadcastHr(). (#181)
-                !(cmd == CommandNumber.SET_DEVICE_CONFIG && puffinExperiment.broadcastHr)) {
+                // SET_DEVICE_CONFIG_VALUE (119) writes ONE persistent device-config value. Opcode 119 is
+                // shared by more than one feature, so an opcode-only clause cannot say "this key and no
+                // other" — and the clause this replaced admitted ANY device-config key whenever the
+                // Broadcast-HR opt-in happened to be on. DeviceConfigWriteGate.admitsSend parses the key
+                // NAME out of the body and admits exactly two, each only while its OWN opt-in is on:
+                // whoop_live_hr_in_adv_ind_pkt (#181, driven by setBroadcastHr()) and
+                // enable_raw_data_w_ecg (#891, driven by setEcgRawDataGate(), which additionally requires
+                // the strap to have attested itself an MG). The other five keys the strap's own 115/116
+                // enumeration listed are refused unconditionally, and SET_FF_VALUE(120) is refused by this
+                // predicate outright — the R22 sequence keeps its separate clause above. Same discipline as
+                // DeviceConfigReadProbe.isReadOnlyOpcode: ONE pure predicate that the send path itself
+                // consults, so the unit tests that prove what it rejects are proving it about this wire
+                // path rather than about a copy of the rule.
+                !DeviceConfigWriteGate.admitsSend(
+                    opcode = cmd.rawValue,
+                    payload = payload,
+                    ecgGateOptIn = puffinExperiment.ecgRawData,
+                    isMG = whoop5Variant().isMG,
+                    broadcastHrOptIn = puffinExperiment.broadcastHr,
+                ) &&
+                // GET_DEVICE_CONFIG_VALUE (121) as the ECG gate's mandatory post-write read-back. Allowed
+                // ONLY while a verification is actually in flight, the same in-flight shape the read probes
+                // use, and narrowed to 121 alone (isReadBackOpcode) rather than the probe's four.
+                !(DeviceConfigWriteGate.isReadBackOpcode(cmd.rawValue) && ecgGateReport != null)) {
                 log("send(${cmd.name}) skipped — no WHOOP 5/MG framing for this command yet")
                 return
             }
@@ -3379,8 +3441,16 @@ class WhoopBleClient(
      * of guessed oxygen key names. The report goes to the Devices dialog and the strap log — no new
      * storage. User-initiated only, Test Centre → Connection gated at the call site. Twin of macOS
      * BLEManager.probeDeviceConfigValues().
+     *
+     * @param forceCandidateSweep ask the guessed-name catalogue EVEN IF enumeration succeeded. Off by
+     *   default because it costs one round-trip per name per answering verb. It exists because a
+     *   successful enumeration does not close the question: enumeration reports the keys the firmware
+     *   HOLDS, a key it would accept but has never stored a value for need not appear, and the oracle
+     *   cannot tell that case from "no such key" (both answer FAILURE). It also says nothing about the
+     *   FEATURE-FLAG namespace, where most of the catalogue is aimed — including the `sig<N>` line, the
+     *   family the strap's own console tag ("SIGPROC: generated a valid SPO2 during sleep") points at.
      */
-    fun probeDeviceConfigValues() {
+    fun probeDeviceConfigValues(forceCandidateSweep: Boolean = false) {
         if (!_state.value.connected) {
             log("Device-config read probe (#103) ignored — not connected")
             return
@@ -3399,13 +3469,21 @@ class WhoopBleClient(
             connectedFamily,
             // The flag names come from NOOP's own R22 sequence — never restated here.
             Whoop5Config.enableR22Sequence.map { it.name },
-            DeviceConfigReadProbe.OXYGEN_CANDIDATE_KEYS,
+            ConfigKeySweep.batch(configKeySweepCursor),
+            forceCandidateSweep,
         )
         _deviceConfigProbe.value = WAITING_DEVICE_CONFIG_PROBE
+        val sweepNote = if (forceCandidateSweep) {
+            "; FULL SWEEP — the ${ConfigKeySweep.CATALOGUE.size}-name candidate catalogue will be asked " +
+                "even if enumeration succeeds"
+        } else {
+            ""
+        }
         log(
-            "Device-config read probe (#103): asking for config VALUES via GET_DEVICE_CONFIG_VALUE(121) + " +
-                "GET_FF_VALUE(128) on family=$connectedFamily; read-only (SET_FF_VALUE/120 and " +
-                "SET_DEVICE_CONFIG_VALUE/119 are never sent from this path)",
+            "Config key probe (#103): enumerating device-config keys via " +
+                "START_DEVICE_CONFIG_KEY_EXCHANGE(115)/SEND_NEXT_DEVICE_CONFIG(116), then reading VALUES " +
+                "via GET_DEVICE_CONFIG_VALUE(121)/GET_FF_VALUE(128) on family=$connectedFamily$sweepNote; " +
+                "read-only (SET_FF_VALUE/120 and SET_DEVICE_CONFIG_VALUE/119 are never sent from this path)",
         )
         advanceDeviceConfigProbe()
     }
@@ -3428,7 +3506,14 @@ class WhoopBleClient(
         deviceConfigStep += 1
         deviceConfigAwaiting = step
         val armed = deviceConfigStep
-        send(cmd, DeviceConfigReadProbe.requestBody(step.key))
+        // The enumeration verbs carry the bare b3 byte (the strap walks its own cursor); the value verbs
+        // carry the b3 byte plus the 32-byte key-name field.
+        val payload = if (step.group == DeviceConfigReadProbeReport.Group.ENUMERATE) {
+            ConfigKeySweep.ENUMERATION_REQUEST_BODY
+        } else {
+            DeviceConfigReadProbe.requestBody(step.key)
+        }
+        send(cmd, payload)
         // A reply that already landed advanced deviceConfigStep, so this stale closure no-ops.
         handler.postDelayed({
             if (deviceConfigReport != null && deviceConfigStep == armed && deviceConfigAwaiting != null) {
@@ -3446,8 +3531,11 @@ class WhoopBleClient(
         val report = deviceConfigReport ?: return
         deviceConfigReport = null
         deviceConfigAwaiting = null
+        // Advance the sweep so a catalogue larger than one run's budget continues where this run stopped
+        // rather than re-asking the same slice. Wraps to 0 at the end of the catalogue.
+        configKeySweepCursor = report.batch.nextCursor
         val text = report.render()
-        log("Device-config read probe (#103):\n$text")
+        log("Config key probe (#103):\n$text")
         _deviceConfigProbe.value = text
     }
 
@@ -3464,15 +3552,49 @@ class WhoopBleClient(
         if (deviceConfigReport == null) return
         val step = deviceConfigAwaiting ?: return
         deviceConfigAwaiting = null
-        val parsed = DeviceConfigReadProbe.parse(frame, connectedFamily, step.opcode)
-        val value = parsed.value
-        if (value != null) {
-            deviceConfigReport?.noteReply(value, step)
-        } else {
-            deviceConfigReport?.noteFailure(parsed.failure!!, step)
+        // The enumeration replies share the 117/118 record layout, so they are decoded by that parser with
+        // the device-config opcode passed in; the value replies keep their own decoder.
+        when (step.opcode) {
+            ConfigKeySweep.START_DEVICE_CONFIG_KEY_EXCHANGE_CMD -> {
+                val parsed = FeatureFlagProbe.parseStart(frame, connectedFamily, step.opcode)
+                val value = parsed.value
+                if (value != null) {
+                    deviceConfigReport?.noteEnumerationStart(value)
+                } else {
+                    deviceConfigReport?.noteFailure(configFailure(parsed.failure!!), step)
+                }
+            }
+            ConfigKeySweep.SEND_NEXT_DEVICE_CONFIG_CMD -> {
+                val parsed = FeatureFlagProbe.parseNext(frame, connectedFamily, step.opcode)
+                val value = parsed.value
+                if (value != null) {
+                    deviceConfigReport?.noteEnumerationNext(value)
+                } else {
+                    deviceConfigReport?.noteFailure(configFailure(parsed.failure!!), step)
+                }
+            }
+            else -> {
+                val parsed = DeviceConfigReadProbe.parse(frame, connectedFamily, step.opcode)
+                val value = parsed.value
+                if (value != null) {
+                    deviceConfigReport?.noteReply(value, step)
+                } else {
+                    deviceConfigReport?.noteFailure(parsed.failure!!, step)
+                }
+            }
         }
         advanceDeviceConfigProbe()
     }
+
+    /** The two probes name the same four decode failures in separate enums; map one onto the other so the
+     *  enumeration half reports through the same [DeviceConfigReadProbeReport.noteFailure] path. */
+    private fun configFailure(f: FeatureFlagProbe.ParseFailure): DeviceConfigReadProbe.ParseFailure =
+        when (f) {
+            FeatureFlagProbe.ParseFailure.CRC -> DeviceConfigReadProbe.ParseFailure.CRC
+            FeatureFlagProbe.ParseFailure.ENVELOPE -> DeviceConfigReadProbe.ParseFailure.ENVELOPE
+            FeatureFlagProbe.ParseFailure.WRONG_COMMAND -> DeviceConfigReadProbe.ParseFailure.WRONG_COMMAND
+            FeatureFlagProbe.ParseFailure.TRUNCATED -> DeviceConfigReadProbe.ParseFailure.TRUNCATED
+        }
 
     /**
      * #761: one COMMAND_RESPONSE for 117/118. Guarded on a probe being IN-FLIGHT (like #690) so a stray
@@ -3620,17 +3742,26 @@ class WhoopBleClient(
     }
 
     /**
-     * Resolve + log the 5/MG hardware variant from whatever DIS strings have landed (#520). Diagnostic
-     * only — nothing gates on it yet.
+     * Resolve + log the 5/MG hardware variant from whatever DIS strings have landed (#520).
      *
      * The serial is a device identifier, so ONLY its 3-character prefix is logged (that is the entire
      * information content here) — never the full string, which would end up in a shareable strap log.
      */
     private fun noteWhoop5VariantFromDis() {
-        val variant = Whoop5Variant.from(disSerial, disHwRev)
+        val variant = whoop5Variant()
+        _whoop5Variant.value = variant
         val prefix = disSerial?.trim()?.uppercase()?.take(3) ?: "?"
         log("DIS: serialPrefix=$prefix hwRev=${disHwRev ?: "?"} -> variant=${variant.label}")
     }
+
+    /**
+     * The connected strap's attested 5-generation hardware variant, re-derived from the DIS strings the
+     * connection read rather than cached — so it is UNKNOWN before DIS lands and after a disconnect clears
+     * them, and UNKNOWN is never MG. This is the gate an MG-only capability asks (#891); it is deliberately
+     * independent of [DeviceFamily], which describes the WIRE PROTOCOL and treats MG and 5.0 as one family.
+     * Mirrors the Swift `BLEManager.whoop5Variant`.
+     */
+    fun whoop5Variant(): Whoop5Variant = Whoop5Variant.from(disSerial, disHwRev)
 
     fun refreshBattery() {
         val g = gatt
@@ -4813,6 +4944,19 @@ class WhoopBleClient(
                     ) {
                         handleDeviceConfigProbeResponse(frame)
                     }
+                    // #891: the ECG gate's own two replies — the SET_DEVICE_CONFIG_VALUE(119) write ack
+                    // (recorded, never believed) and the GET_DEVICE_CONFIG_VALUE(121) read-back that is the
+                    // actual proof. Both in-flight-guarded inside, so these are byte compares on every other
+                    // frame. 121 is deliberately handled here as well as by the probe hook above: the two
+                    // paths guard on DIFFERENT in-flight sentinels, so exactly one of them acts.
+                    if (frame.size > cmdOff && (frame[cmdOff - 2].toInt() and 0xFF) == 0x24) {
+                        val op = frame[cmdOff].toInt() and 0xFF
+                        if (op == CommandNumber.SET_DEVICE_CONFIG.rawValue) {
+                            handleEcgGateWriteAck(frame, cmdOff)
+                        } else if (op == CommandNumber.GET_DEVICE_CONFIG_VALUE.rawValue) {
+                            handleEcgGateReadBack(frame, connectedFamily == DeviceFamily.WHOOP5)
+                        }
+                    }
                     if (frame.size > cmdOff && (frame[cmdOff].toInt() and 0xFF) == CommandNumber.GET_DATA_RANGE.rawValue) {
                         // #451: dump raw GET_DATA_RANGE response bytes unconditionally (even if decode returns
                         // null) so a stale/wrong-epoch "newest" can be told apart from a frame-alignment bug in
@@ -5613,6 +5757,126 @@ class WhoopBleClient(
             withResponse = true,
         )
         log("Broadcast HR: wrote whoop_live_hr_in_adv_ind_pkt=" + (if (on) "1" else "0"))
+    }
+
+    /**
+     * EXPERIMENTAL (#891): write the device-config key `enable_raw_data_w_ecg` on a WHOOP MG, then READ IT
+     * BACK and report what the strap actually stores. Mirrors `BLEManager.setEcgRawDataGate`.
+     *
+     * One SET_DEVICE_CONFIG_VALUE(119) write of a single ASCII digit — '1' on, '0' off — to one named key,
+     * followed by one GET_DEVICE_CONFIG_VALUE(121) read of the same key. Nothing else is written: the other
+     * five keys the strap enumerated are refused by [DeviceConfigWriteGate.admitsSend], and SET_FF_VALUE
+     * (120) is unreachable from here.
+     *
+     * #891: all three TOGGLE_LABRADOR (ECG) commands ack SUCCESS on a WHOOP MG and produce zero packets in
+     * a 30-second listen. On that same strap this key reads '0'. It is the leading candidate for the gate —
+     * and **whether flipping it produces ECG data is UNKNOWN**. A confirmed '1' with still no packets is a
+     * real answer for #891, not a failed attempt.
+     *
+     * The write's own ack is recorded and NOT believed: #891 established that a result byte can be a
+     * read-back of stored state rather than an acknowledgement of a change, so only the 121 read proves
+     * anything.
+     *
+     * Gates: opt-in ON, strap positively attested MG over DIS (UNKNOWN is not MG — a plain 5.0 has no
+     * electrodes), 5/MG family, connected and bonded. Not wear-gated: this stores a value, it does not start
+     * an on-wrist stream. Reversible in one call with `on = false`.
+     */
+    fun setEcgRawDataGate(on: Boolean) {
+        if (connectedFamily != DeviceFamily.WHOOP5) {
+            log("ECG gate (#891): needs a WHOOP 5/MG strap — ignored."); return
+        }
+        if (!puffinExperiment.ecgRawData) {
+            log("ECG gate (#891): the experiment is off — enable it in Settings → Experimental first.")
+            return
+        }
+        val variant = whoop5Variant()
+        if (!variant.isMG) {
+            // Refuse rather than guess. A plain 5.0 has no ECG electrodes, and UNKNOWN means the strap has
+            // not said what it is — either way this key has nothing to gate.
+            log(
+                "ECG gate (#891): the strap has not attested itself an MG over DIS " +
+                    "(variant=${variant.label}) — ignored. A plain WHOOP 5.0 has no ECG electrodes.",
+            )
+            return
+        }
+        val s = _state.value
+        if (!s.connected || !s.bonded) {
+            log("ECG gate (#891): connect and bond a 5/MG strap first — ignored."); return
+        }
+        if (ecgGateReport != null) {
+            log("ECG gate (#891): a write is already being verified — ignored."); return
+        }
+
+        val report = EcgRawDataGateReport(on)
+        ecgGateReport = report
+        _ecgRawDataGate.value = report
+        log(
+            "ECG gate (#891): writing ${DeviceConfigWriteGate.ECG_RAW_DATA_KEY}=" +
+                "'${DeviceConfigWriteGate.valueString(on)}' via SET_DEVICE_CONFIG_VALUE(119) on an " +
+                "attested MG; the write ack will NOT be reported as the result — a " +
+                "GET_DEVICE_CONFIG_VALUE(121) read-back follows.",
+        )
+        send(
+            CommandNumber.SET_DEVICE_CONFIG,
+            DeviceConfigWriteGate.writePayload(on),
+            withResponse = true,
+        )
+
+        // Read back after a short settle. 200 ms is the same order the R22 sequence spaces its writes at;
+        // the strap has to have committed the value before a read can prove anything.
+        ecgGateStep += 1
+        val armed = ecgGateStep
+        handler.postDelayed({
+            if (ecgGateReport == null || ecgGateStep != armed) return@postDelayed
+            send(CommandNumber.GET_DEVICE_CONFIG_VALUE, DeviceConfigWriteGate.readBackPayload())
+            handler.postDelayed({
+                if (ecgGateReport == null || ecgGateStep != armed) return@postDelayed
+                ecgGateReport?.noteReadBackTimeout((ECG_GATE_READ_BACK_TIMEOUT_MS / 1000).toInt())
+                finishEcgGateWrite()
+            }, ECG_GATE_READ_BACK_TIMEOUT_MS)
+        }, ECG_GATE_SETTLE_MS)
+    }
+
+    /** Publish + log the finished write/verify report and re-close the send() allowlist. */
+    private fun finishEcgGateWrite() {
+        val report = ecgGateReport ?: return
+        ecgGateReport = null
+        _ecgRawDataGate.value = report
+        log("ECG gate (#891):\n${report.render()}")
+    }
+
+    /** Clear the #891 result (Settings row dismissed / disconnect). Twin of Swift clearEcgRawDataGate(). */
+    fun clearEcgRawDataGate() { _ecgRawDataGate.value = null }
+
+    /**
+     * #891: the WRITE's own COMMAND_RESPONSE. Recorded for the transcript and deliberately NOT used to
+     * decide the verdict — the 121 read-back is what settles it.
+     */
+    private fun handleEcgGateWriteAck(frame: ByteArray, cmdOff: Int) {
+        if (ecgGateReport == null) return
+        // The 5/MG result code is at cmdOff + 2 (cmd byte, then the 2-byte response header).
+        val resultIndex = cmdOff + 2
+        val code = if (frame.size > resultIndex) (frame[resultIndex].toInt() and 0xFF) else null
+        ecgGateReport?.noteWriteAck(code)
+        _ecgRawDataGate.value = ecgGateReport
+    }
+
+    /**
+     * #891: the read-back COMMAND_RESPONSE for 121. In-flight-guarded, and parsed by the same pure
+     * [DeviceConfigReadProbe.parse] the read probe uses — including its CRC gate.
+     */
+    private fun handleEcgGateReadBack(frame: ByteArray, isWhoop5: Boolean) {
+        if (ecgGateReport == null) return
+        val family = if (isWhoop5) DeviceFamily.WHOOP5 else DeviceFamily.WHOOP4
+        val parsed = DeviceConfigReadProbe.parse(
+            frame, family, DeviceConfigWriteGate.GET_DEVICE_CONFIG_VALUE_CMD,
+        )
+        if (parsed.value != null) {
+            ecgGateReport?.noteReadBack(parsed.value)
+        } else if (parsed.failure != null) {
+            ecgGateReport?.noteReadBackFailure(parsed.failure)
+        }
+        finishEcgGateWrite()
     }
 
     /**
@@ -6827,6 +7091,12 @@ class WhoopBleClient(
         _deviceConfigProbe.value = null
         deviceConfigReport = null
         deviceConfigAwaiting = null
+        // #891: drop a stale write/verify result and abandon a verification the link interrupted, which
+        // re-closes the 119/121 send() allowlist. An unverified write must never be left showing a verdict
+        // it never reached. A disconnected strap has attested nothing, so the MG-only gate closes too.
+        _ecgRawDataGate.value = null
+        ecgGateReport = null
+        _whoop5Variant.value = Whoop5Variant.UNKNOWN
         reset()
 
         // close() can itself throw DeadObjectException on a dead binder — teardown must NEVER throw,
