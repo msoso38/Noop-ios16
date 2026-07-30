@@ -857,6 +857,11 @@
     <string name="l10n_test_centre_screen_experimental_algorithms_e09581e2">Algoritmos experimentais</string>
     <string name="l10n_test_centre_screen_export_f3e4fadb">Exportar</string>
     <string name="l10n_test_centre_screen_export_time_2ca90c2e">Tempo de exportação</string>
+    <string name="l10n_test_centre_screen_keep_last_exports_44bc65f5">Manter últimas exportações</string>
+    <string name="l10n_test_centre_screen_older_scheduled_exports_beyond_this_c75723fc">As exportações agendadas mais antigas além deste número são eliminadas automaticamente, começando pelas mais antigas.</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_54123329">Eliminar exportações agendadas</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_36e93dd0">Eliminar exportações agendadas?</string>
+    <string name="l10n_test_centre_screen_this_deletes_every_scheduled_strap_ea52c535">Isto elimina todos os ficheiros de registo da pulseira e de captura em bruto agendados que a NOOP guardou. Esta ação não pode ser anulada.</string>
     <string name="l10n_test_centre_screen_heads_up_this_test_mode_is_8b82ed69">Atenção: este modo de teste está desativado, pelo que o relatório não tem captura para o mesmo. Por um </string>
     <string name="l10n_test_centre_screen_hr_from_ppg_sub_lag_interpolation_a3ed1536">Interpolação de sublag HR-from-PPG (gap fill v26)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">Prontidão HRV (experimental)</string>

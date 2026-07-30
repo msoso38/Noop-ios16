@@ -704,6 +704,11 @@
     <string name="l10n_test_centre_screen_experimental_algorithms_e09581e2">algoritmos experimentales</string>
     <string name="l10n_test_centre_screen_export_f3e4fadb">Exportar</string>
     <string name="l10n_test_centre_screen_export_time_2ca90c2e">Tiempo de exportación</string>
+    <string name="l10n_test_centre_screen_keep_last_exports_44bc65f5">Mantener últimas exportaciones</string>
+    <string name="l10n_test_centre_screen_older_scheduled_exports_beyond_this_c75723fc">Las exportaciones programadas más antiguas que superen este número se eliminan automáticamente, empezando por las más antiguas.</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_54123329">Borrar exportaciones programadas</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_36e93dd0">¿Borrar exportaciones programadas?</string>
+    <string name="l10n_test_centre_screen_this_deletes_every_scheduled_strap_ea52c535">Esto elimina todos los archivos de registro de la correa y de captura en bruto programados que NOOP ha guardado. Esto no se puede deshacer.</string>
     <string name="l10n_test_centre_screen_heads_up_this_test_mode_is_8b82ed69">Cabeza arriba: este modo de prueba está apagado, por lo que el informe no tiene captura para él. Para un</string>
     <string name="l10n_test_centre_screen_hr_from_ppg_sub_lag_interpolation_a3ed1536">HR-from-PPG sub-lag interpolation (v26 gap-fill)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">HRV preparedness (experimental)</string>

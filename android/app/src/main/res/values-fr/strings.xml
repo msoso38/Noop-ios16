@@ -704,6 +704,11 @@
     <string name="l10n_test_centre_screen_experimental_algorithms_e09581e2">Algorithmes expérimentaux</string>
     <string name="l10n_test_centre_screen_export_f3e4fadb">Exporter</string>
     <string name="l10n_test_centre_screen_export_time_2ca90c2e">Temps d\'exportation</string>
+    <string name="l10n_test_centre_screen_keep_last_exports_44bc65f5">Conserver les derniers exports</string>
+    <string name="l10n_test_centre_screen_older_scheduled_exports_beyond_this_c75723fc">Les exports programmés au-delà de ce nombre sont supprimés automatiquement, les plus anciens en premier.</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_54123329">Effacer les exports programmés</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_36e93dd0">Effacer les exports programmés ?</string>
+    <string name="l10n_test_centre_screen_this_deletes_every_scheduled_strap_ea52c535">Ceci supprime tous les fichiers de journal du bracelet et de capture brute programmés que NOOP a enregistrés. Cette action est irréversible.</string>
     <string name="l10n_test_centre_screen_heads_up_this_test_mode_is_8b82ed69">En haut : ce mode de test est désactivé, donc le rapport n\'a pas de capture pour lui. Pour</string>
     <string name="l10n_test_centre_screen_hr_from_ppg_sub_lag_interpolation_a3ed1536">Interpolation du sous-logement HR-from-PPG (v26)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">Préparation à la VFC (expérimental)</string>

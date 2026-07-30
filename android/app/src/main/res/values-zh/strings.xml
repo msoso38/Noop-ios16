@@ -840,6 +840,11 @@
     <string name="l10n_test_centre_screen_experimental_algorithms_e09581e2">实验性算法 (测试中)</string>
     <string name="l10n_test_centre_screen_export_f3e4fadb">导出</string>
     <string name="l10n_test_centre_screen_export_time_2ca90c2e">导出时间</string>
+    <string name="l10n_test_centre_screen_keep_last_exports_44bc65f5">保留最近的导出</string>
+    <string name="l10n_test_centre_screen_older_scheduled_exports_beyond_this_c75723fc">超出该数量的旧计划导出会自动清理，最旧的优先。</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_54123329">清除计划导出</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_36e93dd0">清除计划导出？</string>
+    <string name="l10n_test_centre_screen_this_deletes_every_scheduled_strap_ea52c535">这会删除 NOOP 保存的所有计划手环日志和原始捕获文件。此操作无法撤销。</string>
     <string name="l10n_test_centre_screen_heads_up_this_test_mode_is_8b82ed69">请注意：此测试模式当前处于关闭状态，因此日志中没有包含相关抓取数据。若需...</string>
     <string name="l10n_test_centre_screen_hr_from_ppg_sub_lag_interpolation_a3ed1536">基于 PPG 信号的心率亚延迟插值 (v26 间隙填充算法)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">HRV 恢复就绪度评分 (实验性功能)</string>

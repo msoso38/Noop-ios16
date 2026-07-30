@@ -874,6 +874,11 @@
     <string name="l10n_test_centre_screen_experimental_algorithms_e09581e2">Experimentelle Algorithmen</string>
     <string name="l10n_test_centre_screen_export_f3e4fadb">Exportieren</string>
     <string name="l10n_test_centre_screen_export_time_2ca90c2e">Ausfuhrzeit</string>
+    <string name="l10n_test_centre_screen_keep_last_exports_44bc65f5">Letzte Exporte behalten</string>
+    <string name="l10n_test_centre_screen_older_scheduled_exports_beyond_this_c75723fc">Ältere geplante Exporte über diese Anzahl hinaus werden automatisch entfernt, älteste zuerst.</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_54123329">Geplante Exporte löschen</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_36e93dd0">Geplante Exporte löschen?</string>
+    <string name="l10n_test_centre_screen_this_deletes_every_scheduled_strap_ea52c535">Dies löscht jede geplante Bandprotokoll- und Rohdaten-Erfassungsdatei, die NOOP gespeichert hat. Dies kann nicht rückgängig gemacht werden.</string>
     <string name="l10n_test_centre_screen_heads_up_this_test_mode_is_8b82ed69">Heads up: Dieser Testmodus ist ausgeschaltet, so dass der Bericht keine Erfassung dafür hat. Für a</string>
     <string name="l10n_test_centre_screen_hr_from_ppg_sub_lag_interpolation_a3ed1536">HR-from-PPG Sublag Interpolation (v26 gap-fill)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">HRV-Bereitschaft (experimentell)</string>

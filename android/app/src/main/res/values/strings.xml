@@ -875,6 +875,11 @@
     <string name="l10n_test_centre_screen_experimental_algorithms_e09581e2">Experimental algorithms</string>
     <string name="l10n_test_centre_screen_export_f3e4fadb">Export</string>
     <string name="l10n_test_centre_screen_export_time_2ca90c2e">Export time</string>
+    <string name="l10n_test_centre_screen_keep_last_exports_44bc65f5">Keep last exports</string>
+    <string name="l10n_test_centre_screen_older_scheduled_exports_beyond_this_c75723fc">Older scheduled exports beyond this many are pruned automatically, oldest first.</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_54123329">Clear scheduled exports</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_36e93dd0">Clear scheduled exports?</string>
+    <string name="l10n_test_centre_screen_this_deletes_every_scheduled_strap_ea52c535">This deletes every scheduled strap-log and raw-capture file NOOP has saved. This can\'t be undone.</string>
     <string name="l10n_test_centre_screen_heads_up_this_test_mode_is_8b82ed69">Heads up: this test mode is off, so the report has no capture for it. For a </string>
     <string name="l10n_test_centre_screen_hr_from_ppg_sub_lag_interpolation_a3ed1536">HR-from-PPG sub-lag interpolation (v26 gap-fill)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">HRV readiness (experimental)</string>
