@@ -1289,7 +1289,11 @@ object IntelligenceEngine {
         // the day total two lines up already uses the measured value, and the mismatch is what made a
         // workout's Effort incomparable to its own day's. The most recent scored day that has one is the
         // best available estimate; null (cold start) keeps the old default.
-        val measuredResting = out.lastOrNull { it.rhr != null }?.rhr?.toDouble()
+        // FIRST, not last: `out` is NEWEST-FIRST, because the scoring loop counts backwards from today
+        // (`for (offset in 0 until maxDays)` with `dayStart = nowLocalMidnight - offset * SECONDS_PER_DAY`),
+        // so out[0] is today and the tail is the oldest day in the window. Taking the last match would have
+        // scored today's workout against a resting HR up to `maxDays` old.
+        val measuredResting = out.firstOrNull { it.rhr != null }?.rhr?.toDouble()
         rescoreManualWorkouts(repo, profile, importedDeviceId, maxHROverride, nowSeconds, measuredResting)
 
         return out to healDropped.size

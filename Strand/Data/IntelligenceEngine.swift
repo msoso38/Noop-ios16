@@ -1489,7 +1489,11 @@ final class IntelligenceEngine: ObservableObject {
         // the day total above already uses the measured value, and the mismatch is what made a workout's
         // Effort incomparable to its own day's. The most recent scored day that has one is the best
         // available estimate; nil (cold start) keeps the old default. Twin of the Kotlin derivation.
-        let measuredResting = out.last(where: { $0.rhr != nil })?.rhr.map(Double.init)
+        // FIRST, not last: `out` is NEWEST-FIRST, because the scoring loop counts backwards from today
+        // (`for offset in 0..<maxDays` with `dayStart = nowLocalMidnight - offset * 86_400`), so out[0] is
+        // today and the tail is the oldest day in the window. Taking the last match would have scored
+        // today's workout against a resting HR up to `maxDays` old.
+        let measuredResting = out.first(where: { $0.rhr != nil })?.rhr.map(Double.init)
         await rescoreManualWorkouts(store: store, profile: up, restingHR: measuredResting)
 
         results = out
