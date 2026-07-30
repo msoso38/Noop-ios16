@@ -47,13 +47,20 @@ class ManualWorkoutRescoreRestingHrTest {
         assertEquals(old, explicit)
     }
 
-    /** The resting HR reaches the calories model too — Keytel uses the same measured value (#950). */
+    /** The resting HR reaches the calories model too — but there it sets the ACTIVE THRESHOLD
+     *  (resting + 30% HRR), not the burn rate, so it only moves kcal when samples straddle the two
+     *  thresholds. 95 bpm does: active under a 45-resting threshold (88.5) and resting-rate under a
+     *  60-resting one (99). The first version of this test used an all-hard window and failed on both
+     *  platforms with IDENTICAL kcal — asserting a mechanism the model doesn't have. */
     @Test
-    fun caloriesAlsoSeeTheMeasuredResting() {
-        val default = ManualWorkoutRescore.scored(window(), profile, hrMax)!!
-        val measured = ManualWorkoutRescore.scored(window(), profile, hrMax, restingHR = 45.0)!!
+    fun caloriesSeeTheMeasuredRestingThroughTheActiveThreshold() {
+        val warmup = (0 until 40).map { HrSample(deviceId = "t", ts = it * 30L, bpm = 95) }
+        val mixed = warmup + (40 until 160).map { HrSample(deviceId = "t", ts = it * 30L, bpm = 148) }
+        val default = ManualWorkoutRescore.scored(mixed, profile, hrMax)!!
+        val measured = ManualWorkoutRescore.scored(mixed, profile, hrMax, restingHR = 45.0)!!
         assertTrue(
-            "kcal should move when the resting HR does (${default.kcal} vs ${measured.kcal})",
+            "the 95 bpm warm-up is active under resting 45 but not 60, so kcal must differ " +
+                "(${default.kcal} vs ${measured.kcal})",
             default.kcal != measured.kcal,
         )
     }

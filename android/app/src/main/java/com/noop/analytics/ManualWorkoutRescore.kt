@@ -35,8 +35,8 @@ object ManualWorkoutRescore {
     /** Recompute avg/peak HR, strain and calories from [windowSamples] (the HR now stored for the
      *  workout's [start, end]). Returns null when there are too few samples to score meaningfully.
      *
-     *  [restingHR] is the wearer's MEASURED resting HR (#950): both the strain %HRR denominator and the
-     *  Keytel calories model need it, and both used to silently fall back to a hardcoded 60 here while
+     *  [restingHR] is the wearer's MEASURED resting HR (#950): the strain %HRR denominator needs it, and the
+     *  calories model's active-vs-resting threshold sits at resting + 30% HRR, and both used to silently fall back to a hardcoded 60 here while
      *  the DAY total was scored against the measured value — so a fit wearer's workout was systematically
      *  under-scored relative to the very day it sat in. null keeps the old default (a cold start with no
      *  measured resting yet), so existing callers are byte-identical until they thread one. */
