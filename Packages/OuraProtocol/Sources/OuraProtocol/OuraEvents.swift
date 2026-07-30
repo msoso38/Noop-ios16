@@ -231,10 +231,13 @@ public struct OuraActivityInfo: Equatable, Sendable, Codable {
 /// already-anchored 0x50 MET corpus) found `fields[0]` and `fields[8]` - the two carry-completed
 /// 9-bit values - are also the ONLY fields with a consistent movement correlation (r≈+0.3 vs mean MET,
 /// effect size +1.5/+1.25 resting-vs-moving), a real convergence between the bit-layout hint and the
-/// empirical signal. Still NOT proof: one capture, correlated against a coarse MET proxy, not against a
-/// ground-truth step count - the honest read is "the leading candidate for the step field," not "the
-/// step field." Stays Tier B end to end: emitted only behind `OuraDriver.allowTierB`, and NEVER folded
-/// into `OuraStreamMapping`/scoring. `fields` holds all 14 values verbatim, in the source's own order,
+/// empirical signal. INDEPENDENTLY REPLICATED the same day on a second, separate 2898-pair capture:
+/// `fields[0]` r=+0.317 (vs +0.317) and `fields[8]` r=+0.302 (vs +0.303) - the same two leading fields,
+/// nearly identical correlation strength, from an unrelated session. Still NOT proof: both captures
+/// correlate against the same coarse MET proxy, not a ground-truth step count, and no field shows a
+/// monotonic/cumulative-counter signature - the honest read is "the leading candidate for the step
+/// field," not "the step field." Stays Tier B end to end: emitted only behind `OuraDriver.allowTierB`,
+/// and NEVER folded into `OuraStreamMapping`/scoring. `fields` holds all 14 values verbatim, in order,
 /// so a future controlled-walk capture can test every field, not just the current best guess.
 public struct OuraRealStepsFields: Equatable, Sendable, Codable {
     /// The originating tag byte (`0x7E` realSteps1 or `0x7F` realSteps2) - both route through the same

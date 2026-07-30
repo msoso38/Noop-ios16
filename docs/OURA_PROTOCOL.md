@@ -533,6 +533,13 @@ edit of the ring's tag.
     signature was found in ANY of the 14 fields (all show ~50/50 increase/decrease with frequent large
     resets), so if a step count is in here at all it reads as a per-30s-window value, not a running total.
     Cadence is fixed: 300 ring-ticks (30 s) between consecutive pairs.
+  - **Independently replicated the same day on a second, separate capture** (2898 real_steps pairs, a
+    different connect session, standard app build): `fields[0]` r=+0.317 (vs +0.317 on the first capture)
+    and `fields[8]` r=+0.302 (vs +0.303) - the same two leading fields, correlation strength nearly
+    identical to the thousandths place, from an unrelated session. Meaningfully strengthens the "real
+    signal, not coincidence" read, but still not ground truth: both captures correlate against the same
+    coarse MET proxy. The rigorous next step (a controlled walk read against the Oura app's own step
+    count) remains open.
   - Still Tier B end to end: decoded only behind `allowTierB`, logged once per session + appended to a
     diagnostic JSONL sidecar (`oura-real-steps-<id>.jsonl`, deduped by ring-time), never folded into
     `OuraStreamMapping`/scoring - not even from fields[0]/fields[8]. The rigorous next step is a
