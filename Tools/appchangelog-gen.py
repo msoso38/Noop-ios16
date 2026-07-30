@@ -152,12 +152,33 @@ def sw_block(ver, wn):
     )
 
 
-def apply(path, anchor, block, ver, const_re, const_new):
+def apply(path, anchor, block, ver, const_re, const_new, title_line=None):
+    """Insert `block` at `anchor`, or refresh an existing entry for `ver`, then bump the constant.
+
+    `title_line` is the platform's rendered title assignment (Kotlin's `title = uiString(...)`, Swift's
+    `title: "..."`). It is re-applied to an entry that already exists, because re-running after editing
+    the headline is a normal thing to do during a release — and without this the two halves disagree:
+    `write_title_strings` would mint and write the NEW key while the entry kept referencing the old one,
+    so the card showed the previous headline and the new key sat orphaned in six locale files. Found by
+    doing exactly that.
+    """
     text = path.read_text()
     idx = text.index(anchor) + len(anchor)
     already = f'version = "{ver}"' in text[idx:idx + 400] or f'version: "{ver}"' in text[idx:idx + 400]
     if already:
-        print(f"  {path.name}: v{ver} already the newest entry — leaving entries, refreshing constant")
+        if title_line:
+            pat = re.compile(rf'((?:version = "{re.escape(ver)}",|version: "{re.escape(ver)}",)\s*\n\s*)'
+                             r'(title[ =:][^\n]*)')
+            m = pat.search(text, idx)
+            if not m:
+                sys.exit(f"appchangelog-gen: found a v{ver} entry in {path.name} but not its title line")
+            if m.group(2).rstrip(",") == title_line.rstrip(","):
+                print(f"  {path.name}: v{ver} already the newest entry — title unchanged, refreshing constant")
+            else:
+                text = text[:m.start(2)] + title_line + text[m.end(2):]
+                print(f"  {path.name}: v{ver} already present — title UPDATED to the current headline")
+        else:
+            print(f"  {path.name}: v{ver} already the newest entry — leaving entries, refreshing constant")
     else:
         text = text[:idx] + block + text[idx:]
     text, n = re.subn(const_re, const_new, text, count=1)
@@ -177,9 +198,11 @@ def main():
     print(f"appchangelog-gen: v{ver} — {wn['title']}")
     write_title_strings(title_key(wn["title"]), wn["title"], wn.get("title_locales") or {})
     apply(KT, "val releases: List<Release> = listOf(\n", kt_block(ver, wn), ver,
-          r'(const val CURRENT_VERSION = ")[^"]*(")', rf'\g<1>{ver}\g<2>')
+          r'(const val CURRENT_VERSION = ")[^"]*(")', rf'\g<1>{ver}\g<2>',
+          title_line=f'title = uiString(R.string.{title_key(wn["title"])}),')
     apply(SW, "static let releases: [Release] = [\n", sw_block(ver, wn), ver,
-          r'(static let currentVersion = ")[^"]*(")', rf'\g<1>{ver}\g<2>')
+          r'(static let currentVersion = ")[^"]*(")', rf'\g<1>{ver}\g<2>',
+          title_line=f'title: "{esc_sw(wn["title"])}",')
     print("appchangelog-gen: done. Review the diff, then compile.")
 
 

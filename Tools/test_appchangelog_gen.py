@@ -94,6 +94,68 @@ class EmittedBlockTests(unittest.TestCase):
             self.assertIn('"**One.** A thing."', block)
 
 
+class TitleRefreshTests(unittest.TestCase):
+    """Re-running after editing the headline must update the entry, not leave it stale.
+
+    The bug this pins: `apply()` skipped an entry that already existed, while the string writer ran
+    unconditionally — so an edited headline minted and wrote a NEW key into six locale files while the
+    entry kept referencing the OLD one. The card showed the previous headline and the new key was an
+    orphan, with nothing failing. Found by doing it.
+    """
+
+    KT_HEAD = ("object AppChangelog {\n"
+               "    const val CURRENT_VERSION = \"0.0.0\"\n"
+               "    val releases: List<Release> = listOf(\n")
+    KT_TAIL = "    )\n}\n"
+
+    def _file(self, body):
+        import tempfile
+        f = tempfile.NamedTemporaryFile("w", suffix=".kt", delete=False)
+        f.write(self.KT_HEAD + body + self.KT_TAIL)
+        f.close()
+        return pathlib.Path(f.name)
+
+    ENTRY = ('        Release(\n'
+             '            version = "9.9.9",\n'
+             '            title = uiString(R.string.l10n_app_changelog_old_one_aaaaaaaa),\n'
+             '            date = "July 2026",\n'
+             '        ),\n')
+
+    def test_existing_entry_gets_its_title_updated(self):
+        path = self._file(self.ENTRY)
+        acg.apply(path, "val releases: List<Release> = listOf(\n", "IGNORED", "9.9.9",
+                  r'(const val CURRENT_VERSION = ")[^"]*(")', r'\g<1>9.9.9\g<2>',
+                  title_line="title = uiString(R.string.l10n_app_changelog_new_one_bbbbbbbb),")
+        out = path.read_text()
+        self.assertIn("l10n_app_changelog_new_one_bbbbbbbb", out)
+        self.assertNotIn("l10n_app_changelog_old_one_aaaaaaaa", out)
+        path.unlink()
+
+    def test_it_does_not_duplicate_the_entry(self):
+        path = self._file(self.ENTRY)
+        acg.apply(path, "val releases: List<Release> = listOf(\n", "SHOULD_NOT_APPEAR", "9.9.9",
+                  r'(const val CURRENT_VERSION = ")[^"]*(")', r'\g<1>9.9.9\g<2>',
+                  title_line="title = uiString(R.string.l10n_app_changelog_new_one_bbbbbbbb),")
+        out = path.read_text()
+        self.assertEqual(1, out.count('version = "9.9.9"'))
+        self.assertNotIn("SHOULD_NOT_APPEAR", out)
+        path.unlink()
+
+    def test_unchanged_title_is_left_alone(self):
+        """The ENTRY is untouched when the headline has not moved. Asserting the title line rather than
+        the whole file, because `apply()` legitimately rewrites the version constant on every run —
+        which is what this test got wrong the first time."""
+        same = "title = uiString(R.string.l10n_app_changelog_old_one_aaaaaaaa),"
+        path = self._file(self.ENTRY)
+        acg.apply(path, "val releases: List<Release> = listOf(\n", "IGNORED", "9.9.9",
+                  r'(const val CURRENT_VERSION = ")[^"]*(")', r'\g<1>9.9.9\g<2>', title_line=same)
+        out = path.read_text()
+        self.assertEqual(1, out.count(same))
+        self.assertEqual(1, out.count('version = "9.9.9"'))
+        self.assertIn('const val CURRENT_VERSION = "9.9.9"', out)   # the constant DOES move
+        path.unlink()
+
+
 class LocaleTargetTests(unittest.TestCase):
 
     def test_focus_locales_match_the_resource_dirs_on_disk(self):
