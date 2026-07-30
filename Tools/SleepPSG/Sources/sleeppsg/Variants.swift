@@ -19,14 +19,32 @@ struct Variant {
 
 enum Variants {
 
-    /// PR #987 (upstream, open at the time of writing): forbid wake → deep and wake → REM outright and give
-    /// the freed mass to the wake self-loop. Landed on band-state evidence — band kappa 0.105 → 0.118, wake
-    /// sensitivity 16.0 % → 17.6 %, first-REM latency MAE 53.9 → 41.6 min — and never checked against PSG.
+    /// The awake transition row before PR #987, and after it. #987 forbids wake → deep and wake → REM
+    /// outright and gives the freed mass to the wake self-loop. It was landed on band-state evidence — band
+    /// kappa 0.105 → 0.118, wake sensitivity 16.0 % → 17.6 %, first-REM latency MAE 53.9 → 41.6 min — and
+    /// never checked against PSG, which is one of the two questions this harness exists to answer.
+    static let awakeRowPre987: [String: Double] = ["deep": 0.01, "rem": 0.02, "light": 0.27, "awake": 0.70]
+    static let awakeRowPR987: [String: Double] = ["deep": 0.0, "rem": 0.0, "light": 0.10, "awake": 0.90]
+
+    /// The #987 comparison, whichever side of it this branch is on.
+    ///
+    /// This matters because the fork and upstream disagree about the incumbent: this repository's `main`
+    /// carries #987 already, upstream's does not until the PR merges, and `RecipeConfig.shipped` must track
+    /// whatever `SleepStagerV2` says on the branch it is compiled against (that is exactly what
+    /// `PortValidation` enforces). Rather than hard-code one direction and be wrong half the time, the
+    /// variant reads the shipped awake row and offers the OTHER one. The comparison is the same either way;
+    /// only the sign of the delta and the row's name flip.
     static var pr987: Variant {
+        let shippedRow = RecipeConfig.shipped.transition["awake"] ?? awakeRowPre987
+        let alreadyHas987 = shippedRow == awakeRowPR987
         var c = RecipeConfig.shipped
-        c.transition["awake"] = ["deep": 0.0, "rem": 0.0, "light": 0.10, "awake": 0.90]
-        return Variant(name: "#987 awake-transition row",
-                       note: "wake→deep/rem forbidden; wake self-loop 0.70→0.90", config: c)
+        c.transition["awake"] = alreadyHas987 ? awakeRowPre987 : awakeRowPR987
+        return Variant(
+            name: alreadyHas987 ? "#987 REVERTED (pre-#987 row)" : "#987 awake-transition row",
+            note: alreadyHas987
+                ? "wake→deep/rem restored to 0.01/0.02; self-loop 0.90→0.70"
+                : "wake→deep/rem forbidden; wake self-loop 0.70→0.90",
+            config: c)
     }
 
     /// #348 component 1 — base priors. Measured alone on band state: healthy wake fraction 9.43 % → 17.76 %,
@@ -95,7 +113,9 @@ enum Variants {
         c.deepGateThresh = p348DeepGate.config.deepGateThresh
         c.awakeDeadzone = d.awakeDeadzone
         c.transition = p348OtherRows.config.transition
-        c.transition["awake"] = pr987.config.transition["awake"]
+        // #348's own awake row IS the one #987 later restored — pinned to the literal rather than to
+        // `pr987`, which flips direction depending on which side of #987 the branch is on.
+        c.transition["awake"] = awakeRowPR987
         return Variant(name: "#348 entire (as reverted by #437)",
                        note: "all seven components at once", config: c)
     }

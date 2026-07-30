@@ -190,10 +190,16 @@ final class VariantsTests: XCTestCase {
     func testEachVariantIsASingleNamedChange() {
         let s = RecipeConfig.shipped
 
+        // #987 is a two-sided comparison: this repository's main carries it, upstream's does not, and the
+        // variant offers whichever row the branch is NOT on. Both directions are asserted so the test does
+        // not have to know which branch it is compiled on.
         var c = Variants.pr987.config
-        XCTAssertEqual(c.transition["awake"]!["deep"]!, 0.0)
-        XCTAssertEqual(c.transition["awake"]!["rem"]!, 0.0)
-        XCTAssertEqual(c.transition["awake"]!["awake"]!, 0.90)
+        let shippedRow = s.transition["awake"]!
+        XCTAssertTrue(shippedRow == Variants.awakeRowPre987 || shippedRow == Variants.awakeRowPR987,
+                      "the shipped awake row is neither side of #987 — RecipeConfig.shipped is stale")
+        XCTAssertEqual(c.transition["awake"]!,
+                       shippedRow == Variants.awakeRowPR987 ? Variants.awakeRowPre987 : Variants.awakeRowPR987,
+                       "the #987 variant must offer the row the branch is NOT on")
         c.transition = s.transition
         XCTAssertEqual(c, s, "#987 must change nothing but the awake transition row")
 
@@ -283,6 +289,7 @@ final class VariantsTests: XCTestCase {
         XCTAssertEqual(all.deepGateThresh, Variants.p348DeepGate.config.deepGateThresh)
         XCTAssertEqual(all.awakeDeadzone, Variants.p348Deadzone.config.awakeDeadzone)
         XCTAssertEqual(all.transition["light"]!, Variants.p348OtherRows.config.transition["light"]!)
-        XCTAssertEqual(all.transition["awake"]!, Variants.pr987.config.transition["awake"]!)
+        XCTAssertEqual(all.transition["awake"]!, Variants.awakeRowPR987,
+                       "#348's awake row is the one #987 later restored")
     }
 }

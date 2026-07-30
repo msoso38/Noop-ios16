@@ -99,6 +99,12 @@ struct RecipeConfig: Equatable {
             "deep":  ["deep": 0.86, "rem": 0.007, "light": 0.126, "awake": 0.007],
             "rem":   ["deep": 0.005, "rem": 0.88, "light": 0.10, "awake": 0.015],
             "light": ["deep": 0.06, "rem": 0.06, "light": 0.85, "awake": 0.03],
+            // THE AWAKE ROW IS THE ONE LINE THAT LEGITIMATELY DIFFERS BETWEEN BRANCHES. PR #987 zeroes
+            // wake→deep and wake→rem; this fork's `main` carries it and upstream's does not until the PR
+            // merges. `RecipeConfig.shipped` must always describe `SleepStagerV2` AS COMPILED on this
+            // branch — `PortValidation` is what enforces that, and it will fail loudly on the wrong value.
+            // `Variants.pr987` reads this row and offers the other one, so the #987 comparison works from
+            // either side without a second edit.
             "awake": ["deep": 0.01, "rem": 0.02, "light": 0.27, "awake": 0.70],
         ],
         remLatencyPenalty: 3.0, remLatencyMinutes: 60.0, onsetSustainedEpochs: 10,
