@@ -171,7 +171,9 @@ extension Repository {
         var stored: [String: Double] = [:]
         for p in existing { stored[p.day] = p.value }
 
-        let changed: [MetricPoint] = mlByDay.compactMap { day, ml in
+        // Return type spelled out rather than inferred: this file is app-target Swift that no CI
+        // compiles, so a multi-statement closure leaning on inference is a needless place to be wrong.
+        let changed: [MetricPoint] = mlByDay.compactMap { (day, ml) -> MetricPoint? in
             let value = max(0, ml)
             guard let current = stored[day] else {
                 // No row yet: only worth creating one if there is actually something to record.
