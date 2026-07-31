@@ -1024,8 +1024,14 @@ final class HealthKitBridge: ObservableObject {
             let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
             let q = HKSampleQuery(sampleType: type, predicate: predicate,
                                   limit: HKObjectQueryNoLimit, sortDescriptors: [sort]) { _, samples, error in
-                guard error == nil, let samples else { cont.resume(returning: nil); return }
-                let out: [CaffeineIntake] = (samples as? [HKQuantitySample] ?? []).compactMap { s in
+                // The CAST is part of the failure test, not a fallback. `?? []` here would turn an
+                // unexpected sample type into "no caffeine tonight", and the caller replaces the imported
+                // set wholesale — so a cast that ever failed would silently delete every imported intake.
+                // Same reasoning as the error check beside it.
+                guard error == nil, let samples = samples as? [HKQuantitySample] else {
+                    cont.resume(returning: nil); return
+                }
+                let out: [CaffeineIntake] = samples.compactMap { s in
                     let mg = s.quantity.doubleValue(for: .gramUnit(with: .milli))
                     // A zero or non-finite sample carries no dose worth showing; skip it rather than log
                     // a 0 mg intake, which would pad the "intakes still active" count with nothing.
