@@ -713,6 +713,24 @@ object AnalyticsEngine {
      * drift to exclude, and the value is surfaced honestly as raw ADC — never scored — so there is
      * nothing to poison into a fake %. Pure + deterministic; twin of the Swift `nightlySpo2RawMeans`. (#93)
      */
+    internal fun nightlySpo2RawMeans(
+        sessions: List<DetectedSleep>,
+        spo2: List<Spo2Sample>,
+    ): Pair<Int, Int>? {
+        if (sessions.isEmpty() || spo2.isEmpty()) return null
+        var redSum = 0L
+        var irSum = 0L
+        var kept = 0
+        for (s in spo2) {
+            if (sessions.none { s.ts in it.start..it.end }) continue
+            redSum += s.red
+            irSum += s.ir
+            kept++
+        }
+        if (kept == 0) return null
+        return (redSum / kept).toInt() to (irSum / kept).toInt()
+    }
+
     /**
      * Nightly gated mean of the 5/MG SpO2 **candidate** byte (`@82`) over the detected in-bed [sessions],
      * paired with the sample count it rests on — or null when no in-band reading fell inside any span.
@@ -752,24 +770,6 @@ object AnalyticsEngine {
         }
         if (kept == 0) return null
         return Pair((sum / kept).toInt(), kept)
-    }
-
-    internal fun nightlySpo2RawMeans(
-        sessions: List<DetectedSleep>,
-        spo2: List<Spo2Sample>,
-    ): Pair<Int, Int>? {
-        if (sessions.isEmpty() || spo2.isEmpty()) return null
-        var redSum = 0L
-        var irSum = 0L
-        var kept = 0
-        for (s in spo2) {
-            if (sessions.none { s.ts in it.start..it.end }) continue
-            redSum += s.red
-            irSum += s.ir
-            kept++
-        }
-        if (kept == 0) return null
-        return (redSum / kept).toInt() to (irSum / kept).toInt()
     }
 
     /** Plausible worn skin-temperature range (°C). Off-wrist/charging samples drift to ambient and are
