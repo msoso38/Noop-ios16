@@ -1777,29 +1777,31 @@ struct SettingsView: View {
     /// Flush the in-flight capture, then copy it to a user-chosen location (save panel on macOS) or
     /// hand it to the system share sheet (iOS).
     private func exportPuffinCaptures() {
-        model.ble.flushPuffinCaptures()
-        guard let src = live.puffinCaptureURL else { return }
-        // Suggest a friendly, timestamped name so a reporter saving several captures gets sortable,
-        // non-colliding files (#510) — e.g. noop-raw-capture-260617-1042.json.
-        let suggested = FileExport.timestampedName("noop-raw-capture", ext: "json")
-        #if os(macOS)
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = suggested
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let dest = panel.url else { return }
-        let fm = FileManager.default
-        do {
-            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
-            try fm.copyItem(at: src, to: dest)
-        } catch {
-            backupAlertTitle = String(localized: "Export failed")
-            backupAlertMessage = error.localizedDescription
-            showBackupAlert = true
+        Task { @MainActor in
+            await model.ble.flushPuffinCaptures()
+            guard let src = live.puffinCaptureURL else { return }
+            // Suggest a friendly, timestamped name so a reporter saving several captures gets sortable,
+            // non-colliding files (#510) — e.g. noop-raw-capture-260617-1042.json.
+            let suggested = FileExport.timestampedName("noop-raw-capture", ext: "json")
+            #if os(macOS)
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = suggested
+            panel.canCreateDirectories = true
+            guard panel.runModal() == .OK, let dest = panel.url else { return }
+            let fm = FileManager.default
+            do {
+                if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+                try fm.copyItem(at: src, to: dest)
+            } catch {
+                backupAlertTitle = String(localized: "Export failed")
+                backupAlertMessage = error.localizedDescription
+                showBackupAlert = true
+            }
+            #else
+            FileExport.exportFile(at: src, suggestedName: suggested)
+            #endif
         }
-        #else
-        FileExport.exportFile(at: src, suggestedName: suggested)
-        #endif
     }
 
     private func markOpticalPhase(_ phase: PuffinOpticalExperimentPhase) {
@@ -1829,25 +1831,29 @@ struct SettingsView: View {
     /// export utilities — `FileExport.exportPair` shares both files in one iOS share sheet, and saves
     /// each via its own NSSavePanel on macOS (no new file plumbing).
     private func exportRawAndLog() {
-        model.ble.flushPuffinCaptures()
-        guard let capture = live.puffinCaptureURL else {
-            backupAlertTitle = String(localized: "Nothing to export")
-            backupAlertMessage = String(localized: "No raw capture has been recorded yet this session.")
-            showBackupAlert = true
-            return
+        Task { @MainActor in
+            await model.ble.flushPuffinCaptures()
+            guard let capture = live.puffinCaptureURL else {
+                backupAlertTitle = String(localized: "Nothing to export")
+                backupAlertMessage = String(localized: "No raw capture has been recorded yet this session.")
+                showBackupAlert = true
+                return
+            }
+            let stamp = FileExport.timestamp()
+            FileExport.exportPair(
+                file: capture, fileSuggestedName: "noop-raw-capture-\(stamp).json",
+                text: live.exportableLogText(), textSuggestedName: "noop-strap-log-\(stamp).txt")
         }
-        let stamp = FileExport.timestamp()
-        FileExport.exportPair(
-            file: capture, fileSuggestedName: "noop-raw-capture-\(stamp).json",
-            text: live.exportableLogText(), textSuggestedName: "noop-strap-log-\(stamp).txt")
     }
 
     #if os(macOS)
     /// Flush, then reveal the capture file in Finder so the user can grab it directly.
     private func revealPuffinCaptures() {
-        model.ble.flushPuffinCaptures()
-        guard let url = live.puffinCaptureURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        Task { @MainActor in
+            await model.ble.flushPuffinCaptures()
+            guard let url = live.puffinCaptureURL else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
     }
     #endif
 
