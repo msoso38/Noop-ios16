@@ -712,8 +712,14 @@ final class AppModel: ObservableObject {
     /// with Android) , but a GPS-only walk with HR not streaming still saves. Double-buzz confirms.
     func endWorkout() {
         guard let w = activeWorkout else { return }
+        // #983: read the SESSION's latched denominator before tearing the session down. The saved
+        // workout's Effort is computed further down, by which point `activeWorkout` is nil and the latch
+        // is cleared — so reading it there would take the fresh one-shot value and the STORED number
+        // could differ from the one shown on screen during the workout. Cannot simply clear the latch at
+        // the end of this function instead: the too-short discard path returns before it.
+        let sessionResting = workoutRestingHR()
         activeWorkout = nil
-        sessionRestingHR = nil   // #983: the next session latches its own denominator
+        sessionRestingHR = nil   // the next session latches its own denominator
         let wasGps = activeWorkoutIsGps
         activeWorkoutIsGps = false
         // Drop the durable snapshot the instant the session ends , whether it saves below or is discarded
@@ -745,7 +751,7 @@ final class AppModel: ObservableObject {
         let peak = samples.map(\.bpm).max()
         let strain = samples.count >= 2
             ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax),
-                                  restingHR: workoutRestingHR(), sex: profile.sex) : nil
+                                  restingHR: sessionResting, sex: profile.sex) : nil
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         let up = UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,

@@ -1343,8 +1343,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  discarded quietly. Double-buzz confirms the save. */
     fun endWorkout() {
         val w = _activeWorkout.value ?: return
+        // #983: read the SESSION's latched denominator before tearing the session down. The saved
+        // workout's Effort is computed further down, by which point `_activeWorkout` is null and the
+        // latch is cleared — so reading it there would take the fresh one-shot value and the STORED
+        // number could differ from the one shown on screen during the workout. Cannot simply clear the
+        // latch at the end of this function instead: the too-short discard path returns before it.
+        val sessionResting = workoutRestingHR()
         _activeWorkout.value = null
-        sessionRestingHR = null   // #983: the next session latches its own denominator
+        sessionRestingHR = null   // the next session latches its own denominator
         gpsJob?.cancel(); gpsJob = null
         // Drop the durable non-GPS snapshot the instant the session ends — whether it saves below or is
         // discarded as too-short — so a relaunch never rehydrates an already-finished session (#529).
@@ -1378,7 +1384,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val peak = if (samples.isNotEmpty()) samples.maxOf { it.bpm } else null
         val strain = if (samples.size >= 2)
             StrainScorer.strain(samples, maxHR = profileStore.hrMax.toDouble(),
-                restingHR = workoutRestingHR(), sex = profileStore.sex) else null
+                restingHR = sessionResting, sex = profileStore.sex) else null
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         val energyKcal = if (samples.size >= 2)
