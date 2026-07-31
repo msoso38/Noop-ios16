@@ -35,6 +35,7 @@ import com.noop.ui.NoopPrefs
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 import kotlin.math.round
 import kotlin.reflect.KClass
 
@@ -220,7 +221,9 @@ object HealthConnectImporter {
 
         // Per-day accumulators. Keyed by "YYYY-MM-DD" (local).
         val acc = HashMap<String, DayAcc>()
-        fun dayOf(instant: Instant): String = LocalDate.ofInstant(instant, zone).toString()
+        // #1002: key each record by the offset it was RECORDED in. See [localDayKey] for why the
+        // phone's zone is still the right fallback, and for what this does and does not fix.
+        fun dayOf(instant: Instant, offset: ZoneOffset?): String = localDayKey(instant, offset, zone)
         fun bucket(day: String): DayAcc = acc.getOrPut(day) { DayAcc() }
 
         // #949: imported water, ml per local day. Separate from `acc` because it is written to the
@@ -232,6 +235,11 @@ object HealthConnectImporter {
         var hydrationReadOk = false
 
         val workouts = ArrayList<WorkoutRow>()
+        // #1002: each workout's day key, computed at READ time while the record's own zone offset is
+        // still in hand. WorkoutRow carries only epoch seconds, so re-deriving the key later would
+        // silently fall back to the phone's zone and undo the fix for exactly the travelled sessions
+        // it exists for. Index-parallel to [workouts] — append to both together.
+        val workoutDays = ArrayList<String>()
         // (startEpochS, endEpochS, kcal) of every active-calorie record, so an imported exercise
         // session can be credited with the calories burned inside its window (#117). Garmin/Fit write
         // ActiveCaloriesBurned as interval records; ExerciseSessionRecord itself carries no energy.
@@ -252,14 +260,14 @@ object HealthConnectImporter {
             // dataOrigin package), then take the MAX source per day at write-out, mirroring the de-overlap
             // already shipped on iOS/macOS and the Android XML importer.
             readAll(client, StepsRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.startTime))
+                val b = bucket(dayOf(r.startTime, r.startZoneOffset))
                 val src = r.metadata.dataOrigin.packageName
                 b.stepsBySource[src] = (b.stepsBySource[src] ?: 0L) + r.count
             }
             // --- Total calories burned (basal + active) ---
             // #589: per-SOURCE sums, max-across-sources at write-out (same overlap reasoning as steps).
             readAll(client, TotalCaloriesBurnedRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.startTime))
+                val b = bucket(dayOf(r.startTime, r.startZoneOffset))
                 val src = r.metadata.dataOrigin.packageName
                 b.totalKcalBySource[src] = (b.totalKcalBySource[src] ?: 0.0) + r.energy.inKilocalories
             totalKcalRecords.add(
@@ -271,7 +279,7 @@ object HealthConnectImporter {
             // de-overlaps by source ITSELF (#835 — it used to cross-source SUM, roughly doubling a ride that
             // two apps both logged), so the per-source map here only governs the day total.
             readAll(client, ActiveCaloriesBurnedRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.startTime))
+                val b = bucket(dayOf(r.startTime, r.startZoneOffset))
                 val src = r.metadata.dataOrigin.packageName
                 b.activeKcalBySource[src] = (b.activeKcalBySource[src] ?: 0.0) + r.energy.inKilocalories
                 activeKcalRecords.add(
@@ -280,26 +288,26 @@ object HealthConnectImporter {
             // --- Heart rate (instantaneous samples) -> per-day average ---
             readAll(client, HeartRateRecord::class, filter, selfPackage) { r ->
                 for (s in r.samples) {
-                    val b = bucket(dayOf(s.time))
+                    val b = bucket(dayOf(s.time, r.startZoneOffset))
                     b.hrSum += s.beatsPerMinute
                     b.hrCount += 1
                 }
             }
             // --- Resting heart rate -> per-day average (rounded to Int) ---
             readAll(client, RestingHeartRateRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.time))
+                val b = bucket(dayOf(r.time, r.zoneOffset))
                 b.rhrSum += r.beatsPerMinute
                 b.rhrCount += 1
             }
             // --- HRV (RMSSD, ms) -> per-day average ---
             readAll(client, HeartRateVariabilityRmssdRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.time))
+                val b = bucket(dayOf(r.time, r.zoneOffset))
                 b.hrvSum += r.heartRateVariabilityMillis
                 b.hrvCount += 1
             }
             // --- Sleep sessions -> per-day total sleep minutes, assigned to the WAKE day ---
             readAll(client, SleepSessionRecord::class, filter, selfPackage) { r ->
-                val day = dayOf(r.endTime)
+                val day = dayOf(r.endTime, r.endZoneOffset)
                 val b = bucket(day)
                 // Prefer summed asleep-stage minutes; fall back to session span when no stages.
                 val asleepMin = asleepMinutes(r)
@@ -320,19 +328,19 @@ object HealthConnectImporter {
             }
             // --- SpO2 (%) -> per-day average ---
             readAll(client, OxygenSaturationRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.time))
+                val b = bucket(dayOf(r.time, r.zoneOffset))
                 b.spo2Sum += r.percentage.value
                 b.spo2Count += 1
             }
             // --- Respiratory rate (breaths/min) -> per-day average ---
             readAll(client, RespiratoryRateRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.time))
+                val b = bucket(dayOf(r.time, r.zoneOffset))
                 b.respSum += r.rate
                 b.respCount += 1
             }
             // --- VO2 max (ml/kg/min) -> latest value of the day wins ---
             readAll(client, Vo2MaxRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.time))
+                val b = bucket(dayOf(r.time, r.zoneOffset))
                 if (r.time.epochSecond >= b.vo2maxTs) {
                     b.vo2max = r.vo2MillilitersPerMinuteKilogram
                     b.vo2maxTs = r.time.epochSecond
@@ -340,7 +348,7 @@ object HealthConnectImporter {
             }
             // --- Weight (kg) -> latest value of the day wins ---
             readAll(client, WeightRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.time))
+                val b = bucket(dayOf(r.time, r.zoneOffset))
                 if (r.time.epochSecond >= b.weightTs) {
                     b.weightKg = r.weight.inKilograms
                     b.weightTs = r.time.epochSecond
@@ -350,7 +358,7 @@ object HealthConnectImporter {
             // already 0-100 (unlike Apple's 0..1 fraction), so it stores as-is and matches the iOS
             // "body_fat" key. ---
             readAll(client, BodyFatRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.time))
+                val b = bucket(dayOf(r.time, r.zoneOffset))
                 if (r.time.epochSecond >= b.bodyFatTs) {
                     b.bodyFatPct = r.percentage.value
                     b.bodyFatTs = r.time.epochSecond
@@ -358,7 +366,7 @@ object HealthConnectImporter {
             }
             // --- Lean body mass (kg) -> latest value of the day wins (iOS "lean_mass" twin). ---
             readAll(client, LeanBodyMassRecord::class, filter, selfPackage) { r ->
-                val b = bucket(dayOf(r.time))
+                val b = bucket(dayOf(r.time, r.zoneOffset))
                 if (r.time.epochSecond >= b.leanMassTs) {
                     b.leanMassKg = r.mass.inKilograms
                     b.leanMassTs = r.time.epochSecond
@@ -390,7 +398,9 @@ object HealthConnectImporter {
                     )
                 )
                 // Count exercises per local day on the start day for the WHOOP daily backfill.
-                bucket(dayOf(r.startTime)).exerciseCount += 1
+                val startDay = dayOf(r.startTime, r.startZoneOffset)
+                workoutDays.add(startDay)   // #1002: index-parallel to the add() just above
+                bucket(startDay).exerciseCount += 1
             }
 
             // --- #835: upgrade each workout's calories now the day aggregate exists ---
@@ -408,7 +418,7 @@ object HealthConnectImporter {
             for (i in workouts.indices) {
                 val w = workouts[i]
                 if (w.endTs <= w.startTs) continue
-                val day = acc[dayOf(Instant.ofEpochSecond(w.startTs))]
+                val day = acc[workoutDays[i]]   // #1002: the key from the record's own offset
                 val dayBasal = day?.let {
                     basalKcal(maxSourceDouble(it.totalKcalBySource), maxSourceDouble(it.activeKcalBySource))
                 }
@@ -502,7 +512,7 @@ object HealthConnectImporter {
             hydrationReadOk = readAll(
                 client, HydrationRecord::class, TimeRangeFilter.between(hydrationStart, end), selfPackage,
             ) { r ->
-                val day = dayOf(r.startTime)
+                val day = dayOf(r.startTime, r.startZoneOffset)
                 hydrationMl[day] = (hydrationMl[day] ?: 0.0) + r.volume.inMilliliters
             }
         } catch (e: Exception) {
@@ -671,7 +681,7 @@ object HealthConnectImporter {
         val touchedDays = sortedSetOf<String>().apply {
             addAll(appleRows.map { it.day })
             addAll(dailyRows.map { it.day })
-            addAll(workouts.map { LocalDate.ofInstant(Instant.ofEpochSecond(it.startTs), zone).toString() })
+            addAll(workoutDays)   // #1002: same keys the workouts were bucketed under
         }
         val firstDay = touchedDays.firstOrNull()
         val lastDay = touchedDays.lastOrNull()
@@ -724,8 +734,10 @@ object HealthConnectImporter {
             selfPackage,
         ) { r ->
             // The filter matches by overlap — drop records that STARTED yesterday so the bucketing
-            // agrees with [import]'s dayOf(r.startTime).
-            if (LocalDate.ofInstant(r.startTime, zone) == today) {
+            // agrees with [import]'s dayOf(r.startTime, r.startZoneOffset). #1002: keyed by the
+            // record's own offset for that agreement; `today` stays the phone's zone, which is what
+            // "today" means for a live top-up of the screen you are looking at.
+            if (localDayKey(r.startTime, r.startZoneOffset, zone) == dayKey) {
                 val src = r.metadata.dataOrigin.packageName
                 stepsBySource[src] = (stepsBySource[src] ?: 0L) + r.count
             }
@@ -908,6 +920,30 @@ object HealthConnectImporter {
      */
     internal fun isSelfWritten(originPackage: String, selfPackage: String): Boolean =
         selfPackage.isNotEmpty() && originPackage == selfPackage
+
+    /**
+     * #1002: which local civil day a record belongs to, keyed by the offset the record was RECORDED
+     * in rather than the phone's zone at import time.
+     *
+     * What this does NOT fix, because it was never broken: DST. [zone] is a REGION id
+     * (`ZoneId.systemDefault()` returns e.g. `Europe/London`, not a fixed `+01:00`), and
+     * `LocalDate.ofInstant` applies that region's rules AT THE GIVEN INSTANT — so a January instant
+     * is already keyed with the January offset even when the import runs in July. Pinning a fixed
+     * current offset is what would break DST, and the importer never did that.
+     *
+     * What it does fix is travel and relocation: a record written at 01:30 in Tokyo is the 16th to
+     * the person who made it, but a phone now set to `Europe/London` resolves the same instant to
+     * the 15th. `WINDOW_YEARS` is 10, so one import keys a decade of history that way, and importing
+     * again after moving re-keys the same records differently — which surfaces as a doubled day
+     * beside a gap rather than as an obviously wrong timestamp.
+     *
+     * [offset] is nullable because Health Connect's `startZoneOffset` / `zoneOffset` are optional and
+     * plenty of writers leave them null; the phone's zone stays the fallback, so behaviour is
+     * unchanged for every record that carries no offset. `ZoneOffset` is a `ZoneId`, so the two cases
+     * differ only in which rules resolve the instant.
+     */
+    internal fun localDayKey(instant: Instant, offset: ZoneOffset?, zone: ZoneId): String =
+        LocalDate.ofInstant(instant, offset ?: zone).toString()
 
     /**
      * #589 de-overlap for a per-source step map: SUM is already folded WITHIN each source by the read
