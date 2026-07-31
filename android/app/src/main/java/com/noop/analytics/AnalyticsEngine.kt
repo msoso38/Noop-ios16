@@ -3,6 +3,7 @@ package com.noop.analytics
 import com.noop.data.DailyMetric
 import com.noop.data.EventRow
 import com.noop.data.GravitySample
+import com.noop.data.V18AuxRow
 import com.noop.data.HrSample
 import com.noop.data.SkinTempSample
 import com.noop.data.Spo2Sample
@@ -712,6 +713,47 @@ object AnalyticsEngine {
      * drift to exclude, and the value is surfaced honestly as raw ADC — never scored — so there is
      * nothing to poison into a fake %. Pure + deterministic; twin of the Swift `nightlySpo2RawMeans`. (#93)
      */
+    /**
+     * Nightly gated mean of the 5/MG SpO2 **candidate** byte (`@82`) over the detected in-bed [sessions],
+     * paired with the sample count it rests on — or null when no in-band reading fell inside any span.
+     * (#112, tracking #103.)
+     *
+     * WHY THIS EXISTS. The candidate is decoded and stored but deliberately never scored: `@82` looks like
+     * a strap-computed SpO2 %, and on one independent 8-night check it tracked the WHOOP app almost
+     * exactly, but on the two nights from the strap it was found on it moved the OPPOSITE way. Two
+     * devices, contradictory answers, so it cannot be promoted. Breaking that tie needs a third strap —
+     * and until now the only way to read the candidate was to scroll the Deep Timeline chart and eyeball
+     * it, which is a poor instrument to hand a volunteer and produces a number nobody can check.
+     *
+     * This makes the comparison one number against one number: the wearer reads this and the figure the
+     * WHOOP app reports for the same night. The count travels with the mean on purpose — a mean over 11
+     * readings and a mean over 1100 are not the same evidence.
+     *
+     * Gated to `70..100`, the SAME in-band window the decoder applies when it emits `spo2_candidate_82`:
+     * sub-70 nonzero values are diagnostic codes and bit-7 values are saturation sentinels, so averaging
+     * them in would produce a number that is not a percentage of anything.
+     *
+     * DIAGNOSTIC ONLY. Nothing scores this and it never writes `spo2Pct`. Byte-parity twin of the Swift
+     * `nightlySpo2CandidateMean`.
+     */
+    internal fun nightlySpo2CandidateMean(
+        sessions: List<DetectedSleep>,
+        aux: List<V18AuxRow>,
+    ): Pair<Int, Int>? {
+        if (sessions.isEmpty() || aux.isEmpty()) return null
+        var sum = 0L
+        var kept = 0
+        for (a in aux) {
+            val v = a.auxByte82 ?: continue
+            if (v < 70L || v > 100L) continue
+            if (sessions.none { a.ts in it.start..it.end }) continue
+            sum += v
+            kept += 1
+        }
+        if (kept == 0) return null
+        return Pair((sum / kept).toInt(), kept)
+    }
+
     internal fun nightlySpo2RawMeans(
         sessions: List<DetectedSleep>,
         spo2: List<Spo2Sample>,

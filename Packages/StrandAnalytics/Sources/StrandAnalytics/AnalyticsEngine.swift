@@ -939,6 +939,42 @@ public enum AnalyticsEngine {
         return (red: redSum / kept, ir: irSum / kept)
     }
 
+    /// Nightly gated mean of the 5/MG SpO2 **candidate** byte (`@82`) over the detected in-bed
+    /// `sessions`, with the sample count it rests on — or nil when no in-band reading fell inside any
+    /// span. (#112, tracking #103.)
+    ///
+    /// WHY THIS EXISTS. The candidate is decoded and stored but deliberately never scored: `@82` looks
+    /// like a strap-computed SpO2 %, and on one independent 8-night check it tracked the WHOOP app almost
+    /// exactly, but on the two nights from the strap it was found on it moved the OPPOSITE way. Two
+    /// devices, contradictory answers, so it cannot be promoted. Breaking that tie needs a third strap —
+    /// and until now the only way to read the candidate was to scroll the Deep Timeline chart and eyeball
+    /// it, which is a poor instrument to ask a volunteer to use and produces a number nobody can check.
+    ///
+    /// This makes the comparison one number against one number: the wearer reads this and the figure the
+    /// WHOOP app reports for the same night. `samples` travels with the mean on purpose — a mean over 11
+    /// readings and a mean over 1100 are not the same evidence, and a correlation built from the first
+    /// would be worthless.
+    ///
+    /// Gated to `70...100`, the SAME in-band window the decoder applies when it emits
+    /// `spo2_candidate_82`: sub-70 nonzero values are diagnostic codes and bit-7 values are saturation
+    /// sentinels, so averaging them in would produce a number that is not a percentage of anything.
+    ///
+    /// DIAGNOSTIC ONLY. Nothing scores this, it never writes `spo2Pct`, and it is not a blood-oxygen
+    /// reading — it is the raw candidate averaged, surfaced so it can be checked against a real one.
+    /// Byte-parity twin of the Kotlin `nightlySpo2CandidateMean`.
+    static func nightlySpo2CandidateMean(_ sessions: [SleepSession],
+                                         aux: [V18AuxSample]) -> (mean: Int, samples: Int)? {
+        guard !sessions.isEmpty, !aux.isEmpty else { return nil }
+        var sum = 0, kept = 0
+        for a in aux {
+            guard let v = a.auxByte82, (70...100).contains(v) else { continue }
+            guard sessions.contains(where: { $0.start <= a.ts && a.ts <= $0.end }) else { continue }
+            sum += v; kept += 1
+        }
+        guard kept > 0 else { return nil }
+        return (mean: sum / kept, samples: kept)
+    }
+
     // MARK: - Skin-temp funnel diagnostic (#752)
 
     // Skin temp coming out 0/absent on a WHOOP 4.0 (or any) night is opaque: the user can't tell whether
