@@ -741,7 +741,14 @@ object HealthConnectImporter {
         // row below rather than clobbering it with zero.
         readAll(
             client, StepsRecord::class,
-            TimeRangeFilter.between(today.atStartOfDay(zone).toInstant(), Instant.now()),
+            // #1002: reach back an extra day. The FILTER is in the phone's zone but the day key below is
+            // now the record's own, and a record whose offset sits EAST of the phone's zone can belong to
+            // today while having started before the phone's midnight — fetching only from midnight would
+            // miss it, and the write below replaces a stored count with any non-zero sum, so a miss would
+            // overwrite a good figure with a low one. A day of slack covers every real offset (-12..+14).
+            // The `== dayKey` test still decides membership, so the extra records are read and discarded;
+            // step records are coarse interval rows, a handful per day, so this is cheap on a screen refresh.
+            TimeRangeFilter.between(today.minusDays(1).atStartOfDay(zone).toInstant(), Instant.now()),
             selfPackage,
         ) { r ->
             // The filter matches by overlap — drop records that STARTED yesterday so the bucketing
