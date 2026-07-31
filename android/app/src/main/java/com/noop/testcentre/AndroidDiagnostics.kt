@@ -133,15 +133,29 @@ object AndroidDiagnostics {
             // wondering. Twin of the Swift `DebugDataDiagnostics` line.
             // Same explicit limit as the Swift twin's `spo2CandidateAuxLimit`, rather than Int.MAX_VALUE,
             // so the two platforms visibly read the same window. A night is ~30k rows at 1 Hz.
-            val aux = repo.v18AuxSamples(id, session.startTs, session.endTs, SPO2_CANDIDATE_AUX_LIMIT)
-            val cand = com.noop.analytics.AnalyticsEngine.nightlySpo2CandidateMean(listOf(det), aux)
+            //
+            // The aux read gets its OWN runCatching rather than riding the enclosing one. Letting it
+            // propagate would abort the whole funnels block on a failure here — the skin-temp and REM
+            // lines above would be followed by a generic "(funnels unavailable)" instead of this line
+            // saying which of the two things happened. A failed read and a night with no candidate are
+            // different facts, and this is a diagnostic. Byte-for-byte the same four outcomes, in the
+            // same order, with the same wording as the Swift `DebugDataDiagnostics` twin.
+            val auxRead = runCatching {
+                repo.v18AuxSamples(id, session.startTs, session.endTs, SPO2_CANDIDATE_AUX_LIMIT)
+            }.getOrNull()
+            val cand = auxRead?.let {
+                com.noop.analytics.AnalyticsEngine.nightlySpo2CandidateMean(listOf(det), it)
+            }
             when {
+                auxRead == null -> add(
+                    "SpO₂ candidate @82: could not read the aux stream for this night — " +
+                        "a read failure, NOT an absence of readings.")
                 cand != null -> add(
-                    "SpO2 candidate @82 (5/MG): mean ${cand.first} over ${cand.second} in-band readings " +
-                        "- UNVERIFIED, compare against the WHOOP app's figure for this night (#103).")
+                    "SpO₂ candidate @82 (5/MG): mean ${cand.first} over ${cand.second} in-band readings " +
+                        "— UNVERIFIED, compare against the WHOOP app's figure for this night (#103).")
                 family == com.noop.protocol.DeviceFamily.WHOOP5 ->
-                    add("SpO2 candidate @82 (5/MG): no in-band readings inside this night's span.")
-                else -> add("SpO2 candidate @82: not carried by a WHOOP 4.0 (raw red/IR ADC only).")
+                    add("SpO₂ candidate @82 (5/MG): no in-band readings inside this night's span.")
+                else -> add("SpO₂ candidate @82: not carried by a WHOOP 4.0 (raw red/IR ADC only).")
             }
         }.onFailure { add("(funnels unavailable: ${it.message})") }
     }
