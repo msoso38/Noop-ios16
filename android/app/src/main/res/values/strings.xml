@@ -1824,4 +1824,14 @@
     <string name="l10n_settings_screen_r22_accepted_partial">Strap accepted %1$d/%2$d R22 flags…</string>
     <string name="l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6">Every pattern buzzes the same on a WHOOP 5/MG — the repeat count isn\'t sent to that strap. Your choice is saved and applies to a WHOOP 4.0.</string>
     <string name="l10n_app_changelog_water_and_caffeine_from_apple_health_5123b6b0">Water and caffeine from Apple Health, a sharper Effort score, and an Oura resting-heart-rate fix</string>
+    <string name="settings_language">Language</string>
+    <string name="settings_choose_language">Choose language</string>
+    <string name="settings_language_system">System default</string>
+    <string name="settings_appearance_detail">Choose Light, Dark, or follow your system. Dark is the signature near-black; Light keeps the same clean look on a bright canvas.</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_chart_default">Default</string>
+    <string name="settings_chart_classic">Classic</string>
+    <string name="settings_trend_line">Line</string>
+    <string name="settings_trend_bars">Bars</string>
 </resources>
