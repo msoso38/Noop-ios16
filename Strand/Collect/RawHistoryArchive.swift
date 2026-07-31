@@ -86,6 +86,38 @@ struct RawHistoryArchive {
         VersionKey(family: family.rawValue, version: version)
     }
 
+    #if os(iOS)
+    /// iOS files default to `NSFileProtectionComplete`, which makes them cryptographically UNREADABLE
+    /// while the device is locked. This archive lives outside `OpenWhoop`'s protected App Support tree
+    /// (see `StorePaths.defaultDatabasePath()`, #222) and did NOT inherit that store's protection
+    /// downgrade — so `archiveRejectedFrames` throws while locked, and `BLEManager` treats that as
+    /// `.failed`, holding the trim ack so the strap re-sends the same chunk in a loop (#649). Mirrors
+    /// `StorePaths.swift` exactly: drop to `completeUntilFirstUserAuthentication` (readable after the
+    /// first unlock-since-boot — the correct level for background BLE collection — and still encrypted
+    /// at rest) on the directory (so files created afterward inherit it) AND on the archive file itself
+    /// (for a file that already existed before this fix shipped).
+    private func applyDataProtection() {
+        let protection: [FileAttributeKey: Any] =
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        try? FileManager.default.setAttributes(protection, ofItemAtPath: directory.path)
+        let path = fileURL.path
+        if FileManager.default.fileExists(atPath: path) {
+            try? FileManager.default.setAttributes(protection, ofItemAtPath: path)
+        }
+    }
+    #endif
+
+    /// Creates `directory` if needed and (on iOS) applies the data-protection downgrade described in
+    /// `applyDataProtection` to it — and to the archive file if one already exists there. Callers that
+    /// go on to CREATE a new file must call `applyDataProtection()` again afterward so the freshly
+    /// written file (which iOS would otherwise default to `NSFileProtectionComplete`) is covered too.
+    private func ensureProtectedDirectory() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        #if os(iOS)
+        applyDataProtection()
+        #endif
+    }
+
     /// Durably append `frames` as JSONL. `trim`/`family` tag each line so the corpus is replayable.
     /// Empty input is a no-op success. See `Result` for the ack contract.
     ///
@@ -138,8 +170,11 @@ struct RawHistoryArchive {
         let kept = RawHistoryArchive.evictLines(existing + newLines, maxBytes: maxBytes, floor: perVersionFloor)
         let data = Data(kept.joined().utf8)
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try ensureProtectedDirectory()
             try data.write(to: url, options: .atomic)   // atomic rewrite; durable before the ack
+            #if os(iOS)
+            applyDataProtection()   // the rewrite may have (re)created the file — cover it too
+            #endif
             return .written(count: frames.count)
         } catch {
             return .failed
@@ -148,7 +183,7 @@ struct RawHistoryArchive {
 
     /// Append `data` to `url`, fsyncing before returning so it is durable BEFORE the trim ack.
     private func appendDurably(_ data: Data, to url: URL) throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try ensureProtectedDirectory()
         if FileManager.default.fileExists(atPath: url.path) {
             let handle = try FileHandle(forWritingTo: url)
             defer { try? handle.close() }
@@ -157,6 +192,9 @@ struct RawHistoryArchive {
             try handle.synchronize()   // durable BEFORE the ack — the point of the archive
         } else {
             try data.write(to: url, options: .atomic)
+            #if os(iOS)
+            applyDataProtection()   // brand-new file — cover it since it defaulted to Complete
+            #endif
         }
     }
 
