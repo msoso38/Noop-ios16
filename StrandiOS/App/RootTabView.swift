@@ -693,7 +693,7 @@ private struct FloatingTabBar: View {
         )
         // Lighter, wider shadow: real elevation without stamping a dark halo on the flat canvas.
         .shadow(color: .black.opacity(0.22), radius: 18, x: 0, y: 8)
-        .padding(.horizontal, 22)
+        .padding(.horizontal, NoopMetrics.screenHPadding)
         .padding(.bottom, 4)
     }
 

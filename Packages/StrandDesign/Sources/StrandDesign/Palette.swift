@@ -66,14 +66,15 @@ public extension Color {
 
 public enum StrandPalette {
 
-    // MARK: Surfaces — deep navy canvas, tinted frosted cards
-    // Background is a near-black navy (NOT pure black); cards float just above it.
-    public static let surfaceBase    = Color(light: "#F2F2F7", dark: "#121518") // WHOOP dark blue-grey canvas (sampled)
-    public static let surfaceRaised  = Color(light: "#FFFFFF", dark: "#25292C") // WHOOP grey list-card fill (sampled)
-    public static let surfaceOverlay = Color(light: "#FFFFFF", dark: "#1C1F26") // popovers / sheets / tooltips
-    public static let surfaceInset   = Color(light: "#E9E9EE", dark: "#1F2229") // wells / chart insets / segmented track
-    public static let hairline       = Color(light: "#D8D0BD", dark: "#21304A") // soft 1px border (stronger on light for card edges)
-    public static let hairlineStrong = Color(light: "#C7BCA4", dark: "#2E3C57") // hover / emphasis border
+    // MARK: Surfaces — neutral canvas and chrome
+    // Accent blue belongs to actions and data, not card edges, dividers, or the page canvas.
+    public static let surfaceBase    = Color(light: "#F2F2F7", dark: "#121212")
+    public static let surfaceRaised  = Color(light: "#FFFFFF", dark: "#242424")
+    public static let surfaceOverlay = Color(light: "#F8F8FA", dark: "#2C2C2E")
+    public static let surfaceInset   = Color(light: "#E9E9EE", dark: "#1C1C1E")
+    public static let hairline       = Color(light: "#C7C7CC", dark: "#3A3A3C")
+    public static let hairlineStrong = Color(light: "#8E8E93", dark: "#545458")
+    public static let surfaceShadow  = Color(light: "#1A2230", dark: "#000000")
 
     // MARK: Text — deep navy-ink on paper / cool off-white on navy
     public static let textPrimary    = Color(light: "#1A2230", dark: "#F4F6F8")

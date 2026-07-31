@@ -32,6 +32,7 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSizeClass
     #endif
+    @Environment(\.colorScheme) private var colorScheme
 
     /// Bumped (via the environment) when the iOS tab shell wants THIS screen scrolled to the top — an
     /// at-root re-tap of the active tab (#198 follow-up). Default 0 never changes, so macOS and every
@@ -46,9 +47,9 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
             Color.clear.frame(height: 0).id(screenScaffoldTopAnchorID)
             column
             #if os(iOS)
-            // Unified side margins matching the liquid home (16pt) so every page's cards + header line up
+            // Unified side margins matching the floating navigation bar so every page's cards + header line up
             // to the same edges (2026-07-02); macOS keeps the classic 28 in the #else branch.
-            .padding(.horizontal, 16)
+            .padding(.horizontal, NoopMetrics.screenHPadding)
             .padding(.top, 24)
             // The tab bar floats over the scroll content, so the last card sat hidden behind it.
             // Reserve extra bottom scroll room so every screen's final card clears the floating bar.
@@ -115,14 +116,13 @@ struct ScreenScaffold<Content: View, Trailing: View>: View {
     }
 
     private var header: some View {
-        // When a `topBackground` (the day-cycle liquid sky) sits behind the header, that band is dark in
-        // BOTH themes — so the title/subtitle must use the scheme-invariant on-dark tokens. The regular
-        // text tokens flip to dark ink in Light mode and went dark-on-dark over the sky, exactly the #1013
-        // pattern the Liquid Today hero hit (osifaind's Trends-tab sibling report). Flat-canvas screens
-        // (no topBackground) keep the theme tokens so the header reads on the light/dark surfaceBase.
+        // The day-cycle sky is dark enough for white type in Dark appearance, but its Light appearance
+        // deliberately settles toward the pale app canvas. Treating every sky as dark made page titles
+        // nearly disappear there. Pick the invariant on-dark tokens only for the genuinely dark variant.
         let overSky = topBackground != nil
-        let titleColor = overSky ? StrandPalette.onDarkPrimary : StrandPalette.textPrimary
-        let subtitleColor = overSky ? StrandPalette.onDarkSecondary : StrandPalette.textSecondary
+        let overDarkSky = overSky && colorScheme == .dark
+        let titleColor = overDarkSky ? StrandPalette.onDarkPrimary : StrandPalette.textPrimary
+        let subtitleColor = overDarkSky ? StrandPalette.onDarkSecondary : StrandPalette.textSecondary
         return HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 if let title {

@@ -26,6 +26,7 @@ struct LiquidTodayView: View {
     // only publishes connect/discovery state, never HR. Injected at the app roots beside .environmentObject(model).
     @EnvironmentObject var ble: BLEManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     /// Low Power Mode poses the sky still too — the behaviour the comment on the sky branch below
     /// has always described. There is no environment key for it, hence the shared monitor.
     @ObservedObject private var powerMonitor = LiquidPowerMonitor.shared
@@ -110,8 +111,33 @@ struct LiquidTodayView: View {
     private let liquidPurple = Color(.sRGB, red: 0x9b / 255, green: 0x7b / 255, blue: 0xff / 255, opacity: 1)
     /// The liquid heart pink (matches LiquidThread's default + the mockup #ff6b81).
     private let liquidHeart = Color(.sRGB, red: 1, green: 107 / 255, blue: 129 / 255, opacity: 1)
-    /// Hero card fill: a translucent near-black so it floats over the sky (mock rgba(13,14,20,.78)).
-    private let heroFill = Color(.sRGB, red: 13 / 255, green: 14 / 255, blue: 20 / 255, opacity: 0.80)
+    private var skyPrimary: Color {
+        colorScheme == .dark ? StrandPalette.onDarkPrimary : StrandPalette.textPrimary
+    }
+    private var skySecondary: Color {
+        colorScheme == .dark ? StrandPalette.onDarkSecondary : StrandPalette.textSecondary
+    }
+    private var skyControlFill: Color {
+        StrandPalette.surfaceRaised.opacity(0.92)
+    }
+    private var skyControlBorder: Color {
+        StrandPalette.hairline
+    }
+    private var heroSurfaceFill: Color {
+        StrandPalette.surfaceRaised
+    }
+    private var heroBorder: Color {
+        StrandPalette.hairline
+    }
+    private var heroPrimary: Color {
+        StrandPalette.textPrimary
+    }
+    private var heroSecondary: Color {
+        StrandPalette.textSecondary
+    }
+    private var heroTertiary: Color {
+        StrandPalette.textTertiary
+    }
     /// "Card transparency" (0–100, default 100): fades every liquid card surface here — the hero, the
     /// session-start row, the metric tiles and the `card` helper — in lockstep with the frosted cards.
     /// Content sits above the surface so it stays readable. Mirrors Kotlin `NoopPrefs.cardOpacityPercent`.
@@ -274,7 +300,7 @@ struct LiquidTodayView: View {
                     dataSourcesSection
                     Color.clear.frame(height: 90) // floating tab-bar clearance
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, NoopMetrics.screenHPadding)
                 .padding(.top, 30) // sit the title lower into the sky, not jammed under the status bar
             }
             #if os(macOS)
@@ -407,12 +433,24 @@ struct LiquidTodayView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(dayTitle)
                             .font(StrandFont.rounded(28))
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.4), radius: 10, y: 1)
+                            .foregroundStyle(skyPrimary)
+                            .shadow(
+                                color: StrandPalette.surfaceShadow.opacity(
+                                    colorScheme == .dark ? 0.4 : 0
+                                ),
+                                radius: NoopMetrics.shadowRadiusTitle,
+                                y: NoopMetrics.shadowOffsetMinimal
+                            )
                         Text(dateLine)
                             .font(StrandFont.caption)
-                            .foregroundStyle(.white.opacity(0.78))
-                            .shadow(color: .black.opacity(0.35), radius: 8, y: 1)
+                            .foregroundStyle(skySecondary)
+                            .shadow(
+                                color: StrandPalette.surfaceShadow.opacity(
+                                    colorScheme == .dark ? 0.35 : 0
+                                ),
+                                radius: NoopMetrics.shadowRadiusMedium,
+                                y: NoopMetrics.shadowOffsetMinimal
+                            )
                     }
                     .contentShape(Rectangle())
                 }
@@ -447,9 +485,18 @@ struct LiquidTodayView: View {
                     Button { customizationDestination = .today } label: {
                         Image(systemName: "slider.horizontal.3")
                             .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(skyPrimary)
                             .frame(width: 34, height: 34)
-                            .background(Circle().fill(.white.opacity(0.16)))
+                            .background {
+                                Circle()
+                                    .fill(skyControlFill)
+                                    .overlay(
+                                        Circle().strokeBorder(
+                                            skyControlBorder,
+                                            lineWidth: NoopMetrics.hairlineWidth
+                                        )
+                                    )
+                            }
                     }
                     .buttonStyle(LiquidPressStyle())
                     .accessibilityLabel("Customize Today")
@@ -475,29 +522,29 @@ struct LiquidTodayView: View {
                 Image(systemName: "shield.lefthalf.filled")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(StrandPalette.metricCyan)
-                // The session-start row shares the hero card's pinned-dark `heroFill`, so its text/chevron
-                // use the on-dark tokens — textPrimary/Secondary/Tertiary flip to dark ink in Light mode and
-                // went dark-on-near-black here too (#1013).
                 Text("Start session")
                     .font(StrandFont.subhead)
-                    .foregroundStyle(StrandPalette.onDarkPrimary)
+                    .foregroundStyle(heroPrimary)
                 Text("BETA")
                     .font(StrandFont.overlineScaled(8.5)).tracking(1.2)
-                    .foregroundStyle(StrandPalette.onDarkSecondary)
+                    .foregroundStyle(heroSecondary)
                     .padding(.horizontal, 8).padding(.vertical, 2.5)
-                    .background(Capsule().fill(.white.opacity(0.05))
-                        .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1)))
+                    .background(Capsule().fill(StrandPalette.surfaceInset)
+                        .overlay(Capsule().strokeBorder(
+                            StrandPalette.hairline,
+                            lineWidth: NoopMetrics.hairlineWidth
+                        )))
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(StrandPalette.onDarkTertiary)
+                    .foregroundStyle(heroTertiary)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
             .background(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(heroFill)
+                    .fill(heroSurfaceFill)
                     .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(.white.opacity(0.11), lineWidth: 1))
+                        .strokeBorder(heroBorder, lineWidth: NoopMetrics.hairlineWidth))
                     .opacity(cardOpacity)
             )
         }
@@ -527,7 +574,7 @@ struct LiquidTodayView: View {
                           animated: dataLoaded, onGuide: { guideSection = .rest })
                 .overlay(alignment: .top) {
                     if let sourceLabel = heroSourceLabel {
-                        SourceBadge("\(sourceLabel)", tint: StrandPalette.onDarkSecondary)
+                        SourceBadge("\(sourceLabel)", tint: heroSecondary)
                             // Match the badge's trailing edge to the Rest vessel and centre it on the card border.
                             .fixedSize()
                             .frame(width: HeroScoreCell.vesselDiameter, alignment: .trailing)
@@ -541,10 +588,20 @@ struct LiquidTodayView: View {
         .padding(.horizontal, NoopMetrics.space3)
         .background(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(heroFill)
+                .fill(heroSurfaceFill)
                 .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .strokeBorder(.white.opacity(0.11), lineWidth: 1))
-                .shadow(color: .black.opacity(0.6), radius: 30, y: 16)
+                    .strokeBorder(heroBorder, lineWidth: NoopMetrics.hairlineWidth))
+                .shadow(
+                    color: StrandPalette.surfaceShadow.opacity(
+                        colorScheme == .dark ? 0.16 : 0.08
+                    ),
+                    radius: colorScheme == .dark
+                        ? NoopMetrics.shadowRadiusLarge
+                        : NoopMetrics.shadowRadiusMedium,
+                    y: colorScheme == .dark
+                        ? NoopMetrics.shadowOffsetMedium
+                        : NoopMetrics.shadowOffsetSmall
+                )
                 .opacity(cardOpacity)
         )
     }
@@ -689,7 +746,10 @@ struct LiquidTodayView: View {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .fill(StrandPalette.surfaceRaised)
                     .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                        .strokeBorder(
+                            StrandPalette.hairline,
+                            lineWidth: NoopMetrics.hairlineWidth
+                        ))
                     .opacity(cardOpacity)
             )
         }
@@ -1410,6 +1470,7 @@ private struct PullOffsetKey: PreferenceKey {
 /// for a little easter egg: it plays one of several random one-shot animations — wiggle, shake, flip,
 /// spin, bounce, or a jelly squash — with a light haptic.
 private struct LiquidWordmark: View {
+    @Environment(\.colorScheme) private var colorScheme
     @State private var rot = 0.0      // z-rotation (wiggle / spin)
     @State private var scaleX = 1.0   // horizontal scale (jelly squash)
     @State private var scaleY = 1.0   // vertical scale (bounce / jelly)
@@ -1422,10 +1483,16 @@ private struct LiquidWordmark: View {
             ForEach(Array("NOOP".enumerated()), id: \.offset) { _, ch in
                 Text(String(ch))
                     .font(StrandFont.rounded(16, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(colorScheme == .dark
+                        ? StrandPalette.onDarkTertiary
+                        : StrandPalette.textTertiary)
             }
         }
-        .shadow(color: .black.opacity(0.25), radius: 6, y: 1)
+        .shadow(
+            color: StrandPalette.surfaceShadow.opacity(colorScheme == .dark ? 0.25 : 0),
+            radius: NoopMetrics.shadowRadiusSmall,
+            y: NoopMetrics.shadowOffsetMinimal
+        )
         .rotationEffect(.degrees(rot))
         .scaleEffect(x: scaleX, y: scaleY)
         .offset(x: dx)
@@ -1483,6 +1550,7 @@ private struct HeroScoreCell: View {
     // scale passes 1 to match the app-wide one-decimal `effortDisplay` convention (#45).
     var decimals: Int = 0
 
+    @Environment(\.colorScheme) private var colorScheme
     @State private var shown: Double = 0
 
     private var frac: Double? { score.map { max(0, min(1, $0 / maxValue)) } }
@@ -1513,10 +1581,9 @@ private struct HeroScoreCell: View {
                         .lineLimit(1).minimumScaleFactor(0.7)
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).opacity(0.6)
                 }
-                // The hero card fill is pinned dark in BOTH themes, so the CHARGE/EFFORT/REST label must use
-                // the scheme-invariant on-dark token — textSecondary flips to dark ink in Light mode and
-                // went dark-on-near-black here (#1013).
-                .foregroundStyle(StrandPalette.onDarkSecondary)
+                .foregroundStyle(colorScheme == .dark
+                    ? StrandPalette.onDarkSecondary
+                    : StrandPalette.textSecondary)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(Text("\(label), \(score.map { decimals > 0 ? String(format: "%.\(decimals)f", $0) : String(Int($0.rounded())) } ?? String(localized: "no data yet")). See how it is scored."))
@@ -1610,9 +1677,18 @@ private struct LiquidAddButton: View {
         Button { router.requestQuickActions() } label: {
             Image(systemName: "plus")
                 .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(StrandPalette.textPrimary)
                 .frame(width: 34, height: 34)
-                .background(Circle().fill(.white.opacity(0.16)))
+                .background {
+                    Circle()
+                        .fill(StrandPalette.surfaceRaised.opacity(0.92))
+                        .overlay(
+                            Circle().strokeBorder(
+                                StrandPalette.hairline,
+                                lineWidth: NoopMetrics.hairlineWidth
+                            )
+                        )
+                }
         }
         .buttonStyle(LiquidPressStyle())
         .accessibilityLabel("Quick actions")
@@ -1829,14 +1905,18 @@ extension LiquidTodayView {
 private struct LiquidBatteryButton: View {
     @EnvironmentObject var live: LiveState
     @EnvironmentObject var router: NavRouter
+    @Environment(\.colorScheme) private var colorScheme
     private var display: LiquidTodayView.StrapBatteryDisplay {
         .resolve(connected: live.connected, batteryPct: live.batteryPct, charging: live.charging)
     }
     var body: some View {
         Button { router.openDevices() } label: {
             ZStack {
-                Circle().fill(Color(.sRGB, red: 10 / 255, green: 11 / 255, blue: 16 / 255, opacity: 0.5))
-                Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1)
+                Circle().fill(StrandPalette.surfaceRaised.opacity(0.92))
+                Circle().strokeBorder(
+                    StrandPalette.hairline,
+                    lineWidth: NoopMetrics.hairlineWidth
+                )
                 switch display {
                 case .charge(let pct, let charging):
                     Circle()
@@ -1846,7 +1926,9 @@ private struct LiquidBatteryButton: View {
                         .padding(2.5)
                     Text("\(Int(pct.rounded()))")
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.9))
+                        .foregroundStyle(colorScheme == .dark
+                            ? StrandPalette.onDarkPrimary
+                            : StrandPalette.textPrimary)
                     if charging {
                         // #972: the default Today never surfaced charging state — only the % ring. A small
                         // bolt over the ring gives the same signal as the "· Charging" text on Mac/Android.
@@ -1860,11 +1942,17 @@ private struct LiquidBatteryButton: View {
                     // that is the one thing we actually know, and it is the wearer's live question.
                     Image(systemName: charging ? "bolt.fill" : "ellipsis")
                         .font(.system(size: charging ? 11 : 9, weight: .bold))
-                        .foregroundStyle(charging ? StrandPalette.chargeColor : .white.opacity(0.5))
+                        .foregroundStyle(charging
+                            ? StrandPalette.chargeColor
+                            : (colorScheme == .dark
+                                ? StrandPalette.onDarkTertiary
+                                : StrandPalette.textTertiary))
                 case .offline:
                     Image(systemName: "bolt.slash")
                         .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(colorScheme == .dark
+                            ? StrandPalette.onDarkTertiary
+                            : StrandPalette.textTertiary)
                 }
             }
             .frame(width: 34, height: 34)
@@ -1927,10 +2015,19 @@ private struct LiquidSyncChip: View {
             Image(systemName: system).font(.system(size: 11, weight: .bold))
             Text(text).font(.system(size: 12, weight: .bold))
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(StrandPalette.textPrimary)
         .padding(.horizontal, 10)
         .frame(height: 34)
-        .background(Capsule().fill(.white.opacity(0.16)))
+        .background {
+            Capsule()
+                .fill(StrandPalette.surfaceRaised.opacity(0.92))
+                .overlay(
+                    Capsule().strokeBorder(
+                        StrandPalette.hairline,
+                        lineWidth: NoopMetrics.hairlineWidth
+                    )
+                )
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(a11y))
     }

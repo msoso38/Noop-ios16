@@ -159,14 +159,24 @@ struct WeeklyDigestContent: View {
         }
     }
 
-    // MARK: Header (scenic hero)
+    // MARK: Header
 
     private var header: some View {
         ZStack(alignment: .leading) {
-            ScenicHeroBackground(domain: .charge, starCount: 26)
-                .clipShape(RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous))
+            // The Charge scenic wash resolves to a warm parchment colour in Light appearance, which
+            // looked unrelated to the rest of the neutral dashboard. The weekly summary is information
+            // chrome rather than a metric visualisation, so use the shared card surface in both themes.
+            RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous)
+                .fill(StrandPalette.surfaceRaised)
+                .overlay {
+                    RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous)
+                        .strokeBorder(
+                            StrandPalette.hairline,
+                            lineWidth: NoopMetrics.hairlineWidth
+                        )
+                }
             HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: NoopMetrics.spaceHalf) {
                     Text("Week in review").strandOverline()
                     Text(weekRangeLabel)
                         .font(StrandFont.title2)
