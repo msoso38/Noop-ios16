@@ -307,7 +307,10 @@ object HealthConnectImporter {
             }
             // --- Sleep sessions -> per-day total sleep minutes, assigned to the WAKE day ---
             readAll(client, SleepSessionRecord::class, filter, selfPackage) { r ->
-                val day = dayOf(r.endTime, r.endZoneOffset)
+                // Wake-day keyed, so the END offset is the right one — but a writer that sets only the
+                // start offset is common, and the start is far better evidence of the sleeper's zone than
+                // the phone's zone at import time. Fall through start before giving up.
+                val day = dayOf(r.endTime, r.endZoneOffset ?: r.startZoneOffset)
                 val b = bucket(day)
                 // Prefer summed asleep-stage minutes; fall back to session span when no stages.
                 val asleepMin = asleepMinutes(r)
@@ -512,7 +515,15 @@ object HealthConnectImporter {
             hydrationReadOk = readAll(
                 client, HydrationRecord::class, TimeRangeFilter.between(hydrationStart, end), selfPackage,
             ) { r ->
-                val day = dayOf(r.startTime, r.startZoneOffset)
+                // #1002: hydration deliberately keeps the PHONE's zone, unlike every other record here.
+                // Its write is a windowed REPLACE: `windowDays` below is built from LocalDate.now(zone),
+                // and HydrationStore.importWindow keeps only keys IN that window — anything else is
+                // dropped, not merged. Keying a record by its own offset can move it a day off the phone
+                // zone, so a drink near either edge of the window would land outside it and be silently
+                // discarded. Losing water quietly in a replace path is a worse bug than the one this fixes
+                // (see #986). Correcting it properly means making the window offset-aware too, which is a
+                // change to shared code with an iOS twin, so it is left for its own PR.
+                val day = dayOf(r.startTime, null)
                 hydrationMl[day] = (hydrationMl[day] ?: 0.0) + r.volume.inMilliliters
             }
         } catch (e: Exception) {
