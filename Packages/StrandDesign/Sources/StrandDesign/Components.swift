@@ -471,7 +471,12 @@ public struct SourceBadge: View {
     let text: LocalizedStringKey; var tint: Color = StrandPalette.accent
     public init(_ text: LocalizedStringKey, tint: Color = StrandPalette.accent) { self.text = text; self.tint = tint }
     public var body: some View {
+        // `.tracking` adds its gap after EVERY character including the last, so the laid-out text is half a
+        // point wider than the ink. Nudging right by half re-centres the glyphs inside the capsule. The
+        // vertical axis needs nothing here — `.frame(height:)` centres by default, which is exactly the
+        // difference that left the Android twin's label riding high until it was matched to this.
         Text(text).textCase(.uppercase).font(.system(size: 10, weight: .semibold, design: .rounded)).tracking(0.5)
+            .offset(x: 0.25)
             .padding(.horizontal, 9).frame(height: NoopMetrics.sourceBadgeHeight)
             .background(tint.opacity(0.16), in: Capsule(style: .continuous))
             .foregroundStyle(tint)
