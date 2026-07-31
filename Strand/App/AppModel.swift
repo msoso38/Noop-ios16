@@ -717,8 +717,16 @@ final class AppModel: ObservableObject {
         let avg = samples.isEmpty ? nil
             : Int((Double(samples.map(\.bpm).reduce(0, +)) / Double(samples.count)).rounded())
         let peak = samples.map(\.bpm).max()
+        // #983: score the SAVED workout with the wearer's measured resting HR, not the hardcoded
+        // default of 60. %HRR is (bpm - resting) / (max - resting), so the default moves every zone
+        // boundary — at 136 bpm with maxHR 190 it is the difference between zone 1 and zone 2. Today's
+        // Effort and the manual rescore (#972) already thread this, so the stored number used to
+        // disagree with its own re-score. Read once here, at save time; the live readout during the
+        // session is a transient running estimate and deliberately left alone.
+        let restingHR = repo.today?.restingHr.map(Double.init) ?? StrainScorer.defaultRestingHR
         let strain = samples.count >= 2
-            ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax), sex: profile.sex) : nil
+            ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax),
+                                  restingHR: restingHR, sex: profile.sex) : nil
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         let up = UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
