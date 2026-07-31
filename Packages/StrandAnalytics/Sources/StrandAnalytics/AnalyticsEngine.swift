@@ -962,7 +962,7 @@ public enum AnalyticsEngine {
     /// DIAGNOSTIC ONLY. Nothing scores this, it never writes `spo2Pct`, and it is not a blood-oxygen
     /// reading — it is the raw candidate averaged, surfaced so it can be checked against a real one.
     /// Byte-parity twin of the Kotlin `nightlySpo2CandidateMean`.
-    static func nightlySpo2CandidateMean(_ sessions: [SleepSession],
+    public static func nightlySpo2CandidateMean(_ sessions: [SleepSession],
                                          aux: [V18AuxSample]) -> (mean: Int, samples: Int)? {
         guard !sessions.isEmpty, !aux.isEmpty else { return nil }
         var sum = 0, kept = 0

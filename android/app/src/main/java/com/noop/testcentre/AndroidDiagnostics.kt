@@ -119,6 +119,24 @@ object AndroidDiagnostics {
             val devAnchor = if (family == com.noop.protocol.DeviceFamily.WHOOP4)
                 com.noop.protocol.Whoop4SkinTemp.deviceAnchorRaw(windowSkin.map { it.raw }) else null
             add(com.noop.analytics.AnalyticsEngine.skinTempFunnel(listOf(det), hr, skin, family, devAnchor).summary)
+
+            // #112/#103 — the 5/MG SpO2 CANDIDATE (@82), as one number a wearer can check against the
+            // figure the WHOOP app reports for the same night. The candidate cannot be promoted while two
+            // straps disagree about it, and until now the only way to read it was to scroll the Deep
+            // Timeline and eyeball it, which is not an instrument to hand a volunteer. Diagnostic only:
+            // nothing scores this and it is NOT a blood-oxygen reading. Absent on a WHOOP 4.0, which
+            // carries raw red/IR ADC and no candidate — said explicitly so a 4.0 owner is not left
+            // wondering. Twin of the Swift `DebugDataDiagnostics` line.
+            val aux = repo.v18AuxSamples(id, session.startTs, session.endTs, Int.MAX_VALUE)
+            val cand = com.noop.analytics.AnalyticsEngine.nightlySpo2CandidateMean(listOf(det), aux)
+            when {
+                cand != null -> add(
+                    "SpO2 candidate @82 (5/MG): mean ${cand.first} over ${cand.second} in-band readings " +
+                        "- UNVERIFIED, compare against the WHOOP app's figure for this night (#103).")
+                family == com.noop.protocol.DeviceFamily.WHOOP5 ->
+                    add("SpO2 candidate @82 (5/MG): no in-band readings inside this night's span.")
+                else -> add("SpO2 candidate @82: not carried by a WHOOP 4.0 (raw red/IR ADC only).")
+            }
         }.onFailure { add("(funnels unavailable: ${it.message})") }
     }
 

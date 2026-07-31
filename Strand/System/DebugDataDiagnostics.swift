@@ -145,6 +145,22 @@ enum DebugDataDiagnostics {
         let devAnchor = family == .whoop4 ? Whoop4SkinTemp.deviceAnchorRaw(windowSkin.map { $0.raw }) : nil
         lines.append(AnalyticsEngine.skinTempFunnel([det], hr: hr, skinTemp: skin,
                                                     family: family, anchorRaw: devAnchor).summary)
+
+        // #112/#103 — the 5/MG SpO2 CANDIDATE (@82), as one number a wearer can check against the figure
+        // the WHOOP app reports for the same night. The candidate cannot be promoted while two straps
+        // disagree about it, and the only way to read it until now was to scroll the Deep Timeline and
+        // eyeball it — which is not an instrument to hand a volunteer. Diagnostic only: nothing scores
+        // this, and it is NOT a blood-oxygen reading. Absent on a WHOOP 4.0, which carries raw red/IR ADC
+        // and no candidate at all — said explicitly so a 4.0 owner is not left wondering.
+        let aux = (try? await store.v18AuxSamples(deviceId: did, from: cs.startTs, to: cs.endTs)) ?? []
+        if let cand = AnalyticsEngine.nightlySpo2CandidateMean([det], aux: aux) {
+            lines.append("SpO₂ candidate @82 (5/MG): mean \(cand.mean) over \(cand.samples) in-band readings "
+                         + "— UNVERIFIED, compare against the WHOOP app's figure for this night (#103).")
+        } else if family == .whoop5 {
+            lines.append("SpO₂ candidate @82 (5/MG): no in-band readings inside this night's span.")
+        } else {
+            lines.append("SpO₂ candidate @82: not carried by a WHOOP 4.0 (raw red/IR ADC only).")
+        }
         return lines
     }
 
