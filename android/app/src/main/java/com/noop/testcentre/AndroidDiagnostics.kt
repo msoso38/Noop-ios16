@@ -18,6 +18,10 @@ import android.os.PowerManager
  */
 object AndroidDiagnostics {
 
+    /** Aux rows read for one night's SpO2-candidate line (#112). Twin of the Swift
+     *  `DebugDataDiagnostics.spo2CandidateAuxLimit`. */
+    private const val SPO2_CANDIDATE_AUX_LIMIT = 200_000
+
     fun summaryLines(context: Context): List<String> = buildList {
         add("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
         add("Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
@@ -127,7 +131,9 @@ object AndroidDiagnostics {
             // nothing scores this and it is NOT a blood-oxygen reading. Absent on a WHOOP 4.0, which
             // carries raw red/IR ADC and no candidate — said explicitly so a 4.0 owner is not left
             // wondering. Twin of the Swift `DebugDataDiagnostics` line.
-            val aux = repo.v18AuxSamples(id, session.startTs, session.endTs, Int.MAX_VALUE)
+            // Same explicit limit as the Swift twin's `spo2CandidateAuxLimit`, rather than Int.MAX_VALUE,
+            // so the two platforms visibly read the same window. A night is ~30k rows at 1 Hz.
+            val aux = repo.v18AuxSamples(id, session.startTs, session.endTs, SPO2_CANDIDATE_AUX_LIMIT)
             val cand = com.noop.analytics.AnalyticsEngine.nightlySpo2CandidateMean(listOf(det), aux)
             when {
                 cand != null -> add(
