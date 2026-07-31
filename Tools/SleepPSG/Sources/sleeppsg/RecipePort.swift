@@ -105,7 +105,7 @@ struct RecipeConfig: Equatable {
             // branch — `PortValidation` is what enforces that, and it will fail loudly on the wrong value.
             // `Variants.pr987` reads this row and offers the other one, so the #987 comparison works from
             // either side without a second edit.
-            "awake": ["deep": 0.01, "rem": 0.02, "light": 0.27, "awake": 0.70],
+            "awake": ["deep": 0.0, "rem": 0.0, "light": 0.10, "awake": 0.90],
         ],
         remLatencyPenalty: 3.0, remLatencyMinutes: 60.0, onsetSustainedEpochs: 10,
         remLatencyMode: .gradedFromOnset)
