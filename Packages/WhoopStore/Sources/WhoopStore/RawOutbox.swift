@@ -165,6 +165,7 @@ extension WhoopStore {
     }
 
     /// Mark a batch synced (timestamp in unix seconds).
+    ///
     /// #981 — NO production caller, and by design: see the dormancy note on `pruneRaw`'s Policy 1. Kept
     /// because it is the natural hook for a future on-device export lane, not because anything calls it.
     public func markRawBatchSynced(batchId: String, at: Int) async throws {
