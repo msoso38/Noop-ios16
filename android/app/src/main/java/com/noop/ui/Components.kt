@@ -403,11 +403,6 @@ fun StatePill(
 @Composable
 fun SourceBadge(text: String, tint: Color = Palette.accent, modifier: Modifier = Modifier) {
     val shape = RoundedCornerShape(50)
-    val tracking = 0.5.sp
-    // Half the tracking, in dp. `letterSpacing` adds its gap after EVERY character including the last, so
-    // the measured text is that much wider than the glyphs actually drawn — centring the text node leaves
-    // the glyphs sitting left of true centre by half. Shifting back by half puts the ink in the middle.
-    val trackingNudge = with(LocalDensity.current) { tracking.toDp() } / 2
     Box(
         // The pill itself. The label used to BE this node, with `heightIn` pinning it to 18.dp — and a
         // 10.sp line box is ~13.dp, so the ~5.dp of slack all fell below the text and pushed it upward.
@@ -426,11 +421,10 @@ fun SourceBadge(text: String, tint: Color = Palette.accent, modifier: Modifier =
     ) {
         Text(
             text = text.uppercase(),
-            style = NoopType.overline.copy(fontSize = 10.sp, letterSpacing = tracking),
+            style = NoopType.overline.copy(fontSize = 10.sp, letterSpacing = 0.5.sp),
             color = tint,
             maxLines = 1,                      // #74: e.g. "ON-DEVICE" stays on one line, never wraps the hero
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.offset(x = trackingNudge),
         )
     }
 }
