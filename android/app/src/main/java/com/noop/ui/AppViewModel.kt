@@ -593,8 +593,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * live/manual workout paths were the ones left on the default, so a session's live Effort and the
      * same session rescored later did not agree.
      */
-    private val workoutRestingHR: Double
-        get() = _today.value?.restingHr?.toDouble() ?: StrainScorer.defaultRestingHR
+    private fun workoutRestingHR(): Double {
+        val measured = _today.value?.restingHr?.toDouble() ?: StrainScorer.defaultRestingHR
+        // One-shot scoring (a saved window, no live session) always reads fresh.
+        @Suppress("UNNECESSARY_SAFE_CALL")
+        if (_activeWorkout?.value == null) return measured
+        // LATCHED for the life of the session. Live Effort is recomputed over the WHOLE window on every
+        // incoming sample, so reading this fresh each time would let a mid-session refresh of today's row
+        // (a sync landing, the night's resting HR finally populating) change the denominator and re-score
+        // every sample already taken — the number on screen would visibly step up or down mid-workout.
+        // One session, one denominator.
+        return sessionRestingHR ?: measured.also { sessionRestingHR = it }
+    }
+
+    /** The resting HR latched at the start of the current session; cleared by [endWorkout]. */
+    private var sessionRestingHR: Double? = null
 
     /**
      * #849: Today's heavy history-wide reload guard. The Today screen runs a couple of expensive
@@ -1331,6 +1344,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun endWorkout() {
         val w = _activeWorkout.value ?: return
         _activeWorkout.value = null
+        sessionRestingHR = null   // #983: the next session latches its own denominator
         gpsJob?.cancel(); gpsJob = null
         // Drop the durable non-GPS snapshot the instant the session ends — whether it saves below or is
         // discarded as too-short — so a relaunch never rehydrates an already-finished session (#529).
@@ -1364,7 +1378,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val peak = if (samples.isNotEmpty()) samples.maxOf { it.bpm } else null
         val strain = if (samples.size >= 2)
             StrainScorer.strain(samples, maxHR = profileStore.hrMax.toDouble(),
-                restingHR = workoutRestingHR, sex = profileStore.sex) else null
+                restingHR = workoutRestingHR(), sex = profileStore.sex) else null
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         val energyKcal = if (samples.size >= 2)
@@ -1419,7 +1433,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val w = _activeWorkout?.value ?: return
         val s = w.samples + HrSample(deviceId = deviceId, ts = System.currentTimeMillis() / 1000, bpm = bpm)
         val strain = StrainScorer.strain(s, maxHR = profileStore.hrMax.toDouble(),
-            restingHR = workoutRestingHR, sex = profileStore.sex) ?: 0.0
+            restingHR = workoutRestingHR(), sex = profileStore.sex) ?: 0.0
         val updated = w.copy(
             samples = s, avgHr = s.sumOf { it.bpm } / s.size, peakHr = s.maxOf { it.bpm }, liveStrain = strain,
         )

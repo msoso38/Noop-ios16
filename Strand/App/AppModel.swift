@@ -58,9 +58,22 @@ final class AppModel: ObservableObject {
     /// already threads the measured value and #972 threaded it into the manual rescore; these live/manual
     /// workout paths were the ones left on the default, so a session's live Effort and the same session
     /// rescored later did not agree. Byte-parity twin of Kotlin `AppViewModel.workoutRestingHR`.
-    var workoutRestingHR: Double {
-        repo.today?.restingHr.map(Double.init) ?? StrainScorer.defaultRestingHR
+    func workoutRestingHR() -> Double {
+        let measured = repo.today?.restingHr.map(Double.init) ?? StrainScorer.defaultRestingHR
+        // One-shot scoring (a saved window, no live session) always reads fresh.
+        guard activeWorkout != nil else { return measured }
+        // LATCHED for the life of the session. Live Effort is recomputed over the WHOLE window on every
+        // incoming sample, so reading this fresh each time would let a mid-session refresh of today's row
+        // (a sync landing, the night's resting HR finally populating) change the denominator and re-score
+        // every sample already taken — the number on screen would visibly step mid-workout. One session,
+        // one denominator.
+        if let latched = sessionRestingHR { return latched }
+        sessionRestingHR = measured
+        return measured
     }
+
+    /// The resting HR latched at the start of the current session; cleared by `endWorkout`.
+    private var sessionRestingHR: Double?
     /// User profile (age/sex/body/HR-max) for zones, calories, baselines.
     let profile = ProfileStore()
     /// Behaviour settings: double-tap action, wear automation, zone coaching, smart alarm, illness watch.
@@ -700,6 +713,7 @@ final class AppModel: ObservableObject {
     func endWorkout() {
         guard let w = activeWorkout else { return }
         activeWorkout = nil
+        sessionRestingHR = nil   // #983: the next session latches its own denominator
         let wasGps = activeWorkoutIsGps
         activeWorkoutIsGps = false
         // Drop the durable snapshot the instant the session ends , whether it saves below or is discarded
@@ -731,7 +745,7 @@ final class AppModel: ObservableObject {
         let peak = samples.map(\.bpm).max()
         let strain = samples.count >= 2
             ? StrainScorer.strain(samples, maxHR: Double(profile.hrMax),
-                                  restingHR: workoutRestingHR, sex: profile.sex) : nil
+                                  restingHR: workoutRestingHR(), sex: profile.sex) : nil
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         let up = UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
@@ -779,7 +793,7 @@ final class AppModel: ObservableObject {
         w.peakHr = max(w.peakHr, hr)
         w.avgHr = Int((Double(w.samples.map(\.bpm).reduce(0, +)) / Double(w.samples.count)).rounded())
         w.liveStrain = StrainScorer.strain(w.samples, maxHR: Double(profile.hrMax),
-                                           restingHR: workoutRestingHR, sex: profile.sex) ?? 0
+                                           restingHR: workoutRestingHR(), sex: profile.sex) ?? 0
         activeWorkout = w
         // Re-snapshot the durable session so a kill keeps the latest accumulated HR window (#529).
         persistActiveWorkout()
