@@ -424,6 +424,14 @@ fun SettingsScreen(
 
     var backupBusy by remember { mutableStateOf(false) }
 
+    // #646/#651: LogExport's zip build + file read now run on Dispatchers.IO instead of blocking the
+    // caller, so these buttons no longer freeze the UI — but nothing else stopped a second tap mid-export
+    // either. A big raw capture is exactly when someone taps twice, firing two zips / two chooser
+    // intents. Same disable-while-busy + spinner shape as backupBusy above, one flag per button.
+    var strapLogBusy by remember { mutableStateOf(false) }
+    var whoop5CaptureBusy by remember { mutableStateOf(false) }
+    var rawAndLogBusy by remember { mutableStateOf(false) }
+
     // Re-scan must request the runtime Bluetooth permission before scanning — without this the
     // button calls connect() directly and silently no-ops on Android 12+ when the permission was
     // denied/revoked (issue #1). Shared with Live's Connect via the one rememberRequestScan gate.
@@ -1639,8 +1647,28 @@ fun SettingsScreen(
                     leadingIcon = Icons.Filled.Upload,
                     kind = NoopButtonKind.Secondary,
                     fullWidth = true,
-                    onClick = { scope.launch { LogExport.shareStrapLog(context, vm.ble.exportLogText()) } },
+                    enabled = !strapLogBusy,
+                    onClick = {
+                        strapLogBusy = true
+                        scope.launch {
+                            LogExport.shareStrapLog(context, vm.ble.exportLogText())
+                            strapLogBusy = false
+                        }
+                    },
                 )
+                if (strapLogBusy) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            color = Palette.accent,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(uiString(R.string.l10n_settings_screen_working_13b7bfca), style = NoopType.footnote, color = Palette.textSecondary)
+                    }
+                }
 
                 // "WHOOP 4.0 vs 5.0/MG — what each can read and why" (FI-2 / #490). Shown to BOTH model
                 // owners, so a 4.0 user understands their strap is fully supported (and why the firmware
@@ -2042,8 +2070,28 @@ fun SettingsScreen(
                     leadingIcon = Icons.Filled.Upload,
                     kind = NoopButtonKind.Secondary,
                     fullWidth = true,
-                    onClick = { scope.launch { LogExport.shareWhoop5Capture(context, live.whoop5Detected) } },
+                    enabled = !whoop5CaptureBusy,
+                    onClick = {
+                        whoop5CaptureBusy = true
+                        scope.launch {
+                            LogExport.shareWhoop5Capture(context, live.whoop5Detected)
+                            whoop5CaptureBusy = false
+                        }
+                    },
                 )
+                if (whoop5CaptureBusy) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            color = Palette.accent,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(uiString(R.string.l10n_settings_screen_working_13b7bfca), style = NoopType.footnote, color = Palette.textSecondary)
+                    }
+                }
 
                 // One-tap "matched pair" export (#510): hands a reporter BOTH the raw capture file and
                 // the strap log together (timestamped, same minute) so a protocol-mapping issue arrives
@@ -2053,8 +2101,28 @@ fun SettingsScreen(
                     leadingIcon = Icons.Filled.IosShare,
                     kind = NoopButtonKind.Secondary,
                     fullWidth = true,
-                    onClick = { scope.launch { LogExport.shareRawAndLog(context, vm.ble.exportLogText(), live.whoop5Detected) } },
+                    enabled = !rawAndLogBusy,
+                    onClick = {
+                        rawAndLogBusy = true
+                        scope.launch {
+                            LogExport.shareRawAndLog(context, vm.ble.exportLogText(), live.whoop5Detected)
+                            rawAndLogBusy = false
+                        }
+                    },
                 )
+                if (rawAndLogBusy) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            color = Palette.accent,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(uiString(R.string.l10n_settings_screen_working_13b7bfca), style = NoopType.footnote, color = Palette.textSecondary)
+                    }
+                }
             }
         }
         } // end if (showFiveMGControls)
