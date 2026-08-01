@@ -418,9 +418,10 @@ object HealthConnectImporter {
             // of rows, so a first import paid that per workout. Now sorted once into a KcalIndex and
             // range-scanned per window — the fix the previous version of this comment nominated.
             // Sorted ONCE for the whole pass, not per workout: two O(n log n) sorts replace the
-            // O(workouts x records) walk the comment above describes.
-            val activeIndex = KcalIndex(activeKcalRecords)
-            val totalIndex = KcalIndex(totalKcalRecords)
+            // O(workouts x records) walk the comment above describes. LAZY because an import with no
+            // exercise sessions must not pay for two sorts of a ten-year record list to answer nothing.
+            val activeIndex by lazy(LazyThreadSafetyMode.NONE) { KcalIndex(activeKcalRecords) }
+            val totalIndex by lazy(LazyThreadSafetyMode.NONE) { KcalIndex(totalKcalRecords) }
             for (i in workouts.indices) {
                 val w = workouts[i]
                 if (w.endTs <= w.startTs) continue
@@ -1033,6 +1034,9 @@ object HealthConnectImporter {
      * arithmetic that decides a calorie figure is not worth duplicating for speed.
      */
     internal class KcalIndex(private val records: List<KcalRecord>) {
+        // NOTE: these three properties initialise in DECLARATION order and each reads the one above —
+        // maxLenS feeds usable, usable gates order. Reordering them would silently yield 0/false/empty
+        // rather than a compile error.
         private val maxLenS: Long = records.maxOfOrNull { it.endS - it.startS } ?: 0L
 
         /**
@@ -1051,18 +1055,32 @@ object HealthConnectImporter {
             span > 0L && maxLenS * 20L < span
         }
 
-        /** Start-sorted, but each entry remembers where it came from — see [sumInWindow]. Empty, and
-         *  never sorted, when [usable] is false. */
-        private val sorted: List<IndexedValue<KcalRecord>> =
-            if (usable) records.withIndex().sortedBy { it.value.startS } else emptyList()
+        /**
+         * Record indices ordered by start time. An `IntArray` rather than a sorted list of records or of
+         * `IndexedValue` wrappers: this runs on a phone mid-import over hundreds of thousands of rows,
+         * and the wrapper form allocates one object per record — megabytes of garbage to answer a few
+         * hundred queries. The indices double as the original ordering [sumInWindow] restores.
+         *
+         * Empty, and never sorted, when [usable] is false.
+         */
+        private val order: IntArray =
+            if (usable) {
+                IntArray(records.size) { it }.also { a ->
+                    // boxed sort once, unboxed thereafter — no comparator allocation per comparison
+                    val sortedIdx = a.toTypedArray().sortedBy { records[it].startS }
+                    for (i in sortedIdx.indices) a[i] = sortedIdx[i]
+                }
+            } else {
+                IntArray(0)
+            }
 
         /** First index whose `startS >= value`; `size` when none. Plain lower-bound bisection. */
         private fun lowerBound(value: Long): Int {
             var lo = 0
-            var hi = sorted.size
+            var hi = order.size
             while (lo < hi) {
                 val mid = (lo + hi) ushr 1
-                if (sorted[mid].value.startS < value) lo = mid + 1 else hi = mid
+                if (records[order[mid]].startS < value) lo = mid + 1 else hi = mid
             }
             return lo
         }
@@ -1089,7 +1107,9 @@ object HealthConnectImporter {
             // list is cheaper to walk than to sort. Either branch ends in the same sumKcalInWindow over
             // the same records, so the answer is identical and only the route changes.
             if ((hi - lo) * 20 > records.size) return sumKcalInWindow(records, startS, endS)
-            val slice = sorted.subList(lo, hi).sortedBy { it.index }.map { it.value }
+            // Sorting the indices ascending IS restoring the original order — they are positions in
+            // `records`. See the note above on why that matters for the arithmetic.
+            val slice = order.copyOfRange(lo, hi).sorted().map { records[it] }
             return sumKcalInWindow(slice, startS, endS)
         }
     }
