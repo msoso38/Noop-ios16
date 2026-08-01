@@ -323,7 +323,7 @@ targets:
   NOOPiOSWidgets:
     type: app-extension
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "16.7.8"
     sources:
       - path: StrandiOSWidgets
         excludes:

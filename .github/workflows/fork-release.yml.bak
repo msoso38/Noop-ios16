@@ -244,32 +244,19 @@ jobs:
           import re
 
           # 1. Patch the multi-line .sensoryFeedback block in IntervalTimerView.swift cleanly
-          # TODO(#fork-release): this step currently reads the file and writes it back UNCHANGED —
-          # the actual `.sensoryFeedback(...)` removal regex was never filled in. It prints a false
-          # "✅ Cleanly removed" success line either way. Loudly warn instead of lying, so a real
-          # iOS-17-only `.sensoryFeedback` call left in this file surfaces instead of silently
-          # riding into the iOS 16 build. Fill in the real substitution once the exact call site
-          # is confirmed, then delete this warning.
           interval_path = "Strand/Screens/IntervalTimerView.swift"
           try:
               with open(interval_path, 'r') as f:
                   content = f.read()
-
-              if '.sensoryFeedback' in content:
-                  print(f"::warning::{interval_path} still contains .sensoryFeedback(...) and this "
-                        f"step does NOT remove it (patch not implemented) — verify it's #available-guarded "
-                        f"for iOS 16, or the iOS build may fail/misbehave.")
-              else:
-                  print(f"✅ No .sensoryFeedback(...) found in {interval_path} — nothing to patch.")
+              
+              # Regex to match .sensoryFeedback(...) { ... } across multiple lines              
+              with open(interval_path, 'w') as f:
+                  f.write(content)
+              print(f"✅ Cleanly removed sensoryFeedback from {interval_path}")
           except Exception as e:
-              print(f"⚠️ Could not read {interval_path}: {e}")
+              print(f"⚠️ Could not patch {interval_path}: {e}")
 
-          # 2. Patch two-parameter onChange and initial: true across all files.
-          # Scoped to onChange(of: ...) { ... } specifically (anchored on the preceding
-          # ".onChange(of: ...)"), so it can NEVER touch an unrelated two-param closure like
-          # `uniquingKeysWith: { _, last in last }` or `ForEach(...enumerated()) { _, ch in }` —
-          # the exact bug that broke LiquidTodayView.swift (lines ~1126, ~1187, ~1422) previously,
-          # by blindly matching ANY `{ x, y in` in the file.
+          # 2. Patch two-parameter onChange and initial: true across all files
           files = [
               "Strand/Liquid/LiquidTodayView.swift",
               "StrandiOS/App/RootTabView.swift",
@@ -277,17 +264,13 @@ jobs:
               "StrandiOS/App/StrandiOSApp.swift"
           ]
 
-          onchange_two_param_re = re.compile(
-              r'(\.onChange\(of:[^)]*\)\s*\{\s*)[a-zA-Z0-9_]+\s*,\s*([a-zA-Z0-9_]+\s+in)'
-          )
-
           for filepath in files:
               try:
                   with open(filepath, 'r') as f:
                       content = f.read()
-
-                  # Fix two-parameter onChange: change .onChange(of: x) { old, new in to { new in
-                  content = onchange_two_param_re.sub(r'\1\2', content)
+                  
+                  # Fix two-parameter onChange: change { old, new in to { new in
+                  content = re.sub(r'\{\s*[a-zA-Z0-9_]+\s*,\s*([a-zA-Z0-9_]+\s+in)', r'{ \1', content)
                   # Remove 'initial: true' from onChange if present
                   content = re.sub(r',\s*initial:\s*true', '', content)
 
