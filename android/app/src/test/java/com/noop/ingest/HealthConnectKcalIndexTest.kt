@@ -51,7 +51,8 @@ class HealthConnectKcalIndexTest {
                 if (expected == null) {
                     assertNull("window [$start, ${start + width}) width=$width", actual)
                 } else {
-                    assertEquals("window [$start, ${start + width}) width=$width", expected, actual!!, 1e-9)
+                    // delta 0.0 — bit-exact, not merely close. See bitExactnessSurvivesUnsortedInput.
+                    assertEquals("window [$start, ${start + width}) width=$width", expected, actual!!, 0.0)
                 }
                 checked += 1
                 start += 137L                                        // prime-ish stride, avoids aligning with record starts
@@ -73,7 +74,7 @@ class HealthConnectKcalIndexTest {
         )
         val index = KcalIndex(recs)
         val expected = sumKcalInWindow(recs, 80_000, 80_600)
-        assertEquals(expected!!, index.sumInWindow(80_000, 80_600)!!, 1e-9)
+        assertEquals(expected!!, index.sumInWindow(80_000, 80_600)!!, 0.0)
     }
 
     /** Degenerate inputs must behave exactly as the scan does, including the null cases. */
@@ -88,6 +89,50 @@ class HealthConnectKcalIndexTest {
         assertNull("inverted window", index.sumInWindow(900, 500))
         assertNull("entirely before the corpus", index.sumInWindow(-9_000, -8_000))
         assertNull("entirely after the corpus", index.sumInWindow(500_000, 510_000))
+    }
+
+    /**
+     * Bit-exactness, on input whose insertion order is deliberately NOT its sorted order.
+     *
+     * `sumKcalInWindow` accumulates each source with `+`, and floating-point addition is not
+     * associative — so a slice summed in start-sorted order rather than as-read drifts by an ULP or
+     * two. Before [KcalIndex] restored the original order within its slice, 104 of 595 windows on this
+     * corpus differed by up to 1.8e-15. `round1` downstream would have swallowed every one of them,
+     * which is exactly why it needs a test: nothing else in the app would ever have noticed the index
+     * quietly ceasing to be equivalent.
+     */
+    @Test fun bitExactnessSurvivesUnsortedInput() {
+        val recs = ArrayList<KcalRecord>()
+        var t = 30_000L
+        for (i in 0 until 4_000) {
+            recs.add(
+                KcalRecord(
+                    startS = t,
+                    endS = t + 700 + (i % 5) * 130L,
+                    kcal = 0.1 + (i % 9) * 0.037,          // not representable in binary
+                    source = if (i % 2 == 0) "a" else "b", // two sources, so the MAX-source rule bites
+                ),
+            )
+            t -= 7L * (i % 11 + 1)                          // descending: insertion order != sorted order
+            if (i % 3 == 0) t += 900
+        }
+        val index = KcalIndex(recs)
+        var compared = 0
+        var s = 0L
+        while (s < 40_000L) {
+            for (w in listOf(600L, 3_600L, 20_000L)) {
+                val expected = sumKcalInWindow(recs, s, s + w)
+                val actual = index.sumInWindow(s, s + w)
+                if (expected == null) {
+                    assertNull("window [$s, ${s + w})", actual)
+                } else {
+                    assertEquals("window [$s, ${s + w})", expected, actual!!, 0.0)  // exact
+                    compared += 1
+                }
+            }
+            s += 91L
+        }
+        assert(compared > 400) { "expected a broad sweep, compared only $compared" }
     }
 
     /** A record that ends exactly where the window begins does not overlap it — on both paths. */
