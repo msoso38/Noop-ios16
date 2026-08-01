@@ -64,4 +64,28 @@ class SleepStageVocabularyTest {
         val wake = segs.filter { SleepStageVocabulary.isWake(it.first) }.sumOf { it.second }
         assertEquals(900, wake)
     }
+
+    /**
+     * INTEGRATION, not the predicate. The tests above pass whether or not the five call sites were
+     * actually changed — they exercise the rule, not its users. This one exercises a real caller, so it
+     * is the test that fails if a site is reverted. Twin of the Swift
+     * `testWasoAndDisturbancesCountAnAwakeSegment`.
+     *
+     * `tst` is computed from a POSITIVE list (light/deep/rem) so it is immune either way at 1080 s;
+     * WASO and the disturbance count are not, and read 0 before the fix.
+     */
+    @Test fun wasoAndDisturbancesCountAnAwakeSegment() {
+        val stages = listOf(
+            StageSegment(0L, 60L, "wake"),      // pre-onset, clipped out of WASO
+            StageSegment(60L, 600L, "light"),
+            StageSegment(600L, 900L, "deep"),
+            StageSegment(900L, 960L, "awake"),  // the other spelling — 60 s of WASO
+            StageSegment(960L, 1200L, "rem"),
+        )
+        val session = DetectedSleep(0L, 1200L, 0.95, stages, 50, 60.0)
+        val m = SleepStager.hypnogramMetrics(session)
+        assertEquals("sleep total must be unaffected either way", 1080.0, m.tstS, 1e-9)
+        assertEquals("an awake segment is wake after sleep onset", 60.0, m.wasoS, 1e-9)
+        assertEquals("and counts as one disturbance", 1, m.disturbances)
+    }
 }

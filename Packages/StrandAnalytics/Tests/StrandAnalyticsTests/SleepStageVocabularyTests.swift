@@ -54,4 +54,27 @@ final class SleepStageVocabularyTests: XCTestCase {
         let wake = segs.filter { SleepStageVocabulary.isWake($0.stage) }.reduce(0) { $0 + $1.seconds }
         XCTAssertEqual(wake, 900)
     }
+
+    /// INTEGRATION, not the predicate. The tests above pass whether or not the five call sites were
+    /// actually changed — they exercise the rule, not its users. This one exercises a real caller, so
+    /// it is the test that fails if a site is reverted.
+    ///
+    /// The same night as `SleepStagerTests.testHypnogramMetricsAASM`, with the WASO segment spelled
+    /// `awake`. `tst` is computed from a POSITIVE list (`light || deep || rem`) so it is immune either
+    /// way at 1080 s; WASO and the disturbance count are not, and read 0 before the fix.
+    func testWasoAndDisturbancesCountAnAwakeSegment() {
+        let stages = [
+            StageSegment(start: 0, end: 60, stage: "wake"),      // pre-onset, clipped out of WASO
+            StageSegment(start: 60, end: 600, stage: "light"),
+            StageSegment(start: 600, end: 900, stage: "deep"),
+            StageSegment(start: 900, end: 960, stage: "awake"),  // the other spelling — 60 s of WASO
+            StageSegment(start: 960, end: 1200, stage: "rem"),
+        ]
+        let session = SleepSession(start: 0, end: 1200, efficiency: 0.95,
+                                   stages: stages, restingHR: 50, avgHRV: 60)
+        let m = SleepStager.hypnogramMetrics(session)
+        XCTAssertEqual(m.tstS, 1080, accuracy: 1e-9, "sleep total must be unaffected either way")
+        XCTAssertEqual(m.wasoS, 60, accuracy: 1e-9, "an awake segment is wake after sleep onset")
+        XCTAssertEqual(m.disturbances, 1, "and counts as one disturbance")
+    }
 }
