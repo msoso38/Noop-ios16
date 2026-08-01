@@ -238,6 +238,39 @@ jobs:
           ref: ${{ needs.bump.outputs.sha }}
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Auto-patch iOS 17 code for iOS 16 compatibility
+        run: |
+          python3 - << 'EOF'
+          import glob, re
+
+          files = [
+              "Strand/Screens/IntervalTimerView.swift",
+              "Strand/Liquid/LiquidTodayView.swift",
+              "StrandiOS/App/RootTabView.swift",
+              "Strand/Screens/ScreenScaffold.swift",
+              "StrandiOS/App/StrandiOSApp.swift"
+          ]
+
+          for filepath in files:
+              try:
+                  with open(filepath, 'r') as f:
+                      content = f.read()
+                  
+                  # 1. Remove .sensoryFeedback modifier entirely (safe to drop for a build)
+                  content = re.sub(r'\s*\.sensoryFeedback\([^)]+\)', '', content)
+                  
+                  # 2. Fix two-parameter onChange: change { old, new in to { new in
+                  content = re.sub(r'\{\s*[a-zA-Z0-9_]+\s*,\s*([a-zA-Z0-9_]+\s+in)', r'{ \1', content)
+                  
+                  # 3. Remove 'initial: true' from onChange if present
+                  content = re.sub(r',\s*initial:\s*true', '', content)
+
+                  with open(filepath, 'w') as f:
+                      f.write(content)
+                  print(f"✅ Successfully patched: {filepath}")
+              except Exception as e:
+                  print(f"⚠️ Skipped {filepath}: {e}")
+          EOF
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Build NOOPiOS for device (unsigned, Release)
