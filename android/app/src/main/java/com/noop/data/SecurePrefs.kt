@@ -34,7 +34,21 @@ object SecurePrefs {
 
     private val cache = ConcurrentHashMap<String, SharedPreferences>()
 
-    /** The encrypted prefs for [fileName], created once per process and reused thereafter. */
+    /**
+     * The encrypted prefs for [fileName], created once per process and reused thereafter.
+     *
+     * [ConcurrentHashMap.computeIfAbsent] guarantees the construction happens EXACTLY once under a
+     * race — a second thread asking for the same file blocks and receives the same instance rather
+     * than building a second one. If the build throws, the exception propagates and NO mapping is
+     * recorded, so a transient Keystore failure is retried on the next call instead of being
+     * memoised into a permanently broken store.
+     *
+     * Caveat worth knowing: `ConcurrentHashMap` documents that the mapping function should be "short
+     * and simple", and this one is neither — a Keystore round trip plus Tink setup, with the bin
+     * locked throughout. It is acceptable here because there are exactly two files, each built once
+     * per process, and the function never re-enters the map, so the worst case is one thread briefly
+     * serialising behind another. It would not be acceptable if this map grew keys at runtime.
+     */
     fun of(ctx: Context, fileName: String): SharedPreferences =
         cache.computeIfAbsent(fileName) {
             val app = ctx.applicationContext
