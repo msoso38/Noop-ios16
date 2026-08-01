@@ -24,10 +24,15 @@ import java.io.InputStream
  * [what] names the thing in the failure message so the wording each importer already produced is
  * preserved exactly — "Input exceeds …" everywhere except the zip-entry path, which says "Entry".
  *
+ * `internal`, not public: every copy this replaces was file-private, and nothing outside
+ * `com.noop.ingest` calls it. Kotlin has no package-private, so `internal` is the tightest scope that
+ * still lets the five importers and the unit tests reach it — widening a private helper to public API
+ * would be an unrelated change riding along with a refactor.
+ *
  * @throws IllegalStateException as soon as the running total passes [cap] — before the offending chunk
  *   is buffered, so the peak allocation stays bounded by the cap rather than the file.
  */
-fun InputStream.readCapped(cap: Long, what: String = "Input"): ByteArray {
+internal fun InputStream.readCapped(cap: Long, what: String = "Input"): ByteArray {
     val buffer = ByteArrayOutputStream(64 * 1024)
     val chunk = ByteArray(64 * 1024)
     var total = 0L
