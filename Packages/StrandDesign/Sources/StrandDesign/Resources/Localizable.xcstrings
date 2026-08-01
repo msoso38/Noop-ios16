@@ -2323,10 +2323,34 @@
             "value": "Verre flottant"
           }
         },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vetro fluttuante"
+          }
+        },
         "pt-PT": {
           "stringUnit": {
             "state": "translated",
             "value": "Vidro flutuante"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Плавающее стекло"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "悬浮玻璃"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "懸浮玻璃"
           }
         }
       }
@@ -2656,7 +2680,7 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Plongez pour lire le VHR de chaque jour en ms."
+            "value": "Survolez pour lire la VFC de chaque jour en ms."
           }
         },
         "pt-PT": {
@@ -2824,7 +2848,7 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "GRADIENTS DE RECOUVREMENT"
+            "value": "GRADIENT DE RÉCUPÉRATION"
           }
         },
         "pt-PT": {

@@ -192,6 +192,9 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val updateStore = remember { UpdateStore.from(context) }
     var showUpdatesInbox by remember { mutableStateOf(false) }
+    // #984: the changelog sheet a What's New inbox row opens. Held here (not inside the inbox) so it
+    // survives the inbox sheet closing — the tap dismisses the inbox and presents this over the app.
+    var showWhatsNewFromInbox by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize()) {
         Scaffold(
@@ -414,13 +417,21 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                     store = updateStore,
                     onClose = { showUpdatesInbox = false },
                     onDeepLink = { key ->
-                        // Map the inbox deep-link key to a route (only known keys route). "trends" is
-                        // the one real poster's target today; unknown keys just close the sheet.
-                        val route = when (key) {
-                            "trends" -> Destination.Trends.route
-                            else -> null
+                        // Map the inbox deep-link key to a route (only known keys route); unknown keys
+                        // just close the sheet.
+                        //
+                        // #984: What's New is NOT a nav destination — it is a full-screen sheet, the same
+                        // one Settings › About opens — so it gets handled here rather than through the
+                        // route table. Before this it fell to `else` and the tap did nothing at all.
+                        if (key == UpdateStore.WHATS_NEW_DEEP_LINK) {
+                            showWhatsNewFromInbox = true
+                        } else {
+                            val route = when (key) {
+                                "trends" -> Destination.Trends.route
+                                else -> null
+                            }
+                            if (route != null && route != currentRoute) nav.navigateTopLevel(route)
                         }
-                        if (route != null && route != currentRoute) nav.navigateTopLevel(route)
                     },
                     onRestore = { cardId ->
                         // Flip the shared dismissed flag back off so the card reappears, and signal a
@@ -429,6 +440,20 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
                         updateStore.restoreRequest = cardId
                     },
                 )
+            }
+        }
+
+        // #984: the changelog a What's New inbox row opens. Full-screen Dialog, the same idiom
+        // Settings > About uses for this sheet — What's New is not a nav destination, so it cannot be
+        // reached through the route table the other deep-link keys use.
+        if (showWhatsNewFromInbox) {
+            Dialog(
+                onDismissRequest = { showWhatsNewFromInbox = false },
+                properties = DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Surface(modifier = Modifier.fillMaxSize(), color = Palette.surfaceBase) {
+                    WhatsNewSheet(onClose = { showWhatsNewFromInbox = false })
+                }
             }
         }
     }

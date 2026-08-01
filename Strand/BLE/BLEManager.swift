@@ -696,6 +696,18 @@ public final class BLEManager: NSObject, ObservableObject {
     /// Force the puffin capture buffer to disk so the Settings export/reveal targets a current file.
     public func flushPuffinCaptures() { puffinRecorder.flush() }
 
+    /// Record a local physical-phase marker for the passive optical experiment. This deliberately has
+    /// no peripheral/write path: it only appends to `puffin-deepbuffers.jsonl` when capture is enabled.
+    @discardableResult
+    func markWhoop5OpticalPhase(_ phase: PuffinOpticalExperimentPhase) -> Bool {
+        puffinDeepBufferLog.appendOpticalPhase(phase)
+    }
+
+    /// Flush and expose the passive deep-buffer experiment log for a user-initiated export.
+    func whoop5OpticalExperimentURL() -> URL? {
+        puffinDeepBufferLog.opticalExperimentURL()
+    }
+
     // MARK: CoreBluetooth
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -1490,14 +1502,58 @@ public final class BLEManager: NSObject, ObservableObject {
                 // probeBodyLocationAndStatus() (user-initiated, Test Centre gated); decoded to a diagnostic
                 // report only, never gates wear/scoring. Whether 5/MG answers is a hardware check.
                 || command == .getBodyLocationAndStatus
+                // START_FF_KEY_EXCHANGE (117) / SEND_NEXT_FF (118) over puffin: the READ-ONLY feature-flag
+                // ENUMERATION probe (#761) — it reads the strap's own flag NAMES and writes no value. Gated
+                // harder than the probes above: allowed ONLY while a probe is actually in flight, so on a
+                // 5/MG a default install can never form these bytes. NOTE this whole allowlist is inside the
+                // `deviceFamily == .whoop5` branch — WHOOP 4.0 has no send allowlist at all, so on a 4.0 the
+                // only thing keeping 117/118 off the wire is probeFeatureFlags()'s own Test Centre gate.
+                // Same practical result, different mechanism, and worth knowing because the 4.0 is the
+                // family with a published key dump to reproduce and so the likely first runner.
+                // The SET verbs (120 SET_FF_VALUE / 119 SET_DEVICE_CONFIG_VALUE) keep their own separate
+                // opt-in clauses below and are never sent from this path. Driven only by
+                // probeFeatureFlags() (user-initiated, Test Centre gated).
+                || ((command == .startFeatureFlagKeyExchange || command == .sendNextFeatureFlag)
+                    && featureFlagReport != nil)
+                // ABORT_HISTORICAL_TRANSMITS (20) over puffin: stop an offload already in flight. Allowed
+                // ONLY while one actually is, so a default install can never form these bytes on a 5/MG —
+                // and the gate is the same state the command is about. Non-destructive: the strap frees
+                // records on our HISTORY_END ack, not on this, so an aborted drain re-offloads intact.
+                || (command == .abortHistoricalTransmits && backfilling)
+                // GET_DEVICE_CONFIG_VALUE (121) / GET_FF_VALUE (128) over puffin: the READ-ONLY
+                // device-config READ probe (#103) — it asks for a key's VALUE and writes none. Gated the
+                // same way as 117/118: allowed ONLY while a probe is actually in flight, and the opcode
+                // must additionally satisfy DeviceConfigReadProbe.isReadOnlyOpcode, the same predicate a
+                // unit test proves rejects SET_FF_VALUE(120) and SET_DEVICE_CONFIG_VALUE(119). Those two
+                // keep their own separate opt-in clauses below and are never sent from this path. Driven
+                // only by probeDeviceConfigValues() (user-initiated, Test Centre gated).
+                || (DeviceConfigReadProbe.isReadOnlyOpcode(command.rawValue) && deviceConfigReport != nil)
                 || command == .sendHistoricalData || command == .historicalDataResult
                 || command == .setClock || command == .getClock
-                // SET_CONFIG (the R22 deep-stream unlock) is allowed ONLY while the deep-data
-                // experiment is opted in — it writes a persistent feature flag to the strap, so it
-                // must never fire on a default install. It's still reversible (just changes which
-                // data the strap emits) and is what the official app sends. Driven only by
-                // enableWhoop5DeepData(). (#174)
-                || (command == .setConfig && PuffinExperiment.deepDataEnabled)
+                // SET_CONFIG / SET_FF_VALUE (120), ENABLE direction — the R22 deep-stream unlock. Allowed
+                // only while the deep-data experiment is opted in, and only for a KEY and a VALUE the gate
+                // recognises: one of the sixteen R22 flags carrying that key's own enable value. The clause
+                // this replaces was opcode-only, so it admitted ANY feature-flag key with ANY value for as
+                // long as the opt-in happened to be on — the same weakness #907 closed on opcode 119.
+                // Driven only by enableWhoop5DeepData(). (#174)
+                || FeatureFlagWriteGate.admitsEnableWrite(opcode: command.rawValue,
+                                                          payload: payload,
+                                                          deepDataOptIn: PuffinExperiment.deepDataEnabled)
+                // SET_FF_VALUE (120), DISABLE direction — the undo. Gated on a disable run being in flight
+                // rather than on the opt-in, exactly like the 128 read-back clause below, and restricted to
+                // `featureFlagOffValue`. The opt-in CANNOT gate this: `deepDataEnabled` is @AppStorage bound
+                // straight to the Settings switch, so it is already false by the time the user confirms the
+                // undo the switch itself offered — gating on it made the whole toggle-off path dead (every
+                // write refused here, and the run's own guard returning early). Gating on the run is also
+                // narrower the other way: with the opt-in merely left on, no off value reaches the wire
+                // unless a run is genuinely walking its plan. Driven only by disableWhoop5DeepData(). (#174)
+                || FeatureFlagWriteGate.admitsDisableWrite(opcode: command.rawValue,
+                                                           payload: payload,
+                                                           disableRunInFlight: r22DisableRun != nil)
+                // GET_FF_VALUE (128) as the disable run's mandatory READ-BACK. Gated on a disable run being
+                // in flight, exactly like the read probes' 121/128 clause above, so a default install can
+                // never form these bytes. The write ack is not trusted; this is what proves the clear.
+                || (FeatureFlagWriteGate.isReadBackOpcode(command.rawValue) && r22DisableRun != nil)
                 // SET_DEVICE_CONFIG (the Broadcast-HR flag) is allowed ONLY while that opt-in is on —
                 // it writes one persistent device-config value so the strap advertises standard HR.
                 // Reversible; driven only by setBroadcastHr(_:). (#181)
@@ -1745,6 +1801,49 @@ public final class BLEManager: NSObject, ObservableObject {
     /// is the primary metric source now, mirroring how WHOOP syncs. Live HR is opt-in only (the
     /// manual "Start HR" button in LiveView). Between backfills the Collector sees only the live
     /// type-43 flood, which extractStreams ignores — the data comes from the next periodic offload.
+    /// Stop an offload that is part-way through, at the user's request.
+    ///
+    /// NOOP has been able to START a drain since day one (`sendHistoricalData`) with no way to stop it:
+    /// a session ran to HISTORY_COMPLETE, the backfill timeout, or a dropped link. On a strap with a
+    /// large banked history that is a long time to be stuck, and the only escape was walking out of
+    /// Bluetooth range.
+    ///
+    /// NOTHING IS LOST. The strap frees banked records when NOOP acks a HISTORY_END, so records already
+    /// acked are persisted and records not yet acked stay in flash and re-offload on the next sync. This
+    /// is a stop, not a trim, and no cursor moves.
+    ///
+    /// The local teardown does NOT depend on the strap honouring opcode 20. `exitBackfilling` runs
+    /// either way — the same path the timeout and disconnect already use, including the drain loop's
+    /// `!backfilling` check that discards queued frames — so a firmware that ignores the abort degrades
+    /// to exactly today's behaviour (frames keep arriving and are dropped) rather than leaving the UI
+    /// wedged in "Syncing". That is deliberate: the opcode is confirmed in use on WHOOP 4.0 by OpenStrap
+    /// Edge but is NOT hardware-confirmed here, on either family.
+    ///
+    /// Twin of Android `abortBackfill()`.
+    public func abortBackfill() {
+        guard backfilling else {
+            log("Abort sync ignored — no offload in flight")
+            return
+        }
+        // Send before tearing down: the 5/MG allowlist admits opcode 20 only while `backfilling` is
+        // still true, so ordering here is load-bearing, not stylistic.
+        if state.connected {
+            // Body `[0x00]`, matching the only hands-on use of this opcode (OpenStrap Edge sends
+            // `const [0x00]`) rather than an empty body — the same b3 convention `sendHistoricalData`
+            // already uses here, where an empty body was verified NOT to work.
+            send(.abortHistoricalTransmits, payload: [0x00], writeType: .withResponse)
+            log("Abort sync: ABORT_HISTORICAL_TRANSMITS (20) sent; unacked records stay on the strap")
+        } else {
+            log("Abort sync: not connected — tearing down the local session only")
+        }
+        // The reason string is deliberately NOT one `exitBackfilling` classifies. Only "HISTORY_COMPLETE"
+        // stamps `lastSyncedAt` and only "timeout" raises a sync error; everything else falls through
+        // leaving both untouched — which is exactly right for an abort. A cancelled sync is neither a
+        // success nor a failure: nothing was lost, and the next sync re-offloads what was left.
+        // If a future edit starts classifying more reasons, this one must stay in the fall-through.
+        exitBackfilling(reason: "aborted by user")
+    }
+
     private func exitBackfilling(reason: String) {
         guard backfilling else { return }
         backfilling = false
@@ -2254,7 +2353,11 @@ public final class BLEManager: NSObject, ObservableObject {
         // entirely, so counting it as a "deep packet" gave 4.0 owners a bogus deep-data counter (#346).
         guard selectedModel.deviceFamily == .whoop5 else { return }
         guard frame.count > 10 else { return }
-        if frame[8] == 0x24, frame[10] == WhoopCommand.setConfig.rawValue {
+        // #174: a SET_CONFIG ack means "one enable_r22_* flag accepted" ONLY when we are enabling. A disable
+        // run writes through the same opcode, so without this guard turning R22 OFF would tick the
+        // "Strap accepted N/16 R22 flags" counter upwards — the exact opposite of what happened. The
+        // disable run scores its own acks (and does not trust them; the 128 read-back is its proof).
+        if frame[8] == 0x24, frame[10] == WhoopCommand.setConfig.rawValue, r22DisableRun == nil {
             state.r22FlagsAccepted += 1
             let total = Whoop5Config.enableR22Sequence.count
             if state.r22FlagsAccepted == total {
@@ -2325,8 +2428,166 @@ public final class BLEManager: NSObject, ObservableObject {
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80 * frames.count + 200)) { [weak self] in
-            self?.log("Deep-data: sequence sent. Keep the strap on, let it sync, then share your strap log — we're looking for new deep records (type-0x2F) to start arriving. (#174)")
+            self?.log("Deep-data: sequence sent. Keep the strap on, let it sync, then share your strap log — we're looking for new deep records (type-0x2F) to start arriving. To undo it later, use \"Turn deep data back off\" — disableWhoop5DeepData() writes '0' to the same sixteen keys and reads each one back. (#174)")
         }
+    }
+
+    // MARK: - R22 disable (#174)
+
+    /// Per-step reply window for the disable run. Each step is only sent once the previous reply lands (or
+    /// times out), so this bounds one round-trip, not the whole run.
+    private static let r22DisableStepTimeout: TimeInterval = 8
+
+    /// The in-flight disable run's accumulating report; nil when none is running. Doubles as the send()
+    /// allowlist's in-flight gate for the 128 read-back.
+    private var r22DisableRun: R22DisableReport?
+    /// The step whose reply we are waiting for, nil between steps.
+    private var r22DisableAwaiting: R22DisableReport.Step?
+    /// Monotonic step counter so a late timeout from an earlier step cannot cancel a live run.
+    private var r22DisableStep = 0
+
+    /// EXPERIMENTAL (#174): the undo of `enableWhoop5DeepData()` — write `'0'` to the sixteen `enable_r22_*`
+    /// feature flags and report, per key, the value the strap actually stores afterwards.
+    ///
+    /// **Why this exists.** The Settings copy has promised since #174 that the R22 unlock is "reversible",
+    /// and that was true about the hardware and false about the app: NOOP shipped an enable button and no
+    /// way back, so the only routes out were the official WHOOP app or a factory reset. This closes that.
+    ///
+    /// **Why it is staged rather than sixteen writes.** `'0'` is the confirmed off value in the
+    /// device-config namespace (#181, hardware-validated on the Broadcast-HR flag) and that namespace shares
+    /// this one's entire wire idiom — but no *feature* flag has ever been observed holding `'0'`, and the two
+    /// namespaces are proven separate at the verb level. So the run writes ONE flag, reads it back, and only
+    /// touches the other fifteen if the strap actually stopped reporting the old value. A firmware that
+    /// refuses `'0'` costs the user one round-trip and yields a publishable answer instead of fifteen mystery
+    /// writes. See `Whoop5Config.featureFlagOffValue` and `R22DisableReport` for the full reasoning.
+    ///
+    /// **The ack is never the proof.** Every write's COMMAND_RESPONSE is recorded and not believed —
+    /// `SELECT_WRIST` returns SUCCESS for a no-op and FAILURE for a real mutation on this firmware — so only
+    /// the value a `GET_FF_VALUE(128)` read returns is reported as state (#907/#891).
+    ///
+    /// Same guards as the enable: 5/MG family, explicit opt-in, full encrypted bond. `worn` is deliberately
+    /// NOT required — the on-wrist gate exists because the R22 STREAM is on-wrist-only, and a user turning
+    /// the feature off should not have to put the strap back on to do it. Result goes to
+    /// `LiveState.r22DisableReport` and the strap log; no new storage. Twin of Android
+    /// `disableWhoop5DeepData()`.
+    public func disableWhoop5DeepData() {
+        guard selectedModel.deviceFamily == .whoop5 else {
+            log("Deep-data disable: needs a WHOOP 5.0/MG strap selected — ignored."); return
+        }
+        // NOTE there is deliberately NO `PuffinExperiment.deepDataEnabled` guard here. There was one, and it
+        // made this entire function unreachable from the control users actually use: the Settings switch is
+        // @AppStorage-bound, so flipping it OFF writes the pref false immediately, THEN raises the "Clear the
+        // R22 flags on your strap?" dialog. By the time the user taps "Clear flags on strap" the pref is
+        // already false, so the guard returned at the top and nothing happened — the same shape of defect
+        // this PR exists to fix (UI promising an undo that never runs). The send allowlist now gates the
+        // off-value writes on `r22DisableRun != nil` instead, which is the state that is actually about this
+        // operation. (#174)
+        guard state.connected, state.encryptedBond else {
+            log("Deep-data disable: needs the full encrypted bond, not the live-HR-only link. Close the official WHOOP app, put the strap in pairing mode, and bond it to NOOP first — ignored."); return
+        }
+        guard r22DisableRun == nil else {
+            log("Deep-data disable: a disable run is already walking its plan — ignored."); return
+        }
+        r22DisableRun = R22DisableReport()
+        state.r22DisableReport = BLEManager.deviceConfigProbeWaiting
+        log("Deep-data disable (#174): clearing the \(Whoop5Config.disableR22Sequence.count)-flag R22 sequence — writing '0' via SET_FF_VALUE(120), each verified with GET_FF_VALUE(128). Probing \(R22DisableReport.probeKey) first; the other flags are only written if that one moves.")
+        advanceR22Disable()
+    }
+
+    /// Send the next planned step, or finish when the plan is done.
+    private func advanceR22Disable() {
+        guard let step = r22DisableRun?.nextStep() else {
+            finishR22Disable()
+            return
+        }
+        guard let command = WhoopCommand(rawValue: step.opcode) else {
+            log("Deep-data disable: refusing to send unknown opcode \(step.opcode)")
+            finishR22Disable()
+            return
+        }
+        let payload: [UInt8]
+        if step.isWrite {
+            payload = [0x01] + Whoop5Config.payloadBody(name: step.key, value: Whoop5Config.featureFlagOffValue)
+            // Fail closed: the same predicate the send path consults, asked here too, so a future edit that
+            // widened the plan cannot put an unrecognised key or value on the wire. `disableRunInFlight` is
+            // true by construction here (this is only called from inside a run) — it is passed rather than
+            // hardcoded so this and the send path evaluate the identical predicate.
+            guard FeatureFlagWriteGate.admitsDisableWrite(opcode: step.opcode, payload: payload,
+                                                          disableRunInFlight: r22DisableRun != nil) else {
+                log("Deep-data disable: refusing to write \(step.key) — not admitted by the feature-flag gate")
+                finishR22Disable()
+                return
+            }
+        } else {
+            guard FeatureFlagWriteGate.isReadBackOpcode(step.opcode) else {
+                log("Deep-data disable: refusing to read with opcode \(step.opcode)")
+                finishR22Disable()
+                return
+            }
+            payload = DeviceConfigReadProbe.requestBody(key: step.key)
+        }
+        r22DisableStep &+= 1
+        r22DisableAwaiting = step
+        let armed = r22DisableStep
+        send(command, payload: payload, writeType: .withResponse)
+        // BLE callbacks and this timer both run on the main queue, so guard-then-advance is race-free: a
+        // reply that already landed advanced `r22DisableStep`, and this stale closure no-ops.
+        DispatchQueue.main.asyncAfter(deadline: .now() + BLEManager.r22DisableStepTimeout) { [weak self] in
+            guard let self, self.r22DisableRun != nil, self.r22DisableStep == armed,
+                  self.r22DisableAwaiting != nil else { return }
+            self.r22DisableAwaiting = nil
+            self.r22DisableRun?.noteTimeout(for: step, seconds: Int(BLEManager.r22DisableStepTimeout))
+            self.advanceR22Disable()
+        }
+    }
+
+    /// Render + publish + log the report and end the run (which also re-closes the 128 send allowlist).
+    private func finishR22Disable() {
+        guard let report = r22DisableRun else { return }
+        r22DisableRun = nil
+        r22DisableAwaiting = nil
+        // The "Strap accepted N/16 R22 flags" line reports the last ENABLE send. If this run cleared even one
+        // key that claim is stale, so retire it rather than leaving the card asserting the strap is unlocked
+        // while the report below says it was just cleared. A run that changed nothing leaves it alone.
+        if report.outcomes.values.contains(where: { $0.isSuccess }) {
+            state.r22FlagsAccepted = 0
+        }
+        let text = report.render()
+        log("Deep-data disable (#174):\n\(text)")
+        state.r22DisableReport = text
+    }
+
+    /// Clear the #174 disable result (Settings card dismissed). Twin of Android clearR22DisableReport().
+    public func clearR22DisableReport() { state.r22DisableReport = nil }
+
+    /// #174: one COMMAND_RESPONSE belonging to a disable run — either a `SET_FF_VALUE(120)` write ack or a
+    /// `GET_FF_VALUE(128)` read-back. Guarded on a run being IN-FLIGHT so a stray byte match can never
+    /// surface a result. Parsing — including the CRC gate — lives in the pure `DeviceConfigReadProbe`.
+    private func handleR22DisableResponse(_ frame: [UInt8], isWhoop5: Bool) {
+        guard r22DisableRun != nil, let step = r22DisableAwaiting else { return }
+        r22DisableAwaiting = nil
+        if step.isWrite {
+            // The ack is recorded for the transcript and decides nothing. `pay[1]` is the 5/MG result code:
+            // puffin envelope puts the type @8 and the cmd @10, so the payload starts at 11 and the result
+            // byte is at 12.
+            let resultCode: Int? = frame.count > 12 ? Int(frame[12]) : nil
+            r22DisableRun?.noteWriteAck(resultCode: resultCode, for: step)
+        } else {
+            switch DeviceConfigReadProbe.parse(frame: frame, family: isWhoop5 ? .whoop5 : .whoop4,
+                                               expecting: step.opcode) {
+            case .success(let r): r22DisableRun?.noteReadBack(r, for: step)
+            case .failure(let f): r22DisableRun?.noteReadFailure(f, for: step)
+            }
+        }
+        advanceR22Disable()
+    }
+
+    /// Abandon a disable run the link interrupted, re-closing the 128 send allowlist. Called from the
+    /// disconnect path alongside the probe teardowns.
+    private func abandonR22DisableRun(_ why: String) {
+        guard r22DisableRun != nil else { return }
+        r22DisableRun?.noteAbandoned(why)
+        finishR22Disable()
     }
 
     /// EXPERIMENTAL (#181): make a bonded WHOOP 5/MG advertise its heart rate as a standard BLE HR
@@ -2527,6 +2788,239 @@ public final class BLEManager: NSObject, ObservableObject {
 
     /// Clear the #690 probe result (Devices dialog dismissed). Twin of Android clearBodyLocationProbe().
     public func clearBodyLocationProbe() { state.bodyLocationProbe = nil }
+
+    // MARK: #761 feature-flag enumeration probe (READ-ONLY)
+
+    /// Sentinel while the enumeration is walking, so the dialog shows "waiting…" (twin of the #592/#690
+    /// constants above).
+    public static let featureFlagProbeWaiting = "__waiting__"
+    /// Per-step reply window. Each 118 is only sent after the previous reply lands, so this bounds one
+    /// round-trip, not the whole walk.
+    private static let featureFlagProbeTimeout: TimeInterval = 8
+
+    /// The in-flight probe's accumulating report; nil when no probe is running. Doubles as the send()
+    /// allowlist's in-flight gate — 117/118 cannot leave the app unless this is non-nil.
+    private var featureFlagReport: FeatureFlagProbeReport?
+    /// Monotonic step counter so a late timeout from an earlier step can't cancel a live walk.
+    private var featureFlagStep = 0
+    /// The opcode whose reply we are waiting for (117 or 118), nil between steps.
+    private var featureFlagAwaiting: UInt8?
+
+    /// #761 read-only probe: ask the strap to ENUMERATE the feature-flag key names its firmware knows —
+    /// `START_FF_KEY_EXCHANGE(117)` for the count, then `SEND_NEXT_FF(118)` repeatedly (its body is a
+    /// cursor, not an index) until the strap's own end marker. NOTHING is written: no `SET_FF_VALUE(120)`,
+    /// no `SET_DEVICE_CONFIG_VALUE(119)`, no value of any kind — this writes command frames purely to read,
+    /// exactly like the Oura `spo2_status` / `realsteps_status` probes NOOP already ships
+    /// (`Packages/OuraProtocol/…/Commands.swift`). `GET_FF_VALUE(128)` is deliberately NOT sent (its reply's
+    /// value field is reported unreliable — see `FeatureFlagProbe`).
+    ///
+    /// The strap's own key list is the direct evidence #103 lacks: if a 5/MG names no oxygen-related flag,
+    /// Blood Oxygen is not client-writable; if it names one, that is the answer outright. Result goes to
+    /// `LiveState.featureFlagProbe` (the Devices dialog) and to the strap log — no new storage.
+    /// User-initiated only, Test Centre → Connection gated. Twin of Android `probeFeatureFlags()`.
+    public func probeFeatureFlags() {
+        guard state.connected else {
+            log("Feature-flag probe (#761) ignored — not connected")
+            return
+        }
+        // Defence in depth: the menu entry is already Test-Centre gated, but the sender re-checks so no
+        // other path can start a probe on a default install.
+        //
+        // On WHOOP 4.0 this check is the ONLY thing standing between a default install and 117/118 on the
+        // wire: the send() allowlist that also gates them lives inside the `deviceFamily == .whoop5`
+        // branch, and 4.0 has no allowlist. So this guard is not merely belt-and-braces on every family —
+        // for the family most likely to run this first, it is the belt.
+        guard TestCentre.active(.connection) else {
+            log("Feature-flag probe (#761) ignored — Test Centre → Connection is off")
+            return
+        }
+        guard featureFlagReport == nil else {
+            log("Feature-flag probe (#761) ignored — a probe is already walking the list")
+            return
+        }
+        featureFlagReport = FeatureFlagProbeReport(family: selectedModel.deviceFamily)
+        state.featureFlagProbe = BLEManager.featureFlagProbeWaiting
+        log("Feature-flag probe (#761): sending START_FF_KEY_EXCHANGE(117, read-only) on family=\(selectedModel.deviceFamily); no value is written (SET_FF_VALUE/120 is never sent from this path)")
+        sendFeatureFlagStep(.startFeatureFlagKeyExchange)
+    }
+
+    /// Send one read-only enumeration command and arm the per-step reply window.
+    private func sendFeatureFlagStep(_ command: WhoopCommand) {
+        featureFlagStep &+= 1
+        featureFlagAwaiting = command.rawValue
+        let step = featureFlagStep
+        send(command, payload: FeatureFlagProbe.requestBody)
+        // BLE callbacks + this timer both run on the main queue, so the guard-then-finish is race-free: a
+        // reply that already landed advanced `featureFlagStep`, and this stale closure no-ops.
+        DispatchQueue.main.asyncAfter(deadline: .now() + BLEManager.featureFlagProbeTimeout) { [weak self] in
+            guard let self, self.featureFlagReport != nil, self.featureFlagStep == step,
+                  self.featureFlagAwaiting != nil else { return }
+            self.featureFlagReport?.noteTimeout(command: Int(command.rawValue),
+                                                seconds: Int(BLEManager.featureFlagProbeTimeout))
+            self.finishFeatureFlagProbe()
+        }
+    }
+
+    /// Render + publish + log the report and end the probe (which also re-closes the send() allowlist).
+    private func finishFeatureFlagProbe() {
+        guard let report = featureFlagReport else { return }
+        featureFlagReport = nil
+        featureFlagAwaiting = nil
+        let text = report.render()
+        log("Feature-flag probe (#761):\n\(text)")
+        state.featureFlagProbe = text
+    }
+
+    /// Clear the #761 probe result (Devices dialog dismissed). Twin of Android clearFeatureFlagProbe().
+    public func clearFeatureFlagProbe() { state.featureFlagProbe = nil }
+
+    // MARK: #103 device-config read probe (READ-ONLY)
+
+    /// Sentinel while the probe is walking its plan, so the dialog shows "waiting…".
+    public static let deviceConfigProbeWaiting = "__waiting__"
+    /// Per-step reply window. Each read is only sent after the previous reply lands (or times out), so
+    /// this bounds one round-trip, not the whole walk.
+    private static let deviceConfigProbeTimeout: TimeInterval = 8
+
+    /// The in-flight probe's accumulating report; nil when no probe is running. Doubles as the send()
+    /// allowlist's in-flight gate — 121/128 cannot leave the app unless this is non-nil.
+    private var deviceConfigReport: DeviceConfigReadProbeReport?
+    /// The step whose reply we are waiting for, nil between steps.
+    private var deviceConfigAwaiting: DeviceConfigReadProbeReport.Step?
+    /// Monotonic step counter so a late timeout from an earlier step can't cancel a live walk.
+    private var deviceConfigStep = 0
+
+    /// #103 read-only probe: ask the strap for config VALUES — `GET_DEVICE_CONFIG_VALUE(121)` and
+    /// `GET_FF_VALUE(128)`, one key per round-trip. The #761 probe asked the strap for key NAMES in the
+    /// feature-flag namespace; this asks for a named key's VALUE, and reaches the DEVICE-CONFIG namespace
+    /// (the one `SET_DEVICE_CONFIG_VALUE`/119 writes) that 117/118 never covered.
+    ///
+    /// NOTHING is written: no `SET_FF_VALUE(120)`, no `SET_DEVICE_CONFIG_VALUE(119)`, no value of any
+    /// kind — this writes command frames purely to read, exactly like the Oura `spo2_status` /
+    /// `realsteps_status` probes NOOP already ships (`Packages/OuraProtocol/…/Commands.swift`).
+    ///
+    /// **Both target opcodes may simply be unimplemented.** The probe spends one round-trip per verb
+    /// establishing that before it does anything else, and a clean "neither verb is served" is a useful
+    /// result. Only a verb that answers goes on to read the sixteen known flag values and the short list
+    /// of guessed oxygen key names. Result goes to `LiveState.deviceConfigProbe` (the Devices dialog) and
+    /// to the strap log — no new storage. User-initiated only, Test Centre → Connection gated. Twin of
+    /// Android `probeDeviceConfigValues()`.
+    public func probeDeviceConfigValues() {
+        guard state.connected else {
+            log("Device-config read probe (#103) ignored — not connected")
+            return
+        }
+        // Defence in depth: the menu entry is already Test-Centre gated, but the sender re-checks so no
+        // other path can start a probe on a default install.
+        guard TestCentre.active(.connection) else {
+            log("Device-config read probe (#103) ignored — Test Centre → Connection is off")
+            return
+        }
+        guard deviceConfigReport == nil else {
+            log("Device-config read probe (#103) ignored — a probe is already walking its plan")
+            return
+        }
+        deviceConfigReport = DeviceConfigReadProbeReport(
+            family: selectedModel.deviceFamily,
+            // The flag names come from NOOP's own R22 sequence — never restated here.
+            knownFlagKeys: Whoop5Config.enableR22Sequence.map(\.name),
+            candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
+        state.deviceConfigProbe = BLEManager.deviceConfigProbeWaiting
+        log("Device-config read probe (#103): asking for config VALUES via GET_DEVICE_CONFIG_VALUE(121) + GET_FF_VALUE(128) on family=\(selectedModel.deviceFamily); read-only (SET_FF_VALUE/120 and SET_DEVICE_CONFIG_VALUE/119 are never sent from this path)")
+        advanceDeviceConfigProbe()
+    }
+
+    /// Send the next planned read, or finish when the plan is done.
+    private func advanceDeviceConfigProbe() {
+        guard let step = deviceConfigReport?.nextStep() else {
+            finishDeviceConfigProbe()
+            return
+        }
+        guard let command = WhoopCommand(rawValue: step.opcode),
+              DeviceConfigReadProbe.isReadOnlyOpcode(step.opcode) else {
+            // Unreachable with the plan as written; failing closed here means a future edit that widened
+            // the plan cannot put a non-read opcode on the wire.
+            log("Device-config read probe (#103): refusing to send opcode \(step.opcode) — not a read verb")
+            finishDeviceConfigProbe()
+            return
+        }
+        deviceConfigStep &+= 1
+        deviceConfigAwaiting = step
+        let armed = deviceConfigStep
+        send(command, payload: DeviceConfigReadProbe.requestBody(key: step.key))
+        // BLE callbacks + this timer both run on the main queue, so the guard-then-advance is race-free:
+        // a reply that already landed advanced `deviceConfigStep`, and this stale closure no-ops.
+        DispatchQueue.main.asyncAfter(deadline: .now() + BLEManager.deviceConfigProbeTimeout) { [weak self] in
+            guard let self, self.deviceConfigReport != nil, self.deviceConfigStep == armed,
+                  self.deviceConfigAwaiting != nil else { return }
+            self.deviceConfigAwaiting = nil
+            self.deviceConfigReport?.noteTimeout(for: step,
+                                                 seconds: Int(BLEManager.deviceConfigProbeTimeout))
+            // A silent verb is retired by the report, so the plan skips its remaining steps rather than
+            // spending another eight seconds on each of them.
+            self.advanceDeviceConfigProbe()
+        }
+    }
+
+    /// Render + publish + log the report and end the probe (which also re-closes the send() allowlist).
+    private func finishDeviceConfigProbe() {
+        guard let report = deviceConfigReport else { return }
+        deviceConfigReport = nil
+        deviceConfigAwaiting = nil
+        let text = report.render()
+        log("Device-config read probe (#103):\n\(text)")
+        state.deviceConfigProbe = text
+    }
+
+    /// Clear the #103 probe result (Devices dialog dismissed). Twin of Android clearDeviceConfigProbe().
+    public func clearDeviceConfigProbe() { state.deviceConfigProbe = nil }
+
+    /// #103: one COMMAND_RESPONSE for 121/128. Guarded on a probe being IN-FLIGHT (like #690/#761) so a
+    /// stray byte match can never surface a result. Parsing — including the CRC gate — lives in the pure
+    /// `DeviceConfigReadProbe`; a frame that fails any check retires that verb with a named reason
+    /// instead of being decoded.
+    private func handleDeviceConfigProbeResponse(_ frame: [UInt8], isWhoop5: Bool) {
+        guard deviceConfigReport != nil, let step = deviceConfigAwaiting else { return }
+        deviceConfigAwaiting = nil
+        let family: DeviceFamily = isWhoop5 ? .whoop5 : .whoop4
+        switch DeviceConfigReadProbe.parse(frame: frame, family: family, expecting: step.opcode) {
+        case .success(let r): deviceConfigReport?.noteReply(r, for: step)
+        case .failure(let f): deviceConfigReport?.noteFailure(f, for: step)
+        }
+        advanceDeviceConfigProbe()
+    }
+
+    /// #761: one COMMAND_RESPONSE for 117/118. Guarded on a probe being IN-FLIGHT (like #690) so a stray
+    /// byte match can never surface a result. Parsing — including the CRC gate — lives in the pure
+    /// `FeatureFlagProbe`; a frame that fails any check ends the walk with a named reason instead of
+    /// being decoded.
+    private func handleFeatureFlagProbeResponse(_ frame: [UInt8], isWhoop5: Bool) {
+        guard featureFlagReport != nil, let awaiting = featureFlagAwaiting else { return }
+        let family: DeviceFamily = isWhoop5 ? .whoop5 : .whoop4
+        featureFlagAwaiting = nil
+        if awaiting == WhoopCommand.startFeatureFlagKeyExchange.rawValue {
+            switch FeatureFlagProbe.parseStart(frame: frame, family: family) {
+            case .success(let r):
+                featureFlagReport?.noteStart(r)
+                sendFeatureFlagStep(.sendNextFeatureFlag)
+            case .failure(let f):
+                featureFlagReport?.noteFailure(f, command: Int(awaiting))
+                finishFeatureFlagProbe()
+            }
+            return
+        }
+        switch FeatureFlagProbe.parseNext(frame: frame, family: family) {
+        case .success(let r):
+            if featureFlagReport?.noteNext(r) == true {
+                sendFeatureFlagStep(.sendNextFeatureFlag)
+            } else {
+                finishFeatureFlagProbe()
+            }
+        case .failure(let f):
+            featureFlagReport?.noteFailure(f, command: Int(awaiting))
+            finishFeatureFlagProbe()
+        }
+    }
 
     /// #690: format a GET_BODY_LOCATION_AND_STATUS COMMAND_RESPONSE and publish it, diffing against the
     /// persisted previous payload. Called from the inbound frame handler for both families. Guarded on a
@@ -3522,6 +4016,18 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         state.strapFirmware = nil     // a stale firmware version must not outlive the link
         state.extendedBatteryProbe = nil  // #592: drop a stale probe result on disconnect
         state.bodyLocationProbe = nil     // #690: drop a stale probe result on disconnect
+        state.featureFlagProbe = nil      // #761: drop a stale probe result on disconnect
+        // …and abandon a walk the link interrupted, which also re-closes the 117/118 send() allowlist.
+        featureFlagReport = nil
+        featureFlagAwaiting = nil
+        state.deviceConfigProbe = nil     // #103: drop a stale probe result on disconnect
+        // …and abandon a plan the link interrupted, re-closing the 121/128 send() allowlist.
+        deviceConfigReport = nil
+        deviceConfigAwaiting = nil
+        // #174: a disable run interrupted mid-plan is RENDERED rather than dropped — unlike the read-only
+        // probes above it has already written to the strap, so the user must be told exactly how far it got
+        // and which keys are still set. This publishes the partial report and re-closes the 128 allowlist.
+        abandonR22DisableRun("the strap disconnected mid-run")
         state.clearBiometrics()       // and a stale HR / R-R must not outlive the link either
         state.liveFeedActive = false  // a drop while Live is open must not leave a stale "Stop live feed"
         didBond = false
@@ -4332,6 +4838,20 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 if frame.count > 6, frame[6] == WhoopCommand.getBodyLocationAndStatus.rawValue {
                     handleBodyLocationProbeResponse(frame, isWhoop5: false)
                 }
+                // #761: a reply to the read-only feature-flag enumeration (117/118) — in-flight-guarded
+                // inside, so this is a byte compare on every other frame.
+                if frame.count > 6, frame[6] == WhoopCommand.startFeatureFlagKeyExchange.rawValue
+                    || frame[6] == WhoopCommand.sendNextFeatureFlag.rawValue {
+                    handleFeatureFlagProbeResponse(frame, isWhoop5: false)
+                }
+                // #103: a reply to the read-only device-config READ probe (121/128) — in-flight-guarded
+                // inside, so this is a byte compare on every other frame. The COMMAND_RESPONSE type gate
+                // (@4 on 4.0) is checked HERE as well as in the parser: a data frame that happens to
+                // carry 121/128 at the cmd offset would otherwise abort a live walk with an envelope
+                // failure instead of being ignored.
+                if frame.count > 6, frame[4] == 0x24, DeviceConfigReadProbe.isReadOnlyOpcode(frame[6]) {
+                    handleDeviceConfigProbeResponse(frame, isWhoop5: false)
+                }
                 // #695: WHOOP4 data-range reply — cmd byte @6. The 5/MG reply (puffin envelope, cmd @10) is
                 // handled in the 5/MG case below; both call handleDataRangeResponse so 5/MG now gets the same
                 // newest/oldest window (strapNewestTs / #547 backfill gate) + diagnostics it previously missed.
@@ -4406,6 +4926,28 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                     // #690: a 5/MG body-location probe COMMAND_RESPONSE (puffin envelope: type @8, cmd @10).
                     if frame.count > 10, frame[8] == 0x24, frame[10] == WhoopCommand.getBodyLocationAndStatus.rawValue {
                         handleBodyLocationProbeResponse(frame, isWhoop5: true)
+                    }
+                    // #761: a 5/MG reply to the read-only feature-flag enumeration (117/118), same puffin
+                    // envelope offsets. In-flight-guarded inside.
+                    if frame.count > 10, frame[8] == 0x24,
+                       frame[10] == WhoopCommand.startFeatureFlagKeyExchange.rawValue
+                        || frame[10] == WhoopCommand.sendNextFeatureFlag.rawValue {
+                        handleFeatureFlagProbeResponse(frame, isWhoop5: true)
+                    }
+                    // #103: a 5/MG reply to the read-only device-config READ probe (121/128), same puffin
+                    // envelope offsets. In-flight-guarded inside.
+                    if frame.count > 10, frame[8] == 0x24,
+                       DeviceConfigReadProbe.isReadOnlyOpcode(frame[10]) {
+                        handleDeviceConfigProbeResponse(frame, isWhoop5: true)
+                    }
+                    // #174: a reply belonging to an R22 DISABLE run — either the SET_FF_VALUE(120) write ack
+                    // or the GET_FF_VALUE(128) read-back that verifies it. In-flight-guarded inside, so this
+                    // is a byte compare on every other frame. Note 128 is also matched by the read-probe
+                    // clause above; both handlers guard on their OWN run being live, so exactly one acts.
+                    if frame.count > 10, frame[8] == 0x24,
+                       frame[10] == WhoopCommand.setConfig.rawValue
+                        || frame[10] == WhoopCommand.getFeatureFlagValue.rawValue {
+                        handleR22DisableResponse(frame, isWhoop5: true)
                     }
                     // #695: a 5/MG GET_DATA_RANGE COMMAND_RESPONSE (puffin envelope: type @8, cmd @10). Feeds
                     // the SAME newest/oldest window + backfill gate + diagnostics as the 4.0 path above — this

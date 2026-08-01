@@ -827,12 +827,16 @@ public enum SleepStager {
     /// re-onset (#531): a daytime block the strap itself scored predominantly "asleep" is KEPT even on a
     /// borderline HR dip. Default empty keeps pure-function callers/tests free of it; IntelligenceEngine
     /// passes the night window's persisted band state. It can only RESCUE a real-sleep block, never fabricate.
-    /// `useSleepStagerV2` (V7 / #690): when true, each accepted night is staged by the experimental
-    /// cardiorespiratory recipe `SleepStagerV2.stageSession` instead of V1's `stageSession`. DETECTION is
-    /// unchanged (same accepted windows); only the per-epoch hypnogram differs. Default false keeps V1 the
-    /// byte-identical default (the frozen-golden tests stay green). The live call site threads
-    /// `PuffinExperiment.experimentalSleepV2Enabled` so the Settings toggle now affects normal detected
-    /// nights, not just the self-heal restage path.
+    /// `useSleepStagerV2` (7.0.0; default ON since #277/#351): which recipe stages an accepted night — the cardiorespiratory
+    /// `SleepStagerV2.stageSession` when true, V1's `stageSession` when false. DETECTION is unchanged
+    /// (same accepted windows); only the per-epoch hypnogram differs.
+    ///
+    /// THE TWO DEFAULTS ARE NOT THE SAME, and reading only the signature gets this backwards. This
+    /// PARAMETER defaults false so pure-function callers and the frozen-golden tests stay byte-identical.
+    /// The SHIPPED app never takes that default: the live call site threads
+    /// `PuffinExperiment.experimentalSleepV2Enabled`, which is **default ON** (V2 was promoted over V1 in
+    /// #277 and extended to every strap family in #351), so a normal user's nights are staged by **V2**.
+    /// `= false` here describes the library's contract with its callers, not the product's behaviour.
     /// `sleepHRBaseline` (motion-corroborated wake, directive b): the wearer's PERSONALISED overnight HR band
     /// (`adaptiveOvernightHRBaseline`), used by `confirmSleepWithHR` in place of the day-median so a supplement /
     /// fitness era self-calibrates the sleep band. Default nil keeps the day-median (byte-identical to before);
@@ -1068,7 +1072,7 @@ public enum SleepStager {
     static func efficiency(start: Int, end: Int, stages: [StageSegment]) -> Double {
         let inBed = Double(end - start)
         if inBed <= 0 { return 0 }
-        let wake = stages.filter { $0.stage == "wake" }.reduce(0.0) { $0 + Double($1.end - $1.start) }
+        let wake = stages.filter { SleepStageVocabulary.isWake($0.stage) }.reduce(0.0) { $0 + Double($1.end - $1.start) }
         let asleep = max(0.0, inBed - wake)
         return min(1.0, asleep / inBed)
     }
@@ -2186,7 +2190,7 @@ public enum SleepStager {
 
         var waso = 0.0
         var disturbances = 0
-        for s in segs where s.stage == "wake" {
+        for s in segs where SleepStageVocabulary.isWake(s.stage) {
             let w0 = max(Double(s.start), onset)
             let w1 = min(Double(s.end), sptEnd)
             if w1 > w0 { waso += (w1 - w0); disturbances += 1 }

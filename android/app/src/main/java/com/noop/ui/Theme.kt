@@ -419,6 +419,7 @@ object Metrics {
     val legendLineWidth = 14.dp
     val legendLineHeight = 3.dp
     val progressHeight = 10.dp
+    val editorListMaxHeight = 390.dp
 
     // Quick Launch — shared by the modal panel, its 3x3 grids and the split glass navigation bar.
     // Centralising this feature geometry keeps its screen files free of one-off spacing and sizing.

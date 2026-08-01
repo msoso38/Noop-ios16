@@ -221,6 +221,7 @@ struct LiquidVessel: View {
     var animated: Bool = true
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var power = LiquidPowerMonitor.shared
     @State private var sim: LiquidSim
     @State private var splashes = 0
 
@@ -232,7 +233,7 @@ struct LiquidVessel: View {
     }
 
     var body: some View {
-        if animated && !reduceMotion { gauge } else { staticGauge }
+        if animated && !reduceMotion && !power.isLowPower { gauge } else { staticGauge }
     }
 
     private var gauge: some View {
@@ -275,10 +276,11 @@ struct LiquidTube: View {
     var animated: Bool = true
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var power = LiquidPowerMonitor.shared
     @State private var sim = LiquidSim(target: 0)
 
     var body: some View {
-        if animated && !reduceMotion { liveTube } else { staticTube }
+        if animated && !reduceMotion && !power.isLowPower { liveTube } else { staticTube }
     }
 
     private var liveTube: some View {
@@ -311,9 +313,10 @@ struct LiquidThread: View {
     var animated: Bool = true
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var power = LiquidPowerMonitor.shared
 
     var body: some View {
-        if animated && !reduceMotion { liveThread } else { staticThread }
+        if animated && !reduceMotion && !power.isLowPower { liveThread } else { staticThread }
     }
 
     private var liveThread: some View {

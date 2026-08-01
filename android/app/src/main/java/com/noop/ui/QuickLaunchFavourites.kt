@@ -330,7 +330,11 @@ private fun EmptyFavouriteSlot(onChoose: (() -> Unit)?, highlighted: Boolean) {
 
 @Composable
 private fun rememberFavouriteJiggle(enabled: Boolean, index: Int): Float {
-    if (!enabled) return 0f
+    // #909: the edit-mode jiggle is an unbounded frame loop, so battery saver must collapse it to its
+    // posed frame too — not just "Remove animations", which the caller already folds into `enabled`.
+    // Read unconditionally, before the early return, so the gate is a stable composition slot.
+    val poseStill = rememberPoseStill()
+    if (!enabled || poseStill) return 0f
     val transition = rememberInfiniteTransition(label = "favourite_jiggle")
     val angle by transition.animateFloat(
         initialValue = -NoopMotion.favouriteJiggleDegrees,
