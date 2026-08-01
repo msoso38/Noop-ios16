@@ -1032,11 +1032,29 @@ object HealthConnectImporter {
      * proration and the empty/null behaviour are the same code, not a reimplementation of it. The window
      * arithmetic that decides a calorie figure is not worth duplicating for speed.
      */
-    internal class KcalIndex(records: List<KcalRecord>) {
-        /** Start-sorted, but each entry remembers where it came from — see [sumInWindow]. */
+    internal class KcalIndex(private val records: List<KcalRecord>) {
+        private val maxLenS: Long = records.maxOfOrNull { it.endS - it.startS } ?: 0L
+
+        /**
+         * Whether narrowing can narrow anything, decided ONCE here rather than per query.
+         *
+         * The lower bound reaches back by [maxLenS], so a single record spanning a large share of the
+         * corpus — a weekly or lifetime aggregate row, which providers do write — makes every slice the
+         * whole list. Sorting that per query is worse than the scan this replaces. When the longest
+         * record is not comfortably shorter than the whole span, the index simply is not built and
+         * every query goes straight to the original scan, so this can never cost more than it saves.
+         * A per-DAY coarse record, the common case the workoutKcal note describes, passes this easily.
+         */
+        private val usable: Boolean = run {
+            if (records.size < 2 || maxLenS <= 0L) return@run false
+            val span = (records.maxOf { it.endS }) - (records.minOf { it.startS })
+            span > 0L && maxLenS * 20L < span
+        }
+
+        /** Start-sorted, but each entry remembers where it came from — see [sumInWindow]. Empty, and
+         *  never sorted, when [usable] is false. */
         private val sorted: List<IndexedValue<KcalRecord>> =
-            records.withIndex().sortedBy { it.value.startS }
-        private val maxLenS: Long = sorted.maxOfOrNull { it.value.endS - it.value.startS } ?: 0L
+            if (usable) records.withIndex().sortedBy { it.value.startS } else emptyList()
 
         /** First index whose `startS >= value`; `size` when none. Plain lower-bound bisection. */
         private fun lowerBound(value: Long): Int {
@@ -1063,9 +1081,14 @@ object HealthConnectImporter {
          */
         fun sumInWindow(startS: Long, endS: Long): Double? {
             if (endS <= startS) return null
+            if (!usable) return sumKcalInWindow(records, startS, endS)
             val lo = lowerBound(startS - maxLenS)
             val hi = lowerBound(endS)
             if (hi <= lo) return null
+            // Second guard, for a WIDE window rather than a long record: a slice that is most of the
+            // list is cheaper to walk than to sort. Either branch ends in the same sumKcalInWindow over
+            // the same records, so the answer is identical and only the route changes.
+            if ((hi - lo) * 20 > records.size) return sumKcalInWindow(records, startS, endS)
             val slice = sorted.subList(lo, hi).sortedBy { it.index }.map { it.value }
             return sumKcalInWindow(slice, startS, endS)
         }

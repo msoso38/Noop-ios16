@@ -135,6 +135,38 @@ class HealthConnectKcalIndexTest {
         assert(compared > 400) { "expected a broad sweep, compared only $compared" }
     }
 
+    /**
+     * The guard against the index being SLOWER than the scan it replaces.
+     *
+     * The lower bound reaches back by the longest record's span, so one record covering the whole
+     * corpus — a weekly or lifetime aggregate row, which providers do write — makes every slice the
+     * entire list. Sorting that per query measured **931 ms against the scan's 113 ms** before the
+     * guard existed: an eightfold regression from an optimisation.
+     *
+     * `KcalIndex` now declines to build itself in that case and routes every query to the scan, which
+     * benchmarks at parity. This test pins the CORRECTNESS of that route — the results must still be
+     * bit-identical, because it is a different code path through the same class.
+     */
+    @Test fun aCorpusSpanningRecordFallsBackWithoutChangingResults() {
+        val recs = ArrayList<KcalRecord>()
+        var t = 0L
+        for (i in 0 until 2_000) { recs.add(KcalRecord(t, t + 900, 12.0, "watch")); t += 900 }
+        recs.add(KcalRecord(0, t, 100.0, "phone"))   // spans the entire corpus
+        val index = KcalIndex(recs)
+        var compared = 0
+        var s = 0L
+        while (s < t) {
+            val expected = sumKcalInWindow(recs, s, s + 3_600)
+            val actual = index.sumInWindow(s, s + 3_600)
+            if (expected == null) assertNull(actual) else {
+                assertEquals("window [$s, ${s + 3_600})", expected, actual!!, 0.0)   // exact
+                compared += 1
+            }
+            s += 45_000L
+        }
+        assert(compared > 20) { "expected a real sweep, compared only $compared" }
+    }
+
     /** A record that ends exactly where the window begins does not overlap it — on both paths. */
     @Test fun touchingBoundariesDoNotOverlap() {
         val recs = listOf(KcalRecord(startS = 0, endS = 100, kcal = 50.0, source = "phone"))
