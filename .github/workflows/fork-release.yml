@@ -229,24 +229,26 @@ jobs:
 
   ios:
     needs: bump
-    # iOS 26 Liquid Glass (glassEffect) needs the iOS 26 SDK → Xcode 26 → macos-26.
-    runs-on: macos-26
+    runs-on: macos-14
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.bump.outputs.sha }}
+      - name: Select Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Force iOS 16 Deployment Target
+        # Automatically patches project.yml to iOS 16 before generation
+        run: sed -i '' 's/deploymentTarget:.*/deploymentTarget: "16.0"/g' project.yml || true
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Build NOOPiOS for device (unsigned, Release)
-        # #53: build RELEASE, not Debug. A Debug build carries get-task-allow + debug artifacts that make a
-        # re-signed sideload fail "integrity could not be verified" on modern iOS; Release (the correct config
-        # for a distributed app) installs clean — confirmed by the reporter's own Release build.
         run: >-
           xcodebuild -scheme NOOPiOS -configuration Release -destination 'generic/platform=iOS'
           -derivedDataPath build/dd
+          IPHONEOS_DEPLOYMENT_TARGET=16.0
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
           build
       - name: Package unsigned .ipa (strip embedded watch app, retain widget extension) + attach
@@ -257,16 +259,12 @@ jobs:
           APP=$(find build/dd/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d | head -1)
           test -n "$APP" || { echo ".app (iphoneos) not found"; exit 1; }
           rm -rf "$APP/Watch"
-          # Keep NOOPWidgets.appex. It renders both the Home/Lock-Screen widgets AND the Live Activity;
-          # deleting PlugIns still lets ActivityKit create an activity, but iOS can only show an empty
-          # Dynamic Island shell because its renderer is gone.
           test -d "$APP/PlugIns/NOOPWidgets.appex" || {
             echo "NOOPWidgets.appex missing from iOS build"; exit 1;
           }
           rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
           zip -qr "NOOP-ios-unsigned-v${VER}.ipa" Payload
-          gh release upload "${{ needs.bump.outputs.tag }}" "NOOP-ios-unsigned-v${VER}.ipa" --repo "$GITHUB_REPOSITORY" --clobber
-
+          gh release upload "${{ needs.bump.outputs.tag }}" "NOOP-ios-unsigned-v${VER}.ipa" --repo "$GITHUB_REPOSITORY" --clobber  
   # Prepend this release to the AltStore / SideStore source manifest — the one AltStore reads from
   # raw.githubusercontent.com/<repo>/main/altstore-source.json (docs/IOS.md) — so a sideload user is
   # offered this version automatically. Replaces the manual per-release altstore-source.json PR (#19).
