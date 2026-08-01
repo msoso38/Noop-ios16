@@ -110,18 +110,6 @@ enum PuffinExperiment {
         !hasOvernightChoice && hasUsedContinuousHrv
     }
 
-    /// The rule behind `continuousHrvOvernightOnlyEnabled`, lifted out so it can be tested without
-    /// touching `UserDefaults`. Twin of the Android `NoopPrefs.continuousHrvOvernightDefault`.
-    ///
-    /// An explicit choice always wins. With no choice recorded, `hasUsedContinuousHrv` decides: someone
-    /// who has been through this screen keeps the always-on behaviour they experienced, a fresh install
-    /// gets overnight-only.
-    static func continuousHrvOvernightDefault(hasExplicitChoice: Bool,
-                                              explicitChoice: Bool,
-                                              hasUsedContinuousHrv: Bool) -> Bool {
-        hasExplicitChoice ? explicitChoice : !hasUsedContinuousHrv
-    }
-
     // MARK: - Power saving (#477), parity with Android NoopPrefs
 
     /// "Power saving" master: battery-adaptive strap-sync cadence. Default off. */
