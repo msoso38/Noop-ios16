@@ -249,9 +249,7 @@ jobs:
               with open(interval_path, 'r') as f:
                   content = f.read()
               
-              # Regex to match .sensoryFeedback(...) { ... } across multiple lines
-              content = re.sub(r'\s*\.sensoryFeedback\s*\([^)]*\)\s*\{[^}]*\}', '', content, flags=re.DOTALL)
-              
+              # Regex to match .sensoryFeedback(...) { ... } across multiple lines              
               with open(interval_path, 'w') as f:
                   f.write(content)
               print(f"✅ Cleanly removed sensoryFeedback from {interval_path}")

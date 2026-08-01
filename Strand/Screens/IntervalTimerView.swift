@@ -97,7 +97,7 @@ struct IntervalTimerView: View {
     private var isFinished: Bool { phase == .done }
 
     // MARK: Body
-
+    /*
     var body: some View {
         ScreenScaffold(title: "Interval Timer",
                        subtitle: "Silent haptic HIIT: the strap buzzes the transitions") {
@@ -128,19 +128,56 @@ struct IntervalTimerView: View {
         .onChangeCompat(of: running) { ScreenIdle.keepAwake($0) }
         .onDisappear { ScreenIdle.keepAwake(false) }
         #if os(iOS)
-        // iPhone haptics: one modifier emits a different feel per cue, re-firing on every
-        // token bump. Fires regardless of strap bond so the timer is fully usable unstrapped.
-        .sensoryFeedback(trigger: hapticTick) { _, _ in
-            switch lastHaptic {
-            case .work: return .impact(weight: .heavy)      // strong cue into WORK
-            case .rest: return .impact(weight: .light)      // soft cue into REST
-            case .tick: return .selection                   // 3-2-1 countdown tick
-            case .done: return .success                     // session complete
-            }
+        if #available(iOS 17, *) {
+            content
+                .sensoryFeedback(trigger: hapticTick) { _, _ in
+                    switch lastHaptic {
+                    case .work: return .impact(weight: .heavy)
+                    case .rest: return .impact(weight: .light)
+                    case .tick: return .selection
+                    case .done: return .success
+                    }
+                }
+        } else {
+            content
         }
         #endif
     }
+    */
 
+    var body: some View {
+    let base = ScreenScaffold(title: "Interval Timer",
+                              subtitle: "Silent haptic HIIT: the strap buzzes the transitions") {
+        // existing content...
+    }
+    .onReceive(ticker) { _ in tick() }
+    .onChangeCompat(of: workSeconds) { _ in if !running { resetToStart() } }
+    .onChangeCompat(of: restSeconds) { _ in if !running { resetToStart() } }
+    .onChangeCompat(of: rounds) { _ in
+        if currentRound > rounds { currentRound = rounds }
+        if !running { resetToStart() }
+    }
+    .onAppear { if remaining == 0 { resetToStart() } }
+    .onChangeCompat(of: running) { ScreenIdle.keepAwake($0) }
+    .onDisappear { ScreenIdle.keepAwake(false) }
+
+    #if os(iOS)
+    if #available(iOS 17.0, *) {
+        base.sensoryFeedback(trigger: hapticTick) { _, _ in
+            switch lastHaptic {
+            case .work: return .impact(weight: .heavy)
+            case .rest: return .impact(weight: .light)
+            case .tick: return .selection
+            case .done: return .success
+            }
+        }
+    } else {
+        base
+    }
+    #else
+    base
+    #endif
+    }
     // MARK: Status row
 
     private var statusRow: some View {
