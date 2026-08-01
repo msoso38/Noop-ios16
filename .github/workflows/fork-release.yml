@@ -241,10 +241,25 @@ jobs:
       - name: Auto-patch iOS 17 code for iOS 16 compatibility
         run: |
           python3 - << 'EOF'
-          import glob, re
+          import re
 
+          # 1. Patch the multi-line .sensoryFeedback block in IntervalTimerView.swift cleanly
+          interval_path = "Strand/Screens/IntervalTimerView.swift"
+          try:
+              with open(interval_path, 'r') as f:
+                  content = f.read()
+              
+              # Regex to match .sensoryFeedback(...) { ... } across multiple lines
+              content = re.sub(r'\s*\.sensoryFeedback\s*\([^)]*\)\s*\{[^}]*\}', '', content, flags=re.DOTALL)
+              
+              with open(interval_path, 'w') as f:
+                  f.write(content)
+              print(f"✅ Cleanly removed sensoryFeedback from {interval_path}")
+          except Exception as e:
+              print(f"⚠️ Could not patch {interval_path}: {e}")
+
+          # 2. Patch two-parameter onChange and initial: true across all files
           files = [
-              "Strand/Screens/IntervalTimerView.swift",
               "Strand/Liquid/LiquidTodayView.swift",
               "StrandiOS/App/RootTabView.swift",
               "Strand/Screens/ScreenScaffold.swift",
@@ -256,13 +271,9 @@ jobs:
                   with open(filepath, 'r') as f:
                       content = f.read()
                   
-                  # 1. Remove .sensoryFeedback modifier entirely (safe to drop for a build)
-                  content = re.sub(r'\s*\.sensoryFeedback\([^)]+\)', '', content)
-                  
-                  # 2. Fix two-parameter onChange: change { old, new in to { new in
+                  # Fix two-parameter onChange: change { old, new in to { new in
                   content = re.sub(r'\{\s*[a-zA-Z0-9_]+\s*,\s*([a-zA-Z0-9_]+\s+in)', r'{ \1', content)
-                  
-                  # 3. Remove 'initial: true' from onChange if present
+                  # Remove 'initial: true' from onChange if present
                   content = re.sub(r',\s*initial:\s*true', '', content)
 
                   with open(filepath, 'w') as f:
