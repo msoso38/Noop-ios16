@@ -14,11 +14,14 @@ struct NOOPProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (NOOPEntry) -> Void) {
-        completion(NOOPEntry(date: Date(), snapshot: WidgetSnapshot.load() ?? .placeholder))
+        let fallback: WidgetSnapshot = context.isPreview ? .placeholder : .unavailable
+        completion(NOOPEntry(date: Date(), snapshot: WidgetSnapshot.load() ?? fallback))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<NOOPEntry>) -> Void) {
-        let snap = WidgetSnapshot.load() ?? .placeholder
+        // Gallery previews use `placeholder(in:)` / getSnapshot's preview branch. A real timeline
+        // with no shared snapshot must show missing data honestly, never plausible sample numbers.
+        let snap = WidgetSnapshot.load() ?? .unavailable
         // Refresh roughly every 15 minutes; the app also forces a reload when it publishes fresh data.
         let next = Calendar.current.date(byAdding: .minute, value: 15, to: Date()) ?? Date().addingTimeInterval(900)
         completion(Timeline(entries: [NOOPEntry(date: Date(), snapshot: snap)], policy: .after(next)))

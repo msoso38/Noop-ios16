@@ -1336,7 +1336,8 @@
       ],
       "appPermissions": {
         "entitlements": [
-          "com.apple.developer.healthkit"
+          "com.apple.developer.healthkit",
+          "com.apple.security.application-groups"
         ],
         "privacy": {
           "NSBluetoothAlwaysUsageDescription": "NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device.",
