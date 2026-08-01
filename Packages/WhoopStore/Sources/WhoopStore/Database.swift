@@ -710,6 +710,22 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "ts"])
             }
         }
+
+        // v32: persist nightly SDNN — the 5-min SDNN index (broad-variability twin of avgHrv=RMSSD),
+        // window-matched to a watch's short SDNN rather than the drift-inflated whole-night SD. Additive,
+        // nullable; computed by HRVAnalyzer.sdnnIndex during the nightly analysis.
+        //
+        // Numbered v32, not v31: upstream took v31 (`v31-deep-capture-channels`) after this branch was
+        // opened. This identifier has never shipped under the v31 spelling — the fork carries it as
+        // `v29-daily-avg-sdnn` (declared there as a fork lineage, precisely because renaming a SHIPPED
+        // identifier makes GRDB read it as un-applied and re-run its body against a schema that already
+        // has the column). Renumbering an unshipped upstream identifier is free; renaming a shipped one
+        // is not, and this is the former.
+        migrator.registerMigration("v32-daily-avg-sdnn") { db in
+            try db.alter(table: "dailyMetric") { t in
+                t.add(column: "avgSdnn", .double)
+            }
+        }
         return migrator
     }
 }
