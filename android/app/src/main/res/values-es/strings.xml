@@ -1732,6 +1732,21 @@
     <string name="l10n_data_sources_screen_last_shared_6bf8389c">"Compartido por última vez "</string>
     <string name="l10n_data_sources_screen_sharing_paused_health_connect_permission_was_e8950315">Uso compartido en pausa: se revocó el permiso de Health Connect. Toca para volver a concederlo.</string>
     <string name="l10n_data_sources_screen_last_share_didn_t_finish_noop_0d6c27f0">El último uso compartido no se completó: NOOP lo reintentará automáticamente.</string>
+    <!-- Optional profile name used to personalize the Today greeting. -->
+    <string name="profile_preferred_name">Nombre</string>
+    <string name="profile_name_placeholder">Opcional</string>
+    <string name="profile_name_accessibility">Nombre, opcional</string>
+    <string name="today_greeting_morning">Buenos días</string>
+    <string name="today_greeting_afternoon">Buenas tardes</string>
+    <string name="today_greeting_evening">Buenas noches</string>
+    <string name="today_greeting_with_name">%1$s, %2$s</string>
+    <string name="today_syncing_accessibility">Sincronizando el historial de la pulsera</string>
+    <plurals name="today_syncing_chunks_accessibility">
+        <item quantity="one">Sincronizando el historial de la pulsera, %1$d bloque</item>
+        <item quantity="other">Sincronizando el historial de la pulsera, %1$d bloques</item>
+    </plurals>
+    <string name="today_strap_battery_accessibility">Batería de la pulsera</string>
+    <string name="today_strap_battery_percent_accessibility">Batería de la pulsera, %1$d por ciento</string>
     <string name="settings_streak_title">Racha</string>
     <plurals name="settings_streak_run">
         <item quantity="one">%1$d día seguido</item>

@@ -1726,4 +1726,23 @@
     <string name="l10n_settings_screen_r22disable_confirm_cancel">仅停止发送</string>
     <string name="l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6">在 WHOOP 5/MG 上所有模式的震动都相同——重复次数不会发送到该手环。你的选择会被保存，并在 WHOOP 4.0 上生效。</string>
     <string name="l10n_app_changelog_water_and_caffeine_from_apple_health_5123b6b0">从 Apple 健康导入饮水与咖啡因、更精确的 Effort 分数，以及 Oura 静息心率修复</string>
+
+    <!-- Today greeting + the optional preferred name, and the header's sync/battery TalkBack labels.
+         手环 is the established term for the strap; the greeting joiner uses a fullwidth comma. -->
+    <string name="profile_preferred_name">姓名</string>
+    <string name="profile_name_placeholder">可选</string>
+    <string name="profile_name_accessibility">姓名，可选</string>
+    <string name="today_greeting_morning">早上好</string>
+    <string name="today_greeting_afternoon">下午好</string>
+    <string name="today_greeting_evening">晚上好</string>
+    <string name="today_greeting_with_name">%1$s，%2$s</string>
+    <string name="today_syncing_accessibility">正在同步手环历史数据</string>
+    <string name="today_strap_battery_accessibility">手环电量</string>
+    <string name="today_strap_battery_percent_accessibility">手环电量 %1$d%%</string>
+
+    <!-- Chinese has a single CLDR plural category, so only `other` is declared; Android uses it for
+         every count. -->
+    <plurals name="today_syncing_chunks_accessibility">
+        <item quantity="other">正在同步手环历史数据，%1$d 个数据块</item>
+    </plurals>
 </resources>

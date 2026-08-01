@@ -4,7 +4,7 @@
 //  This is the FULL Today, re-created faithfully from the locked mockup
 //  (scratchpad/liquid-metal-home.html): sky title + record/add/battery controls,
 //  the three scores as liquid vessels with a card-level source badge, the live heart-rate
-//  thread, the five "your cards" as liquid chips, a greeting + readiness pills,
+//  thread, the five "your cards" as liquid chips, a personalised greeting + readiness pills,
 //  Synthesis, Recovery Vitals, a Key Metrics grid (incl. steps), Last Workouts
 //  and Data Sources. Every value binds to the SAME real data the classic
 //  TodayView reads (accessors verified against TodayView.swift), and every tap
@@ -159,14 +159,14 @@ struct LiquidTodayView: View {
         Self.maxDayOffset(earliestDayKey: repo.freshness.earliestDay,
                           todayKey: Repository.logicalDayKey(Date()))
     }
-    /// The big header title: Today / Yesterday / weekday for older days.
+    /// The big header title: a personalised greeting for today, then Yesterday / weekday for older days.
     private var dayTitle: String {
         switch selectedDayOffset {
-        // #1013: these must localize — the header showed English "Today"/"Yesterday"/weekday even when the
-        // system UI (tab bar etc.) was another language. "Today"/"Yesterday" go through String(localized:)
-        // (matching the classic TodayView.dayNavLabel), and the weekday name is formatted in the user's
-        // locale, not the en_US_POSIX one used only for machine day-keys.
-        case 0: return String(localized: "Today")
+        // #1013: these must localize — the header previously showed English labels even when the system UI
+        // used another language. Today's header composes localized greeting parts, "Yesterday" goes through
+        // String(localized:), and weekday names use the user's locale rather than the en_US_POSIX locale used
+        // only for machine day-keys.
+        case 0: return todayGreeting
         case 1: return String(localized: "Yesterday")
         default:
             return selectedLogicalDay.formatted(.dateTime.weekday(.wide).locale(Locale.autoupdatingCurrent))
@@ -275,7 +275,7 @@ struct LiquidTodayView: View {
                     Color.clear.frame(height: 90) // floating tab-bar clearance
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 30) // sit the title lower into the sky, not jammed under the status bar
+                .padding(.top, NoopMetrics.space4)
             }
             #if os(macOS)
             // Keep the phone-shaped column readable + centred on the wide mac detail pane. The sky is a
@@ -363,32 +363,33 @@ struct LiquidTodayView: View {
 
     static let pullSpace = "liqTodayScroll"
 
-    /// Reserves the revealed space at the top and shows a vessel that fills with the pull, then sloshes
-    /// while the refresh runs. A plain computed property (not a LiveState-isolated leaf) — it doesn't read
-    /// LiveState itself, so it's cheap to re-evaluate as part of the main body. It hands the actual
-    /// visibility decision to `LiquidRefreshIndicator` below, which DOES own LiveState.
+    /// Shows the vessel only while the user is actively pulling. Once released, the header battery control
+    /// owns the compact sync animation so a background offload never inserts space above the greeting.
     private var liquidRefreshIndicator: some View {
-        LiquidRefreshIndicator(pullY: pullY, pullThreshold: pullThreshold, refreshing: refreshing,
-                               liquidHeart: liquidHeart)
+        LiquidRefreshIndicator(pullY: pullY, pullThreshold: pullThreshold, liquidHeart: liquidHeart)
     }
 
     /// Arm the refresh once the pull passes the threshold; FIRE it when the finger releases (the pull
     /// springs back toward zero). Guarded so it can't double-fire or re-trigger mid-refresh.
     private func handlePull(_ y: CGFloat) {
+        guard !refreshing else {
+            pullY = 0
+            return
+        }
         pullY = max(0, y)
-        guard !refreshing else { return }
         if pullY >= pullThreshold, !refreshArmed {
             refreshArmed = true
             pullHaptic &+= 1
         }
         if refreshArmed, pullY < 6 {
             refreshArmed = false
+            pullY = 0
             refreshing = true
             Task {
                 // #334 (iOS twin of Android #426): a pull requests a fresh strap history offload, not just
                 // a UI reload. syncNow() is internally gated (connected + bonded + not-already-backfilling),
-                // so a pull while disconnected or mid-offload safely no-ops. The sync status chip owns the
-                // ongoing offload progress; the pull spinner stays short (the reload below).
+                // so a pull while disconnected or mid-offload safely no-ops. The battery control owns the
+                // ongoing offload progress without moving the page.
                 ble.syncNow()
                 await repo.refresh()
                 await load()
@@ -408,6 +409,8 @@ struct LiquidTodayView: View {
                         Text(dayTitle)
                             .font(StrandFont.rounded(28))
                             .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.8)
                             .shadow(color: .black.opacity(0.4), radius: 10, y: 1)
                         Text(dateLine)
                             .font(StrandFont.caption)
@@ -440,9 +443,12 @@ struct LiquidTodayView: View {
                     // #245: the Liquid header shipped with no sync indication at all (B1) — add it next to
                     // the battery button, matching the issue's own ask ("near the battery percentage") and
                     // the layout Android already uses (its SyncStatusChip sits in the same row as the
-                    // battery ring).
+                    // battery ring). The chip carries the IDLE answer only; while a sync is actually
+                    // running the battery button below becomes the spinner in place and the chip yields
+                    // its space, so the header never grows a second bubble. Twin of Android's
+                    // `SyncChipState.Syncing -> Unit`.
                     LiquidSyncChip()
-                    LiquidBatteryButton()
+                    LiquidBatteryButton(refreshing: refreshing)
                     // One entry point for section order/visibility and both nested card editors.
                     Button { customizationDestination = .today } label: {
                         Image(systemName: "slider.horizontal.3")
@@ -461,7 +467,7 @@ struct LiquidTodayView: View {
             // section block below. The wordmark's bottom pad (10) + the section VStack's 12 spacing keeps
             // the default hero-under-wordmark gap at the original 22.
             LiquidWordmark()
-                .padding(.top, 30)
+                .padding(.top, NoopMetrics.space4)
                 .padding(.bottom, 10)
         }
     }
@@ -696,7 +702,7 @@ struct LiquidTodayView: View {
         .buttonStyle(LiquidPressStyle())
     }
 
-    // MARK: - Synthesis (greeting + readiness pills + one-liner)
+    // MARK: - Synthesis (Today label + readiness pills + one-liner)
 
     /// Liquid parity with classic `effortZeroNote`: the "no cardio load yet" line shown in the synthesis
     /// card when today's Effort is ~0, so a calm day explains itself instead of a bare 0. Reuses classic's
@@ -709,7 +715,9 @@ struct LiquidTodayView: View {
     private var synthesisSection: some View {
         VStack(spacing: 8) {
             HStack {
-                Text(greeting).font(StrandFont.rounded(19)).foregroundStyle(StrandPalette.textPrimary)
+                Text(String(localized: "Today"))
+                    .font(StrandFont.rounded(19))
+                    .foregroundStyle(StrandPalette.textPrimary)
                     .lineLimit(1).minimumScaleFactor(0.6)   // yield to the pills rather than push them to wrap
                 Spacer(minLength: 8)
                 HStack(spacing: 8) {
@@ -1284,11 +1292,16 @@ struct LiquidTodayView: View {
         }
     }
 
-    private var greeting: String {
+    private var timeGreeting: String {
         let h = Calendar.current.component(.hour, from: Date())
         return h < 12 ? String(localized: "Good morning")
             : h < 17 ? String(localized: "Good afternoon")
             : String(localized: "Good evening")
+    }
+
+    private var todayGreeting: String {
+        guard let name = profile.greetingName else { return timeGreeting }
+        return String(format: String(localized: "%@, %@"), timeGreeting, name)
     }
 
     // Measured strap count ?: imported Apple Health count ?: motion estimate — the same precedence the
@@ -1535,50 +1548,18 @@ private struct HeroScoreCell: View {
 
 // MARK: - Scene controls (LiveState-isolated leaves)
 
-/// The liquid pull-to-refresh vessel + a "Syncing…" label. Owns LiveState (isolated leaf, per the file's
-/// convention — see `LiquidLiveHR`) so a live-HR notify doesn't re-render the whole Today, but the vessel
-/// still knows about an ONGOING strap backfill.
-///
-/// Visibility used to be driven only by the local `refreshing` flag, which flips false ~350ms after the
-/// pull releases (once the local repo reload + a short "let the fill read as done" delay complete) — but
-/// `ble.syncNow()` kicks off a real BLE history offload that can run far longer than that. The vessel was
-/// disappearing while the strap was still mid-sync, with no feedback beyond the easy-to-miss header
-/// `SyncStatusChip`. `syncing` now also holds it (and the label) up while `live.backfilling` is true, so
-/// releasing the pull and watching it go away actually means the sync finished.
+/// Pull-distance feedback only. It collapses as soon as the drag is released; sync progress continues in
+/// `LiquidBatteryButton`, in-place, instead of reserving a "Syncing…" band above the Today greeting.
 private struct LiquidRefreshIndicator: View {
     let pullY: CGFloat
     let pullThreshold: CGFloat
-    let refreshing: Bool
     let liquidHeart: Color
-
-    @EnvironmentObject private var live: LiveState
 
     private var progress: CGFloat { min(1, max(0, pullY / pullThreshold)) }
 
-    /// The RAW "a sync is happening" signal. `live.backfilling` toggles false→true between EVERY offload
-    /// chunk (`exitBackfilling` at each HISTORY_END → auto-continue re-kick → `beginBackfill`), with a real
-    /// BLE round-trip gap in between. A deep backlog is now up to ~24 chunks in ONE connection (#594 raised
-    /// the auto-continue cap 6→24), so binding the vessel straight to this strobes it in/out on every chunk
-    /// boundary. The MenuBar header pins a constant height for exactly this reason (see MenuBarContent).
-    private var syncingRaw: Bool { refreshing || live.backfilling }
-
-    /// Debounced visibility that drives the body: goes true INSTANTLY, but only goes false after riding out
-    /// [hideDelay] with no new chunk — so a brief per-chunk `backfilling` gap can't flicker the vessel.
-    @State private var syncing = false
-    @State private var hideTask: Task<Void, Never>?
-    private static let hideDelaySeconds: UInt64 = 3   // comfortably longer than an inter-chunk gap
-
     var body: some View {
         ZStack {
-            if syncing {
-                VStack(spacing: 6) {
-                    LiquidVessel(value: 0.6, tint: liquidHeart, animated: true)
-                        .frame(width: 34, height: 34)
-                    Text("Syncing…")
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textSecondary)
-                }
-            } else if pullY > 2 {
+            if pullY > 2 {
                 LiquidVessel(value: progress, tint: liquidHeart, animated: false)
                     .frame(width: 30, height: 30)
                     .opacity(progress)
@@ -1586,21 +1567,7 @@ private struct LiquidRefreshIndicator: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: syncing ? 64 : min(pullY, pullThreshold * 1.15))
-        .animation(.easeOut(duration: 0.22), value: syncing)
-        .onAppear { syncing = syncingRaw }
-        .onChangeCompat(of: syncingRaw) { raw in
-            hideTask?.cancel()
-            if raw {
-                syncing = true                       // a sync (or pull) is active — show at once
-            } else {
-                // Might just be the gap between two chunks — wait it out; a new chunk cancels this.
-                hideTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: Self.hideDelaySeconds * 1_000_000_000)
-                    if !Task.isCancelled { syncing = false }
-                }
-            }
-        }
+        .frame(height: min(pullY, pullThreshold * 1.15))
     }
 }
 
@@ -1739,6 +1706,8 @@ extension LiquidTodayView {
 
     /// (A3/B2, docs/bugs/2026-07-15-strap-battery-backfill-observability.md)
     enum StrapBatteryDisplay: Equatable {
+        /// An active history offload replaces the battery contents without changing the control's frame.
+        case syncing
         /// No link — say nothing about charge. A stale % is worse than no %.
         case offline
         /// Linked, but no charge reading has landed yet. `charging` is still knowable on its own.
@@ -1746,7 +1715,9 @@ extension LiquidTodayView {
         /// A reading from the current link.
         case charge(pct: Double, charging: Bool)
 
-        static func resolve(connected: Bool, batteryPct: Double?, charging: Bool?) -> StrapBatteryDisplay {
+        static func resolve(connected: Bool, batteryPct: Double?, charging: Bool?,
+                            syncing: Bool = false) -> StrapBatteryDisplay {
+            if syncing { return .syncing }
             guard connected else { return .offline }
             guard let pct = batteryPct else { return .pending(charging: charging == true) }
             return .charge(pct: pct, charging: charging == true)
@@ -1825,12 +1796,24 @@ extension LiquidTodayView {
     }
 }
 
-/// Strap-battery ring. Owns LiveState. Tap → Devices.
+/// Strap-battery ring. During a refresh/history offload it becomes an in-place spinner, preserving the
+/// exact 34pt footprint so syncing never moves the personalized greeting or the Today content. Tap → Devices.
 private struct LiquidBatteryButton: View {
     @EnvironmentObject var live: LiveState
     @EnvironmentObject var router: NavRouter
+    let refreshing: Bool
+
+    /// `backfilling` briefly drops between history chunks. Show immediately, then wait out those gaps so
+    /// the spinner does not flash back to the battery reading several times during one logical sync.
+    @State private var syncing = false
+    @State private var rotation = 0.0
+    @State private var hideTask: Task<Void, Never>?
+    private static let hideDelaySeconds: UInt64 = 3
+
+    private var syncingRaw: Bool { refreshing || live.backfilling }
     private var display: LiquidTodayView.StrapBatteryDisplay {
-        .resolve(connected: live.connected, batteryPct: live.batteryPct, charging: live.charging)
+        .resolve(connected: live.connected, batteryPct: live.batteryPct, charging: live.charging,
+                 syncing: syncing)
     }
     var body: some View {
         Button { router.openDevices() } label: {
@@ -1838,6 +1821,16 @@ private struct LiquidBatteryButton: View {
                 Circle().fill(Color(.sRGB, red: 10 / 255, green: 11 / 255, blue: 16 / 255, opacity: 0.5))
                 Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1)
                 switch display {
+                case .syncing:
+                    Circle()
+                        .stroke(.white.opacity(0.10), lineWidth: 3)
+                        .padding(3)
+                    Circle()
+                        .trim(from: 0.06, to: 0.72)
+                        .stroke(StrandPalette.accent,
+                                style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .rotationEffect(.degrees(rotation - 90))
+                        .padding(3)
                 case .charge(let pct, let charging):
                     Circle()
                         .trim(from: 0, to: max(0.02, min(1, pct / 100)))
@@ -1871,10 +1864,38 @@ private struct LiquidBatteryButton: View {
         }
         .buttonStyle(LiquidPressStyle())
         .accessibilityLabel(batteryAccessibility)
+        .onAppear { syncing = syncingRaw }
+        .onChangeCompat(of: syncingRaw) { raw in
+            hideTask?.cancel()
+            if raw {
+                syncing = true
+            } else {
+                hideTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: Self.hideDelaySeconds * 1_000_000_000)
+                    if !Task.isCancelled { syncing = false }
+                }
+            }
+        }
+        .task(id: syncing) {
+            guard syncing else {
+                rotation = 0
+                return
+            }
+            rotation = 0
+            withAnimation(.linear(duration: 0.85).repeatForever(autoreverses: false)) {
+                rotation = 360
+            }
+        }
+        .onDisappear { hideTask?.cancel() }
     }
     /// Never "Strap battery" alone for a no-reading state — that was indistinguishable from a real one.
     private var batteryAccessibility: String {
         switch display {
+        case .syncing:
+            let n = live.syncChunksThisSession
+            return n > 0
+                ? String(localized: "Syncing strap history, chunk \(n)")
+                : String(localized: "Syncing strap history")
         case .offline:
             return String(localized: "Strap battery, strap not connected")
         case .pending(let charging):
@@ -1908,9 +1929,11 @@ private struct LiquidSyncChip: View {
 
     var body: some View {
         switch SyncChipState.resolve(live: live) {
-        case .syncing(let chunks):
-            pill(system: "arrow.triangle.2.circlepath", text: "\(chunks)",
-                 a11y: String(localized: "Syncing strap history, \(chunks) chunks"))
+        case .syncing:
+            // Active progress belongs in the fixed battery position next to this chip, which spins in
+            // place: one moving element, and the trailing control row keeps its width. Twin of Android's
+            // `SyncChipState.Syncing -> Unit` in `SyncStatusChip`.
+            EmptyView()
         case .synced(let agoText):
             pill(system: "checkmark", text: agoText,
                  a11y: String(localized: "Strap history synced \(agoText) ago"))
