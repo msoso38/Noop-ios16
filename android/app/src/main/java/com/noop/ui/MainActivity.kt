@@ -181,8 +181,9 @@ object NoopPrefs {
 
     /** "Overnight only" refinement of Continuous HRV capture (#927): when on (with [KEY_CONTINUOUS_HRV]),
      *  the dense realtime stream is armed only inside the nightly quiet-hours window (22:00 to 07:00 by
-     *  default, wrap-aware, local wall time) instead of 24/7, roughly halving the battery cost. Default
-     *  OFF, so existing Continuous HRV users keep the always-on behaviour with no migration. Read by
+     *  default, wrap-aware, local wall time) instead of 24/7, roughly halving the battery cost. Defaults
+     *  ON for fresh installs and OFF for anyone who has already used Continuous HRV (#1008), so existing
+     *  users keep the always-on behaviour with no migration. Read by
      *  [com.noop.ble.WhoopBleClient] at every arm site (re-derived at arm time, never cached). */
     const val KEY_CONTINUOUS_HRV_OVERNIGHT = "noop.continuousHrvOvernight"
 
@@ -315,10 +316,44 @@ object NoopPrefs {
         of(context).edit().putBoolean(KEY_CONTINUOUS_HRV, enabled).apply()
     }
 
-    /** Whether Continuous HRV capture arms the stream only inside the nightly window (#927). Default
-     *  false = always-on, the pre-#927 behaviour. */
-    fun continuousHrvOvernight(context: Context): Boolean =
-        of(context).getBoolean(KEY_CONTINUOUS_HRV_OVERNIGHT, false)
+    /**
+     * Whether Continuous HRV capture arms the stream only inside the nightly window (#927).
+     *
+     * Defaults to ON for anyone who has never touched Continuous HRV, and to OFF for anyone who has
+     * (#1008). WHOOP publishes no daytime HRV figure at all — its reading is an overnight one — so a
+     * 24/7 stream has no official-app analogue, and the setting's own copy says overnight-only roughly
+     * halves the battery cost. Making the cheaper, WHOOP-comparable behaviour the one you get by
+     * default is the point; the expensive one stays a deliberate choice.
+     *
+     * The unset case is resolved from whether [KEY_CONTINUOUS_HRV] exists rather than by writing a
+     * migration, because the ONLY thing that must not happen is silently narrowing capture for someone
+     * already relying on it. Presence of that key means the user has been through this screen and
+     * experienced always-on; absence means a fresh install, which gets the new default. A user who
+     * toggled the base setting on and back off keeps always-on too — conservative on purpose, since
+     * they have seen the old behaviour.
+     */
+    fun continuousHrvOvernight(context: Context): Boolean {
+        val prefs = of(context)
+        return continuousHrvOvernightDefault(
+            hasExplicitChoice = prefs.contains(KEY_CONTINUOUS_HRV_OVERNIGHT),
+            explicitChoice = prefs.getBoolean(KEY_CONTINUOUS_HRV_OVERNIGHT, true),
+            hasUsedContinuousHrv = prefs.contains(KEY_CONTINUOUS_HRV),
+        )
+    }
+
+    /**
+     * The rule behind [continuousHrvOvernight], lifted out so it can be tested without a `Context`.
+     * Twin of the Swift `PuffinExperiment.continuousHrvOvernightDefault`.
+     *
+     * An explicit choice always wins. With no choice recorded, [hasUsedContinuousHrv] decides: someone
+     * who has been through this screen keeps the always-on behaviour they experienced, a fresh install
+     * gets overnight-only.
+     */
+    internal fun continuousHrvOvernightDefault(
+        hasExplicitChoice: Boolean,
+        explicitChoice: Boolean,
+        hasUsedContinuousHrv: Boolean,
+    ): Boolean = if (hasExplicitChoice) explicitChoice else !hasUsedContinuousHrv
 
     fun setContinuousHrvOvernight(context: Context, enabled: Boolean) {
         of(context).edit().putBoolean(KEY_CONTINUOUS_HRV_OVERNIGHT, enabled).apply()

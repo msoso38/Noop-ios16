@@ -48,12 +48,42 @@ enum PuffinExperiment {
     /// only inside the nightly window (the reused quiet-hours window convention: minutes since local
     /// midnight, wrap-aware, 22:00 to 07:00 by default) instead of 24/7, roughly halving the battery
     /// cost. Composed with the base toggle so existing users need no migration: base on + this off reads
-    /// ALWAYS (the pre-#927 behaviour). Default OFF. Read by BLEManager at EVERY arm site (re-derived at
+    /// ALWAYS (the pre-#927 behaviour). Defaults ON for fresh installs, OFF once Continuous HRV has been
+    /// used (#1008) — see below. Read by BLEManager at EVERY arm site (re-derived at
     /// arm time, never precomputed; see ContinuousHrvSchedule). Mirrors the Android
     /// `NoopPrefs.KEY_CONTINUOUS_HRV_OVERNIGHT`.
     static let continuousHrvOvernightOnlyKey = "noopContinuousHrvOvernightOnly"
 
-    static var continuousHrvOvernightOnlyEnabled: Bool { UserDefaults.standard.bool(forKey: continuousHrvOvernightOnlyKey) }
+    /// Defaults to ON for anyone who has never touched Continuous HRV, and to OFF for anyone who has
+    /// (#1008). WHOOP publishes no daytime HRV figure at all — its reading is an overnight one — so a
+    /// 24/7 stream has no official-app analogue, and overnight-only roughly halves the battery cost.
+    /// Making the cheaper, WHOOP-comparable behaviour the default is the point; the expensive one stays
+    /// a deliberate choice.
+    ///
+    /// `UserDefaults.bool(forKey:)` cannot express this on its own: it returns `false` for a missing key,
+    /// which is indistinguishable from an explicit off. The unset case is therefore resolved from whether
+    /// `keepRealtimeForDataKey` exists, rather than by writing a migration — the only thing that must not
+    /// happen is silently narrowing capture for someone already relying on it. Twin of the Android
+    /// `NoopPrefs.continuousHrvOvernight`.
+    static var continuousHrvOvernightOnlyEnabled: Bool {
+        let defaults = UserDefaults.standard
+        return continuousHrvOvernightDefault(
+            hasExplicitChoice: defaults.object(forKey: continuousHrvOvernightOnlyKey) != nil,
+            explicitChoice: defaults.bool(forKey: continuousHrvOvernightOnlyKey),
+            hasUsedContinuousHrv: defaults.object(forKey: keepRealtimeForDataKey) != nil)
+    }
+
+    /// The rule behind `continuousHrvOvernightOnlyEnabled`, lifted out so it can be tested without
+    /// touching `UserDefaults`. Twin of the Android `NoopPrefs.continuousHrvOvernightDefault`.
+    ///
+    /// An explicit choice always wins. With no choice recorded, `hasUsedContinuousHrv` decides: someone
+    /// who has been through this screen keeps the always-on behaviour they experienced, a fresh install
+    /// gets overnight-only.
+    static func continuousHrvOvernightDefault(hasExplicitChoice: Bool,
+                                              explicitChoice: Bool,
+                                              hasUsedContinuousHrv: Bool) -> Bool {
+        hasExplicitChoice ? explicitChoice : !hasUsedContinuousHrv
+    }
 
     // MARK: - Power saving (#477), parity with Android NoopPrefs
 
