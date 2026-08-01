@@ -332,28 +332,54 @@ object NoopPrefs {
      * toggled the base setting on and back off keeps always-on too — conservative on purpose, since
      * they have seen the old behaviour.
      */
-    fun continuousHrvOvernight(context: Context): Boolean {
+    fun continuousHrvOvernight(context: Context): Boolean =
+        of(context).getBoolean(KEY_CONTINUOUS_HRV_OVERNIGHT, true)
+
+    /**
+     * One-time migration for the #1008 default flip. Called once at process start, BEFORE anything reads
+     * the setting.
+     *
+     * The default moved from OFF to ON, so an install that predates the change has to be pinned to OFF
+     * explicitly or it would be silently narrowed to overnight-only capture — removing daytime data the
+     * user opted in for. "Predates the change" is read as "has ever toggled Continuous HRV", i.e. the
+     * base key exists.
+     *
+     * Deciding this at READ time instead does not work, and the way it fails is worth recording: the
+     * discriminator would be the base key, which the user's own opt-in creates — so a fresh install
+     * would default to ON, then flip to OFF the moment they enabled Continuous HRV, which is the exact
+     * opposite of the intent. The decision has to be pinned before the user can touch either setting.
+     *
+     * Idempotent: writes only when the overnight key is absent and the base key is present, so it is a
+     * no-op on every launch after the first and on every fresh install.
+     */
+    fun migrateContinuousHrvOvernightDefault(context: Context) {
         val prefs = of(context)
-        return continuousHrvOvernightDefault(
-            hasExplicitChoice = prefs.contains(KEY_CONTINUOUS_HRV_OVERNIGHT),
-            explicitChoice = prefs.getBoolean(KEY_CONTINUOUS_HRV_OVERNIGHT, true),
-            hasUsedContinuousHrv = prefs.contains(KEY_CONTINUOUS_HRV),
-        )
+        if (shouldPinLegacyOvernightDefault(
+                hasOvernightChoice = prefs.contains(KEY_CONTINUOUS_HRV_OVERNIGHT),
+                hasUsedContinuousHrv = prefs.contains(KEY_CONTINUOUS_HRV),
+            )
+        ) {
+            prefs.edit().putBoolean(KEY_CONTINUOUS_HRV_OVERNIGHT, false).apply()
+        }
     }
 
     /**
-     * The rule behind [continuousHrvOvernight], lifted out so it can be tested without a `Context`.
-     * Twin of the Swift `PuffinExperiment.continuousHrvOvernightDefault`.
+     * The migration's decision, lifted out so it is testable without a `Context`. Twin of the Swift
+     * `PuffinExperiment.shouldPinLegacyOvernightDefault`.
      *
-     * An explicit choice always wins. With no choice recorded, [hasUsedContinuousHrv] decides: someone
-     * who has been through this screen keeps the always-on behaviour they experienced, a fresh install
-     * gets overnight-only.
+     * Pin the OLD default only for an install that has used Continuous HRV and never chose an overnight
+     * setting. Everything else is left alone: an explicit choice is already recorded, or the install is
+     * fresh and should take the new default.
+     *
+     * Note what this is NOT keyed on: the READ. An earlier attempt resolved the default at read time
+     * from [hasUsedContinuousHrv], which the user's own opt-in creates — so a fresh install read ON and
+     * then flipped to OFF the moment Continuous HRV was enabled. Running the decision once at launch is
+     * what makes the answer stable, because it is taken before the user can change the inputs.
      */
-    internal fun continuousHrvOvernightDefault(
-        hasExplicitChoice: Boolean,
-        explicitChoice: Boolean,
+    internal fun shouldPinLegacyOvernightDefault(
+        hasOvernightChoice: Boolean,
         hasUsedContinuousHrv: Boolean,
-    ): Boolean = if (hasExplicitChoice) explicitChoice else !hasUsedContinuousHrv
+    ): Boolean = !hasOvernightChoice && hasUsedContinuousHrv
 
     fun setContinuousHrvOvernight(context: Context, enabled: Boolean) {
         of(context).edit().putBoolean(KEY_CONTINUOUS_HRV_OVERNIGHT, enabled).apply()

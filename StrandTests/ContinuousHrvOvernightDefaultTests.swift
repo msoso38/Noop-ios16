@@ -15,28 +15,40 @@ import XCTest
 /// suite is not executed by CI today. The Kotlin twin is, under `testFullDebugUnitTest`.
 final class ContinuousHrvOvernightDefaultTests: XCTestCase {
 
-    /// A fresh install gets the WHOOP-comparable, cheaper default. This is the change.
-    func testFreshInstallDefaultsToOvernightOnly() {
-        XCTAssertTrue(PuffinExperiment.continuousHrvOvernightDefault(
-            hasExplicitChoice: false, explicitChoice: false, hasUsedContinuousHrv: false))
+    /// The case the migration exists for: used the feature, never chose — pin the old default.
+    func testAnExistingContinuousHrvUserIsPinnedToAlwaysOn() {
+        XCTAssertTrue(PuffinExperiment.shouldPinLegacyOvernightDefault(
+            hasOvernightChoice: false, hasUsedContinuousHrv: true))
     }
 
-    /// The regression guard: an existing Continuous HRV user keeps always-on. Narrowing it under them
-    /// would remove the daytime data they opted in for, without asking.
-    func testAnExistingContinuousHrvUserKeepsAlwaysOn() {
-        XCTAssertFalse(PuffinExperiment.continuousHrvOvernightDefault(
-            hasExplicitChoice: false, explicitChoice: false, hasUsedContinuousHrv: true))
+    /// A fresh install is left alone, so the read picks up the new ON default.
+    func testAFreshInstallIsLeftAloneAndTakesTheNewDefault() {
+        XCTAssertFalse(PuffinExperiment.shouldPinLegacyOvernightDefault(
+            hasOvernightChoice: false, hasUsedContinuousHrv: false))
     }
 
-    /// An explicit ON wins over anything the install age would imply.
-    func testAnExplicitOnIsHonoured() {
-        XCTAssertTrue(PuffinExperiment.continuousHrvOvernightDefault(
-            hasExplicitChoice: true, explicitChoice: true, hasUsedContinuousHrv: true))
+    /// An explicit choice is never overwritten, whichever way it points.
+    func testAnExplicitChoiceIsNeverOverwritten() {
+        XCTAssertFalse(PuffinExperiment.shouldPinLegacyOvernightDefault(
+            hasOvernightChoice: true, hasUsedContinuousHrv: true))
+        XCTAssertFalse(PuffinExperiment.shouldPinLegacyOvernightDefault(
+            hasOvernightChoice: true, hasUsedContinuousHrv: false))
     }
 
-    /// An explicit OFF wins too, including on a fresh install — the mirror of the guard above.
-    func testAnExplicitOffIsHonouredEvenOnAFreshInstall() {
-        XCTAssertFalse(PuffinExperiment.continuousHrvOvernightDefault(
-            hasExplicitChoice: true, explicitChoice: false, hasUsedContinuousHrv: false))
+    /// Idempotence, which is what makes it safe to run on every launch.
+    func testTheMigrationIsIdempotent() {
+        XCTAssertTrue(PuffinExperiment.shouldPinLegacyOvernightDefault(
+            hasOvernightChoice: false, hasUsedContinuousHrv: true))
+        XCTAssertFalse(PuffinExperiment.shouldPinLegacyOvernightDefault(
+            hasOvernightChoice: true, hasUsedContinuousHrv: true))
+    }
+
+    /// The sequence that broke the first attempt: resolving the default at READ time from a fact the
+    /// user's own opt-in creates. Running the decision once at launch is what fixes it.
+    func testEnablingContinuousHrvAfterLaunchCannotChangeTheDecision() {
+        XCTAssertFalse(PuffinExperiment.shouldPinLegacyOvernightDefault(
+            hasOvernightChoice: false, hasUsedContinuousHrv: false))
+        XCTAssertTrue(PuffinExperiment.shouldPinLegacyOvernightDefault(
+            hasOvernightChoice: false, hasUsedContinuousHrv: true))
     }
 }
