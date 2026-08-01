@@ -101,3 +101,12 @@ Strand/Oura/OuraSecrets.xcconfig
 
 # Personal bundle id prefix (BYO; never committed)
 Config/BundleIdSecrets.xcconfig
+
+# (#979) The linux-capture workbench moved from `tools/` to `Tools/` when the two case-colliding
+# trees were merged. On a case-SENSITIVE filesystem, any capture a contributor already had stays
+# behind at the old path — where that tool's own .gitignore no longer reaches it. Those files carry
+# HR and timeline, and the .db carries the strap serial, session token and MAC. Keep the legacy path
+# ignored so a leftover capture cannot surface in `git status` and be committed by accident.
+# Scoped to the moved directory rather than all of `tools/`, so a deliberately-new lowercase tree
+# would still be visible instead of silently ignored.
+tools/linux-capture/
