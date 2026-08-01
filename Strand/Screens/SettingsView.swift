@@ -156,6 +156,12 @@ struct SettingsView: View {
     @State private var rawCsvBusy = false
     @State private var lastRawCsvURL: URL?
 
+    /// #646/#651: the "Export raw + log" button's zip build now runs off the main actor, so a second tap
+    /// mid-export would fire a second `exportPair` — two staged zips, two save panels / stacked share
+    /// sheets (see the `present(activityItems:)` #455 comment). Same disable-while-busy guard as
+    /// `rawCsvBusy` above.
+    @State private var rawAndLogBusy = false
+
     /// Passive WHOOP 5/MG optical experiment: the picker writes local timestamp markers into the
     /// durable deep-buffer JSONL. It never calls a BLE write path.
     @State private var showOpticalPhasePicker = false
@@ -1656,9 +1662,20 @@ struct SettingsView: View {
                     // One-tap "matched pair" export (#510): hands a reporter BOTH the raw capture file
                     // and the strap log together (timestamped, same minute) so a protocol-mapping issue
                     // arrives with the frames AND the context that produced them.
-                    NoopButton("Export raw + log", systemImage: "square.and.arrow.up.on.square", kind: .secondary) {
+                    Button {
                         exportRawAndLog()
+                    } label: {
+                        if rawAndLogBusy {
+                            HStack(spacing: NoopMetrics.space1 + 2) {
+                                ProgressView().controlSize(.small)
+                                Text("Exporting…")
+                            }
+                        } else {
+                            Label("Export raw + log", systemImage: "square.and.arrow.up.on.square")
+                        }
                     }
+                    .buttonStyle(NoopButtonStyle(.secondary))
+                    .disabled(rawAndLogBusy)
                     Text("Saves the raw capture and the strap log together as a matched pair. Attach both to a protocol-mapping issue.")
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
@@ -1828,6 +1845,11 @@ struct SettingsView: View {
     /// both stamped with the same `yyMMdd-HHmm` minute so they're obviously a pair. Reuses the existing
     /// export utilities — `FileExport.exportPair` shares both files in one iOS share sheet, and saves
     /// each via its own NSSavePanel on macOS (no new file plumbing).
+    ///
+    /// #646/#651: `exportPair` is now async (its file read + zip build run off the main actor), so this
+    /// launches it in a `Task` — the button action itself stays synchronous from the caller's perspective.
+    /// `rawAndLogBusy` disables the button for the duration: without it a second tap mid-export fires a
+    /// second `exportPair` (two staged zips, two save panels / stacked share sheets).
     private func exportRawAndLog() {
         model.ble.flushPuffinCaptures()
         guard let capture = live.puffinCaptureURL else {
@@ -1837,9 +1859,13 @@ struct SettingsView: View {
             return
         }
         let stamp = FileExport.timestamp()
-        FileExport.exportPair(
-            file: capture, fileSuggestedName: "noop-raw-capture-\(stamp).json",
-            text: live.exportableLogText(), textSuggestedName: "noop-strap-log-\(stamp).txt")
+        rawAndLogBusy = true
+        Task {
+            await FileExport.exportPair(
+                file: capture, fileSuggestedName: "noop-raw-capture-\(stamp).json",
+                text: live.exportableLogText(), textSuggestedName: "noop-strap-log-\(stamp).txt")
+            rawAndLogBusy = false
+        }
     }
 
     #if os(macOS)
