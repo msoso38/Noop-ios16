@@ -1054,6 +1054,123 @@ final class SleepStagerTests: XCTestCase {
             "the persisted+re-expanded band grid drives the H7 confirm end to end")
     }
 
+    // MARK: - Band sleep_state WAKE-veto (recover strap-disputed false wakes)
+
+    /// A hypnogram tiling [0, 960] (32 epochs of 30 s): a leading onset-latency wake block, an INTERIOR
+    /// WASO wake block (epochs 10–15 = [300, 480)), and a trailing final-morning wake block — the exact
+    /// shape the veto must treat differently at the edges vs the interior.
+    private func vetoHypnoFixture() -> [StageSegment] {
+        [ StageSegment(start: 0,   end: 60,  stage: "wake"),    // epochs 0–1  (onset latency)
+          StageSegment(start: 60,  end: 300, stage: "light"),   // epochs 2–9
+          StageSegment(start: 300, end: 480, stage: "wake"),    // epochs 10–15 (interior WASO)
+          StageSegment(start: 480, end: 900, stage: "light"),   // epochs 16–29
+          StageSegment(start: 900, end: 960, stage: "wake") ]   // epochs 30–31 (final wake)
+    }
+    /// One band sample per 30 s epoch carrying the given states (the shape sessionEpochSleepState grids).
+    private func bandSamples(start: Int, _ states: [Int]) -> [(ts: Int, state: Int)] {
+        states.enumerated().map { (ts: start + $0.offset * 30, state: $0.element) }
+    }
+    private func bandAllAsleep(start: Int, end: Int) -> [(ts: Int, state: Int)] {
+        let n = max(1, Int(ceil(Double(end - start) / 30.0)))
+        return (0..<n).map { (ts: start + $0 * 30, state: 2) }
+    }
+
+    func testBandStateWakeVetoRecoversInteriorFalseWake() {
+        // The strap's OWN band reads "asleep" (2) across the WHOLE night. The interior WASO block is
+        // recovered to light (and merges with the flanking light); the leading onset-latency and trailing
+        // final-wake blocks are NEVER touched even though the band scored them asleep too.
+        let out = SleepStager.applyBandStateWakeVeto(vetoHypnoFixture(), start: 0, end: 960,
+                                                     bandSleepState: bandAllAsleep(start: 0, end: 960))
+        XCTAssertEqual(out, [
+            StageSegment(start: 0,   end: 60,  stage: "wake"),
+            StageSegment(start: 60,  end: 900, stage: "light"),
+            StageSegment(start: 900, end: 960, stage: "wake"),
+        ], "interior @81-asleep wake → light (merged); onset-latency + final-wake blocks stay wake")
+    }
+
+    func testBandStateWakeVetoOnlyAsleepStateVetoes() {
+        // Interior wake epochs 10–15 get band states still(1)/up(3)/wake(0) — none is asleep(2) — so NONE
+        // is recovered. (Sleep + edge epochs are asleep(2) but the veto only ever looks at wake epochs, and
+        // the edges are excluded.) The hypnogram is returned byte-identical.
+        var states = [Int](repeating: 2, count: 32)
+        for (k, i) in (10...15).enumerated() { states[i] = [1, 1, 3, 3, 0, 0][k] }
+        let out = SleepStager.applyBandStateWakeVeto(vetoHypnoFixture(), start: 0, end: 960,
+                                                     bandSleepState: bandSamples(start: 0, states))
+        XCTAssertEqual(out, vetoHypnoFixture(),
+                       "still/up/wake band never vetoes — only the strap's explicit asleep(2) does")
+    }
+
+    func testBandStateWakeVetoPartialInteriorRecovery() {
+        // Per-EPOCH: within the interior WASO block, only epochs 10–12 are asleep(2); 13–15 are up(3). The
+        // block splits — [300,390) recovered to light, [390,480) stays wake — proving epoch granularity.
+        var states = [Int](repeating: 2, count: 32)
+        for i in 13...15 { states[i] = 3 }
+        let out = SleepStager.applyBandStateWakeVeto(vetoHypnoFixture(), start: 0, end: 960,
+                                                     bandSleepState: bandSamples(start: 0, states))
+        XCTAssertEqual(out, [
+            StageSegment(start: 0,   end: 60,  stage: "wake"),
+            StageSegment(start: 60,  end: 390, stage: "light"),
+            StageSegment(start: 390, end: 480, stage: "wake"),
+            StageSegment(start: 480, end: 900, stage: "light"),
+            StageSegment(start: 900, end: 960, stage: "wake"),
+        ], "only the asleep-banded sub-run of an interior wake block is recovered")
+    }
+
+    func testBandStateWakeVetoNoOpWhenBandAbsent() {
+        // No band stream (WHOOP 4.0 / unbanded window) → byte-identical hypnogram, whatever the flag.
+        XCTAssertEqual(
+            SleepStager.applyBandStateWakeVeto(vetoHypnoFixture(), start: 0, end: 960, bandSleepState: []),
+            vetoHypnoFixture(), "absent band → veto is a no-op")
+        // Band entirely outside the window grids to empty → also a no-op (never fabricates asleep).
+        XCTAssertEqual(
+            SleepStager.applyBandStateWakeVeto(vetoHypnoFixture(), start: 0, end: 960,
+                                               bandSleepState: [(ts: 100_000, state: 2)]),
+            vetoHypnoFixture())
+    }
+
+    func testBandStateWakeVetoPreservesTilingAndOnlyRemovesWake() {
+        XCTAssertTrue(SleepStager.bandStateWakeVetoEnabled, "band sleep_state veto ships default-ON")
+        let stages = vetoHypnoFixture()
+        let out = SleepStager.applyBandStateWakeVeto(stages, start: 0, end: 960,
+                                                     bandSleepState: bandAllAsleep(start: 0, end: 960))
+        XCTAssertEqual(out.first?.start, 0)
+        XCTAssertEqual(out.last?.end, 960)
+        for i in 1..<out.count {
+            XCTAssertEqual(out[i].start, out[i - 1].end, "segments tile [start,end] with no gaps/overlaps")
+        }
+        let wake: ([StageSegment]) -> Int = { $0.filter { $0.stage == "wake" }.reduce(0) { $0 + ($1.end - $1.start) } }
+        XCTAssertLessThan(wake(out), wake(stages), "the veto only ever turns wake into sleep")
+    }
+
+    func testBandStateWakeVetoRaisesEfficiencyEndToEnd() {
+        // WIRING PROOF through detectSleep: a still overnight night with a mid-sleep motion+HR burst that
+        // NOOP scores as INTERIOR wake. With an all-"asleep" band threaded, that interior wake is
+        // recovered end to end — efficiency rises and no interior wake survives (only onset/final blocks).
+        let start = nightStart(2)                 // 02:00 overnight (skips the daytime nap guard)
+        let dur = 6 * 3600
+        var grav = stillGravity(start: start, durationS: dur)
+        var hr = hrStream(start: start, durationS: dur, bpm: 50)
+        for i in (3 * 3600)..<(3 * 3600 + 5 * 60) {   // 5-min burst at +3h: high motion + elevated HR
+            grav[i] = GravitySample(ts: start + i, x: Double(i % 2) * 0.5, y: 0, z: 1.0)
+            hr[i] = HRSample(ts: start + i, bpm: 95)
+        }
+        let noBand = SleepStager.detectSleep(hr: hr, gravity: grav)
+        XCTAssertEqual(noBand.count, 1)
+        let withBand = SleepStager.detectSleep(hr: hr, gravity: grav,
+                                               bandSleepState: bandAllAsleep(start: start, end: start + dur))
+        XCTAssertEqual(withBand.count, 1)
+        let wake: (SleepSession) -> Int = { $0.stages.filter { $0.stage == "wake" }.reduce(0) { $0 + ($1.end - $1.start) } }
+        XCTAssertLessThanOrEqual(wake(withBand[0]), wake(noBand[0]), "the @81 veto can only reduce wake")
+        XCTAssertGreaterThanOrEqual(withBand[0].efficiency, noBand[0].efficiency,
+                                    "recovering strap-disputed false wake raises efficiency")
+        // With an all-asleep band, every recovered epoch is interior, so any surviving wake is an EDGE block.
+        let segs = withBand[0].stages
+        for (i, s) in segs.enumerated() where s.stage == "wake" {
+            XCTAssertTrue(i == 0 || i == segs.count - 1,
+                          "an all-asleep band leaves no INTERIOR wake — only onset/final-wake blocks")
+        }
+    }
+
     // MARK: - REM-funnel diagnostic (#688)
 
     /// A still, REM-eligible epoch (still + cardiac-activated + irregular resp). The percentile
