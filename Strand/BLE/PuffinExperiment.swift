@@ -146,6 +146,19 @@ enum PuffinExperiment {
 
     static var motionAwareWakeEnabled: Bool { UserDefaults.standard.bool(forKey: motionAwareWakeKey) }
 
+    /// Opt-in "WHOOP MG ECG (experimental)": unlock the gated, user-initiated ECG ("Labrador") probe that
+    /// asks an MG strap to start its ECG subsystem. Default OFF, and OFF is not merely the default — with
+    /// this key false the four ECG opcodes are dropped by the BLEManager allowlist, so no ECG byte can
+    /// reach a strap on a normal install. Additionally gated on a POSITIVELY identified MG
+    /// (`Whoop5Variant.mg`): a plain 5.0 has no electrodes and a 4.0 has neither the hardware nor the
+    /// transport. Every send is still user-initiated and confirmation-gated at the call site.
+    ///
+    /// NOT a medical feature. Whatever the strap returns is unvalidated instrumentation, never a
+    /// diagnosis — see the probe's report text and DISCLAIMER.md.
+    static let ecgKey = "noopWhoop5Ecg"
+
+    static var ecgEnabled: Bool { UserDefaults.standard.bool(forKey: ecgKey) }
+
     /// Every 5/MG-only probe key, in ONE place — the twin of Kotlin's `FIVE_MG_GATED_KEYS`.
     ///
     /// The capture flag deliberately appears here even though it is declared on `PuffinFrameRecorder`
@@ -157,6 +170,10 @@ enum PuffinExperiment {
         defaultsKey,                     // protocol probes
         deepDataKey,                     // R22 deep-data strap write
         broadcastHrKey,                  // broadcast-HR write
+        // MG ECG (Labrador) probe — writes ECG control commands. Swift-only for now: the Android client
+        // takes the ECG decoder but has no ECG app layer, so Kotlin's FIVE_MG_GATED_KEYS has no twin
+        // entry to add. Add one there in the same change that adds an Android probe.
+        ecgKey,
         PuffinFrameRecorder.enabledKey,  // raw frame capture — declared on PuffinFrameRecorder
     ]
 

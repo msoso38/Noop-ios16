@@ -51,6 +51,11 @@ struct SettingsView: View {
     /// BLE sensor for Garmin/Zwift/gym kit. See [PuffinExperiment.broadcastHrKey]. (#181)
     @AppStorage(PuffinExperiment.broadcastHrKey) private var broadcastHrEnabled = false
 
+    /// WHOOP MG ECG ("Labrador") experiment. Unlocks the gated, user-initiated ECG probe on the Devices
+    /// card. Default off; with it off the four ECG opcodes are dropped by the command allowlist, so no
+    /// ECG byte can reach a strap. See [PuffinExperiment.ecgKey].
+    @AppStorage(PuffinExperiment.ecgKey) private var ecgEnabled = false
+
     /// Opt-in "Continuous HRV capture" (off by default) — holds the dense realtime stream armed 24/7 so
     /// the strap banks beat-to-beat R-R for better overnight HRV/recovery/sleep, at a battery cost.
     /// See [PuffinExperiment.keepRealtimeForDataKey].
@@ -1590,6 +1595,42 @@ struct SettingsView: View {
                             .foregroundStyle(StrandPalette.statusWarning)
                             .accessibilityHidden(true)
                         Text("Broadcast HR is ON. Your strap is advertising its heart rate continuously, which keeps its radio hot and drains the battery faster. Turn it off when you're not using it with another device.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.statusWarning)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                }
+
+                Divider().overlay(StrandPalette.hairline)
+
+                // MARK: WHOOP MG ECG (Labrador) — MG-only, writes ECG control commands. NOT medical.
+                Toggle(isOn: $ecgEnabled) {
+                    Text("WHOOP MG ECG capture (experimental)")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                // Turning the switch off also tells the strap to stop, so a stream can't be left running
+                // by a user who simply flips the toggle back. `ecgStopCapture` is deliberately reachable
+                // with the opt-in already off (see BLEManager.ecgStopOverride). When the strap isn't a
+                // connected MG the send can't happen — the Devices "Stop" control then stays offered via
+                // `ecgMayBeRunning` so there is still a route once the link is back.
+                // `reportsResult: false`: switching a setting off must not pop the Devices result sheet.
+                .onChangeCompat(of: ecgEnabled) { on in if !on { model.ecgStopCapture(reportsResult: false) } }
+                Text("The WHOOP MG has ECG electrodes in its clasp. This unlocks a gated, hand-run probe on the Devices screen that asks the strap to start its ECG subsystem and logs whatever comes back. MG only — a plain WHOOP 5.0 has no electrodes, and NOOP will refuse to send unless your strap identifies itself as an MG. Nobody has confirmed a strap honours these commands, so it may simply do nothing. Turn on “Record puffin frames to a file” below first if you want a complete byte-level capture to share.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if ecgEnabled {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(StrandPalette.statusWarning)
+                            .accessibilityHidden(true)
+                        Text("NOOP is not a medical device and this is not an ECG test. Anything the strap reports here — including any heart-rhythm classification it happens to send — is unvalidated instrumentation for protocol research, not a measurement and not a diagnosis. Never use it to make a decision about your health. If you have symptoms or are worried about your heart, talk to a doctor.")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.statusWarning)
                             .fixedSize(horizontal: false, vertical: true)

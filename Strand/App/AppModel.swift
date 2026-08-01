@@ -860,6 +860,21 @@ final class AppModel: ObservableObject {
     func probeFeatureFlags() { ble.probeFeatureFlags() }
     func clearFeatureFlagProbe() { ble.clearFeatureFlagProbe() }
 
+    // WHOOP MG ECG ("Labrador") experimental probe. Every entry point is user-initiated and
+    // confirmation-gated in DevicesView, and BLEManager gates the sends again on the Experimental opt-in
+    // plus a positively-identified MG. Unvalidated instrumentation, never a medical measurement.
+    /// True only for a POSITIVELY identified WHOOP MG — the gate the ECG UI is offered behind.
+    var isWhoop5MG: Bool { ble.isWhoop5MG }
+    /// PERSISTENT strap write, deliberately its own action rather than part of the start flow.
+    func ecgSelectWrist(_ wrist: Whoop5Ecg.WristSelection) { ble.ecgSelectWrist(wrist) }
+    func ecgStartCapture() { ble.ecgStartCapture() }
+    /// `reportsResult: false` for the Settings-toggle path, so switching the experiment off doesn't pop
+    /// the Devices result sheet from another screen.
+    func ecgStopCapture(reportsResult: Bool = true) { ble.ecgStopCapture(reportsResult: reportsResult) }
+    func clearEcgProbe() { ble.clearEcgProbe() }
+    /// True once a start has been sent this session and no stop has completed — keeps the Stop control
+    /// reachable even after the opt-in has been switched back off.
+    var ecgMayBeRunning: Bool { ble.ecgMayBeRunning }
     // #103: READ-ONLY device-config READ probe (121/128) — asks the strap for a key's VALUE, the
     // follow-up to #761's key-NAME enumeration. Writes nothing. User-initiated, Test-Centre-gated in
     // DevicesView.
