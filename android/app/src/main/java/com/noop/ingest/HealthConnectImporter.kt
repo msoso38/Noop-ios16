@@ -413,11 +413,14 @@ object HealthConnectImporter {
             // session that already had a good Active credit keeps it (the estimate is a max, not a
             // replacement).
             //
-            // Cost: two record-list scans per workout, O(workouts × kcal records). That shape is
-            // pre-existing — the old construction-time call scanned the Active list the same way. This
-            // adds the Total list and drops the now-redundant construction scan, so it is 2 scans where
-            // it was 1, not 3. Fine at realistic sizes; if a multi-year import ever makes it hurt, sort
-            // both lists by start and range-scan rather than filtering the whole list each time.
+            // Cost: was two FULL record-list scans per workout, O(workouts × kcal records). At
+            // WINDOW_YEARS = 10 and ~15-minute provider buckets each list runs to hundreds of thousands
+            // of rows, so a first import paid that per workout. Now sorted once into a KcalIndex and
+            // range-scanned per window — the fix the previous version of this comment nominated.
+            // Sorted ONCE for the whole pass, not per workout: two O(n log n) sorts replace the
+            // O(workouts x records) walk the comment above describes.
+            val activeIndex = KcalIndex(activeKcalRecords)
+            val totalIndex = KcalIndex(totalKcalRecords)
             for (i in workouts.indices) {
                 val w = workouts[i]
                 if (w.endTs <= w.startTs) continue
@@ -425,7 +428,7 @@ object HealthConnectImporter {
                 val dayBasal = day?.let {
                     basalKcal(maxSourceDouble(it.totalKcalBySource), maxSourceDouble(it.activeKcalBySource))
                 }
-                val better = workoutKcal(activeKcalRecords, totalKcalRecords, dayBasal, w.startTs, w.endTs)
+                val better = workoutKcal(activeIndex, totalIndex, dayBasal, w.startTs, w.endTs)
                 if (better != null) workouts[i] = w.copy(energyKcal = round1(better))
             }
 
@@ -1018,6 +1021,50 @@ object HealthConnectImporter {
      * grossly over-credits. Returns null when nothing overlaps, so an energy-less session stays blank
      * rather than showing 0. (#117)
      */
+    /**
+     * A start-sorted view of a kcal record list, so a per-workout window query can RANGE-scan instead of
+     * walking the whole list (#835 follow-up).
+     *
+     * The post-pass calls [sumKcalInWindow] twice per workout, and each call scanned every record in the
+     * import window. `WINDOW_YEARS` is 10 and providers write these in ~15-minute buckets, so each list
+     * runs to hundreds of thousands of rows: the shape is O(workouts x records), which the original
+     * comment flagged as "fine at realistic sizes; if a multi-year import ever makes it hurt, sort both
+     * lists by start and range-scan". This is that.
+     *
+     * Correctness rests on one bound: a record overlaps `[startS, endS)` only if it STARTS before `endS`
+     * and ENDS after `startS`. Sorted by start, the first is a binary search. The second needs a floor,
+     * and [maxLenS] supplies it — no record can reach further back than the longest one in the list. The
+     * resulting slice is therefore a SUPERSET of the overlapping records, never a subset.
+     *
+     * It then hands that slice to [sumKcalInWindow] unchanged, so the per-source max, the partial-overlap
+     * proration and the empty/null behaviour are the same code, not a reimplementation of it. The window
+     * arithmetic that decides a calorie figure is not worth duplicating for speed.
+     */
+    internal class KcalIndex(records: List<KcalRecord>) {
+        private val sorted: List<KcalRecord> = records.sortedBy { it.startS }
+        private val maxLenS: Long = sorted.maxOfOrNull { it.endS - it.startS } ?: 0L
+
+        /** First index whose `startS >= value`; `size` when none. Plain lower-bound bisection. */
+        private fun lowerBound(value: Long): Int {
+            var lo = 0
+            var hi = sorted.size
+            while (lo < hi) {
+                val mid = (lo + hi) ushr 1
+                if (sorted[mid].startS < value) lo = mid + 1 else hi = mid
+            }
+            return lo
+        }
+
+        /** Byte-identical to `sumKcalInWindow(allRecords, startS, endS)`, over a narrowed slice. */
+        fun sumInWindow(startS: Long, endS: Long): Double? {
+            if (endS <= startS) return null
+            val lo = lowerBound(startS - maxLenS)
+            val hi = lowerBound(endS)
+            if (hi <= lo) return null
+            return sumKcalInWindow(sorted.subList(lo, hi), startS, endS)
+        }
+    }
+
     internal fun sumKcalInWindow(
         records: List<KcalRecord>,
         startS: Long,
@@ -1058,6 +1105,30 @@ object HealthConnectImporter {
      *
      * Returns null when neither stream yields anything positive — no fabricated number.
      */
+    /**
+     * Index-backed twin of [workoutKcal] for the per-workout post-pass (#835 follow-up). Same
+     * arithmetic — it differs only in how the two windows are gathered. The list-taking overload below
+     * stays as the reference the unit tests pin.
+     */
+    internal fun workoutKcal(
+        activeIndex: KcalIndex,
+        totalIndex: KcalIndex,
+        dayBasalKcal: Double?,
+        startS: Long,
+        endS: Long,
+    ): Double? {
+        if (endS <= startS) return null
+        val fromActive = activeIndex.sumInWindow(startS, endS)
+        val totalInWindow = totalIndex.sumInWindow(startS, endS)
+        val fromTotal = if (totalInWindow != null && dayBasalKcal != null) {
+            val basalShare = dayBasalKcal * ((endS - startS).toDouble() / 86_400.0)
+            (totalInWindow - basalShare).takeIf { it > 0.0 }
+        } else {
+            totalInWindow
+        }
+        return listOfNotNull(fromActive, fromTotal).maxOrNull()?.takeIf { it > 0.0 }
+    }
+
     internal fun workoutKcal(
         activeRecords: List<KcalRecord>,
         totalRecords: List<KcalRecord>,
