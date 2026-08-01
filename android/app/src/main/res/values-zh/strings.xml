@@ -310,6 +310,7 @@
     <string name="l10n_coach_screen_e_g_gpt_4o_1da2e4d2">例如：gpt-4o</string>
     <string name="l10n_coach_screen_enter_any_model_id_the_provider_dce4bbcb">输入该服务商支持的任意模型 ID。</string>
     <string name="l10n_coach_screen_fetch_models_from_provider_6654e1a0">从服务商获取模型列表</string>
+    <string name="l10n_coach_screen_key_header_3f2a9b10">密钥请求头</string>
     <string name="l10n_coach_screen_let_the_coach_use_my_data_405d1188">允许 AI 教练访问我的数据</string>
     <string name="l10n_coach_screen_model_selected_tap_to_change_043056c1">当前模型：%1$s (点击更换)</string>
     <string name="l10n_coach_screen_provider_displayname_model_8b39f761">%1$s · %2$s</string>
@@ -319,6 +320,7 @@
     <string name="l10n_coach_screen_server_url_1d5d1eff">服务器 URL</string>
     <string name="l10n_coach_screen_suggested_prompt_prompt_379c0b15">建议提问：%1$s</string>
     <string name="l10n_coach_screen_thinking_a60d9c9c">思考中…</string>
+    <string name="l10n_coach_screen_use_bearer_for_most_local_servers_4429ab64">大多数本地服务器请使用 Bearer；如果网关要求将密钥放在该请求头中，请使用 x-api-key。</string>
     <string name="l10n_coach_screen_use_model_8d558ce2">使用模型</string>
     <string name="l10n_compare_screen_add_a_metric_to_compare_e6a7c9f1">添加要对比的指标</string>
     <string name="l10n_compare_screen_compare_8d105cf4">数据对比</string>
