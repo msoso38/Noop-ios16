@@ -80,14 +80,20 @@ fun WhatsNewSheet(onClose: () -> Unit) {
                 contentPadding = PaddingValues(20.dp),
                 verticalArrangement = Arrangement.spacedBy(Metrics.sectionGap),
             ) {
-                item(key = "expectations") { ExpectationsCard() }
+                item { ExpectationsCard() }
                 // The newest release is the headline — give it the brand-green wash; the rest stay
-                // frosted-neutral so the latest stands out at a glance. Keyed by version (unique and
-                // stable) so recomposition tracks cards across changes, mirroring the Swift `id`.
-                itemsIndexed(
-                    AppChangelog.releases,
-                    key = { _, release -> release.version },
-                ) { index, release ->
+                // frosted-neutral so the latest stands out at a glance.
+                //
+                // DELIBERATELY UNKEYED. Keys exist so recomposition can track identity when a list
+                // inserts, removes or reorders; [AppChangelog.releases] is a compile-time constant
+                // that cannot change during a session, so a key buys nothing here — and LazyColumn
+                // THROWS on a duplicate key, where the previous forEachIndexed rendered duplicates
+                // without complaint. Keying by version would hand a generated file the power to crash
+                // this screen: the entries are unique today, but appchangelog-gen.py only guards the
+                // NEWEST entry, so a re-released version or a hand-edit would do it. The Swift twin's
+                // `id:` is not a precedent for adding one — SwiftUI's ForEach requires an identifier,
+                // LazyColumn does not.
+                itemsIndexed(AppChangelog.releases) { index, release ->
                     ReleaseCard(release, isLatest = index == 0)
                 }
             }
