@@ -53,8 +53,10 @@ public struct WidgetSnapshot: Codable, Equatable {
     }
 
     public static var placeholder: WidgetSnapshot {
+        // Gallery / pre-publish stand-in: realistic Charge · Effort · Rest on the 0–100 axis so the
+        // three-ring Home Screen layouts (and the large grid) preview with filled arcs, not dashes.
         WidgetSnapshot(recovery: 72, bpm: 58, batteryPct: 84, bonded: true, updated: Date(),
-                       effort: 8, rest: 81, hrv: 64, restingHr: 52)
+                       effort: 38, rest: 81, hrv: 64, restingHr: 52)
     }
 
     /// Read the last-published snapshot from the shared suite, if any.
