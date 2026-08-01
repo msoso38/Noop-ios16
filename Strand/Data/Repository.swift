@@ -1364,10 +1364,12 @@ final class Repository: ObservableObject {
         let steps = useMotionAwareWake
             ? ((try? await store.stepSamples(deviceId: deviceId, from: lo, to: hi, limit: 200_000)) ?? [])
             : []
-        // Opt-in experimental staging (Settings → Experimental · Sleep staging): when the user has flipped
-        // the V2 flag on, re-stage with the cardiorespiratory recipe `SleepStagerV2`; otherwise the default
-        // V1 `SleepStager`. Read once here off the actor; the switch is purely which engine runs over the
-        // already-detected window , V1 stays the default and is untouched. (V7 Pillar 3b)
+        // Which staging engine re-stages this window (Settings → Experimental · Sleep staging). The flag is
+        // **default ON** (#277 promoted V2 over V1; #351 extended it to every strap family), so unless the
+        // user has explicitly turned it OFF this re-stages with the cardiorespiratory recipe `SleepStagerV2`;
+        // turning it off falls back to V1 `SleepStager`. Read once here off the actor; the switch is purely
+        // which engine runs over the already-detected window — detection is identical either way.
+        // (V7 Pillar 3b)
         let useV2 = PuffinExperiment.experimentalSleepV2Enabled
         let segs = await Task.detached(priority: .utility) {
             let staged = useV2

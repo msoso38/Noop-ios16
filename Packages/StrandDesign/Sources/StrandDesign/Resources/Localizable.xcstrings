@@ -2686,7 +2686,7 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Plongez pour lire le VHR de chaque jour en ms."
+            "value": "Survolez pour lire la VFC de chaque jour en ms."
           }
         },
         "pt-PT": {
@@ -2854,7 +2854,7 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "GRADIENTS DE RECOUVREMENT"
+            "value": "GRADIENT DE RÉCUPÉRATION"
           }
         },
         "pt-PT": {

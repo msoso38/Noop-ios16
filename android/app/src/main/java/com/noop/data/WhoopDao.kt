@@ -779,12 +779,24 @@ interface WhoopDao : DeviceRegistryDao {
     /** Max HR sample ts for a device, or null if none — the biometric data frontier.
      *  COALESCEs measured `hrSample` with the v26 PPG-derived `ppgHrSample` (#156) so a PPG-only
      *  offload (a v26 WHOOP 5 night with no measured HR) still advances the frontier, matching the
-     *  Swift reader (Reads.swift latestHrSampleTs). Both persist on the same per-second ts grid. */
+     *  Swift reader (Reads.swift latestHrSampleTs). Both persist on the same per-second ts grid.
+     *
+     *  Each arm is its OWN `SELECT MAX(ts)` rather than one `MAX(ts)` over a `UNION ALL` of the two
+     *  timestamp streams. SQLite's MIN/MAX optimization only fires on a bare `SELECT MAX(col)` that can
+     *  seek the last matching index entry; wrapping the columns in a compound subquery first makes the
+     *  planner materialize it and walk EVERY index entry for the device. Measured on Apple against a
+     *  746 MB store (3.1M hrSample rows) at 4.3–5.8 s for the old shape and 0.01–0.07 s for this one
+     *  (#908); Room is SQLite, so the same plan applies here, and this reader is on paths a user waits
+     *  on — FullDayChartScreen's land-on-the-latest-day effect and DataSourcesScreen's load.
+     *
+     *  Identical answer in every case: each scalar subquery is NULL when that stream has no rows for the
+     *  device, MAX() ignores NULLs, and both-empty stays NULL. Both arms are aliased because Room
+     *  verifies queries at compile time and only the first arm's names survive a compound select. */
     @Query(
-        "SELECT MAX(ts) FROM (" +
-            "SELECT ts FROM hrSample WHERE deviceId = :deviceId " +
+        "SELECT MAX(m) FROM (" +
+            "SELECT (SELECT MAX(ts) FROM hrSample WHERE deviceId = :deviceId) AS m " +
             "UNION ALL " +
-            "SELECT ts FROM ppgHrSample WHERE deviceId = :deviceId)",
+            "SELECT (SELECT MAX(ts) FROM ppgHrSample WHERE deviceId = :deviceId) AS m)",
     )
     suspend fun latestHrSampleTs(deviceId: String): Long?
 

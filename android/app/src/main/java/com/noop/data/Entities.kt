@@ -8,12 +8,19 @@ import androidx.room.Index
  * Room entities mirroring the verified GRDB schema in
  * Packages/WhoopStore/Sources/WhoopStore/Database.swift (+ MetricsCache.swift).
  *
+ * That mirroring is CHECKED, not just described: `SchemaOracleTest` compares the schema Room's processor
+ * generates from these entities against the shared `schema_oracle.json`, and the Swift `SchemaOracleTests`
+ * compares GRDB's `PRAGMA table_info` against the same file. Editing an entity here — adding a column,
+ * reordering fields, changing a type or nullability — fails that test until the GRDB twin lands with it or
+ * the difference is written into the fixture's `divergenceReasons`. The notes below are a reader's summary
+ * of what the oracle enforces.
+ *
  * Natural keys mirror the Swift `ON CONFLICT(...) DO NOTHING` upserts so insert dedupe behaves identically,
  * with ONE deliberate exception noted inline:
  *   - hrSample        PK (deviceId, ts)
  *   - rrInterval      PK (deviceId, ts, rrMs, seq)  // v18: `seq` tiebreaks EQUAL same-second beats.
- *                                                   // Diverges from Swift (still deviceId, ts, rrMs) — see
- *                                                   // the RrInterval doc + PR; Swift needs the same fix.
+ *                                                   // Swift matches since WhoopStore `v24-rr-seq`; this
+ *                                                   // note used to say the fix was still pending there.
  *   - event           PK (deviceId, ts, kind)
  *   - battery         PK (deviceId, ts)
  *   - spo2Sample      PK (deviceId, ts)
@@ -644,6 +651,21 @@ data class LiveSessionRow(
  * existing per-second tables widen rows that were already being written.
  *
  * INSTRUMENTATION ONLY: nothing reads these rows.
+ *
+ * CONSUMER STATUS — deliberately none, stated here so nobody has to re-derive it. The writer is live, but
+ * every `v18AuxSamples` call site on BOTH platforms is a TEST: no analytic, no score, no gate, no UI, no
+ * export reads a row. **Do NOT "clean up" the reader as dead code** — the rows are the point, and the
+ * reader is how they become reachable once a consumer is validated. The same applies to the four named
+ * columns v31/MIGRATION_24_25 added alongside this table (`gravitySample.dynAccel`,
+ * `sleepStateSample.rawByte`, `skinTempSample.aux1Raw/aux2Raw`): they are read into their entities and no
+ * consumer touches the properties, on purpose.
+ *
+ * Why the rows still matter unread: before this migration these fields were not merely unread, they were
+ * DESTROYED — the strap trims its history the moment an offload is acked, so each one was unrecoverable.
+ * This converts permanent loss into retained-but-unread, which is the whole fix and is complete. Fifteen
+ * of the slots are unpinned bytes whose names deliberately assert nothing; wiring them to anything before
+ * a census would be exactly the overclaiming this project has already had to retract. The capture IS the
+ * deliverable. Twin of the Swift `v31-deep-capture-channels` migration note in `Database.swift`.
  */
 @Entity(tableName = "v18AuxSample", primaryKeys = ["deviceId", "ts"])
 data class V18AuxSampleEntity(

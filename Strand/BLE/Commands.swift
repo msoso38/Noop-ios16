@@ -108,6 +108,19 @@ public enum WhoopCommand: UInt8, CaseIterable {
     /// index, so the same frame is repeated to walk the list. Bounded by `FeatureFlagProbe.maxFlags` and
     /// by the strap's own end marker. Driven ONLY by `BLEManager.probeFeatureFlags()`. (#761)
     case sendNextFeatureFlag = 118
+    /// GET_DEVICE_CONFIG_VALUE (121 / 0x79) — ask for ONE device-config value by key name.
+    /// READ-ONLY: nothing on the strap changes. Payload `[0x01]` + the key ASCII NUL-padded to 32 bytes,
+    /// the SET side's own name field minus its value byte. This is the read half of the DEVICE-CONFIG
+    /// namespace — the one `setDeviceConfig`/119 writes and that the #761 enumerate pair (117/118, feature
+    /// flags only) never reached. **May not be implemented in firmware**; establishing that is the point.
+    /// Driven ONLY by `BLEManager.probeDeviceConfigValues()` — user-initiated, Test Centre → Connection
+    /// gated. Parsing lives in `DeviceConfigReadProbe` (pure, unit-tested). (#103, follow-up to #761.)
+    case getDeviceConfigValue = 121
+    /// GET_FF_VALUE (128 / 0x80) — ask for ONE feature-flag value by key name.
+    /// READ-ONLY, same body shape as 121. The read half of the flag surface NOOP has only ever written
+    /// (`setConfig`/120): #761 read the flag NAMES, this reads a named flag's VALUE. **May not be
+    /// implemented in firmware.** Driven ONLY by `BLEManager.probeDeviceConfigValues()`. (#103)
+    case getFeatureFlagValue = 128
     case toggleIMUMode         = 106
     case enableOpticalData     = 107
     /// SET_CONFIG / SET_FF_VALUE (0x78) — write one persistent device feature-flag. Used by the
@@ -178,6 +191,8 @@ public enum WhoopCommand: UInt8, CaseIterable {
         case .getBodyLocationAndStatus:return "Get Body Location And Status"
         case .startFeatureFlagKeyExchange: return "Start Feature-Flag Key Exchange"
         case .sendNextFeatureFlag:   return "Send Next Feature Flag"
+        case .getDeviceConfigValue:  return "Get Device Config Value"
+        case .getFeatureFlagValue:   return "Get Feature Flag Value"
         case .toggleIMUMode:         return "Toggle IMU Mode"
         case .enableOpticalData:     return "Enable Optical Data"
         case .setConfig:             return "Set Config (R22 feature flag)"

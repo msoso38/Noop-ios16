@@ -65,6 +65,8 @@ private struct DevicesContent: View {
     @State private var bodyLocationProbeTarget: PairedDevice?
     /// #761 feature-flag enumeration probe (Test Centre → Connection) — the device whose dialog is open.
     @State private var featureFlagProbeTarget: PairedDevice?
+    /// #103 device-config READ probe (Test Centre → Connection) — the device whose dialog is open.
+    @State private var deviceConfigProbeTarget: PairedDevice?
     /// After removing the ACTIVE device with other devices still paired, prompt to pick a new active one.
     @State private var pickNewActive = false
 
@@ -196,7 +198,10 @@ private struct DevicesContent: View {
                     // range. Nothing is lost: unacked records stay on the strap.
                     onAbortSync: (device.status == .active && live.connected && live.backfilling
                                   && SourceCoordinator.isWhoop(device))
-                        ? { model.ble.abortBackfill() } : nil)
+                        ? { model.ble.abortBackfill() } : nil,
+                    // #103 device-config READ probe: read-only (asks for VALUES, writes none), both
+                    // families. Same Test Centre → Connection gate.
+                    onDeviceConfigProbe: probeGate ? { deviceConfigProbeTarget = device } : nil)
                     .staggeredAppear(index: idx)
             }
 
@@ -301,6 +306,8 @@ private struct DevicesContent: View {
         .modifier(BodyLocationProbeSheets(target: $bodyLocationProbeTarget))
         // #761 feature-flag enumeration probe (confirm + result) — same ViewModifier isolation.
         .modifier(FeatureFlagProbeSheets(target: $featureFlagProbeTarget))
+        // #103 device-config READ probe (confirm + result) — same ViewModifier isolation.
+        .modifier(DeviceConfigProbeSheets(target: $deviceConfigProbeTarget))
         // Second, strongly-worded delete-data confirm (reached from the Remove card's secondary control)
         .alert("Delete all of this device's data?",
                isPresented: Binding(get: { deleteDataTarget != nil },
@@ -491,6 +498,9 @@ private struct DeviceCard: View {
     /// it reads the flag NAMES the strap's firmware knows and writes nothing.
     var onFeatureFlagProbe: (() -> Void)? = nil
     var onAbortSync: (() -> Void)? = nil
+    /// #103 device-config READ probe (Test Centre → Connection, both WHOOP families). Read-only: it asks
+    /// the strap for a config key's VALUE and writes none.
+    var onDeviceConfigProbe: (() -> Void)? = nil
     /// Removed-section affordances (re-add as active / delete its data).
     var onReAdd: (() -> Void)? = nil
     var onDeleteData: (() -> Void)? = nil
@@ -751,6 +761,11 @@ private struct DeviceCard: View {
                 // Test Centre → Connection.
                 if let onFeatureFlagProbe {
                     Button { onFeatureFlagProbe() } label: { Label("Feature-flag probe (#761 RE)…", systemImage: "ladybug") }
+                }
+                // #103 device-config READ probe (RE): read-only VALUE reads, both families.
+                // Test Centre → Connection.
+                if let onDeviceConfigProbe {
+                    Button { onDeviceConfigProbe() } label: { Label("Device-config read probe (#103 RE)…", systemImage: "ladybug") }
                 }
                 if let onRemove {
                     Divider()
@@ -1136,6 +1151,77 @@ private struct FeatureFlagProbeResultView: View {
             if waiting {
                 // Reuses the #592/#690 waiting copy — the walk sends one 118 per reply, so at any moment
                 // it is waiting on exactly one strap reply, and the catalog keeps a single translation.
+                Text("Waiting for the strap's reply…")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            } else {
+                ScrollView {
+                    Text(text)
+                        .font(StrandFont.mono)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                if !waiting {
+                    Button("Copy") { PlatformPasteboard.copy(text) }
+                }
+                Spacer()
+                Button("Close") { onClose() }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 340, minHeight: 260)
+        .background(StrandPalette.surfaceOverlay)
+    }
+}
+
+/// #103: the READ-ONLY device-config read probe's confirm + result dialogs, isolated into a
+/// ViewModifier for the same reason `FeatureFlagProbeSheets` is — keeping the DevicesView
+/// `.confirmationDialog`/`.sheet` chain inside the iOS Swift type-checker's budget.
+private struct DeviceConfigProbeSheets: ViewModifier {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var live: LiveState
+    @Binding var target: PairedDevice?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Device-config read probe (#103 RE)",
+                                isPresented: Binding(get: { target != nil },
+                                                     set: { if !$0 { target = nil } }),
+                                titleVisibility: .visible,
+                                presenting: target) { _ in
+                Button("Send probe (read-only)") { model.probeDeviceConfigValues(); target = nil }
+                Button("Cancel", role: .cancel) { target = nil }
+            } message: { _ in
+                Text("Asks the strap for config VALUES: GET_DEVICE_CONFIG_VALUE (0x79) and GET_FF_VALUE (0x80), one key per round-trip. Both commands may simply not exist in this firmware — finding that out is the point. Read-only — no value is written, and the SET commands are never sent from this probe. The result is shown here and written to the strap log.")
+            }
+            .sheet(isPresented: Binding(get: { live.deviceConfigProbe != nil },
+                                        set: { if !$0 { model.clearDeviceConfigProbe() } })) {
+                DeviceConfigProbeResultView(
+                    text: live.deviceConfigProbe ?? "",
+                    onClose: { model.clearDeviceConfigProbe() })
+            }
+    }
+}
+
+/// The #103 read report (per-verb verdict, the values read, the exchange transcript), or a "waiting…"
+/// state while the plan runs. Selectable text + a Copy button, structurally identical to the #592/#690/
+/// #761 result views. Twin of the Android device-config probe result dialog.
+private struct DeviceConfigProbeResultView: View {
+    let text: String
+    let onClose: () -> Void
+    private var waiting: Bool { text == BLEManager.deviceConfigProbeWaiting }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Device-config read probe result (#103)")
+                .font(StrandFont.title2)
+                .foregroundStyle(StrandPalette.textPrimary)
+            if waiting {
+                // Reuses the #592/#690/#761 waiting copy — the plan sends one read per reply, so at any
+                // moment it is waiting on exactly one strap reply, and the catalog keeps one translation.
                 Text("Waiting for the strap's reply…")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)

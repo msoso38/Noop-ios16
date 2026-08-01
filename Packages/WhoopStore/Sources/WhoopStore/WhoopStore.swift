@@ -56,6 +56,10 @@ private actor StoreOpenGate {
 /// caller's (main) thread; what changed is read/write CONCURRENCY at the SQLite layer, not the
 /// data or the query results.
 public actor WhoopStore {
+
+    /// v18 aux rows banked since the retention sweep last ran, PER DEVICE — the sweep is per device too,
+    /// so a shared counter would let one strap spend another's budget. See `StreamStore`.
+    var v18AuxRowsSincePrune: [String: Int] = [:]
     let dbWriter: any DatabaseWriter
 
     /// Read-only handle to the underlying GRDB writer for the synchronous `DeviceRegistryStore`.

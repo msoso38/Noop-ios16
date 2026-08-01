@@ -17,9 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * version 2 added the v8 journal/workout/appleDaily caches. **v3 (#78)** adds the stepSample table
  * + dailyMetric.steps/activeKcalEst via a REAL additive migration (MIGRATION_2_3), NOT a destructive
  * rebuild, so a user's already-offloaded raw streams survive (the strap trims acked history and won't
- * re-send it). The destructive fallback is deliberately GONE: with exportSchema=false there's no
- * build-time schema check, so a hand-written-SQL mismatch would otherwise SILENTLY wipe that history;
- * without the fallback Room throws loudly instead, and MigrationRoundTripTest guards the SQL in CI.
+ * re-send it). The destructive fallback is deliberately GONE: a hand-written-SQL mismatch would
+ * otherwise SILENTLY wipe that history; without the fallback Room throws loudly instead, and
+ * MigrationRoundTripTest guards the SQL in CI.
  */
 @Database(
     entities = [
@@ -53,7 +53,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         V18AuxSampleEntity::class,
     ],
     version = 25,
-    exportSchema = false,
+    // #775: ON so Room's KSP processor writes the generated schema (every table's exact `CREATE TABLE`,
+    // columns in declaration order with affinity/NOT NULL/default, PK and indices) as JSON. That export
+    // is what lets a plain JVM test — no device, no Robolectric — read Android's REAL schema and compare
+    // it to the shared Room<->GRDB `schema_oracle.json`. Written to the build directory, not the repo
+    // (see `room.schemaLocation` in app/build.gradle.kts). Enabling the export changes NO runtime
+    // behaviour: it emits a build artifact and nothing else. In particular it does NOT reinstate a
+    // destructive migration fallback — the reasoning below stands unchanged.
+    exportSchema = true,
 )
 abstract class WhoopDatabase : RoomDatabase() {
     abstract fun whoopDao(): WhoopDao

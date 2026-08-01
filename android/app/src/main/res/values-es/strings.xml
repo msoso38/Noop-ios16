@@ -94,6 +94,7 @@
     <string name="l10n_backup_sync_screen_restore_3cbe6d6b">Restaurar</string>
     <string name="l10n_backup_sync_screen_restore_from_a_backup_c28917c6">Restaurar desde una copia de seguridad…</string>
     <string name="l10n_backup_sync_screen_roughly_when_the_daily_backup_runs_71de04e1">Roughly cuando la copia de seguridad diaria funciona (mejor esfuerzo - el sistema puede deslizarlo un poco).</string>
+    <string name="l10n_backup_sync_screen_these_backups_are_unencrypted_too_if_53e70fe8">Estas copias de seguridad tampoco están cifradas. Si esta carpeta se sincroniza con Drive, Dropbox o iCloud, el archivo legible también llegará allí: apunte solo a un servicio de confianza.</string>
     <string name="l10n_backup_sync_screen_tip_a_desktop_drive_dropbox_app_2eaff1e3">Consejo: una aplicación de escritorio Drive / Dropbox auto-syncs una carpeta elegida. Por teléfono, ahorre a un</string>
     <string name="l10n_backup_sync_screen_writes_a_fresh_dated_backup_to_bd964fc5">Escribe una copia de seguridad de fecha nueva en tu carpeta una vez al día en el momento siguiente, manteniendo</string>
     <string name="l10n_breathe_screen_a_relaxation_rhythm_not_cardiac_control_5c2f10a8">Un ritmo de relajación, no un control cardíaco. Nunca marca un ritmo por debajo de un nivel seguro y puedes parar cuando quieras. Si tu frecuencia cardíaca no se calma, te lo diremos claramente.</string>
@@ -230,10 +231,21 @@
     <string name="l10n_devices_screen_body_location_probe_690_re_7def8c39">Sonda de posición corporal (#690 RE)…</string>
     <string name="l10n_devices_screen_body_location_probe_result_690_60c5ee79">Resultado de la sonda de posición corporal (#690)</string>
     <string name="l10n_devices_screen_body_location_probe_explainer_a9363239">Envía el comando de posición corporal de solo lectura (0x54) y vuelca la respuesta cruda completa de la banda al registro, decodificando el registro (revisión / posición / confianza / estado) en la WHOOP 4.0. No se escribe nada en la banda y nunca cambia la detección de uso ni la puntuación.</string>
+    <string name="l10n_devices_screen_delete_this_device_s_data_3cae7a2a">Eliminar los datos de este dispositivo…</string>
+    <string name="l10n_devices_screen_disconnect_ed28e068">Desconectar</string>
     <string name="l10n_devices_screen_feature_flag_probe_761_re_21241d68">Sonda de indicadores de función (#761 RE)…</string>
+    <string name="l10n_devices_screen_make_active_75690bb8">Activar</string>
+    <string name="l10n_devices_screen_reboot_probe_4_0_re_828b3916">Sonda de reinicio (4.0 RE)…</string>
+    <string name="l10n_devices_screen_reconnect_6988b16a">Reconectar</string>
+    <string name="l10n_devices_screen_remove_e963907d">Eliminar</string>
+    <string name="l10n_devices_screen_rename_d3f4cb89">Renombrar</string>
+    <string name="l10n_devices_screen_restart_strap_c976cd6c">Reiniciar la correa…</string>
     <string name="l10n_devices_screen_stop_sync_4a1f2b6e">Detener sincronización</string>
     <string name="l10n_devices_screen_feature_flag_probe_result_761_c50ef4d4">Resultado de la sonda de indicadores de función (#761)</string>
     <string name="l10n_devices_screen_feature_flag_probe_explainer_58eec30f">Pide a la banda que enumere los NOMBRES de los indicadores de función que conoce su propio firmware: START_FF_KEY_EXCHANGE (0x75) y luego SEND_NEXT_FF (0x76) hasta que la banda indique que ha terminado. Solo lectura — no se escribe ningún valor y esta sonda nunca envía los comandos SET. La lista se muestra aquí y se escribe en el registro de la banda.</string>
+    <string name="l10n_devices_screen_device_config_read_probe_103_re_837f46de">Sonda de lectura de configuración del dispositivo (#103 RE)…</string>
+    <string name="l10n_devices_screen_device_config_read_probe_result_103_67d02ec9">Resultado de la sonda de lectura de configuración del dispositivo (#103)</string>
+    <string name="l10n_devices_screen_device_config_probe_explainer_dd23169f">Pide a la banda los VALORES de configuración: GET_DEVICE_CONFIG_VALUE (0x79) y GET_FF_VALUE (0x80), una clave por intercambio. Puede que ambos comandos sencillamente no existan en este firmware; averiguarlo es el objetivo. Solo lectura: no se escribe ningún valor y los comandos SET nunca se envían desde esta sonda. El resultado se muestra aquí y se escribe en el registro de la banda.</string>
     <string name="l10n_devices_screen_battery_probe_explainer_2858bb6a">Dos tablas de protocolo independientes discrepan sobre el opcode de batería extendida (98 vs 87). Esto envía el 98 curado y de solo lectura y vuelca la respuesta cruda completa de la banda al registro. Una carga tipo batería confirma 98 en tu firmware; un stub corto lo deja ambiguo. No se escribe nada en la banda. Exporta y comparte el registro después.</string>
     <string name="l10n_devices_screen_cancel_77dfd213">Cancelar</string>
     <string name="l10n_devices_screen_clamped_1f39cebb">%1$s%%</string>
@@ -321,6 +333,7 @@
     <string name="l10n_hydration_screen_kotlin_math_min_100_fraction_100_72f2dfde">%1$s%% del objetivo de hoy</string>
     <string name="l10n_hydration_screen_log_8bf95ea3">Diario</string>
     <string name="l10n_hydration_screen_logged_today_0071a46c">Registrado hoy</string>
+    <string name="l10n_hydration_screen_from_health_connect_4ad037a3">Desde Health Connect</string>
     <string name="l10n_hydration_screen_millilitres_ml_0fb0d2a4">Millilitres (ml)</string>
     <string name="l10n_hydration_screen_no_drinks_logged_yet_tap_sip_cc0d2f72">Aún no hay bebidas registradas. Toca Sorbo, Taza o Botella para empezar.</string>
     <string name="l10n_hydration_screen_no_history_yet_933f417e">Aún no hay historial.</string>
@@ -693,6 +706,11 @@
     <string name="l10n_test_centre_screen_experimental_algorithms_e09581e2">algoritmos experimentales</string>
     <string name="l10n_test_centre_screen_export_f3e4fadb">Exportar</string>
     <string name="l10n_test_centre_screen_export_time_2ca90c2e">Tiempo de exportación</string>
+    <string name="l10n_test_centre_screen_keep_last_exports_44bc65f5">Mantener últimas exportaciones</string>
+    <string name="l10n_test_centre_screen_older_scheduled_exports_beyond_this_c75723fc">Las exportaciones programadas más antiguas que superen este número se eliminan automáticamente, empezando por las más antiguas.</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_54123329">Borrar exportaciones programadas</string>
+    <string name="l10n_test_centre_screen_clear_scheduled_exports_36e93dd0">¿Borrar exportaciones programadas?</string>
+    <string name="l10n_test_centre_screen_this_deletes_every_scheduled_strap_ea52c535">Esto elimina todos los archivos de registro de la correa y de captura en bruto programados que NOOP ha guardado. Esto no se puede deshacer.</string>
     <string name="l10n_test_centre_screen_heads_up_this_test_mode_is_8b82ed69">Cabeza arriba: este modo de prueba está apagado, por lo que el informe no tiene captura para él. Para un</string>
     <string name="l10n_test_centre_screen_hr_from_ppg_sub_lag_interpolation_a3ed1536">HR-from-PPG sub-lag interpolation (v26 gap-fill)</string>
     <string name="l10n_test_centre_screen_hrv_readiness_experimental_924f61bc">HRV preparedness (experimental)</string>
@@ -957,7 +975,6 @@
     <string name="l10n_app_changelog_honest_labelling_for_whoop_5_mg_8c650225">Etiquetas honestas para diagnósticos de datos profundos WHOOP 5/MG</string>
     <string name="l10n_app_changelog_hotfix_making_a_heart_rate_strap_09f87c0a">Hotfix - hacer una correa de corazón activa ya no se bloquea</string>
     <string name="l10n_app_changelog_hr_from_the_optical_waveform_an_b8874b42">Recursos humanos de la forma de onda óptica, una reflujo de día temprano y términos más claros</string>
-    <string name="l10n_app_changelog_hrv_accuracy_fix_oura_sleep_and_4ed31e39">Corrección de la precisión de la VFC, sueño y movimiento de Oura, decodificación 5/MG más completa y sincronización cancelable</string>
     <string name="l10n_app_changelog_hrv_that_reads_true_and_a_2b09fa43">HRV que lee verdad, y una lista de entrenamiento de tidier</string>
     <string name="l10n_app_changelog_import_fixes_both_sources_all_data_92cfed50">Arreglos de importación - ambas fuentes, todos los tipos de datos</string>
     <string name="l10n_app_changelog_import_polish_mac_whoop_5_optical_5067d90c">Esmalte de importación (Mac) + decodificación óptica WHOOP 5</string>
@@ -1005,6 +1022,7 @@
     <string name="l10n_app_changelog_personal_vital_baselines_mac_analytics_parity_744972d1">Bases vitales personales + Paridad analítica de Mac</string>
     <string name="l10n_app_changelog_polish_matched_to_the_iphone_mac_cc34126b">Polaco - compatible con el diseño iPhone &amp;amp; Mac</string>
     <string name="l10n_app_changelog_german_french_spanish_pull_to_sync_1109bda2">Alemán, francés y español, deslizar para sincronizar en Today y una oleada de mejoras</string>
+    <string name="l10n_app_changelog_hrv_accuracy_fix_oura_sleep_and_4ed31e39">Corrección de HRV, sueño y movimiento de Oura, más datos 5/MG y una sincronización que puedes detener</string>
     <string name="l10n_app_changelog_optimal_strain_alerts_faster_history_sync_6488a27a">Avisos de esfuerzo óptimo, sincronización del historial más rápida y una oleada de correcciones de precisión</string>
     <string name="l10n_app_changelog_power_saving_that_protects_your_strap_57a32503">Ahorro de energía que protege su correa, un entrenador con Géminis en Android, y detalles métricos más ricos</string>
     <string name="l10n_app_changelog_raw_spo_honest_units_and_a_55e83a59">Raw SpO2, unidades honestas y una aplicación más ligera</string>
@@ -1337,6 +1355,7 @@
     <string name="l10n_settings_screen_temperature_0a9062a9">Temperatura</string>
     <string name="l10n_settings_screen_test_centre_37b36828">Centro de pruebas</string>
     <string name="l10n_settings_screen_theme_a797e309">Tema</string>
+    <string name="l10n_settings_screen_this_is_a_plain_unencrypted_archive_b0dfe63d">Es un archivo sencillo y sin cifrar: cualquiera que consiga el archivo puede abrirlo con cualquier herramienta zip. Guárdelo en un lugar de confianza.</string>
     <string name="l10n_settings_screen_this_restarts_the_roughly_4_night_c610a93d">Esto reinicia el período de unas 4 noches de construcción de la Carga y tu línea base de VFC. Tu historial se conserva. Úsalo si una mala primera semana, como usarla estando enfermo, desvió tu línea base.</string>
     <string name="l10n_settings_screen_trend_charts_19085c81">Gráficos de tendencias</string>
     <string name="l10n_settings_screen_try_whoop_5_mg_protocol_probes_1d584653">Prueba las sondas del protocolo WHOOP 5/MG</string>
@@ -1538,6 +1557,16 @@
     <string name="action_log_journal">Registrar diario</string>
     <string name="action_breathe">Respira</string>
     <string name="today_latest_workouts">Últimos entrenamientos</string>
+    <string name="today_customize_title">Personalizar Hoy</string>
+    <string name="today_customize_action">Personalizar</string>
+    <string name="today_customize_description">Reordena lo que se muestra o mueve una sección a Ocultos sin eliminarla.</string>
+    <string name="today_customize_shown">VISIBLES</string>
+    <string name="today_customize_hidden">OCULTOS</string>
+    <string name="today_customize_nothing_hidden">No hay nada oculto</string>
+    <string name="today_customize_move_up">Mover %1$s hacia arriba</string>
+    <string name="today_customize_move_down">Mover %1$s hacia abajo</string>
+    <string name="today_customize_hide">Ocultar %1$s</string>
+    <string name="today_customize_show">Mostrar %1$s</string>
     <string name="terms_title">Antes de usar NOOP</string>
     <string name="terms_subtitle">Por favor lea los puntos de abajo, luego confirme cada declaración.</string>
     <string name="terms_point_independent_head">Independiente: no afiliado a WHOOP</string>
@@ -1718,4 +1747,55 @@
     <string name="battery_critical_body">Queda %1$d%%. La correa deja de registrar cerca del 10%% — no captará esta noche si no la carga.</string>
     <string name="battery_bedtime_title">No aguantará la noche</string>
     <string name="battery_bedtime_body">Queda %1$s de registro, pero esta noche necesita alrededor de %2$s. Cárguela antes de acostarse.</string>
+
+    <!-- #867: the three older battery notifications, previously raw Kotlin literals in
+         BatteryAlertNotifier and therefore English in every locale. Wording and translations are the
+         Apple catalog's, moved across unchanged. -->
+    <string name="battery_runtime_title">Batería baja de la pulsera</string>
+    <string name="battery_runtime_body">Autonomía restante en tu WHOOP: %1$s. Recárgalo esta noche.</string>
+    <string name="battery_low_title">Batería baja</string>
+    <string name="battery_low_body">Recarga tu WHOOP antes de esta noche.</string>
+    <string name="battery_full_title">Pulsera completamente cargada</string>
+    <string name="battery_full_body">Tu WHOOP está al 100%.</string>
+
+    <!-- Foreground-service notification (WhoopConnectionService). Always on screen while the strap is
+         connected, and hardcoded English until now: com/noop/ble is outside i18n_audit.py's scan roots,
+         and a NotificationCompat builder chain matches none of its Compose patterns, so the gate could
+         not see it. postNotification's dedupe key now includes the locale — without that, these would
+         keep the previous language until the connection or battery state happened to change. -->
+    <string name="fgs_title_reconnecting">Reconectando con tu WHOOP…</string>
+    <string name="fgs_title_syncing">Sincronizando el historial de la pulsera…</string>
+    <string name="fgs_title_connected">Conectado a tu WHOOP</string>
+    <string name="fgs_detail_streaming">Transmitiendo en segundo plano</string>
+    <string name="fgs_detail_keeping_link">Manteniendo la conexión abierta</string>
+    <string name="fgs_detail_recovery">Recuperación %1$d%%</string>
+    <string name="fgs_detail_battery">Pulsera %1$d%%</string>
+    <string name="fgs_action_disconnect">Desconectar</string>
+    <string name="fgs_channel_name">Conexión de la pulsera</string>
+    <string name="fgs_channel_desc">Se muestra mientras NOOP mantiene tu WHOOP conectado en segundo plano.</string>
+
+    <!-- The remaining notifier titles/bodies, surfaced by extending i18n_audit.py to the
+         notification builders. Same defect as the block above: user-visible, never localised. -->
+    <string name="illness_alert_title">Aviso temprano: tómatelo con calma</string>
+    <string name="inactivity_title">Recordatorio de movimiento</string>
+    <string name="smart_alarm_title">Buenos días</string>
+    <string name="smart_alarm_body">Tu alarma inteligente acaba de sonar.</string>
+    <string name="battery_channel_name">Alertas de batería</string>
+    <string name="battery_channel_desc">Avisos cuando la batería de la pulsera está baja o completamente cargada.</string>
+    <string name="l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650">El ahorro de batería calma los indicadores, notificaciones de Android traducidas y gráficos instantáneos</string>
+    <string name="l10n_health_screen_no_spo_import_or_health_value_408f8c55">Sin importación de SpO₂ ni valor de Health</string>
+    <string name="l10n_health_screen_raw_counts_only_needs_an_import_d0e33552">Solo valores brutos — requiere importación</string>
+    <string name="l10n_settings_screen_turn_deep_data_back_off_r22disable">Volver a desactivar los datos profundos</string>
+    <string name="l10n_settings_screen_r22disable_needs_bond">Necesita el vínculo cifrado completo: cierra primero la app oficial de WHOOP y empareja la pulsera con NOOP (un enlace solo de FC en vivo no puede transportar la escritura).</string>
+    <string name="l10n_settings_screen_r22disable_reason">Escribe el valor de apagado en las 16 marcas y vuelve a leer cada una, para que veas lo que la pulsera guarda en vez de solo que confirmó. El valor de apagado se deduce de la marca que NOOP ya desactiva así para la difusión Garmin; nunca se ha visto en una marca R22, por eso NOOP prueba primero con una sola y se detiene si la pulsera la rechaza. Borrar las marcas no es lo mismo que ver parar los registros profundos: compruébalo sincronizando después.</string>
+    <string name="l10n_settings_screen_r22disable_running">Borrando las marcas R22 y releyendo cada una…</string>
+    <string name="l10n_settings_screen_r22disable_dismiss">Descartar el informe de desactivación</string>
+    <string name="l10n_settings_screen_r22disable_confirm_title">¿Borrar las marcas R22 de la pulsera?</string>
+    <string name="l10n_settings_screen_r22disable_confirm_body">Apagar este interruptor solo impide que NOOP envíe el desbloqueo. Las marcas ya escritas siguen en la pulsera hasta que algo las borre. NOOP puede escribir ahora el valor de apagado en las 16 y releer cada una para que veas lo que la pulsera guarda realmente. Requiere la pulsera conectada y vinculada.</string>
+    <string name="l10n_settings_screen_r22disable_confirm_action">Borrar marcas en la pulsera</string>
+    <string name="l10n_settings_screen_r22disable_confirm_cancel">Solo dejar de enviar</string>
+    <string name="l10n_settings_screen_r22_accepted_all">✓ La pulsera aceptó las %1$d marcas R22</string>
+    <string name="l10n_settings_screen_r22_accepted_partial">La pulsera aceptó %1$d/%2$d marcas R22…</string>
+    <string name="l10n_notifications_settings_screen_every_pattern_buzzes_the_same_on_34e873f6">En una WHOOP 5/MG todos los patrones vibran igual: el número de repeticiones no se envía a esa correa. Tu elección se guarda y se aplica a una WHOOP 4.0.</string>
+    <string name="l10n_app_changelog_water_and_caffeine_from_apple_health_5123b6b0">Agua y cafeína desde Apple Health, una puntuación de Effort más precisa y una corrección del pulso en reposo de Oura</string>
 </resources>

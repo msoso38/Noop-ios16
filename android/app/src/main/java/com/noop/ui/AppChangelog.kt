@@ -26,7 +26,7 @@ object AppChangelog {
      * Bump this when you add a release below. The "What's New" sheet shows automatically when the
      * stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
      */
-    const val CURRENT_VERSION = "9.2.0"
+    const val CURRENT_VERSION = "9.3.0"
 
     data class Release(
         val version: String,
@@ -37,6 +37,30 @@ object AppChangelog {
 
     /** Newest first. */
     val releases: List<Release> = listOf(
+        Release(
+            version = "9.3.0",
+            title = uiString(R.string.l10n_app_changelog_water_and_caffeine_from_apple_health_5123b6b0),
+            date = "July 2026",
+            items = listOf(
+                "**Water and caffeine import themselves (#949).** Log a drink in Apple Health or Health Connect and it shows up in NOOP, kept in its own row so it can never overwrite what you typed by hand. iPhone will ask permission once for the two new data types.",
+                "**Effort is measured more honestly (#963, #983).** Every heart-rate sample is now weighted by its own gap rather than the window's first one, and a saved workout is scored against your measured resting heart rate instead of a hardcoded 60. Your Effort numbers will move — in either direction — including for past days.",
+                "**Oura days no longer spike to 90+ resting heart rate (#375).** A nap or a short fragment could outrank the real night and claim the whole day's numbers. Re-import your Oura history to correct days already stored.",
+                "**Sleep staging can't jump from awake to deep (#348).** A transition no scorer should ever emit is now forbidden outright, which is the part of a larger staging change that survived a clean benchmark.",
+                "**The Updates page scrolls, and its release row opens (#984).** Older entries were unreachable and tapping \"what's new\" did nothing but mark it read, so it looked like the entry had been deleted.",
+            ),
+        ),
+        Release(
+            version = "9.2.1",
+            title = uiString(R.string.l10n_app_changelog_battery_saver_quiets_the_gauges_translated_bdbe8650),
+            date = "July 2026",
+            items = listOf(
+                "**Battery saver stops the animation (#909).** Turn on Low Power Mode or battery saver and the live gauges, sky and pulsing dots settle into a single still frame. On iPhone that was measured at ~18% of a CPU core with the screen just sitting idle, and 0% posed still. It switches the moment you flip the setting — no restart.",
+                "**Android notifications are translated (#867).** Every notification the app sends shipped in English no matter your language — the always-on connection notice, all five battery alerts, the illness, move and smart-alarm alerts, and both notification categories in system settings. All of them now speak German, Spanish, French, Portuguese and Chinese.",
+                "**Today and the day chart open instantly on a long history (#908).** Finding your most recent reading walked every heart-rate row for the strap. On a large store that took four to six seconds every time the screen opened; it now takes hundredths of a second.",
+                "**The pulsing connection dot honours \"Remove animations\" (#909).** It kept pulsing regardless. It doesn't now.",
+                "**Strap logs name every command (#891).** An Android strap log showed a bare `0x8B(139)` where iPhone showed the command's name, and neither platform said whether a command had actually succeeded. Both now do — which is what makes a pasted log useful to anyone reading it.",
+            ),
+        ),
         Release(
             version = "9.2.0",
             title = uiString(R.string.l10n_app_changelog_hrv_accuracy_fix_oura_sleep_and_4ed31e39),

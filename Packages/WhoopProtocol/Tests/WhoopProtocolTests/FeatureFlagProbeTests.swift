@@ -430,7 +430,12 @@ final class FeatureFlagProbeTests: XCTestCase {
         XCTAssertEqual(report.render(), golden)
     }
 
-    func testAnnouncedCountWithNoNamesIsSaidPlainly() {
+    /// The 117 answer landed and then nothing did: `BLEManager.probeFeatureFlags()` sends 118, the 8s
+    /// timer fires, and the report renders with zero SEND_NEXT replies. "Named none" would be a claim
+    /// about the strap's key list that this run's own inputs cannot support — the list was never read.
+    /// Same class as the `skipped > 0` branch beside it: never report our limitation as the strap's
+    /// behaviour.
+    func testAnnouncedCountWithNo118ReplyIsInconclusiveNotBlamedOnTheStrap() {
         var report = FeatureFlagProbeReport(family: .whoop5)
         let start = whoop5Response(cmd: 117, payload: payload(result: 1, record: [0x01, 0x05, 0x00]))
         guard case .success(let s) = FeatureFlagProbe.parseStart(frame: start, family: .whoop5) else {
@@ -438,6 +443,43 @@ final class FeatureFlagProbeTests: XCTestCase {
         }
         report.noteStart(s)
         report.noteTimeout(command: 118, seconds: 8)
+
+        XCTAssertEqual(report.steps, 0, "no SEND_NEXT reply was decoded")
+        let v = report.verdict
+        XCTAssertEqual(v, "strap announced 5 flag(s); no SEND_NEXT_FF(118) reply was decoded — "
+                       + "the key list was never read (inconclusive)")
+        XCTAssertFalse(v.contains("named none"),
+                       "must not report our own timeout as the strap serving no names")
+    }
+
+    /// A 118 reply that DID land and carried no name is the opposite case: the strap walked its own
+    /// cursor straight to the end marker, so "named none" is a fact about the strap and is said plainly.
+    func testAnnouncedCountWithARealEmptyWalkIsSaidPlainly() {
+        var report = FeatureFlagProbeReport(family: .whoop5)
+        let start = whoop5Response(cmd: 117, payload: payload(result: 1, record: [0x01, 0x05, 0x00]))
+        guard case .success(let s) = FeatureFlagProbe.parseStart(frame: start, family: .whoop5) else {
+            return XCTFail("start")
+        }
+        report.noteStart(s)
+        XCTAssertFalse(report.noteNext(FeatureFlagProbe.NextResponse(
+            resultCode: 1, revision: 1, index: 0xFF, validKey: false, key: nil)))
+
+        XCTAssertEqual(report.steps, 1)
+        XCTAssertEqual(report.keys, [])
+        XCTAssertEqual(report.skipped, 0)
         XCTAssertEqual(report.verdict, "strap announced 5 flag(s) but named none")
+    }
+
+    /// The count itself is the strap's claim, not a measurement. `noteStart` already marks an implausible
+    /// one in the trace; the verdict is the line that gets pasted into an issue, so it carries the doubt
+    /// too rather than restating the number as bare fact.
+    func testImplausibleAnnouncedCountIsNotRestatedAsFactInTheVerdict() {
+        var report = FeatureFlagProbeReport(family: .whoop5)
+        report.noteStart(FeatureFlagProbe.StartResponse(resultCode: 1, revision: 1, count: 9999))
+        report.noteTimeout(command: 118, seconds: 8)
+
+        let v = report.verdict
+        XCTAssertTrue(v.contains("an implausible 9999 flag(s)"), v)
+        XCTAssertTrue(v.contains("(inconclusive)"), v)
     }
 }

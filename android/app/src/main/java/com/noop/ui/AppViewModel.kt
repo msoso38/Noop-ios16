@@ -937,8 +937,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         // report ships proof of what was computed per day. Mirrors the macOS sink wired to
                         // live.append(log:). (Sleep overhaul §2.5.)
                         diag = { line -> ble.externalLog(line) },
-                        // Opt-in experimental sleep staging (V2) — read off SharedPreferences here (the
-                        // analytics layer is Context-free) and thread it into the sleep self-heal. (V7 3b)
+                        // Experimental sleep staging (V2) — read off SharedPreferences here (the analytics
+                        // layer is Context-free) and thread it into the sleep self-heal. The preference is
+                        // default TRUE, so this normally passes V2. (V7 3b)
                         useExperimentalSleepV2 = PuffinExperiment.from(appContext).experimentalSleepV2,
                         // Opt-in motion-aware wake refinement (#364 follow-up) — same Context-free threading.
                         useMotionAwareWake = PuffinExperiment.from(appContext).motionAwareWake,
@@ -1348,12 +1349,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val endMs = System.currentTimeMillis()
         val avg = if (samples.isNotEmpty()) samples.sumOf { it.bpm } / samples.size else null
         val peak = if (samples.isNotEmpty()) samples.maxOf { it.bpm } else null
+        // #983: score the SAVED workout with the wearer's measured resting HR, not the hardcoded
+        // default of 60. %HRR is (bpm - resting) / (max - resting), so the default moves every zone
+        // boundary — at 136 bpm with maxHR 190 it is the difference between zone 1 and zone 2. Today's
+        // Effort and the manual rescore (#972) already thread this, so the stored number used to
+        // disagree with its own re-score. Read once here, at save time; the live readout during the
+        // session is a transient running estimate and deliberately left alone.
+        val restingHR = _today.value?.restingHr?.toDouble() ?: StrainScorer.defaultRestingHR
         val strain = if (samples.size >= 2)
-            StrainScorer.strain(samples, maxHR = profileStore.hrMax.toDouble(), sex = profileStore.sex) else null
+            StrainScorer.strain(samples, maxHR = profileStore.hrMax.toDouble(),
+                restingHR = restingHR, sex = profileStore.sex) else null
         // Estimate calories from the captured HR window (same Keytel/Harris–Benedict model the
         // auto-detector uses) so a manual session shows energy too, not just duration/strain. (#117)
         val energyKcal = if (samples.size >= 2)
-            Calories.estimateBoutCalories(samples, currentProfile(), profileStore.hrMax.toDouble(), null)
+            // #983: same measured resting HR as the strain above, not null. The calories model's
+            // active-vs-resting threshold sits at resting + 30% HRR, so the default silently shifts what
+            // counts as active — and #972 already threads it in the rescore path, so leaving it null here
+            // meant a saved workout's kcal disagreed with its own re-score just as its Effort did.
+            Calories.estimateBoutCalories(samples, currentProfile(), profileStore.hrMax.toDouble(), restingHR)
                 .first.takeIf { it > 0 }
         else null
         val row = WorkoutRow(
@@ -1544,8 +1557,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // would re-score + persist every night's HRV over the WHOLE night, silently overwriting the
                 // deep-window value (the "deep sleep window changes nothing" bug).
                 deepHrvWindow = UnitPrefs.hrvWindow(appContext) == HrvWindow.DEEP_SLEEP,
-                // Opt-in experimental sleep staging (V2) — same flag the 15-min loop reads, so a manual
-                // re-score after an edit stages with the same engine the user chose. (V7 Pillar 3b)
+                // Experimental sleep staging (V2) — same flag the 15-min loop reads (default TRUE), so a
+                // manual re-score after an edit stages with the same engine the user chose. (V7 Pillar 3b)
                 useExperimentalSleepV2 = PuffinExperiment.from(appContext).experimentalSleepV2,
                 // Opt-in motion-aware wake refinement (#364 follow-up) — same flag the 15-min loop reads.
                 useMotionAwareWake = PuffinExperiment.from(appContext).motionAwareWake,
@@ -1885,6 +1898,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val featureFlagProbe = ble.featureFlagProbe
 
     fun clearFeatureFlagProbe() = ble.clearFeatureFlagProbe()
+
+    /** #103: READ-ONLY device-config READ probe (GET_DEVICE_CONFIG_VALUE/121 + GET_FF_VALUE/128) — asks
+     *  the strap for a config key's VALUE, the follow-up to #761's key-NAME enumeration. Writes nothing.
+     *  User-initiated, Test-Centre-gated in DevicesScreen; the report goes to the dialog + strap log. */
+    fun probeDeviceConfigValues() = ble.probeDeviceConfigValues()
+
+    /** #103 probe report text (null until the plan finishes; waiting sentinel while it runs). */
+    val deviceConfigProbe = ble.deviceConfigProbe
+
+    fun clearDeviceConfigProbe() = ble.clearDeviceConfigProbe()
 
     /**
      * Flip the "keep connected in the background" preference (driven by Settings). Turning it on
