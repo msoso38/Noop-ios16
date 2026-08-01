@@ -13,6 +13,8 @@ struct ImportedSleepFigures: Equatable {
     var consistencyPct: Double?   // "sleep_consistency", 0–100
     var needMin: Double?          // "sleep_need_min", minutes
     var debtMin: Double?          // "sleep_debt_min", minutes
+    /// Original export duration, retained when an edited daily row replaces its sleep fields.
+    var originalSleepMin: Double?
 }
 
 // MARK: - Cross-source resolver model (PR#196 , fresher live charts/metrics)
@@ -163,6 +165,28 @@ final class Repository: ObservableObject {
     /// canonical computed sibling. Same dedup rule as `importedReadIds`.
     var computedReadIds: [String] {
         computedDeviceId == canonicalComputedId ? [computedDeviceId] : [computedDeviceId, canonicalComputedId]
+    }
+
+    /// Every namespace that can own a sleep row currently visible in the app, in the order a write probes
+    /// them.
+    ///
+    /// `CachedSleepSession` intentionally has no device id, so a write that starts from a merged Sleep-tab
+    /// row must resolve its owner across the same active-plus-canonical union the reads use. Otherwise a
+    /// historical night under the canonical source after a strap re-add looks editable but its save is a
+    /// no-op.
+    ///
+    /// Order is STRICTLY ADDITIVE over the pre-union behaviour: the ACTIVE strap's two namespaces keep the
+    /// exact order they were probed in before (computed, then imported), and the canonical pair is appended
+    /// only as a fallback that previously was not probed at all. Probing a canonical namespace ahead of the
+    /// active imported one would demote a live row below a historical twin and could redirect an edit to a
+    /// coincidental same-`detectedStartTs` row — the failure the single-fallback chain was written to avoid.
+    private var sleepOwnerIds: [String] {
+        var ids: [String] = []
+        for id in [computedDeviceId, deviceId, canonicalComputedId, canonicalDeviceId]
+        where !ids.contains(id) {
+            ids.append(id)
+        }
+        return ids
     }
 
     /// True when the ACTIVE strap is an Oura ring, resolved from its registry id prefix against the canonical
@@ -731,18 +755,23 @@ final class Repository: ObservableObject {
             for p in cons { fig[p.day, default: ImportedSleepFigures()].consistencyPct = p.value }
             for p in need { fig[p.day, default: ImportedSleepFigures()].needMin = p.value }
             for p in debt { fig[p.day, default: ImportedSleepFigures()].debtMin = p.value }
-            // H5 (#509): a night the user hand-edited (userEdited) must keep its corrected sleep figures even
-            // when a WHOOP/Apple import also covers that day. The computed ("-noop") session carries the edit,
-            // and IntelligenceEngine re-keys the computed DAILY row from it; collect those edited days so the
-            // merge lets the computed row's SLEEP fields win there (imports still win on every un-edited day).
-            let editedDays = Self.userEditedDays(compSleep)
+            for day in imported where (day.totalSleepMin ?? 0) > 0 {
+                fig[day.day, default: ImportedSleepFigures()].originalSleepMin = day.totalSleepMin
+            }
+            // A user correction can live in either the computed or imported namespace. Merge the displayed
+            // sessions first, then use their corrected stages to overlay the affected daily sleep fields.
+            // This keeps the Sleep tab, its debt ledger, and the dashboard on the same edited night even when
+            // no raw data exists to produce a computed daily row (for example a historical WHOOP import).
+            let mergedSleeps = Self.mergeSleep(imported: impSleep, computed: compSleep)
+            let editedDays = Self.userEditedDays(mergedSleeps)
+            let mergedDays = Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays)
             return MergedCaches(
                 importedSleep: fig,
                 days: Self.mergeActivityFileSteps(
-                    into: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
+                    into: Self.applyingEditedSleepSessions(mergedSleeps, to: mergedDays),
                     activityFile
                 ),
-                sleeps: Self.mergeSleep(imported: impSleep, computed: compSleep),
+                sleeps: mergedSleeps,
                 vitalRows: Self.sourceRows(imported: imported, computed: computed, apple: apple),
                 freshness: Self.computeFreshness(imported: imported, computed: computed, apple: apple,
                                                  importedSleeps: impSleep, computedSleeps: compSleep))
@@ -858,16 +887,93 @@ final class Repository: ObservableObject {
         return byDay.values.sorted { $0.day < $1.day }
     }
 
+    /// The LOCAL wake-day a sleep session belongs to, keyed exactly as `DailyMetric.day` is.
+    ///
+    /// The zone offset is resolved AT the session's own end instant, never at "now": a single current-zone
+    /// offset applied across history mis-keys any night recorded under the other side of a DST switch, which
+    /// is the mis-attribution the local-day keying fixed (the Swift half of #406; mirrors the Android #304
+    /// fix pinned by MergeSleepLocalDayTest). One definition so every consumer , `userEditedDays`,
+    /// `mergeSleep` and the edited-day overlay , keys identically and cannot drift apart.
+    nonisolated static func sleepEndDayKey(_ s: CachedSleepSession) -> String {
+        let offsetSec = TimeZone.current.secondsFromGMT(for: Date(timeIntervalSince1970: TimeInterval(s.endTs)))
+        return AnalyticsEngine.dayString(s.endTs, offsetSec: offsetSec)
+    }
+
     /// The set of LOCAL wake-days that carry a user-edited sleep session , keyed exactly as
     /// `DailyMetric.day` is (the engine's cached-offset local-day keyer, matching `mergeSleep.endDay`).
     /// Drives the H5 edit-merge precedence in `mergeDaily`.
     nonisolated static func userEditedDays(_ sessions: [CachedSleepSession]) -> Set<String> {
-        var days = Set<String>()
-        for s in sessions where s.userEdited {
-            let offsetSec = TimeZone.current.secondsFromGMT(for: Date(timeIntervalSince1970: TimeInterval(s.endTs)))
-            days.insert(AnalyticsEngine.dayString(s.endTs, offsetSec: offsetSec))
+        Set(sessions.filter(\.userEdited).map(sleepEndDayKey))
+    }
+
+    /// Resolves a night's debt after a manual edit. The exported debt remains the baseline, adjusted by
+    /// the exact change in asleep minutes. Old imports without an original duration keep the existing
+    /// need-minus-asleep approximation.
+    nonisolated static func resolvedSleepDebtMinutes(imported: ImportedSleepFigures?,
+                                                     actualSleepMin: Double?,
+                                                     fallbackNeedMin: Double,
+                                                     isUserEdited: Bool) -> Double? {
+        if let debt = imported?.debtMin, !isUserEdited { return debt }
+        guard let actualSleepMin, actualSleepMin > 0, fallbackNeedMin > 0 else { return nil }
+        if isUserEdited,
+           let debt = imported?.debtMin,
+           let originalSleepMin = imported?.originalSleepMin,
+           originalSleepMin > 0 {
+            return Swift.max(0, debt + originalSleepMin - actualSleepMin)
         }
-        return days
+        return Swift.max(0, fallbackNeedMin - actualSleepMin)
+    }
+
+    /// Rebuild the sleep-only fields for days with a manually corrected session. Historical imports have no
+    /// raw streams, so `IntelligenceEngine` cannot always create a computed daily row after an edit; deriving
+    /// this overlay from the stored, re-clipped stages makes the edited duration immediately authoritative.
+    nonisolated static func applyingEditedSleepSessions(_ sessions: [CachedSleepSession],
+                                                        to days: [DailyMetric]) -> [DailyMetric] {
+        guard sessions.contains(where: \.userEdited) else { return days }
+        // Scalar current-zone offset for the ANALYTICS calls only (the main-night pick and the habitual
+        // learner read a local time-of-day, matching every other caller of these APIs). Day KEYS must not
+        // use it , see `sleepEndDayKey`.
+        let offsetSec = TimeZone.current.secondsFromGMT()
+        let habitualBlocks = sessions.compactMap { session -> SleepStageTotals.HistoryBlock? in
+            let start = session.effectiveStartTs, end = session.endTs
+            guard end > start else { return nil }
+            let midpoint = start + (end - start) / 2
+            let midpointOffsetSec = TimeZone.current.secondsFromGMT(
+                for: Date(timeIntervalSince1970: TimeInterval(midpoint)))
+            return SleepStageTotals.HistoryBlock(
+                start: start,
+                end: end,
+                dayKey: AnalyticsEngine.dayString(midpoint, offsetSec: midpointOffsetSec)
+            )
+        }
+        let habitualMidsleepSec = SleepStageTotals.habitualMidsleepSec(habitualBlocks, offsetSec: offsetSec)
+        // Grouped through the SHARED keyer so this overlay lands on the same `DailyMetric.day` that
+        // `userEditedDays` (which decides where the debt correction applies) and `mergeSleep` resolved.
+        let sessionsByDay = Dictionary(grouping: sessions, by: sleepEndDayKey)
+
+        return days.map { daily in
+            guard let daySessions = sessionsByDay[daily.day], daySessions.contains(where: \.userEdited) else {
+                return daily
+            }
+            let editedStages = Dictionary(
+                daySessions.filter(\.userEdited).map { ($0.startTs, $0.stagesJSON) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let onsets = Dictionary(
+                daySessions.map { ($0.startTs, $0.effectiveStartTs) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            guard let aggregate = SleepStageTotals.dailyAggregateHonoringEdits(
+                detected: daySessions.map { (startTs: $0.startTs, stagesJSON: $0.stagesJSON) },
+                edited: editedStages,
+                onsetByStart: onsets,
+                offsetSec: offsetSec,
+                habitualMidsleepSec: habitualMidsleepSec
+            ), aggregate.editApplied else {
+                return daily
+            }
+            return daily.takingEditedSleepFields(from: aggregate.sleep)
+        }
     }
 
     /// Daily rows tagged with the source that supplied them, for the source-aware vital-sign cards.
@@ -894,10 +1000,7 @@ final class Repository: ObservableObject {
     /// across a midnight boundary for non-UTC users (the Swift half of #406; mirrors the Android #304 fix
     /// pinned by MergeSleepLocalDayTest).
     nonisolated private static func mergeSleep(imported: [CachedSleepSession], computed: [CachedSleepSession]) -> [CachedSleepSession] {
-        func endDay(_ s: CachedSleepSession) -> String {
-            let offsetSec = TimeZone.current.secondsFromGMT(for: Date(timeIntervalSince1970: TimeInterval(s.endTs)))
-            return AnalyticsEngine.dayString(s.endTs, offsetSec: offsetSec)
-        }
+        let endDay = sleepEndDayKey
         // #715, preserve EVERY session (a day with a main night + a nap must keep both); imported still
         // wins per end-day. Shared, unit-tested grouping (WhoopStore.SleepMerge / SleepMergeTests) replaces
         // the old per-day dictionary that silently dropped a second same-day session.
@@ -1148,16 +1251,13 @@ final class Repository: ObservableObject {
         let stagesJSON = await restageFromRaw(start: safeStartTs, end: safeEndTs)
             ?? SleepWindowReclip.reclip(stagesJSON: storedStagesJSON, sessionStart: detectedStartTs,
                                         oldEnd: oldEndTs, newStart: safeStartTs, newEnd: safeEndTs)
-        // Apply to the source that actually OWNS this block. Try the computed source first; only fall
-        // back to the imported source when no computed row matched , so we never edit a coincidental
-        // same-startTs row in the other namespace (which the old unconditional double-write could do).
-        let computedChanged = (try? await store.applySleepEdit(
-            deviceId: computedDeviceId, detectedStartTs: detectedStartTs,
-            newStartTs: safeStartTs, newEndTs: safeEndTs, stagesJSON: stagesJSON)) ?? 0
-        if computedChanged == 0 {
-            _ = try? await store.applySleepEdit(
-                deviceId: deviceId, detectedStartTs: detectedStartTs,
-                newStartTs: safeStartTs, newEndTs: safeEndTs, stagesJSON: stagesJSON)
+        // Resolve the actual owner from every namespace the Sleep tab can display. Stop at the first
+        // match so duplicate detected keys in another source cannot receive a second edit.
+        for ownerDeviceId in sleepOwnerIds {
+            let changed = (try? await store.applySleepEdit(
+                deviceId: ownerDeviceId, detectedStartTs: detectedStartTs,
+                newStartTs: safeStartTs, newEndTs: safeEndTs, stagesJSON: stagesJSON)) ?? 0
+            if changed > 0 { break }
         }
         await refresh()
     }
@@ -1196,11 +1296,11 @@ final class Repository: ObservableObject {
             dismissedSleepSpans = DismissedSleepSpans.adding(startTs: detectedStartTs, endTs: endTs,
                                                              to: dismissedSleepSpans)
         }
-        // Delete from the namespace that actually owns the row: computed first, imported as a fallback.
-        let computedDeleted = (try? await store.deleteSleepSession(
-            deviceId: computedDeviceId, startTs: detectedStartTs)) ?? 0
-        if computedDeleted == 0 {
-            _ = try? await store.deleteSleepSession(deviceId: deviceId, startTs: detectedStartTs)
+        // Delete from the same union of possible owners that the Sleep tab reads from.
+        for ownerDeviceId in sleepOwnerIds {
+            let deleted = (try? await store.deleteSleepSession(
+                deviceId: ownerDeviceId, startTs: detectedStartTs)) ?? 0
+            if deleted > 0 { break }
         }
         await refresh()
         return snapshot
@@ -1251,11 +1351,10 @@ final class Repository: ObservableObject {
             return SleepDeletionSnapshot(session: session, ownerDeviceId: owner, endTs: session.endTs,
                                          motion: motion ?? nil, sleepState: sleepState ?? nil)
         }
-        if let computed = await row(computedDeviceId) {
-            return await snapshot(computed, owner: computedDeviceId)
-        }
-        if let imported = await row(deviceId) {
-            return await snapshot(imported, owner: deviceId)
+        for ownerDeviceId in sleepOwnerIds {
+            if let session = await row(ownerDeviceId) {
+                return await snapshot(session, owner: ownerDeviceId)
+            }
         }
         return nil
     }
@@ -2820,6 +2919,32 @@ private extension DailyMetric {
             steps: steps,
             activeKcalEst: activeKcalEst,
             spo2Red: spo2Red,   // non-sleep field: preserved as-is (#93)
+            spo2Ir: spo2Ir
+        )
+    }
+
+    /// Applies the stage totals re-derived from a user-edited session while retaining fields that stages
+    /// cannot truthfully recompute, such as disturbances and overnight vitals.
+    func takingEditedSleepFields(from source: SleepStageTotals.DailySleep) -> DailyMetric {
+        DailyMetric(
+            day: day,
+            totalSleepMin: source.totalSleepMin,
+            efficiency: source.efficiency,
+            deepMin: source.deepMin,
+            remMin: source.remMin,
+            lightMin: source.lightMin,
+            disturbances: disturbances,
+            restingHr: restingHr,
+            avgHrv: avgHrv,
+            recovery: recovery,
+            strain: strain,
+            exerciseCount: exerciseCount,
+            spo2Pct: spo2Pct,
+            skinTempDevC: skinTempDevC,
+            respRateBpm: respRateBpm,
+            steps: steps,
+            activeKcalEst: activeKcalEst,
+            spo2Red: spo2Red,
             spo2Ir: spo2Ir
         )
     }
