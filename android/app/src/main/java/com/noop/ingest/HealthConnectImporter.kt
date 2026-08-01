@@ -1066,7 +1066,12 @@ object HealthConnectImporter {
         private val order: IntArray =
             if (usable) {
                 IntArray(records.size) { it }.also { a ->
-                    // boxed sort once, unboxed thereafter — no comparator allocation per comparison
+                    // This DOES box, once, to get a comparator sort: what the IntArray buys is the
+                    // RETAINED footprint — the boxes and the temporary list are collectable the moment
+                    // this returns, whereas a sorted List<IndexedValue> would be held for the whole
+                    // import. A primitive sort-by-key would avoid the boxing too, but packing a start
+                    // time and an index into one Long assumes both stay inside 32 bits, and a
+                    // pre-1970 timestamp would break it silently. Not worth that for a one-off sort.
                     val sortedIdx = a.toTypedArray().sortedBy { records[it].startS }
                     for (i in sortedIdx.indices) a[i] = sortedIdx[i]
                 }
