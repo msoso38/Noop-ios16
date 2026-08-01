@@ -182,7 +182,7 @@ targets:
   NOOPiOS:
     type: application
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "16.0"
     sources:
       - path: Strand
         excludes:
