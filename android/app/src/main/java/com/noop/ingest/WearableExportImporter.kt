@@ -16,6 +16,7 @@ import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.zip.ZipInputStream
+import com.noop.analytics.SleepStageVocabulary
 
 /**
  * Offline file-import of a user's OWN Oura / Fitbit / Garmin data export — fully offline, no cloud
@@ -785,7 +786,7 @@ object WearableExportImporter {
         var asleep = 0L
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            if (o.optString("stage") == "wake") continue
+            if (SleepStageVocabulary.isWake(o.optString("stage"))) continue
             asleep += (o.optLong("end") - o.optLong("start")).coerceAtLeast(0)
         }
         return minOf(100.0, asleep.toDouble() / (end - start) * 100.0)
