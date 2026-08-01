@@ -1014,14 +1014,6 @@ object HealthConnectImporter {
     }
 
     /**
-     * Active-calorie kcal attributable to an exercise session: for every active-calorie record that
-     * overlaps [startS, endS], credit the kcal in proportion to the overlap fraction. Time-weighting
-     * (not a flat overlap test) means a per-minute record fully inside the session counts in full,
-     * while a day-spanning total record only contributes the session's slice — so neither under- nor
-     * grossly over-credits. Returns null when nothing overlaps, so an energy-less session stays blank
-     * rather than showing 0. (#117)
-     */
-    /**
      * A start-sorted view of a kcal record list, so a per-workout window query can RANGE-scan instead of
      * walking the whole list (#835 follow-up).
      *
@@ -1065,6 +1057,14 @@ object HealthConnectImporter {
         }
     }
 
+    /**
+     * Active-calorie kcal attributable to an exercise session: for every active-calorie record that
+     * overlaps [startS, endS], credit the kcal in proportion to the overlap fraction. Time-weighting
+     * (not a flat overlap test) means a per-minute record fully inside the session counts in full,
+     * while a day-spanning total record only contributes the session's slice — so neither under- nor
+     * grossly over-credits. Returns null when nothing overlaps, so an energy-less session stays blank
+     * rather than showing 0. (#117)
+     */
     internal fun sumKcalInWindow(
         records: List<KcalRecord>,
         startS: Long,
@@ -1086,25 +1086,6 @@ object HealthConnectImporter {
         return bySource.values.maxOrNull()?.takeIf { it > 0.0 }
     }
 
-    /**
-     * #835 — a workout's active kcal, taking the BEST of the two energy streams Health Connect exposes
-     * rather than only `ActiveCaloriesBurned`.
-     *
-     * Two ways the Active-only credit came out too low:
-     *  - the session's source writes `TotalCaloriesBurned` and no Active at all, so the workout was
-     *    credited only with whatever unrelated background Active happened to overlap it;
-     *  - the only Active cover is a COARSE record (one per day is common), and prorating it by time
-     *    assumes calories burn uniformly — a hard hour inside a 24 h record reads as 1/24 of the day.
-     *
-     * So also derive a candidate from Total: prorated Total over the window, minus the window's share of
-     * the day's basal burn ([dayBasalKcal] spread evenly over 24 h — basal genuinely IS near-uniform, so
-     * prorating THAT is sound in a way prorating a workout's active burn is not). Take whichever estimate
-     * is larger: a stray background record is small, real session coverage is not, so the max picks the
-     * stream that actually resolves this session without needing a threshold. Where both streams cover it
-     * properly they agree, and the max is a no-op.
-     *
-     * Returns null when neither stream yields anything positive — no fabricated number.
-     */
     /**
      * Index-backed twin of [workoutKcal] for the per-workout post-pass (#835 follow-up). Same
      * arithmetic — it differs only in how the two windows are gathered. The list-taking overload below
@@ -1129,6 +1110,25 @@ object HealthConnectImporter {
         return listOfNotNull(fromActive, fromTotal).maxOrNull()?.takeIf { it > 0.0 }
     }
 
+    /**
+     * #835 — a workout's active kcal, taking the BEST of the two energy streams Health Connect exposes
+     * rather than only `ActiveCaloriesBurned`.
+     *
+     * Two ways the Active-only credit came out too low:
+     *  - the session's source writes `TotalCaloriesBurned` and no Active at all, so the workout was
+     *    credited only with whatever unrelated background Active happened to overlap it;
+     *  - the only Active cover is a COARSE record (one per day is common), and prorating it by time
+     *    assumes calories burn uniformly — a hard hour inside a 24 h record reads as 1/24 of the day.
+     *
+     * So also derive a candidate from Total: prorated Total over the window, minus the window's share of
+     * the day's basal burn ([dayBasalKcal] spread evenly over 24 h — basal genuinely IS near-uniform, so
+     * prorating THAT is sound in a way prorating a workout's active burn is not). Take whichever estimate
+     * is larger: a stray background record is small, real session coverage is not, so the max picks the
+     * stream that actually resolves this session without needing a threshold. Where both streams cover it
+     * properly they agree, and the max is a no-op.
+     *
+     * Returns null when neither stream yields anything positive — no fabricated number.
+     */
     internal fun workoutKcal(
         activeRecords: List<KcalRecord>,
         totalRecords: List<KcalRecord>,
