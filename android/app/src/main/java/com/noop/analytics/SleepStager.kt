@@ -938,11 +938,14 @@ object SleepStager {
         // HR dip. Default empty keeps pure-function callers/tests free of it; IntelligenceEngine passes the
         // night window's persisted band state. It can only RESCUE a real-sleep block, never fabricate. Mirrors Swift.
         bandSleepState: List<Pair<Long, Int>> = emptyList(),
-        // V7 / #690: when true, each accepted night is staged by the experimental cardiorespiratory recipe
-        // [SleepStagerV2.stageSession] instead of V1's [stageSession]. DETECTION is unchanged (same accepted
-        // windows); only the per-epoch hypnogram differs. Default false keeps V1 the byte-identical default
-        // (frozen-golden tests stay green). The live call site threads the experimentalSleepV2 flag so the
-        // Settings toggle now affects normal detected nights, not just the self-heal restage path. Mirrors Swift.
+        // 7.0.0 (default ON since #277/#351): which recipe stages an accepted night — the cardiorespiratory
+        // [SleepStagerV2.stageSession] when true, V1's [stageSession] when false. DETECTION is unchanged
+        // (same accepted windows); only the per-epoch hypnogram differs.
+        // THE TWO DEFAULTS DIFFER. This PARAMETER defaults false so pure-function callers and the
+        // frozen-golden tests stay byte-identical. The SHIPPED app never takes that default: the live call
+        // site threads the experimentalSleepV2 preference, which is default TRUE (V2 promoted over V1 in
+        // #277, extended to every strap family in #351), so a normal user's nights are staged by V2.
+        // Mirrors Swift.
         useSleepStagerV2: Boolean = false,
         // Motion-corroborated wake (#462, directive b): the wearer's PERSONALISED overnight HR band
         // ([adaptiveOvernightHRBaseline]), used by [confirmSleepWithHR] in place of the day-median so a
@@ -1151,7 +1154,7 @@ object SleepStager {
     internal fun efficiency(start: Long, end: Long, stages: List<StageSegment>): Double {
         val inBed = (end - start).toDouble()
         if (inBed <= 0) return 0.0
-        val wake = stages.filter { it.stage == "wake" }.sumOf { (it.end - it.start).toDouble() }
+        val wake = stages.filter { SleepStageVocabulary.isWake(it.stage) }.sumOf { (it.end - it.start).toDouble() }
         val asleep = maxOf(0.0, inBed - wake)
         return minOf(1.0, asleep / inBed)
     }
@@ -2372,7 +2375,7 @@ object SleepStager {
         var waso = 0.0
         var disturbances = 0
         for (s in segs) {
-            if (s.stage != "wake") continue
+            if (!SleepStageVocabulary.isWake(s.stage)) continue
             val w0 = maxOf(s.start.toDouble(), onset)
             val w1 = minOf(s.end.toDouble(), sptEnd)
             if (w1 > w0) {

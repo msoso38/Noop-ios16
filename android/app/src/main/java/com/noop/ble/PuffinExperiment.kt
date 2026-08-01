@@ -48,9 +48,10 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
 
     /** True if the user opted in to "Experimental sleep staging (V2)": detected nights are re-staged with
      *  [com.noop.analytics.SleepStagerV2] (the transparent cardiorespiratory recipe, reimplemented from
-     *  contributor PR #600) instead of the default V1 [com.noop.analytics.SleepStager]. Pure analysis switch
+     *  contributor PR #600) instead of the older V1 [com.noop.analytics.SleepStager]. Pure analysis switch
      *  — it changes ONLY which staging engine runs over an already-detected sleep window; detection, scoring
-     *  and the default V1 path are untouched. Model-agnostic (works on WHOOP 4 and 5). **Default true**:
+     *  and the V1 code path itself are untouched. Model-agnostic (works on WHOOP 4 and 5). **Default true —
+     *  V2, not V1, is what stages a normal user's nights**:
      *  V2 was promoted to the default staging engine after a 44-subject cross-subject benchmark (AAUWSS +
      *  Walch sleep-accel, leave-one-subject-out) showed V2 strictly dominates V1 (kappa 0.35 vs 0.03, deep
      *  recall 55% vs 1%) — the multi-subject validation this recipe originally lacked. V1 remains available.
@@ -95,9 +96,28 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(KEY_MOTION_AWARE_WAKE, false)
         set(v) = prefs.edit().putBoolean(KEY_MOTION_AWARE_WAKE, v).apply()
 
+    /**
+     * Turn OFF every 5/MG-only experimental probe: protocol probes ([isEnabled]), raw capture
+     * ([isCaptureEnabled]), the R22 deep-data strap write ([isDeepDataEnabled]) and broadcast-HR
+     * ([broadcastHr]). Called on a strap FAMILY switch (WHOOP 4.0 ↔ 5/MG) so a 5/MG-only option can
+     * never linger enabled and get applied to a strap it doesn't belong to. One atomic edit.
+     *
+     * The line is "does it SEND something to the strap": these four arm probes, raw-capture writes, the
+     * R22 deep-data write and the broadcast-HR write, all of which target hardware that may not support
+     * them. Pure analysis flags are deliberately left alone even when they only do anything on one
+     * family — [ppgHrSubLagInterp] only affects v26 optical records, which a 4.0 never sends, so it is
+     * inert rather than misapplied. [experimentalSleepV2], [hrvReadiness] and [motionAwareWake] are
+     * model-agnostic (the last self-gates on observed sample density, never on family, per #345).
+     */
+    fun resetFiveMGGatedProbes() {
+        val editor = prefs.edit()
+        FIVE_MG_GATED_KEYS.forEach { editor.putBoolean(it, false) }
+        editor.apply()
+    }
+
     companion object {
-        /** Persisted preferences file. */
-        private const val PREFS = "noop_experiments"
+        /** Persisted preferences file. Internal so a UI screen can observe external writes to it. */
+        internal const val PREFS = "noop_experiments"
 
         /** Shared key name with the macOS build (`PuffinExperiment.defaultsKey`). */
         const val KEY = "noopPuffinExperiments"
@@ -110,6 +130,10 @@ class PuffinExperiment(private val prefs: SharedPreferences) {
 
         /** "Broadcast heart rate" opt-in (mirrors macOS `PuffinExperiment.broadcastHrKey`). */
         const val KEY_BROADCAST_HR = "noopBroadcastHr"
+
+        /** The 5/MG-only probe keys, in ONE place: [resetFiveMGGatedProbes] clears exactly these, and
+         *  SettingsScreen watches exactly these for external writes. Two lists would drift. */
+        internal val FIVE_MG_GATED_KEYS = listOf(KEY, KEY_CAPTURE, KEY_DEEP_DATA, KEY_BROADCAST_HR)
 
         /** "Experimental sleep staging (V2)" opt-in (mirrors macOS `PuffinExperiment.experimentalSleepV2Key`). */
         const val KEY_EXPERIMENTAL_SLEEP_V2 = "noopExperimentalSleepV2"

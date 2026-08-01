@@ -205,10 +205,29 @@ object Framing {
         return FrameCheck(ok = headerOk && (crc32Ok == true), length = declaredLength, headerCrcOk = headerOk, crc32Ok = crc32Ok)
     }
 
+    /**
+     * Family-aware envelope + CRC check — true only when the envelope and BOTH CRCs verify. The Kotlin
+     * twin of Swift's `verifyFrame(_:family:).ok`. Exposed so a decoder outside this object can CRC-gate
+     * a frame before reading any field (the BLE safety contract's "bad bytes never drive state");
+     * [parseFrame] uses the same two private validators internally.
+     */
+    fun frameCrcOk(frame: ByteArray, family: DeviceFamily): Boolean =
+        when (family) {
+            DeviceFamily.WHOOP4 -> verifyWhoop4(frame).ok
+            DeviceFamily.WHOOP5 -> verifyWhoop5(frame).ok
+        }
+
     // MARK: - type / enum naming
 
-    /** Canonical packet-type name, aliasing the Whoop 5.0 "puffin" types onto their base names. */
-    private fun typeName(t: Int): String = when (t) {
+    /**
+     * Canonical packet-type name, aliasing the Whoop 5.0 "puffin" types onto their base names: the enum
+     * name, or `type<N>` for a byte nothing names, exactly as Swift's `canonicalTypeName` does.
+     *
+     * Internal rather than private since #891 — the unhandled-packet-type census in `HistoricalStreams`
+     * renders through this so the two platforms report the same string for the same byte, instead of
+     * keeping a second copy of the rules that could drift.
+     */
+    internal fun typeName(t: Int): String = when (t) {
         PuffinPacketType.PUFFIN_COMMAND_RESPONSE -> "COMMAND_RESPONSE"
         PuffinPacketType.PUFFIN_METADATA -> "METADATA"
         else -> PacketType.fromRaw(t)?.name ?: "type$t"
@@ -221,11 +240,17 @@ object Framing {
     private fun metaLabel(v: Int): String =
         MetadataType.fromRaw(v)?.let { "${it.name}($v)" } ?: hexLabel(v)
 
-    private fun commandLabel(v: Int): String =
-        CommandNumber.fromRaw(v)?.let { "${it.name}($v)" } ?: hexLabel(v)
+    // Labels from the schema-mirroring [CommandNames] table, NOT from the CommandNumber sender enum:
+    // the sender enum is deliberately curated down to safe opcodes, so labelling from it left 46 of the
+    // schema's 80 commands rendering as bare hex on Android while Apple named them, and printed a
+    // different name than Apple for 77/119/120. Read path only; naming an opcode does not make it
+    // sendable. (#891)
+    private fun commandLabel(v: Int): String = CommandNames.label(v)
 
-    /** 5/MG COMMAND_RESPONSE result codes. 3=UNSUPPORTED matches our own MG haptics-rejection
-     *  capture (#48); 2=PENDING precedes SUCCESS on GET_DATA_RANGE (hardware-confirmed, #78 fork). */
+    /** COMMAND_RESPONSE result codes, on both families. 3=UNSUPPORTED matches our own MG haptics-rejection
+     *  capture (#48); 2=PENDING precedes SUCCESS on GET_DATA_RANGE (hardware-confirmed, #78 fork). The same
+     *  codes appear on a 4.0 at payload[1] — 0x01 on an answered GET_DATA_RANGE, 0x00 on an empty
+     *  extended-battery reply (#791 captures). */
     private fun commandResultLabel(v: Int): String = when (v) {
         0 -> "FAILURE(0)"
         1 -> "SUCCESS(1)"
@@ -467,6 +492,19 @@ object Framing {
         val pay = frame.copyOfRange(7, payEnd)
         val cmd = frame.u8(6) ?: return
         parsed["resp_cmd"] = commandLabel(cmd)
+        // #791: the origin-seq echo and the result code, which the 5/MG path has always exposed (at @11/@12)
+        // and this one never did. Without them a 4.0 strap log cannot say whether a command SUCCEEDED or
+        // FAILED — a reporter had to hand-decode `result=0x00` from raw hex to discover that their strap was
+        // answering GET_EXTENDED_BATTERY_INFO with FAILURE rather than an empty success.
+        //
+        // Grounded in real 4.0 captures, not inferred: an answered GET_DATA_RANGE carries pay[1] = 0x01
+        // (SUCCESS) and the empty extended-battery reply carries 0x00 (FAILURE), and the GET_BATTERY_LEVEL
+        // decode below has always read its value from payload[2..4] — already skipping these two bytes.
+        //
+        // The echo also makes a duplicated write self-evident: the same resp_seq arriving two or three times
+        // for one send is the #791 write-queue bug, visible in a log instead of needing frame archaeology.
+        if (pay.isNotEmpty()) parsed["resp_seq"] = pay[0].toInt() and 0xFF
+        if (pay.size >= 2) parsed["result"] = commandResultLabel(pay[1].toInt() and 0xFF)
         when (CommandNumber.fromRaw(cmd)) {
             CommandNumber.GET_BATTERY_LEVEL -> {
                 if (pay.size >= 4) {

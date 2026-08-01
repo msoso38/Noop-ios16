@@ -8,6 +8,8 @@ import com.noop.analytics.RestScorer
 import com.noop.analytics.ScoreConfidence
 import com.noop.data.DailyMetric
 import java.time.LocalDate
+import java.time.Instant
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
@@ -217,6 +219,37 @@ sealed class ScoreState {
             NeedsStrap -> "Needs the strap"
         }
 
+    /**
+     * #731: names WHY the countdown restarted when the user tapped "Recalibrate baseline".
+     *
+     * The count alone is not enough. A reporter sat at "Calibrating, 3 of 4 nights" with 15 valid HRV
+     * nights on file and tapped Recalibrate again — which discards every earlier night and resets the
+     * count to 0. Two weeks of that and Charge could never return. Seeing the countdown without knowing
+     * their own tap caused it makes re-tapping the natural move; naming the cause breaks the loop.
+     *
+     * A separate whole sentence, not a fragment stitched onto the countdown. Returns null when no
+     * recalibration is set, so the card is unchanged for every user who never tapped it. Pure.
+     * Twin of Swift `ChargeBreakdownFormat.calibrationRestartCause`.
+     */
+    companion object {
+        /** The recalibration epoch (seconds) as a short display day ("19 Jul"), or null when none is
+         *  set. Pure - the caller reads the pref. Twin of Swift
+         *  `ChargeBreakdownFormat.recalibrationDay(epoch:)`; uses the same "d MMM" pattern as the
+         *  sibling day formatter in this file. (#731) */
+        fun recalibrationDay(epochSeconds: Long): String? {
+            if (epochSeconds <= 0L) return null
+            return Instant.ofEpochSecond(epochSeconds)
+                .atZone(ZoneId.systemDefault())
+                .toLocalDate()
+                .format(DateTimeFormatter.ofPattern("d MMM", Locale.US))
+        }
+
+        fun calibrationRestartCause(recalibratedOn: String?): String? {
+            if (recalibratedOn.isNullOrEmpty()) return null
+            return "Restarted when you recalibrated on $recalibratedOn — no need to tap it again."
+        }
+    }
+
     /** The one-line plain-English what-to-do. VERBATIM, mirror Swift exactly. The night(s) plural in
      *  the calibrating copy follows [nightsRemaining]. */
     val detail: String
@@ -337,6 +370,65 @@ internal fun recordingStateFor(
         RecordingState.LastSynced((secs + 59L) / 60L)
     }
     else -> RecordingState.NotRecording
+}
+
+/** #245: the sync-status state the Today top bar's `SyncStatusChip` composable renders. Mirrors Swift
+ *  `SyncChipState` 1:1 (same four cases, same priority order) so the twin can't drift on WHEN to show
+ *  what. THREE non-hidden states so the ABSENCE of active syncing reads as "caught up", not "missing
+ *  indicator": actively offloading -> [Syncing]; idle with a known last-sync -> [Synced]; a 5/MG whose
+ *  history sync is experimental (live-connected, no completed offload yet) -> [ExperimentalLive].
+ *  [Hidden] only on a true cold start (the building-scores note owns that case). Previously this
+ *  priority order lived inline inside the `@Composable`, where it could not be unit-tested. */
+sealed class SyncChipState {
+    data class Syncing(val chunks: Int) : SyncChipState()
+    data class Synced(val agoText: String) : SyncChipState()
+    object ExperimentalLive : SyncChipState()
+    object Hidden : SyncChipState()
+
+    companion object {
+        /** Pure + unit-tested. Mirrors Swift `SyncChipState.resolve` exactly: backfilling wins over a
+         *  known last-sync, which wins over the 5/MG experimental fallback.
+         *
+         *  [nowSec] (unix seconds) and [nowLabel] (the already-translated "now" word) are PARAMETERS
+         *  rather than things this function reaches for, which is what keeps "pure" true. Resolving the
+         *  word in here instead cost the twin its own test: it goes through `NoopApplication`, which
+         *  throws `IllegalStateException: NoopApplication is not attached` under a plain JVM unit test —
+         *  these run without Robolectric, so no Application is ever attached. Only the `< 60s` branch of
+         *  [shortSyncAgo] wants a word, so the failure was invisible until a case landed in it. Same
+         *  injected-clock style as [recordingStateFor] just above.
+         *
+         *  Swift's twin keeps both inside its own `shortAgo` and is fine there — XCTest runs against a
+         *  real bundle, so `String(localized:)` resolves. The two SIGNATURES therefore differ on purpose;
+         *  the decision they encode does not. Don't "restore parity" by moving the lookup back in here. */
+        fun resolve(
+            backfilling: Boolean,
+            chunks: Int,
+            lastSyncAtSec: Long?,
+            historySyncExperimental: Boolean,
+            nowSec: Long,
+            nowLabel: String,
+        ): SyncChipState = when {
+            backfilling -> Syncing(chunks)
+            lastSyncAtSec != null -> Synced(shortSyncAgo(lastSyncAtSec, nowSec, nowLabel))
+            historySyncExperimental -> ExperimentalLive
+            else -> Hidden
+        }
+    }
+}
+
+/** Compact relative age for the header chip ("now" / "Nm" / "Nh" / "Nd") from a unix-SECONDS timestamp —
+ *  deliberately terse. "now" is the only word in here (the rest is digits + a unit letter), so it's the
+ *  only piece that needs a catalog entry to translate; it arrives as [nowLabel], resolved by the
+ *  composable that owns the chip, so the bucketing stays framework-free. [nowSec] is unix seconds,
+ *  injected for the same reason. Mirrors the iOS `SyncChipState.shortAgo`. */
+internal fun shortSyncAgo(unixSec: Long, nowSec: Long, nowLabel: String): String {
+    val secs = (nowSec - unixSec).coerceAtLeast(0)
+    return when {
+        secs < 60 -> nowLabel
+        secs < 3600 -> "${secs / 60}m"
+        secs < 86_400 -> "${secs / 3600}h"
+        else -> "${secs / 86_400}d"
+    }
 }
 
 /** Whether this night's sleep staging is low-confidence, using the core [ScoreConfidence] rule. */

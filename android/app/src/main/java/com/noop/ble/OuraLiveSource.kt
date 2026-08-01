@@ -29,6 +29,7 @@ import com.noop.oura.OuraDriver
 import com.noop.oura.OuraDriverPhase
 import com.noop.oura.OuraEvent
 import com.noop.oura.OuraFraming
+import com.noop.oura.OuraIbiHr
 import com.noop.oura.OuraGatt
 import com.noop.oura.OuraCommands
 import com.noop.oura.OuraDecoders
@@ -243,6 +244,11 @@ class OuraLiveSource(
      *  row). Null when there is no device id. The Kotlin twin of the Swift `OuraActivityDump`. */
     private val activityDump: OuraActivityDump? =
         if (deviceId.isNotEmpty()) OuraActivityDump(appContext, deviceId, log) else null
+
+    /** 0x47 motion calibration corpus (Tier-A), for offline LSB→g scale + cadence work (#804). Kotlin twin
+     *  of the Swift `OuraMotionDump`. Null when there is no device id. */
+    private val motionDump: OuraMotionDump? =
+        if (deviceId.isNotEmpty()) OuraMotionDump(appContext, deviceId, log) else null
     private val scanner: BluetoothLeScanner? get() = adapter?.bluetoothLeScanner
 
     private var gatt: BluetoothGatt? = null
@@ -1533,6 +1539,21 @@ class OuraLiveSource(
                 "deep/light/rem/awake=${counts[0]}/${counts[1]}/${counts[2]}/${counts[3]}")
             hypnogramAssembler.feed(phases.first().ringTimestamp, phases)?.let { persistHypnogramBurst(it) }
         }
+        // #728: materialise hrSample from BANKED IBI. A batch with NO live-HR push (Hr) is history data —
+        // the ring banks overnight IBI (0x60/0x80/0x6E) but no HR, and the nightly pipeline gates on
+        // hrSample (day-owner probe + hr.count >= 200), so an Oura night otherwise never scores. Derive one
+        // median HR per IBI-record (OuraIbiHr) and enqueue it as Hr → the mapping writes hrSample, WITHOUT
+        // this switch's wear/live-badge side-effects (enqueue buffers for the mapping, it never re-enters
+        // emit). Live batches ([Hr, Ibi]) are excluded, so live HR is never double-counted. Per-record
+        // ring-time anchored; an unanchored record is skipped (re-derived when it re-serves after 0x42).
+        val hasLiveHR = events.any { it is OuraEvent.Hr }
+        if (!hasLiveHR) {
+            val bankedIbis = events.mapNotNull { (it as? OuraEvent.Ibi)?.value }
+            for (hr in OuraIbiHr.perRecordMedianHR(bankedIbis)) {
+                val ts = d.unixSeconds(forRingTimestamp = hr.ringTimestamp)
+                if (ts != null) enqueue(listOf(OuraEvent.Hr(hr)), ts.toInt())
+            }
+        }
         for (e in events) when (e) {
             is OuraEvent.Hr -> {
                 val bpm = e.value.bpm
@@ -1701,8 +1722,24 @@ class OuraLiveSource(
                     )
                 }
             }
-            // Motion / debugText / etc: not a durable Streams row (see OuraStreamMapping). StateEvent is
-            // handled above (wear badge only, also not a Streams row).
+            is OuraEvent.MotionVectorEvent -> {
+                // 0x47 averaged accel vector (Tier-A). Persisted as an OURA_MOTION event (same event-table
+                // path as OURA_HRV / OURA_SLEEP_PHASE — see OuraStreamMapping), AND appended to the raw
+                // calibration sidecar. Instrumentation only: never scored, never fed to the sleep stager
+                // (0x47 is movement-gated, a shape mismatch for the gravity-stillness stager, #804). Anchor
+                // per record so each window lands on a distinct (deviceId, ts, kind) row. Twin of Swift.
+                d.unixSeconds(forRingTimestamp = e.value.ringTimestamp)?.let { utc ->
+                    motionDump?.record(
+                        ringTs = e.value.ringTimestamp, utc = utc, orientation = e.value.orientation,
+                        motionSeconds = e.value.motionSeconds, x = e.value.avgX, y = e.value.avgY,
+                        z = e.value.avgZ, lowIntensity = e.value.lowIntensity,
+                        highIntensity = e.value.highIntensity,
+                    )
+                }
+                enqueueAnchoredOrPark(e, e.value.ringTimestamp, d)
+            }
+            // Motion (0x6b) / debugText / etc: not a durable Streams row (see OuraStreamMapping). StateEvent
+            // is handled above (wear badge only, also not a Streams row).
             else -> Unit
         }
     }

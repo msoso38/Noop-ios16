@@ -732,13 +732,24 @@ final class IntelligenceEngine: ObservableObject {
                     // R-R) + exact-duplicate beat count, so a "reads ~2x too high" report is self-diagnosing
                     // from the always-on log instead of hand-computing beat density.
                     let ts = sleepRrRows.map { $0.ts }
-                    let cov = String(format: "%.2f", HRVAnalyzer.rrCoverage(tsSec: ts, rrMs: sleepRr))
+                    // Computed ONCE and reused for both the formatted field and the verdict below:
+                    // collapsedCoverage sorts and de-dups the whole night's R-R (tens of thousands of rows
+                    // on a dense capture), and this runs per day across a full re-score.
+                    let covVal = HRVAnalyzer.rrCoverage(tsSec: ts, rrMs: sleepRr)
+                    let cov = String(format: "%.2f", covVal)
                     // #550: collapsedCov previews a same-second R-R de-dup — well below `coverage` ⇒ the
                     // over-count is same-second (a dedup fix would work); still high ⇒ cross-second overlap.
-                    let colCov = String(format: "%.2f", HRVAnalyzer.collapsedCoverage(tsSec: ts, rrMs: sleepRr))
+                    let colCovVal = HRVAnalyzer.collapsedCoverage(tsSec: ts, rrMs: sleepRr)
+                    let colCov = String(format: "%.2f", colCovVal)
                     let dup = HRVAnalyzer.duplicateBeatCount(tsSec: ts, rrMs: sleepRr)
+                    // #550: state the CONCLUSION, not just the evidence. Reading coverage against
+                    // collapsedCov is what distinguishes a same-second over-count (a de-dup would fix it)
+                    // from a cross-second one (it would not) — a rule that lived only in the comment above,
+                    // so triaging an "HRV reads ~2x high" report required knowing it. Now the line says which.
+                    let verdict = HRVAnalyzer.classifyCoverage(coverage: covVal, collapsed: colCovVal)
                     hrvDiag = "hrv diag day=\(res.daily.day) rmssd=\(ms(h.rmssd))ms sdnn=\(ms(h.sdnn))ms "
-                        + "meanNN=\(ms(h.meanNN))ms rr=\(h.nInput)/\(h.nClean) rejected=\(rej)% coverage=\(cov) collapsedCov=\(colCov) dupBeats=\(dup)"
+                        + "meanNN=\(ms(h.meanNN))ms rr=\(h.nInput)/\(h.nClean) rejected=\(rej)% coverage=\(cov) collapsedCov=\(colCov) dupBeats=\(dup) "
+                        + "rrIntegrity=\(verdict.rawValue)"
                 }
                 // ── Steps test mode: 5/MG raw-counter trace ──────────────────────────────────────────────
                 // Only built when the Steps mode is on (the gate was read once before the loop). Recomputes
@@ -793,6 +804,7 @@ final class IntelligenceEngine: ObservableObject {
         // side uses; when they DIVERGE on a day that has data, that's the #814 read/write split made
         // visible in every export.
         var readOwnerByDay: [String: (owner: String, hrRows: Int)] = [:]
+        var resolvedScoreOwnerByDay: [String: String] = [:]
 
         // Back on the main actor: fold the off-actor results into the pass-2 state in the SAME order the
         // loop produced them. Pure assignment / appends , no further store reads , so this is cheap and the
@@ -800,6 +812,7 @@ final class IntelligenceEngine: ObservableObject {
         for scan in scanned {
             let res = scan.result
             readOwnerByDay[res.daily.day] = (scan.readOwner, scan.hrRows)
+            resolvedScoreOwnerByDay[res.daily.day] = scan.readOwner
             nightlyHrvByDay[res.daily.day] = res.daily.avgHrv
             nightlyRhrByDay[res.daily.day] = res.daily.restingHr.map(Double.init)
             nightlyRespByDay[res.daily.day] = res.daily.respRateBpm
@@ -1147,6 +1160,7 @@ final class IntelligenceEngine: ObservableObject {
                 let scored = row.with(recovery: recovery, skinTempDevC: row.skinTempDevC)
                 dailies.append(scored)
                 importScoredDays.insert(w.day)
+                resolvedScoreOwnerByDay[w.day] = source
                 if let rest = AnalyticsEngine.Rest.composite(daily: scored) {
                     restPoints.append(MetricPoint(day: w.day, key: "sleep_performance", value: rest))
                 }
@@ -1166,8 +1180,34 @@ final class IntelligenceEngine: ObservableObject {
         // Fitness Age gate can't be undercut by this pass's own scoring/eviction. Windowed to the range.
         let faPriorDaily = await repo.dailyMetrics(fromDay: oldestDay, toDay: newestDay)
 
-        // Upsert FIRST so the row count never transiently dips (#521).
-        if !dailies.isEmpty { _ = try? await store.upsertDailyMetrics(dailies, deviceId: computedId) }
+        // Score provenance is metric-specific and lives outside dayOwnership (which remains solely a
+        // resolver override). Persist scores + provenance atomically so a failed write can never label an
+        // older score with a newer provider. The last row for a duplicate day wins, matching the upsert.
+        var provenanceByCell: [String: ScoreInputProvenanceRow] = [:]
+        for daily in dailies {
+            guard let source = resolvedScoreOwnerByDay[daily.day] else { continue }
+            if daily.recovery != nil {
+                provenanceByCell["\(daily.day)\u{1F}recovery"] =
+                    ScoreInputProvenanceRow(day: daily.day, key: "recovery", sourceId: source)
+            }
+            if daily.strain != nil {
+                provenanceByCell["\(daily.day)\u{1F}strain"] =
+                    ScoreInputProvenanceRow(day: daily.day, key: "strain", sourceId: source)
+            }
+        }
+        for point in restPoints {
+            guard let source = resolvedScoreOwnerByDay[point.day] else { continue }
+            provenanceByCell["\(point.day)\u{1F}\(point.key)"] =
+                ScoreInputProvenanceRow(day: point.day, key: point.key, sourceId: source)
+        }
+        try? await store.persistComputedScores(
+            dailyMetrics: dailies,
+            metricPoints: restPoints,
+            provenance: Array(provenanceByCell.values),
+            deviceId: computedId,
+            from: oldestDay,
+            to: newestDay
+        )
 
         // Now evict only the STALE computed rows in the window , those a prior (e.g. UTC-keyed) run left
         // behind that the current local-keyed run no longer produces. Read the window, diff against the
@@ -1179,8 +1219,6 @@ final class IntelligenceEngine: ObservableObject {
         for stale in existingWindow where !freshKeys.contains(stale.day) {
             _ = try? await store.deleteDailyMetrics(deviceId: computedId, from: stale.day, to: stale.day)
         }
-        if !restPoints.isEmpty { _ = try? await store.upsertMetricSeries(restPoints, deviceId: computedId) }
-
         // ── Fitness Age (Phase 2) , weekly, keyed to the week's Saturday ────────────────────────────
         // Roll the last 7 computed days into the Nes/HUNT inputs and upsert a weekly Fitness Age (+ an
         // optional VO₂max when a waist is set) under the same "-noop" source. Idempotent on the Saturday
@@ -1447,7 +1485,16 @@ final class IntelligenceEngine: ObservableObject {
         // #137: a manually-started workout is scored from sparse live HR at save time , near-zero
         // calories/strain on a 5/MG. Now that offloaded HR may cover the window, re-score the
         // under-sampled ones from that denser data.
-        await rescoreManualWorkouts(store: store, profile: up)
+        // #950: score the workout against the wearer's MEASURED resting HR, not the hardcoded 60 —
+        // the day total above already uses the measured value, and the mismatch is what made a workout's
+        // Effort incomparable to its own day's. The most recent scored day that has one is the best
+        // available estimate; nil (cold start) keeps the old default. Twin of the Kotlin derivation.
+        // FIRST, not last: `out` is NEWEST-FIRST, because the scoring loop counts backwards from today
+        // (`for offset in 0..<maxDays` with `dayStart = nowLocalMidnight - offset * 86_400`), so out[0] is
+        // today and the tail is the oldest day in the window. Taking the last match would have scored
+        // today's workout against a resting HR up to `maxDays` old.
+        let measuredResting = out.first(where: { $0.rhr != nil })?.rhr.map(Double.init)
+        await rescoreManualWorkouts(store: store, profile: up, restingHR: measuredResting)
 
         results = out
         note = out.isEmpty
@@ -1559,7 +1606,8 @@ final class IntelligenceEngine: ObservableObject {
     /// window, recompute from it. Conservative + idempotent: only `manual` rows that look under-scored
     /// (negligible calories), and only when the recompute is a genuine improvement , so a well-scored
     /// 4.0 workout is never touched and a still-sparse window is a no-op.
-    private func rescoreManualWorkouts(store: WhoopStore, profile up: UserProfile) async {
+    private func rescoreManualWorkouts(store: WhoopStore, profile up: UserProfile,
+                                       restingHR: Double? = nil) async {
         let now = Int(Date().timeIntervalSince1970)
         let since = now - 14 * 86_400
         guard let rows = try? await store.workouts(deviceId: deviceId, from: since, to: now, limit: 200)
@@ -1573,7 +1621,8 @@ final class IntelligenceEngine: ObservableObject {
             && (ManualWorkoutRescore.looksUnderScored(currentKcal: row.energyKcal) || row.strain == nil) {
             guard let samples = try? await store.hrSamples(deviceId: deviceId, from: row.startTs,
                                                            to: row.endTs, limit: 20_000),
-                  let s = ManualWorkoutRescore.scored(windowSamples: samples, profile: up, hrMax: hrMax),
+                  let s = ManualWorkoutRescore.scored(windowSamples: samples, profile: up, hrMax: hrMax,
+                                                      restingHR: restingHR),
                   ManualWorkoutRescore.improves(s, over: row.energyKcal, currentStrain: row.strain,
                                                 allowStrainOnlyFill: true)
             else { continue }

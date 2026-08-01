@@ -2,6 +2,7 @@ package com.noop.analytics
 
 import com.noop.data.DailyMetric
 import com.noop.data.MetricSeriesRow
+import com.noop.data.ScoreInputProvenanceRow
 import com.noop.data.SleepSession
 import com.noop.data.WhoopRepository
 import com.noop.data.WorkoutRow
@@ -167,11 +168,14 @@ object IntelligenceEngine {
         // are unaffected; the AppViewModel wires it to the BLE client's strap log (ble.externalLog),
         // which PII-scrubs every line at the sink. Pure-JVM (a closure), matching persistStepsCalibration.
         diag: (String) -> Unit = {},
-        // Opt-in "Experimental sleep staging (V2)" flag (Settings → Experimental · Sleep staging). The
-        // analytics layer is Context-free, so the Context-aware caller (AppViewModel / WhoopBleClient) reads
-        // it off SharedPreferences (PuffinExperiment.experimentalSleepV2) and threads it down to the sleep
-        // self-heal, which re-stages with SleepStagerV2 when true. Default false → V1 (the default, untouched
-        // path), so existing callers / tests are unaffected. (V7 Pillar 3b)
+        // "Experimental sleep staging (V2)" flag (Settings → Experimental · Sleep staging). The analytics
+        // layer is Context-free, so the Context-aware caller (AppViewModel / WhoopBleClient) reads it off
+        // SharedPreferences (PuffinExperiment.experimentalSleepV2) and threads it down to the sleep
+        // self-heal, which re-stages with SleepStagerV2 when true.
+        // The stored preference is default TRUE (getBoolean(KEY, true)) — V2 was promoted over V1 in #277
+        // and extended to every strap family in #351 — so the SHIPPED app stages with V2. This PARAMETER
+        // defaults false only so existing callers / tests are unaffected; it is not the product default.
+        // (V7 Pillar 3b)
         useExperimentalSleepV2: Boolean = false,
         // Opt-in "Motion-aware wake refinement" flag (#364 "Proposal 2" follow-up; density gate precedent
         // #345). Same Context-free threading as [useExperimentalSleepV2]: the Context-aware caller reads
@@ -297,7 +301,9 @@ object IntelligenceEngine {
         baselineEpoch: Double = 0.0,
         recoveryEpoch: Double = 0.0,
         diag: (String) -> Unit = {},
-        // Opt-in experimental staging (V2), threaded down to the sleep self-heal. Default false → V1. (3b)
+        // Experimental staging (V2), threaded down to the sleep self-heal. This PARAMETER defaults false so
+        // existing callers / tests are unaffected; the STORED PREFERENCE the app threads in is default TRUE,
+        // so the shipped app stages with V2. Not the same default — see [analyzeRecent]'s note. (3b)
         useExperimentalSleepV2: Boolean = false,
         // Opt-in motion-aware wake refinement (#364 follow-up), threaded the same way. Default false.
         useMotionAwareWake: Boolean = false,
@@ -374,6 +380,7 @@ object IntelligenceEngine {
         // builds for daySourceToken, so there is no extra read). Only populated when the universal sink is
         // on. Keyed by the local day.
         val readOwnerByDay = LinkedHashMap<String, OwnerRead>()
+        val resolvedScoreOwnerByDay = LinkedHashMap<String, String>()
         // HRV baseline honours the manual "Recalibrate baseline" epoch (noop.hrvBaselineEpoch): pass the
         // per-value "yyyy-MM-dd" day keys (parallel to the values) so foldHistory drops every night before
         // the epoch. baselineEpoch is threaded down from the Context-aware caller (0.0 = no recalibration).
@@ -568,7 +575,7 @@ object IntelligenceEngine {
                 wristOff = wristOff,
                 habitualMidsleepSec = habitualMidsleepSec,
                 bandSleepState = bandSleepState,
-                // #690: thread the V2 toggle into the NORMAL staging path so it affects detected nights,
+                // 7.0.0: thread the V2 toggle into the NORMAL staging path so it affects detected nights,
                 // not just the userEdited self-heal restage. The Context-aware caller (AppViewModel/
                 // WhoopBleClient) supplied it from PuffinExperiment.from(context).experimentalSleepV2.
                 // V2 is the default staging engine for EVERY strap (toggle defaults on); turn it off for V1.
@@ -607,13 +614,24 @@ object IntelligenceEngine {
                 // R-R) + exact-duplicate beat count, so a "reads ~2x too high" report is self-diagnosing
                 // from the always-on log instead of hand-computing beat density.
                 val ts = sleepRrRows.map { it.ts }
-                val cov = String.format(java.util.Locale.US, "%.2f", HrvAnalyzer.rrCoverage(ts, sleepRr))
+                // Computed ONCE and reused for both the formatted field and the verdict below:
+                // collapsedCoverage sorts and de-dups the whole night's R-R (tens of thousands of rows on a
+                // dense capture), and this runs per day across a full re-score.
+                val covVal = HrvAnalyzer.rrCoverage(ts, sleepRr)
+                val cov = String.format(java.util.Locale.US, "%.2f", covVal)
                 // #550: collapsedCov previews a same-second R-R de-dup — well below `coverage` ⇒ the
                 // over-count is same-second (a dedup fix would work); still high ⇒ cross-second overlap.
-                val colCov = String.format(java.util.Locale.US, "%.2f", HrvAnalyzer.collapsedCoverage(ts, sleepRr))
+                val colCovVal = HrvAnalyzer.collapsedCoverage(ts, sleepRr)
+                val colCov = String.format(java.util.Locale.US, "%.2f", colCovVal)
                 val dup = HrvAnalyzer.duplicateBeatCount(ts, sleepRr)
+                // #550: state the CONCLUSION, not just the evidence. Reading coverage against collapsedCov
+                // is what distinguishes a same-second over-count (a de-dup would fix it) from a cross-second
+                // one (it would not) — a rule that lived only in the comments above, so triaging an
+                // "HRV reads ~2x high" report required knowing it. Now the line says which.
+                val verdict = HrvAnalyzer.classifyCoverage(covVal, colCovVal)
                 diag("hrv diag day=${res.daily.day} rmssd=${ms(h.rmssd)}ms sdnn=${ms(h.sdnn)}ms meanNN=${ms(h.meanNN)}ms " +
-                    "rr=${h.nInput}/${h.nClean} rejected=$rej% coverage=$cov collapsedCov=$colCov dupBeats=$dup")
+                    "rr=${h.nInput}/${h.nClean} rejected=$rej% coverage=$cov collapsedCov=$colCov dupBeats=$dup " +
+                    "rrIntegrity=${verdict.raw}")
             }
 
             // Steps test mode: emit the 5/MG raw-counter trace for this day (cumulative @57 series +
@@ -660,6 +678,7 @@ object IntelligenceEngine {
                 diag(rhrFloorMeanLogLine(day, rhrFloor, inBedBpms))
             }
             scoredNights.add(res)
+            resolvedScoreOwnerByDay[res.daily.day] = owner
         }
 
         // ── Seed the baseline from the UNION of imported nightly history + the nightly
@@ -976,6 +995,11 @@ object IntelligenceEngine {
         // ("my-whoop"), so importedDeviceId is included; a row already carrying its OWN recovery is left
         // alone. Mirrors the Swift fold.
         val importScoredDays = HashSet<String>().apply { addAll(dailies.map { it.day }) }
+        val healthConnectDays = repo.appleDaily(
+            WhoopRepository.HEALTH_CONNECT_SOURCE,
+            oldestDay,
+            newestDay,
+        ).mapTo(HashSet()) { it.day }
         val importSourceIds = buildList {
             add(importedDeviceId) // Health Connect imports its DailyMetric rows under the strap source.
             add(WhoopRepository.APPLE_HEALTH_SOURCE)
@@ -994,6 +1018,15 @@ object IntelligenceEngine {
                 val scored = row.copy(deviceId = computedId, recovery = recovery)
                 dailies.add(scored)
                 importScoredDays.add(w.day)
+                // Health Connect's compatibility DailyMetric row lives under `my-whoop`, while its
+                // AppleDaily row retains the real source. Preserve that provider fact without changing
+                // ingestion or score precedence.
+                resolvedScoreOwnerByDay[w.day] =
+                    if (source == importedDeviceId && w.day in healthConnectDays) {
+                        WhoopRepository.HEALTH_CONNECT_SOURCE
+                    } else {
+                        source
+                    }
                 RestScorer.restFromDaily(scored)?.let { rest ->
                     restRows.add(MetricSeriesRow(deviceId = computedId, day = w.day, key = "sleep_performance", value = rest))
                 }
@@ -1009,7 +1042,6 @@ object IntelligenceEngine {
                 )
             }
         }
-
         // Snapshot the persisted/merged daily history BEFORE the delete+re-upsert below rewrites the
         // computed window. This is the accumulated view the readiness card + dashboard read ("N of 7
         // nights"); captured here so the Fitness Age gate (further down) can't be undercut by this pass's
@@ -1018,14 +1050,37 @@ object IntelligenceEngine {
         // it stays bounded (daysMerged is full-history) and can't drag in stale nights older than the window.
         val faPriorDaily = repo.daysMerged(importedDeviceId).filter { it.day in oldestDay..newestDay }
 
-        repo.deleteComputedDailyInRange(computedId, oldestDay, newestDay)
-
         // Persist the computed scores under the dedicated "-noop" source so the WHOLE
         // dashboard (Today / Recovery / Strain / Sleep / Trends) reads them. The repository
         // merges these UNDER any imported "my-whoop" rows, so a real WHOOP import always wins;
         // this only fills the days the strap collected but no import covered.
-        if (dailies.isNotEmpty()) repo.upsertDailyMetrics(dailies)
-        if (restRows.isNotEmpty()) repo.upsertMetricSeries(restRows)
+        // Persist metric-level input provenance in the SAME Room transaction. dayOwnership remains
+        // exclusively a resolver override, and a failed write can never relabel an older score.
+        val provenanceByCell = LinkedHashMap<Pair<String, String>, ScoreInputProvenanceRow>()
+        for (daily in dailies) {
+            val source = resolvedScoreOwnerByDay[daily.day] ?: continue
+            if (daily.recovery != null) {
+                provenanceByCell[daily.day to "recovery"] =
+                    ScoreInputProvenanceRow(computedId, daily.day, "recovery", source)
+            }
+            if (daily.strain != null) {
+                provenanceByCell[daily.day to "strain"] =
+                    ScoreInputProvenanceRow(computedId, daily.day, "strain", source)
+            }
+        }
+        for (point in restRows) {
+            val source = resolvedScoreOwnerByDay[point.day] ?: continue
+            provenanceByCell[point.day to point.key] =
+                ScoreInputProvenanceRow(computedId, point.day, point.key, source)
+        }
+        repo.replaceComputedScoreWindow(
+            deviceId = computedId,
+            from = oldestDay,
+            to = newestDay,
+            dailyMetrics = dailies,
+            metricPoints = restRows,
+            provenance = provenanceByCell.values.toList(),
+        )
 
         // ── Fitness Age (Phase 2) , weekly, keyed to the week's Saturday ──
         val fa7 = dailies.sortedBy { it.day }.takeLast(7)
@@ -1230,7 +1285,16 @@ object IntelligenceEngine {
         // #137: a manually-started workout is scored from sparse live HR at save time , near-zero
         // calories/strain on a 5/MG. Now that offloaded HR may cover the window, re-score the
         // under-sampled ones from that denser data.
-        rescoreManualWorkouts(repo, profile, importedDeviceId, maxHROverride, nowSeconds)
+        // #950: score the workout against the wearer's MEASURED resting HR, not the hardcoded 60 —
+        // the day total two lines up already uses the measured value, and the mismatch is what made a
+        // workout's Effort incomparable to its own day's. The most recent scored day that has one is the
+        // best available estimate; null (cold start) keeps the old default.
+        // FIRST, not last: `out` is NEWEST-FIRST, because the scoring loop counts backwards from today
+        // (`for (offset in 0 until maxDays)` with `dayStart = nowLocalMidnight - offset * SECONDS_PER_DAY`),
+        // so out[0] is today and the tail is the oldest day in the window. Taking the last match would have
+        // scored today's workout against a resting HR up to `maxDays` old.
+        val measuredResting = out.firstOrNull { it.rhr != null }?.rhr?.toDouble()
+        rescoreManualWorkouts(repo, profile, importedDeviceId, maxHROverride, nowSeconds, measuredResting)
 
         return out to healDropped.size
     }
@@ -1284,6 +1348,9 @@ object IntelligenceEngine {
         deviceId: String,
         maxHROverride: Double?,
         nowSeconds: Long,
+        // #950: the wearer's measured resting HR (most recent scored day), threaded into scored() so the
+        // rescore uses the same %HRR denominator as the day total. null → the scorer's default.
+        restingHR: Double? = null,
     ) {
         val since = nowSeconds - 14L * 86_400L
         val rows = runCatching { repo.workouts(deviceId, since, nowSeconds) }.getOrNull() ?: return
@@ -1297,7 +1364,7 @@ object IntelligenceEngine {
             if (!ManualWorkoutRescore.looksUnderScored(row.energyKcal) && row.strain != null) continue
             val samples = runCatching { repo.hrSamples(deviceId, row.startTs, row.endTs, 20_000) }
                 .getOrNull() ?: continue
-            val s = ManualWorkoutRescore.scored(samples, profile, hrMax) ?: continue
+            val s = ManualWorkoutRescore.scored(samples, profile, hrMax, restingHR) ?: continue
             if (!ManualWorkoutRescore.improves(s, row.energyKcal, row.strain, allowStrainOnlyFill = true)) continue
             // Never lower a summed kcal: only take the recomputed kcal when it genuinely beats the stored
             // value; a strain-only fill (merged row) keeps the existing summed energyKcal.

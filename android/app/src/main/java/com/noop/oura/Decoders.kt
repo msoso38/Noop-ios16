@@ -508,6 +508,46 @@ object OuraDecoders {
         return if (out.isEmpty()) null else out
     }
 
+    // MARK: - Motion events, averaged accel vector (0x47; s6.13)
+
+    /**
+     * Decode a 0x47 motion_events record: a compact per-window motion summary. Byte-for-byte port of
+     * open_oura's decode_motion / parse_api_motion_events (clean-room fact citation; OURA_PROTOCOL.md
+     * s6.13):
+     *   byte0 >> 5   = orientation (0..7)
+     *   byte0 & 0x1f = motion_seconds (0..31)
+     *   byte1/2/3    = avg X/Y/Z, signed int8 × 8
+     *   byte4 (opt)  = low_intensity: bit 0x40 set ⇒ INVALID (record → null); else & 0x3f
+     *   byte5 (opt)  = high_intensity: bit 0x40 set ⇒ INVALID (record → null); else & 0x3f
+     * Needs ≥ 4 bytes; low/high optional. 0x47 is MOVEMENT-GATED (validated #804): emitted only while
+     * moving, so there is no still/1 g sample — motion_seconds / intensity are the activity signal, not a
+     * gravity magnitude. Byte-identical twin of Swift.
+     */
+    fun decodeMotionEvents(rec: OuraRecord): OuraMotionEvent? {
+        val b = rec.payload
+        if (b.size < 4) return null
+        var low: Int? = null
+        if (b.size >= 5) {
+            if (b[4] and 0x40 != 0) return null
+            low = b[4] and 0x3f
+        }
+        var high: Int? = null
+        if (b.size >= 6) {
+            if (b[5] and 0x40 != 0) return null
+            high = b[5] and 0x3f
+        }
+        return OuraMotionEvent(
+            ringTimestamp = rec.ringTimestamp,
+            orientation = b[0] shr 5,
+            motionSeconds = b[0] and 0x1f,
+            avgX = i8(b[1]) * 8,
+            avgY = i8(b[2]) * 8,
+            avgZ = i8(b[3]) * 8,
+            lowIntensity = low,
+            highIntensity = high,
+        )
+    }
+
     // MARK: - Activity info (0x50; s6.13) - Tier B, third-party formula
 
     /**

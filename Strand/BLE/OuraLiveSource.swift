@@ -266,6 +266,13 @@ public final class OuraLiveSource: NSObject, ObservableObject {
     /// SQLite). Created only on a live/persisting source (nil for the discovery-only scanner). Deduped by
     /// ring-time so re-served records don't duplicate; logs its file path once when the first record lands.
     private let activityDump: OuraActivityDump?
+    /// Append-only JSONL sidecar for the 0x47 motion vectors (Tier-A), for offline LSB→g calibration (#804).
+    private let motionDump: OuraMotionDump?
+    /// Append-only JSONL capture of the RAW, undecoded history-drain notification bytes (`oura-raw-<id>.jsonl`).
+    /// Complement to the decoded sidecars above: those show what NOOP interpreted, this shows exactly what the
+    /// ring sent, so after a full connect a hole in a decoded file can be pinned as a decode drop vs ring-side.
+    /// No dedup (a re-serve is still evidence the ring re-sent it); the offline reframer collapses duplicates.
+    private let rawDump: OuraRawDump?
     /// Cached local-day formatter (the 0x50 stream is high-volume; avoid building one per record).
     private static let activityDayFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f   // local time zone by default
@@ -772,6 +779,10 @@ public final class OuraLiveSource: NSObject, ObservableObject {
         self.adoptIntent = adoptIntent
         // Tier-B MET research corpus: only on a live/persisting source, never the discovery-only scanner.
         self.activityDump = feedsLive && !deviceId.isEmpty ? OuraActivityDump(deviceId: deviceId, log: log) : nil
+        // 0x47 motion calibration corpus: same gate as the activity dump (live/persisting source only).
+        self.motionDump = feedsLive && !deviceId.isEmpty ? OuraMotionDump(deviceId: deviceId, log: log) : nil
+        // RAW undecoded history-drain capture: same live/persisting gate; complements the decoded sidecars.
+        self.rawDump = feedsLive && !deviceId.isEmpty ? OuraRawDump(deviceId: deviceId, log: log) : nil
         super.init()
         // Dedicated queue-less central -> callbacks arrive on the main queue, matching @MainActor.
         self.central = CBCentralManager(delegate: self, queue: nil)
@@ -1127,6 +1138,23 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                 persistHypnogramBurst(closed)
             }
         }
+        // #728: materialise `hrSample` from BANKED IBI. A batch with NO live-HR push (`.hr`) is history
+        // data — the ring banks overnight IBI (0x60/0x80/0x6E) but no HR, and the nightly pipeline gates on
+        // `hrSample` (day-owner probe + `hr.count >= 200`), so an Oura night otherwise never scores. Derive
+        // one median HR per IBI-record (`OuraIbiHr`) and enqueue it as `.hr` → the mapping writes
+        // `hrSample`, WITHOUT this switch's wear/live-badge side-effects (enqueue buffers for the mapping,
+        // it never re-enters ingest). Live batches ([.hr, .ibi]) are excluded, so live HR is never
+        // double-counted. Per-record ring-time anchored; an unanchored record is skipped (re-derived when
+        // it re-serves after the 0x42 anchor, exactly like the sibling `.ibi` rows).
+        let hasLiveHR = events.contains { if case .hr = $0 { return true } else { return false } }
+        if !hasLiveHR {
+            let bankedIbis: [OuraIBI] = events.compactMap { if case .ibi(let v) = $0 { return v } else { return nil } }
+            for hr in OuraIbiHr.perRecordMedianHR(bankedIbis) {
+                if let ts = driver.unixSeconds(forRingTimestamp: hr.ringTimestamp) {
+                    enqueue([.hr(hr)], ts: ts)
+                }
+            }
+        }
         for e in events {
             switch e {
             case .hr(let hr):
@@ -1355,8 +1383,24 @@ public final class OuraLiveSource: NSObject, ObservableObject {
                     publishWearState()
                 }
 
+            case .motionEvent(let m):
+                // 0x47 averaged accel vector (Tier-A). Persisted as an OURA_MOTION event (same event-table
+                // path as OURA_HRV / OURA_SLEEP_PHASE — see OuraStreamMapping), AND appended to the raw
+                // calibration sidecar. Instrumentation only: never scored, never fed to the sleep stager
+                // (0x47 is movement-gated, a shape mismatch for the gravity-stillness stager, #804). Anchor
+                // per record (its own ring-time) so each window lands on a distinct (deviceId, ts, kind) row.
+                if let ts = driver.unixSeconds(forRingTimestamp: m.ringTimestamp) {
+                    motionDump?.record(ringTs: m.ringTimestamp, utc: ts, orientation: m.orientation,
+                                       motionSeconds: m.motionSeconds, x: m.avgX, y: m.avgY, z: m.avgZ,
+                                       lowIntensity: m.lowIntensity, highIntensity: m.highIntensity)
+                    enqueue([e], ts: ts)
+                    noteStoredHistoryRingTime(m.ringTimestamp)
+                } else {
+                    pendingAnchorEvents.append((e, m.ringTimestamp))
+                }
+
             default:
-                break   // motion / debugText / etc: not a durable Streams row (see OuraStreamMapping)
+                break   // state / debugText / etc: not a durable Streams row (see OuraStreamMapping)
             }
         }
     }
@@ -1828,11 +1872,13 @@ extension OuraLiveSource: @preconcurrency CBPeripheralDelegate {
             let tlvBytes = frames.filter { $0.op != OuraFraming.secureSessionOp && $0.op != Self.setAuthKeyRespOp }
                                  .flatMap { [$0.op, UInt8($0.body.count)] + $0.body }
             if !tlvBytes.isEmpty {
+                rawDump?.record(bytes: tlvBytes)
                 ingestHistory(driver.ingest(notification: tlvBytes, reassembler: reassembler))
             }
             return
         }
         // No secure frame in this notification: treat the whole value as TLV record bytes.
+        rawDump?.record(bytes: bytes)
         ingestHistory(driver.ingest(notification: bytes, reassembler: reassembler))
     }
 

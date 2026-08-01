@@ -10,6 +10,9 @@ import PhotosUI
 import StrandDesign
 import StrandAnalytics
 import WhoopStore
+// #174: the R22 card reads the flag COUNT off `Whoop5Config.enableR22Sequence` rather than restating it —
+// the hardcoded "15" outlived the sequence growing to 16 and declared success a flag early.
+import WhoopProtocol
 
 /// Settings — profile (powers zones / calories / recovery), strap connection, and about.
 /// Grouped cards on surface.raised with a two-column form feel.
@@ -36,6 +39,13 @@ struct SettingsView: View {
     /// Opt-in WHOOP 5/MG "R22" deep-data unlock (off by default) — the one probe that writes a
     /// persistent feature flag to the strap. See [PuffinExperiment.deepDataKey]. (#174)
     @AppStorage(PuffinExperiment.deepDataKey) private var deepDataEnabled = false
+
+    /// #174: set when the deep-data switch is turned OFF, so the app can OFFER to clear the flags on the
+    /// strap instead of silently leaving them set. The switch alone has never written anything in either
+    /// direction — it gates sends — so turning it off used to change nothing on the hardware while reading
+    /// like an undo. Asking is the right shape rather than writing automatically: the strap may not be
+    /// connected, and a write to bonded hardware is not something a toggle should do unannounced.
+    @State private var confirmingDeepDataDisable = false
 
     /// Opt-in "Broadcast heart rate" (off by default) — makes the strap advertise its HR as a standard
     /// BLE sensor for Garmin/Zwift/gym kit. See [PuffinExperiment.broadcastHrKey]. (#181)
@@ -146,6 +156,11 @@ struct SettingsView: View {
     @State private var rawCsvBusy = false
     @State private var lastRawCsvURL: URL?
 
+    /// Passive WHOOP 5/MG optical experiment: the picker writes local timestamp markers into the
+    /// durable deep-buffer JSONL. It never calls a BLE write path.
+    @State private var showOpticalPhasePicker = false
+    @State private var opticalPhaseStatus = ""
+
     /// Confirm gate for the "Recalibrate Charge baseline" action (it re-learns the HRV anchor from tonight).
     @State private var showRecalibrateConfirm = false
 
@@ -234,6 +249,25 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This restarts the roughly 4-night build-up for Charge and your HRV baseline. Your history stays. Use it if a bad first week, like wearing it while sick, set your baseline off.")
+        }
+        // #174: the switch going OFF is the moment to offer the undo. Declining leaves the flags set and
+        // says so — which is still an improvement on the old behaviour, where the same tap silently left
+        // them set with no indication either way.
+        .confirmationDialog("Clear the R22 flags on your strap?",
+                            isPresented: $confirmingDeepDataDisable, titleVisibility: .visible) {
+            Button("Clear flags on strap") { model.ble.disableWhoop5DeepData() }
+            Button("Just stop sending", role: .cancel) { }
+        } message: {
+            Text("Turning this switch off only stops NOOP sending the unlock. The flags it already wrote stay on the strap until something clears them. NOOP can write the off value to all 16 now and read each one back so you can see what the strap actually stores. Needs the strap connected and bonded.")
+        }
+        .confirmationDialog("Mark optical experiment phase",
+                            isPresented: $showOpticalPhasePicker, titleVisibility: .visible) {
+            ForEach(PuffinOpticalExperimentPhase.allCases, id: \.self) { phase in
+                Button(phase.displayName) { markOpticalPhase(phase) }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("A marker starts the selected phase and ends the previous one. This only timestamps the local capture file; it sends nothing to the strap.")
         }
         .sheet(isPresented: $showWhatsNew) {
             WhatsNewView(onClose: { showWhatsNew = false })
@@ -1404,6 +1438,35 @@ struct SettingsView: View {
         #endif
     }
 
+    /// How many flags the enable sequence actually writes. Read from the sequence rather than restated, so
+    /// the card cannot drift from it again — it said "15" for the whole life of the 16-flag sequence (#174).
+    private var r22FlagCount: Int { Whoop5Config.enableR22Sequence.count }
+
+    /// The disable button is gated like the enable one MINUS the wear check: the on-wrist requirement exists
+    /// because the R22 *stream* is on-wrist gated, and nothing about clearing a stored flag needs the strap
+    /// worn. Making a user strap it back on to turn a feature off would be the wrong trade.
+    private var deepDataDisableButtonDisabled: Bool {
+        #if os(macOS)
+        return true
+        #else
+        return !live.encryptedBond || live.r22DisableReport == BLEManager.deviceConfigProbeWaiting
+        #endif
+    }
+
+    /// The reason line under the disable button. Says what the run will do and, crucially, what it can and
+    /// cannot establish — the off value is inferred from the sibling namespace, so the read-back is the
+    /// evidence, and a cleared flag is still not the same as observed behaviour reverting.
+    private var deepDataDisableButtonReason: String {
+        #if os(macOS)
+        return String(localized: "Turning deep data back off needs an iPhone or Android. A Mac can't form the encrypted bond a 5/MG requires.")
+        #else
+        if !live.encryptedBond {
+            return String(localized: "Needs the full encrypted bond: close the official WHOOP app and pair the strap to NOOP first (a live-HR-only link can't carry the write).")
+        }
+        return String(localized: "Writes the off value to all 16 flags and reads each one back, so you see what the strap stores rather than just that it acked. The off value is inferred from the flag NOOP already turns off this way for Garmin broadcast — it has never been seen on an R22 flag, so NOOP tries one flag first and stops if the strap refuses it. Clearing the flags is not the same as watching the deep records stop: check that by syncing afterwards.")
+        #endif
+    }
+
     private var fiveMGCard: some View {
         SettingsSection(
             icon: "flask.fill",
@@ -1433,7 +1496,11 @@ struct SettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
-                Text("WHOOP 5/MG straps hand a fresh app only live heart rate. The official app switches on the deeper streams (high-rate HR + motion + history) by writing a set of feature flags, a sequence two independent projects have documented. With this on, the button below sends that exact sequence to your strap. Unlike everything else here it does write to the strap, but it's reversible (it only changes which data the strap chooses to emit) and is the same thing the official app does. Experimental: it may do nothing on your firmware. iPhone/Android only. A Mac can't write to a 5/MG.")
+                // #174: turning the switch OFF used to write nothing — it only hid the enable button, so the
+                // strap kept every flag the enable sequence set while the UI implied it had been undone.
+                // Now it offers the real undo. Turning it ON still writes nothing until the button is tapped.
+                .onChangeCompat(of: deepDataEnabled) { on in if !on { confirmingDeepDataDisable = true } }
+                Text("WHOOP 5/MG straps hand a fresh app only live heart rate. The official app switches on the deeper streams (high-rate HR + motion + history) by writing a set of feature flags, a sequence two independent projects have documented. With this on, the button below sends that exact sequence to your strap. Unlike everything else here it does write to the strap — and it is reversible: \u{201C}Turn deep data back off\u{201D} writes the off value to the same flags and then reads every one of them back, so you see what the strap actually stores rather than just that it acked. Experimental: it may do nothing on your firmware. iPhone/Android only. A Mac can't write to a 5/MG.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1447,14 +1514,28 @@ struct SettingsView: View {
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
 
+                    // #174: the undo. Offered whenever the flags may be set — which is any time the opt-in
+                    // has been on, not only right after a send, because the flags persist across launches
+                    // and the app has no record of what a previous install wrote.
+                    NoopButton("Turn deep data back off", systemImage: "bolt.slash", kind: .secondary) {
+                        model.ble.disableWhoop5DeepData()
+                    }
+                    .disabled(deepDataDisableButtonDisabled)
+                    Text(deepDataDisableButtonReason)
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+
                     // Live R22 telemetry (#174): proof of what the strap is doing right now.
+                    // The threshold and the number are both driven off the sequence itself — they were
+                    // hardcoded to 15 while the sequence carried 16, so the card declared success one flag
+                    // early and named a count that had already drifted.
                     if live.r22FlagsAccepted > 0 {
-                        Label(live.r22FlagsAccepted >= 15
-                              ? "Strap accepted all 15 R22 flags"
-                              : "Strap accepted \(live.r22FlagsAccepted)/15 R22 flags…",
-                              systemImage: live.r22FlagsAccepted >= 15 ? "checkmark.seal.fill" : "ellipsis")
+                        Label(live.r22FlagsAccepted >= r22FlagCount
+                              ? "Strap accepted all \(r22FlagCount) R22 flags"
+                              : "Strap accepted \(live.r22FlagsAccepted)/\(r22FlagCount) R22 flags…",
+                              systemImage: live.r22FlagsAccepted >= r22FlagCount ? "checkmark.seal.fill" : "ellipsis")
                             .font(StrandFont.caption)
-                            .foregroundStyle(live.r22FlagsAccepted >= 15 ? StrandPalette.statusPositive : StrandPalette.textSecondary)
+                            .foregroundStyle(live.r22FlagsAccepted >= r22FlagCount ? StrandPalette.statusPositive : StrandPalette.textSecondary)
                     }
                     if live.deepPacketsThisSession > 0 {
                         Label(live.deepPacketsThisSession == 1
@@ -1463,10 +1544,38 @@ struct SettingsView: View {
                               systemImage: "clock.arrow.circlepath")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textSecondary)
-                    } else if live.r22FlagsAccepted >= 15 {
+                    } else if live.r22FlagsAccepted >= r22FlagCount {
                         Text("Flags accepted, but the enable sequence doesn't start a separate live stream. The deep records arrive as part of the normal history sync (#494).")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textTertiary)
+                    }
+
+                }
+
+                // #174: the disable run's per-key result. Shown verbatim because the interesting part is
+                // the read-back table, not a green tick — a write that acked SUCCESS but did not move
+                // the stored value renders here as "unchanged", which is the case worth seeing.
+                //
+                // OUTSIDE the `if deepDataEnabled` block on purpose. The commonest way to reach a disable
+                // run is flipping the switch OFF and confirming, which means the pref is already false while
+                // the run is walking its plan — so nesting this inside that block hid the progress line and
+                // the whole read-back table for exactly the run a user is most likely to start. The report
+                // is about what is on the STRAP, which outlives the app's opt-in: it stays legible (and
+                // dismissable) whatever the switch says.
+                if let report = live.r22DisableReport {
+                    if report == BLEManager.deviceConfigProbeWaiting {
+                        Label("Clearing R22 flags and reading each one back\u{2026}", systemImage: "ellipsis")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    } else {
+                        Text(report)
+                            .font(StrandFont.caption.monospaced())
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                        NoopButton("Dismiss disable report", systemImage: "xmark", kind: .secondary) {
+                            model.ble.clearR22DisableReport()
+                        }
                     }
                 }
 
@@ -1513,6 +1622,31 @@ struct SettingsView: View {
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if puffinCapture {
+                    Divider().overlay(StrandPalette.hairline)
+                    Text("Optical block experiment")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Text("Mark the start of each physical phase while wearing or handling the strap. NOOP aligns the marker to the timestamp inside delayed history buffers, then the offline analyzer compares block activation, header bytes and raw ADC changes. It does not assume a wavelength or calculate SpO₂/BP.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: NoopMetrics.space3) {
+                        NoopButton("Mark phase…", systemImage: "flag.fill", kind: .primary) {
+                            showOpticalPhasePicker = true
+                        }
+                        NoopButton("Export experiment…", systemImage: "square.and.arrow.up", kind: .secondary) {
+                            exportOpticalExperiment()
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    if !opticalPhaseStatus.isEmpty {
+                        Text(opticalPhaseStatus)
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    }
+                }
 
                 if live.puffinCaptureCount > 0 {
                     Text(live.puffinCaptureCount == 1
@@ -1593,10 +1727,20 @@ struct SettingsView: View {
     }
 
     /// Export the last 24h of decoded sensor streams for the connected strap to a CSV, then save (macOS
-    /// NSSavePanel) or share (iOS share sheet) — the same pattern as exportPuffinCaptures(). The store
-    /// handle and the strap deviceId both come from the app's single "my-whoop" id.
+    /// NSSavePanel) or share (iOS share sheet) — the same pattern as exportPuffinCaptures().
+    ///
+    /// The strap id comes from `repo.deviceId`, NOT `model.deviceId`. The latter is a hardcoded
+    /// `let "my-whoop"`; the former is seeded with it and then re-pointed to the registry's active strap
+    /// once the store opens (`adoptActiveDeviceId`). This read used the hardcoded one, so after a
+    /// remove+re-add — which mints a fresh "whoop-<uuid>" that the Collector writes today's raw under —
+    /// the CSV exported the legacy id's streams rather than the strap being worn, silently, in the file
+    /// people attach to bug reports. That is #814 on the diagnostic path, and the Android twin of it.
+    ///
+    /// Read on the MainActor before the Task hop, as `LiveSessionRunner` does, rather than reaching into
+    /// the actor-isolated repo from inside the task.
     private func exportRawSensorCSV() {
         rawCsvBusy = true
+        let strapId = model.repo.deviceId
         Task {
             let since = Date().timeIntervalSince1970 - 24 * 60 * 60
             guard let store = await model.repo.storeHandle() else {
@@ -1609,7 +1753,7 @@ struct SettingsView: View {
                 return
             }
             do {
-                let url = try await store.exportRawCSV(deviceId: model.deviceId, since: since)
+                let url = try await store.exportRawCSV(deviceId: strapId, since: since)
                 await MainActor.run {
                     rawCsvBusy = false
                     lastRawCsvURL = url
@@ -1669,6 +1813,28 @@ struct SettingsView: View {
         #else
         FileExport.exportFile(at: src, suggestedName: suggested)
         #endif
+    }
+
+    private func markOpticalPhase(_ phase: PuffinOpticalExperimentPhase) {
+        if model.ble.markWhoop5OpticalPhase(phase) {
+            opticalPhaseStatus = String(localized: "Marked: \(phase.displayName)")
+        } else {
+            opticalPhaseStatus = String(localized: "Marker wasn't saved. Keep frame recording on and try again.")
+        }
+    }
+
+    /// Export the durable JSONL used by the optical comparison CLI. Closing its append handle first
+    /// makes the user-selected copy complete; logging reopens lazily on the next buffer or marker.
+    private func exportOpticalExperiment() {
+        guard let src = model.ble.whoop5OpticalExperimentURL() else {
+            backupAlertTitle = String(localized: "Nothing to export")
+            backupAlertMessage = String(localized: "No WHOOP 5/MG deep buffers or phase markers have been recorded yet.")
+            showBackupAlert = true
+            return
+        }
+        FileExport.exportFile(
+            at: src,
+            suggestedName: FileExport.timestampedName("noop-whoop5-optical-experiment", ext: "jsonl"))
     }
 
     /// One-tap matched-pair export (#510): export the raw puffin capture AND the strap log together,
@@ -1754,6 +1920,21 @@ struct SettingsView: View {
                     Text("Importing overwrites everything currently on \(Platform.deviceNounPhrase). Your old data is kept in a side file just in case. NOOP needs a relaunch for an import to take effect. Export CSV writes a WHOOP-format zip of your days, sleeps, workouts and journal that re-imports into NOOP on Mac, iPhone, or Android. On-device computed rows are marked APPROXIMATE in its Source column; the full backup stays the lossless restore path.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // #644: .noopbak is a plain ZIP, not an encrypted container — anyone who gets the file
+                // can open it in any archive tool. Say so plainly next to the Export button, rather than
+                // let people assume the file itself is protected once it leaves the device (e.g. dropped
+                // into a cloud-synced folder).
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(StrandPalette.statusWarning)
+                        .font(.system(size: 13))
+                        .accessibilityHidden(true)
+                    Text("This is a plain, unencrypted archive — anyone who gets the file can open it with any zip tool. Store it somewhere you trust.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.statusWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 

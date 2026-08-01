@@ -88,6 +88,7 @@ public struct DeviceRegistryStore: Sendable {
         "hrSample", "rrInterval", "spo2Sample", "skinTempSample", "respSample", "gravitySample",
         "stepSample", "ppgHrSample", "event", "battery", "dailyMetric", "sleepSession",
         "journal", "workout", "appleDaily", "metricSeries", "dayOwnership",
+        "scoreInputProvenance",
         // Added: device-keyed tables introduced by later migrations that the list previously missed, so a
         // "delete all of this device's data" left raw captures (rawBatch), user-entered lab/blood markers
         // (labMarker), banked band sleep-state (sleepStateSample) and live coaching sessions
@@ -106,6 +107,9 @@ public struct DeviceRegistryStore: Sendable {
         // v28-raw-imu (#423): the opt-in 5/MG raw-IMU offload capture is deviceId-keyed too — "delete all
         // of this device's data" must clear it, or the raw inertial samples survive deletion (same defect).
         "rawImuSample",
+        // v31-deep-capture-channels: the banked 5/MG v18 auxiliary fields are deviceId-keyed per-second
+        // rows like every stream above, so a "delete all of this device's data" must clear them too.
+        "v18AuxSample",
     ]
 
     /// Permanently delete every recorded sample/derived row belonging to one device, across all
@@ -118,6 +122,10 @@ public struct DeviceRegistryStore: Sendable {
             for table in Self.deviceScopedTables {
                 try db.execute(sql: "DELETE FROM \(table) WHERE deviceId = ?", arguments: [deviceId])
             }
+            // Provenance also references the physical/import source separately from its computed
+            // namespace. Forgetting a provider must remove those associations too.
+            try db.execute(sql: "DELETE FROM scoreInputProvenance WHERE sourceId = ?",
+                           arguments: [deviceId])
         }
     }
 

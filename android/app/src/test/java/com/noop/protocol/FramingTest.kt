@@ -240,6 +240,10 @@ class FramingTest {
     @Test
     fun parse_commandResponse_getBatteryLevel() {
         // COMMAND_RESPONSE GET_BATTERY_LEVEL(26): soc=912 -> 91.2%.
+        // GENERATED, not captured — see this class's header. Its [seq][result] prefix is 00 00 on a
+        // reply that succeeded, which reads as a counterexample to the #791 result-byte mapping, and it
+        // was cited as one in #900 by someone who had not read that header. Zero bytes in a generated
+        // vector are whatever the generator emitted. Nothing below asserts the result byte. (#900)
         val frame = bytes(
             0xaa, 0x0b, 0x00, 0x97, 0x24, 0x00, 0x1a, 0x00, 0x00, 0x90, 0x03, 0x72,
             0x96, 0x86, 0x64,
@@ -482,13 +486,15 @@ class FramingTest {
 
     @Test
     fun whoop5_event_decodesAtPlus4AndPreservesPayload() {
-        // Real 5/MG capture: uncatalogued event 0x1D(29) with a 16-byte payload — kept as hex so
-        // protocol research can classify it later.
+        // Real 5/MG capture: event 29 with a 16-byte payload. The shared catalogue names it
+        // STRAP_CONDITION_REPORT — event NAMES are family-independent (#791) — but its PAYLOAD has no
+        // on-device 5.0 ground truth, so it stays raw hex for protocol research rather than being decoded
+        // on faith. The payload assertion below is what pins that distinction.
         val frame = fromHex("aa011c00010023d130c61d00e61ab7698a390c000e0000000000e8020b000100d2803585")
         val parsed = Framing.parseFrame(frame, DeviceFamily.WHOOP5)
         assertEquals("EVENT", parsed.typeName)
         assertEquals(true, parsed.crcOk)
-        assertEquals("0x1D(29)", parsed.parsed["event"])
+        assertEquals("STRAP_CONDITION_REPORT(29)", parsed.parsed["event"])
         assertEquals(1773607654, parsed.parsed["event_timestamp"])
         assertEquals("8a390c000e0000000000e8020b000100", parsed.parsed["event_payload_hex"])
     }
